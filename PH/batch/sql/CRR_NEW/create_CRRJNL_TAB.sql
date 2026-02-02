@@ -1,0 +1,2 @@
+CREATE OR REPLACE type CRRJNL_TAB is table of CRRJNL_OBJ
+/

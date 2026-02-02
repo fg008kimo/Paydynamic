@@ -1,0 +1,31 @@
+CREATE OR REPLACE FUNCTION sp_txn_code_update(
+	in_txn_code		txn_code.tc_code%type,
+	in_desc			txn_code.tc_desc%type, 
+	in_voidable		txn_code.tc_voidable%type,
+	in_fe_display		txn_code.tc_fe_display%type,
+	in_update_user		txn_code.tc_update_user%type
+	)
+  RETURN NUMBER IS
+
+BEGIN
+
+  UPDATE txn_code
+     SET tc_desc = in_desc,
+         tc_voidable = NVL(in_voidable, tc_voidable),	
+	 tc_fe_display = NVL(in_fe_display, tc_fe_display),
+         tc_update_user = in_update_user,
+         tc_update_timestamp = sysdate
+   WHERE tc_code = in_txn_code;
+
+  IF SQL%ROWCOUNT = 0 THEN
+     RETURN 1;
+  ELSE
+     RETURN 0;
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+
+END sp_txn_code_update;
+/

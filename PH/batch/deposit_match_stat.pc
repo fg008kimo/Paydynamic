@@ -1,0 +1,507 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/10/15              LokMan Chow
+*/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_TR           "<tr align=\"center\">"
+#define PD_TD           "<td>"
+#define PD_TD_LEFT      "<td align=\"left\">"
+#define PD_TR_END       "</tr>"
+#define PD_TD_END       "</td>"
+#define PD_TR_BGCOLOR	"<tr align=\"center\" bgcolor=#C0C0C0>"
+#define PD_TD_COLSPAN_RIGHT      "<td colspan=\"9\" align=\"right\">"
+
+char    cs_date[PD_DATE_LEN + 1];
+char    cDebug='Y';
+
+int process_txn(const char* csDate);
+
+int batch_init(int argc, char* argv[])
+{
+
+	if (argc < 2) {
+        	printf("usage:  -d Date\n");
+        	return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        //strcpy(cs_outfile,"");
+        //strcpy(cs_merchant_id,"");
+        //strcpy(cs_txn_code,"");
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+        //char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+        //FILE    *fp;
+	//int	iNumOfRecord = 0;
+	//char    csMerchIdList[MAX_MERCHANT_NUM][PD_MERCHANT_ID_LEN+1];
+        
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS){
+        	printf("usage:  -d Date\n");
+                return (iRet);
+        }
+
+	iRet = process_txn(cs_date);
+DEBUGLOG(("process_txn: iRet [%d]\n",iRet));
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int process_txn(const char* csDate)
+{               
+ 	//char    *csTmp;// = strdup("");
+        int     iRet = SUCCESS;
+	int	iLineCnt = 0;
+	double	dTotalMerchantAmt = 0.0;
+	double	dTotalPspAmt = 0.0;
+	char	csTag[PD_TAG_LEN+1];
+	hash_t *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+        
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_date[PD_DATE_LEN];
+
+		varchar v_client_name[PD_TMP_BUF_LEN+1];
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN+1];
+		varchar v_name[PD_TMP_BUF_LEN+1];
+		varchar	v_merchant_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_psp_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_amt_type[PD_TXN_ELEMENT_TYPE_LEN +1];
+		varchar	v_amt_type_desc[PD_DESC_LEN +1];
+		double	v_merchant_amt;
+		double	v_psp_amt;
+		double	v_rate;
+		int	v_cnt;
+
+		short	ind_client_name= -1;
+		short	ind_merchant_id= -1;
+		short	ind_name= -1;
+		short	ind_merchant_ccy= -1;
+		short	ind_psp_ccy= -1;
+		short	ind_amt_type= -1;
+		short	ind_amt_type_desc= -1;
+		short	ind_merchant_amt= -1;
+		short	ind_psp_amt= -1;
+		short	ind_rate= -1;
+		short	ind_cnt= -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_date.len = strlen(csDate);
+        memcpy(hv_date.arr,csDate,hv_date.len);
+DEBUGLOG(("process_txn::date = [%.*s]\n",hv_date.len,hv_date.arr));
+
+        EXEC SQL DECLARE c_cursor_getmtxn CURSOR FOR
+		select  client_name,
+			merchant_id,
+			short_name, 
+			ds_amt_type,
+			decode(ds_amt_type,'TAMT','Txn Amt', 'TFEE','Fee', 'MAMT', 'MarkUp Fee') as type_desc,
+			ds_ccy,
+			ds_amt,
+			ds_to_ccy,
+			ds_to_amt,
+			ds_txn_count,
+			ds_ex_rate
+		from	deposit_match_stat,
+			merch_detail,
+			clients
+		where	ds_txn_date=:hv_date
+		and	ds_party_id = merchant_id
+		and	ds_party_type = 'M'
+		and	merch_detail.client_id = clients.client_id
+		order by type_desc desc, ds_party_id;
+
+        EXEC SQL DECLARE c_cursor_gettmptxn CURSOR FOR
+		select  ' ',
+			' ',
+			'Temporary Account', 
+			ds_amt_type,
+			decode(ds_amt_type,'TAMT','Txn Amt') as type_desc,
+			ds_ccy,
+			sum(ds_amt),
+			ds_to_ccy,
+			sum(ds_to_amt),
+			sum(ds_txn_count)
+		from	deposit_match_stat
+		where	ds_txn_date=:hv_date
+		and	ds_party_type = 'T'
+		group by ds_amt_type,ds_ccy,ds_to_ccy
+		order by type_desc desc, ds_ccy;
+
+
+	EXEC SQL DECLARE c_cursor_getptxn CURSOR FOR
+		select  ' ',
+			' ',
+			'PSP - ' || psp_name,
+			ds_amt_type,
+			decode(ds_amt_type,'TAMT','Txn Amt', 'NAMT','Net Amt', 'TFEE','PSP Cost') as type_desc,
+                        ds_ccy,
+                        ds_amt,
+			ds_txn_count
+		from    deposit_match_stat,
+                        psp_detail
+                where   ds_txn_date=:hv_date
+                and     ds_party_id = psp_id
+		and	ds_party_type = 'P'
+                order by type_desc, ds_party_id;
+
+
+	EXEC SQL OPEN c_cursor_getmtxn;
+        do {    
+                EXEC SQL FETCH c_cursor_getmtxn
+                INTO
+			:v_client_name:ind_client_name,
+			:v_merchant_id:ind_merchant_id,
+			:v_name:ind_name,
+			:v_amt_type:ind_amt_type,
+			:v_amt_type_desc:ind_amt_type_desc,
+			:v_merchant_ccy:ind_merchant_ccy,
+			:v_merchant_amt:ind_merchant_amt,
+			:v_psp_ccy:ind_psp_ccy,
+			:v_psp_amt:ind_psp_amt,
+			:v_cnt:ind_cnt,
+			:v_rate:ind_rate;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		iLineCnt ++;
+
+		if((iLineCnt%2) != 0)
+			printf("%s",PD_TR);
+		else
+			printf("%s",PD_TR_BGCOLOR);
+/* Client Name */
+                if (ind_client_name < 0 )
+                        v_client_name.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_client_name.len,v_client_name.arr,PD_TD_END);
+
+/* Merchant Id */
+                if (ind_merchant_id < 0 )
+                        v_merchant_id.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_merchant_id.len,v_merchant_id.arr,PD_TD_END);
+
+/* Name */
+                if (ind_name < 0 )
+                        v_name.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_name.len,v_name.arr,PD_TD_END);
+
+/* Amount Type Desc*/
+                if (ind_amt_type_desc< 0 )
+                        v_amt_type_desc.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_amt_type_desc.len,v_amt_type_desc.arr,PD_TD_END);
+
+/* Merchant Ccy*/
+                if (ind_merchant_ccy< 0 )
+                        v_merchant_ccy.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD,v_merchant_ccy.len,v_merchant_ccy.arr,PD_TD_END);
+
+/* Merchant Amount*/
+                if (ind_merchant_amt< 0 )
+			v_merchant_amt= 0.0;
+		if(strcmp((const char *)v_amt_type.arr,PD_ELEMENT_TXN_AMT))
+                	printf("%s%.2f%s%s%s",PD_TD,v_merchant_amt,PD_TD_END,PD_TD,PD_TD_END);
+		else		
+                	printf("%s%s%s%.2f%s",PD_TD,PD_TD_END,PD_TD,v_merchant_amt,PD_TD_END);
+
+/* Txn count*/
+		if(ind_cnt<0)
+			v_cnt = 0;
+		if(strcmp((const char *)v_amt_type.arr,PD_ELEMENT_TXN_AMT))
+			printf("%s%s",PD_TD,PD_TD_END);
+		else
+			printf("%s%d%s",PD_TD,v_cnt,PD_TD_END);
+
+/* Rate
+                if (ind_rate< 0 )
+			v_rate= 0.0;
+		if(strcmp((const char *)v_amt_type.arr,PD_ELEMENT_TXN_AMT))
+			printf("%s%s",PD_TD,PD_TD_END);
+		else
+                	printf("%s%.5f%s",PD_TD,v_rate,PD_TD_END);
+*/
+
+/* Psp Ccy*/
+                if (ind_psp_ccy< 0 )
+                        v_psp_ccy.arr[0] = '\0';
+		if(strcmp((const char *)v_amt_type.arr,PD_ELEMENT_TXN_AMT))
+			printf("%s%s",PD_TD,PD_TD_END);
+		else
+			printf("%s%.*s%s",PD_TD,v_psp_ccy.len,v_psp_ccy.arr,PD_TD_END);
+
+/* PSP Amount*/
+                if (ind_psp_amt< 0 )
+			v_psp_amt= 0.0;
+		if(strcmp((const char *)v_amt_type.arr,PD_ELEMENT_TXN_AMT)){
+			printf("%s%s",PD_TD,PD_TD_END);
+		}
+		else{
+                	printf("%s%s%s%.2f%s",PD_TD,PD_TD_END,PD_TD,v_psp_amt,PD_TD_END);
+			dTotalMerchantAmt = 0.0;
+			sprintf(csTag,"total_merch_amt");
+			GetField_Double(hTxn,csTag,&dTotalMerchantAmt);
+			dTotalMerchantAmt += v_psp_amt;
+			PutField_Double(hTxn,csTag,dTotalMerchantAmt);
+		}
+
+		printf("%s\n",PD_TR_END);
+
+ 	}
+        while(PD_TRUE);
+
+	EXEC SQL OPEN c_cursor_gettmptxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettmptxn
+                INTO
+			:v_client_name:ind_client_name,
+			:v_merchant_id:ind_merchant_id,
+			:v_name:ind_name,
+			:v_amt_type:ind_amt_type,
+			:v_amt_type_desc:ind_amt_type_desc,
+			:v_merchant_ccy:ind_merchant_ccy,
+			:v_merchant_amt:ind_merchant_amt,
+			:v_psp_ccy:ind_psp_ccy,
+			:v_psp_amt:ind_psp_amt,
+			:v_cnt:ind_cnt;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		iLineCnt ++;
+
+		if((iLineCnt%2) != 0)
+			printf("%s",PD_TR);
+		else
+			printf("%s",PD_TR_BGCOLOR);
+/* Client Name */
+                if (ind_client_name < 0 )
+                        v_client_name.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_client_name.len,v_client_name.arr,PD_TD_END);
+
+/* Merchant Id */
+                if (ind_merchant_id < 0 )
+                        v_merchant_id.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_merchant_id.len,v_merchant_id.arr,PD_TD_END);
+
+/* Name */
+                if (ind_name < 0 )
+                        v_name.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_name.len,v_name.arr,PD_TD_END);
+
+/* Amount Type Desc*/
+                if (ind_amt_type_desc< 0 )
+                        v_amt_type_desc.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_amt_type_desc.len,v_amt_type_desc.arr,PD_TD_END);
+
+/* Merchant Ccy*/
+                if (ind_merchant_ccy< 0 )
+                        v_merchant_ccy.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD,v_merchant_ccy.len,v_merchant_ccy.arr,PD_TD_END);
+
+/* Merchant Amount*/
+                if (ind_merchant_amt< 0 )
+			v_merchant_amt= 0.0;
+                printf("%s%s%s%.2f%s",PD_TD,PD_TD_END,PD_TD,v_merchant_amt,PD_TD_END);
+
+/* Txn count*/
+		if(ind_cnt<0)
+			v_cnt = 0;
+		printf("%s%d%s",PD_TD,v_cnt,PD_TD_END);
+
+/* Rate
+                printf("%s%s",PD_TD,PD_TD_END);
+*/
+
+/* Psp Ccy*/
+                if (ind_psp_ccy< 0 )
+                        v_psp_ccy.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD,v_psp_ccy.len,v_psp_ccy.arr,PD_TD_END);
+
+/* PSP Amount*/
+                if (ind_psp_amt< 0 )
+			v_psp_amt= 0.0;
+                printf("%s%s%s%.2f%s",PD_TD,PD_TD_END,PD_TD,v_psp_amt,PD_TD_END);
+		dTotalMerchantAmt = 0.0;
+		sprintf(csTag,"total_merch_amt");
+		GetField_Double(hTxn,csTag,&dTotalMerchantAmt);
+		dTotalMerchantAmt += v_psp_amt;
+		PutField_Double(hTxn,csTag,dTotalMerchantAmt);
+
+		printf("%s\n",PD_TR_END);
+
+ 	}
+        while(PD_TRUE);
+
+	EXEC SQL OPEN c_cursor_getptxn;
+        do {    
+                EXEC SQL FETCH c_cursor_getptxn
+                INTO
+			:v_client_name:ind_client_name,
+			:v_merchant_id:ind_merchant_id,
+			:v_name:ind_name,
+			:v_amt_type:ind_amt_type,
+			:v_amt_type_desc:ind_amt_type_desc,
+			:v_psp_ccy:ind_psp_ccy,
+			:v_psp_amt:ind_psp_amt,
+			:v_cnt:ind_cnt;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+		iLineCnt++;
+
+		if((iLineCnt%2) != 0)
+			printf("%s",PD_TR);
+		else
+			printf("%s",PD_TR_BGCOLOR);
+/* Client Name */
+                if (ind_client_name < 0 )
+                        v_client_name.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_client_name.len,v_client_name.arr,PD_TD_END);
+
+/* Merchant Id */
+                if (ind_merchant_id < 0 )
+                        v_merchant_id.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_merchant_id.len,v_merchant_id.arr,PD_TD_END);
+
+/* Name */
+                if (ind_name < 0 )
+                        v_name.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_name.len,v_name.arr,PD_TD_END);
+
+/* Amount Type Desc*/
+                if (ind_amt_type_desc< 0 )
+                        v_amt_type_desc.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD_LEFT,v_amt_type_desc.len,v_amt_type_desc.arr,PD_TD_END);
+
+/* Merchant Ccy*/
+		printf("%s%s",PD_TD,PD_TD_END);
+
+/* Merchant Amount*/
+		printf("%s%s",PD_TD,PD_TD_END);
+		printf("%s%s",PD_TD,PD_TD_END);
+
+/* Txn count*/
+		if(ind_cnt<0)
+			v_cnt = 0;
+		if(!strcmp((const char *)v_amt_type.arr,PD_ELEMENT_TXN_AMT))
+			printf("%s%d%s",PD_TD,v_cnt,PD_TD_END);
+		else if(!strcmp((const char *)v_amt_type.arr,"NAMT"))
+			printf("%s%d%s",PD_TD,v_cnt,PD_TD_END);
+		else
+			printf("%s%s",PD_TD,PD_TD_END);
+
+/* Rate
+		printf("%s%s",PD_TD,PD_TD_END);
+*/
+/* Psp Ccy*/
+                if (ind_psp_ccy< 0 )
+                        v_psp_ccy.arr[0] = '\0';
+		printf("%s%.*s%s",PD_TD,v_psp_ccy.len,v_psp_ccy.arr,PD_TD_END);
+
+/* PSP Amount*/
+                if (ind_psp_amt< 0 )
+			v_psp_amt= 0.0;
+		printf("%s%.2f%s%s%s",PD_TD,v_psp_amt,PD_TD_END,PD_TD,PD_TD_END);
+		dTotalPspAmt= 0.0;
+		sprintf(csTag,"total_psp_amt");
+		GetField_Double(hTxn,csTag,&dTotalPspAmt);
+		dTotalPspAmt += v_psp_amt;
+		PutField_Double(hTxn,csTag,dTotalPspAmt);
+
+		printf("%s\n",PD_TR_END);
+
+ 	}
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getmtxn;
+        EXEC SQL CLOSE c_cursor_gettmptxn;
+        EXEC SQL CLOSE c_cursor_getptxn;
+
+	printf("%s%s\n",PD_TR,PD_TR_END);
+	dTotalMerchantAmt = 0.0;
+	dTotalPspAmt = 0.0;
+	
+	GetField_Double(hTxn,"total_merch_amt",&dTotalMerchantAmt);
+	GetField_Double(hTxn,"total_psp_amt",&dTotalPspAmt);
+	printf("<tr>%sTotal:</td><td>%.2f</td><td>%.2f</td></tr>\n",PD_TD_COLSPAN_RIGHT,dTotalPspAmt,dTotalMerchantAmt);
+
+
+	FREE_ME(hTxn);
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getmtxn;
+    EXEC SQL CLOSE c_cursor_gettmptxn;
+    EXEC SQL CLOSE c_cursor_getptxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}

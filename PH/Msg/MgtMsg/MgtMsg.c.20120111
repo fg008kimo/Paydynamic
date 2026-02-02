@@ -1,0 +1,811 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/05/17              Cody Chan
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "MgtMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include "internal.h"
+#include <zlib.h>
+#include "ObjPtr.h"
+#include <expat.h>
+#include "b64.h"
+
+#define PD_XML_HEADER           "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+#define PD_ROOT_ELEMENT         "PH"
+#define	PD_ID_ELEMENT		"id"
+#define	PD_DT_ELEMENT		"dt"
+
+#ifdef XML_LARGE_SIZE
+#if defined(XML_USE_MSC_EXTENSIONS) && _MSC_VER < 1400
+#define XML_FMT_INT_MOD "I64"
+#else
+#define XML_FMT_INT_MOD "ll"
+#endif
+#else
+#define XML_FMT_INT_MOD "l"
+#endif
+
+
+char	cDebug;
+
+
+void	MgtMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     iTotal = 0;
+int	iN;
+char*   csTag[PD_MAX_TAG];
+char*   csValue[PD_MAX_TAG];
+char*   csName[PD_MAX_TAG];
+char	*csAttr;
+int	iAttr;
+
+
+static void XMLCALL
+startElement(void *userData, const char *name, const char **atts)
+{
+  	int *depthPtr = userData;
+
+	int i;
+	for(i = 0; atts[i]; i += 2) {
+		if (!strcmp(atts[i],PD_ID_ELEMENT)) {
+			if (csAttr != NULL) 
+				FREE_ME(csAttr);
+        		csAttr = (char*) malloc (PD_TMP_BUF_LEN +1 );
+			strcpy(csAttr,atts[i +1]);
+//DEBUGLOG(("att = [%s]\n",csAttr));
+			iAttr++;
+		}
+	}
+	if (strcmp(name,PD_ROOT_ELEMENT)) {
+		if (csName[iN] != NULL) {
+			char* csTmp;
+        		csTmp = (char*) malloc (PD_TMP_BUF_LEN +1 );
+			sprintf(csTmp,"%s_%s",csName[iN],name);
+			FREE_ME(csName[iN]);
+			csName[iN] = (char*)strdup(csTmp);
+			FREE_ME(csTmp);
+		}
+		else {
+			csName[iN]= (char*) strdup(name);
+		}
+
+//DEBUGLOG(("in = [%d]\n",iN));
+		if (iN >= 1) {
+			int i;
+			char* csBuf;
+			int	iLen=0;
+        		csBuf = (char*) malloc (PD_TMP_BUF_LEN +1 );
+			for (i = 0; i < iN; i++) {
+				if (iLen > 0 ) {
+					memcpy(&csBuf[iLen],"_",1);
+					iLen++;
+				}
+				memcpy(&csBuf[iLen],csName[i],strlen(csName[i]));
+				iLen += strlen(csName[i]);
+				csBuf[iLen] = '\0';
+			}
+			
+			if (iLen > 0 ) {
+				memcpy(&csBuf[iLen],"_",1);
+				iLen++;
+			}
+			memcpy(&csBuf[iLen],name,strlen(name));
+			iLen += strlen(name);
+			csBuf[iLen] = '\0';
+
+			if (csAttr != NULL) {
+				if (iLen > 0 ) {
+					memcpy(&csBuf[iLen],"_",1);
+					iLen++;
+				}
+				memcpy(&csBuf[iLen],csAttr,strlen(csAttr));
+				iLen += strlen(csAttr);
+				csBuf[iLen] = '\0';
+			}
+			if (csTag[iTotal] != NULL) 
+				FREE_ME(csTag[iTotal]);
+
+			csTag[iTotal] = (char*)strdup(csBuf);
+			FREE_ME(csBuf);
+		}
+		else  {
+			csTag[iTotal] = (char*)strdup(name);
+		}
+
+		iN++;
+//DEBUGLOG(("T[%d][<%s>]\n",iN,csTag[iTotal]));
+	}
+
+  	*depthPtr += 1;
+}
+
+static void XMLCALL
+endElement(void *userData, const char *name)
+{
+  int *depthPtr = userData;
+  *depthPtr -= 1;
+	iN--;
+//DEBUGLOG(("FREE %s\n",csName[iN]));
+	FREE_ME(csName[iN]);
+//DEBUGLOG(("T[%d][%d][</%s>]\n",iN,iTotal,name));
+}
+
+static void XMLCALL
+Chars(void *userData, const XML_Char *s, int len)
+{
+        char* csTmp;
+        if (len > 1) {
+                csTmp = (char*) malloc (len +1 );
+                sprintf(csTmp,"%.*s",len,s);
+//DEBUGLOG(("XMLCALL Chars [%s]\n",csTmp));
+//DEBUGLOG(("value = [%s]\n",csTmp));
+		csValue[iTotal] = strdup(csTmp);
+                FREE_ME(csTmp);
+        }
+        else {
+//DEBUGLOG(("XMLCALL Chars len !>1\n"));
+                csTmp = (char*) malloc (2);
+                sprintf(csTmp,"%c",s[0]);
+//DEBUGLOG(("XMLCALL Chars***** [%s]\n",csTmp));
+//DEBUGLOG(("value = [%s]\n",csTmp));
+                csValue[iTotal] = strdup(csTmp);
+		FREE_ME(csTmp);
+        }
+        iTotal ++;
+}
+
+
+int FormatDTMsg(const hash_t* hIn,unsigned char *outMsg, const int iCnt);
+
+int FormatMultiMsg(const hash_t* hIn,unsigned char *outMsg, const int iCnt);
+
+int FormatMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int iRet = PD_OK;
+	char*	csPtr;
+	char*	csTxnCode;
+	char*	csBuf,*csTag,*csTmp;
+	double	dTmp;
+	int	iTmp;
+
+        csBuf = (char*) malloc (PD_MAX_BUFFER +1);
+        csTag = (char*) malloc (PD_TMP_BUF_LEN +1);
+        csTmp = (char*) malloc (PD_TMP_BUF_LEN +1);
+
+        
+        strcpy((char*)outMsg,PD_XML_HEADER);
+
+/* Root Element */
+        sprintf(csBuf,"<%s>",PD_ROOT_ELEMENT);
+        strcat((char*)outMsg,csBuf);
+
+/* reply_txn_code */
+        strcpy(csTag,"reply_txn_code");
+        if (GetField_CString(hIn,csTag,&csTxnCode)) {
+        	strcpy(csTag,"reply_tc");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTxnCode));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTxnCode,csTag);
+                strcat((char*)outMsg,csBuf);
+        }
+/* response_code */
+        strcpy(csTag,"response_code");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"ret");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* host_posting_date */
+        strcpy(csTag,"host_posting_date");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"phdate");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* org_txn_seq */
+        strcpy(csTag,"org_txn_seq");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"txnid");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* merchant_id */
+        strcpy(csTag,"merchant_id");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"mid");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* merchant_ref */
+        strcpy(csTag,"merchant_ref");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"mtid");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* txn_ccy */
+        strcpy(csTag,"txn_ccy");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"ccy");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* net_ccy */
+        strcpy(csTag,"net_ccy");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"nccy");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* txn_country */
+        strcpy(csTag,"txn_country");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+        	strcpy(csTag,"country");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* single_pay_method */
+        strcpy(csTag,"single_pay_method");
+        if (GetField_Int(hIn,csTag,&iTmp)) {
+        	strcpy(csTag,"single_pay_method");
+DEBUGLOG(("FormatMsg <%s> = <%d>\n",csTag,iTmp));
+                sprintf(csBuf,"<%s>%d</%s>",csTag,iTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* pay_method */
+        strcpy(csTag,"pay_method");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg: pay_method = [%s]\n",csPtr));
+		char* p;
+		char* csTmp;
+		csTmp = (char*) malloc(strlen(csPtr) +1);
+		strcpy(csTmp,csPtr);
+		p = strtok(csTmp,",");
+DEBUGLOG(("FormatMsg  = [%s]\n",p));
+		if (p != NULL) {
+			sprintf(csTag,"T_%s",p);
+                	sprintf(csBuf,"<%s>1</%s>",csTag,csTag);
+                	strcat((char*)outMsg,csBuf);
+		}
+		while (((p = strtok(NULL,",")) != NULL)) {
+			sprintf(csTag,"T_%s",p);
+                	sprintf(csBuf,"<%s>1</%s>",csTag,csTag);
+                	strcat((char*)outMsg,csBuf);
+		}
+		FREE_ME(csTmp);
+	}
+/* txn_amt */
+	if (GetField_Double(hIn,"txn_amt",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"txnamt");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* net_amt */
+	if (GetField_Double(hIn,"net_amt",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"netamt");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* fee */
+	if (GetField_Double(hIn,"fee",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"fee");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+
+/* total_cnt */
+	if (GetField_Int(hIn,"total_cnt",&iTmp)) {
+                strcpy(csTag,"total_cnt");
+DEBUGLOG(("FormatMsg <%s> = <%d>\n",csTag,iTmp));
+		sprintf(csBuf,"<%s>%d</%s>",csTag,iTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+
+		if(!strcmp(csTxnCode,"EFX") ||
+		   !strcmp(csTxnCode,"POP") ||
+		   !strcmp(csTxnCode,"RAG") ||
+		   !strcmp(csTxnCode,"PRC")) {
+
+			FormatMultiMsg(hIn,outMsg,iTmp);
+                }
+		else{
+			FormatDTMsg(hIn,outMsg,iTmp);
+		}
+	}
+
+
+/*psp */
+/* psp_id */
+        strcpy(csTag,"psp_id");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* psp_tid */
+        strcpy(csTag,"psp_tid");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* psp_txn_date */
+        strcpy(csTag,"psp_txn_date");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* service_fee */
+	if (GetField_Double(hIn,"service_fee",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"service_fee");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* pay_center_number */
+        strcpy(csTag,"pay_center_number");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* customer_number */
+        strcpy(csTag,"customer_number");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* conf_number */
+        strcpy(csTag,"conf_number");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* store_id */
+        strcpy(csTag,"store_id");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+/* receipt_number */
+        strcpy(csTag,"receipt_number");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* redirect_url */      
+        strcpy(csTag,"redirect_url");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                char*   csTmpBuf;
+                csTmpBuf = (char*) malloc (PD_MAX_BUFFER +1);
+                base64_encode((unsigned char*)csPtr,strlen(csPtr),csTmpBuf,PD_MAX_BUFFER);
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmpBuf,csTag);
+                FREE_ME(csTmpBuf); 
+                strcat((char*)outMsg,csBuf); 
+        }                       
+                                   
+
+/* jnl_id */
+        strcpy(csTag,"jnl_id");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* merchant_reserved_amt*/
+	if (GetField_Double(hIn,"reserved_amt",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"reserved_amt");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* aval_balance */
+	if (GetField_Double(hIn,"aval_balance",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"aval_balance");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* psp_balance */
+	if (GetField_Double(hIn,"psp_balance",&dTmp)) {
+		sprintf((char*)csTmp,"%.2f",dTmp);
+        	strcpy(csTag,"psp_balance");
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csTmp));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csTmp,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* rtn_code */
+        strcpy(csTag,"rtn_code");
+        if (GetField_CString(hIn,csTag,&csPtr)) {
+DEBUGLOG(("FormatMsg <%s> = <%s>\n",csTag,csPtr));
+                sprintf(csBuf,"<%s>%s</%s>",csTag,csPtr,csTag);
+                strcat((char*)outMsg,csBuf);
+	}
+
+/* Root Element */
+        sprintf(csBuf,"</%s>",PD_ROOT_ELEMENT);
+        strcat((char*)outMsg,csBuf);
+        *outLen = strlen((char*)outMsg);
+
+	FREE_ME(csTag);
+	FREE_ME(csBuf);
+	FREE_ME(csTmp);
+DEBUGLOG(("FormatMsg:: out = [%s]\n",outMsg));
+DEBUGLOG(("FormatMsg:: iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int BreakDownMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	int 	userData = 0;
+	int	done = 0;
+	int	i;
+	char	*csTmp;
+
+	iTotal = 0;
+	iN = 0;
+	iAttr = 0;
+	XML_Parser parser;
+
+DEBUGLOG(("[%s]\n",inMsg));
+
+	csTmp = (char*) malloc (PD_TMP_BUF_LEN +1);
+	parser = XML_ParserCreate((XML_Char *)"UTF-8");
+	XML_SetUserData(parser, &userData);
+	XML_SetElementHandler(parser, startElement, endElement);
+	XML_SetCharacterDataHandler(parser,Chars);
+	
+	if (!XML_Parse(parser, (char*)inMsg, inLen, done)) {
+DEBUGLOG(("%s at line %d\n", XML_ErrorString(XML_GetErrorCode(parser)), XML_GetCurrentLineNumber(parser)));
+		return 1;
+	}	
+
+	XML_ParserFree(parser);
+
+//DEBUGLOG(("iTotal = [%d]\n",iTotal));
+        for (i = 0; i < iTotal; i++) {
+		U2L(csTag[i],strlen(csTag[i]),csTmp);
+DEBUGLOG(("%s = [%s]\n",csTmp,csValue[i]));
+		if (!strcmp(csTmp,"tc")) {
+                	PutField_CString(hOut,"txn_code",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"txnid")) {
+                	PutField_CString(hOut,"org_txn_seq",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"enc_txnid")) {
+                	PutField_CString(hOut,"enc_txn_seq",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"user")) {
+                	PutField_CString(hOut,"add_user",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"mid")) {
+                	PutField_CString(hOut,"merchant_id",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"to_mid")) {
+                	PutField_CString(hOut,"to_merchant_id",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"country")) {
+                	PutField_CString(hOut,"txn_country",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"ccy")) {
+                	PutField_CString(hOut,"txn_ccy",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"to_ccy")) {
+                	PutField_CString(hOut,"dst_txn_ccy",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"service")) {
+                	PutField_CString(hOut,"service_code",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"to_service")) {
+                	PutField_CString(hOut,"to_service_code",csValue[i]);
+		}
+		else if (!strcmp(csTmp,"batchid")) {
+                	PutField_CString(hOut,"batch_id",csValue[i]);
+		}
+		else 
+                	PutField_CString(hOut,csTmp,csValue[i]);
+
+
+
+if (!strcmp(csTmp,"jh1")) {
+            PutField_CString(hOut,"jnl_id",csValue[i]);
+}
+if (!strcmp(csTmp,"jh2")) {
+            PutField_CString(hOut,"jnl_type_id",csValue[i]);
+}
+if (!strcmp(csTmp,"jh3")) {
+            PutField_CString(hOut,"description",csValue[i]);
+}
+if (!strcmp(csTmp,"jh4")) {
+            PutField_CString(hOut,"txn_date",csValue[i]);
+}
+if (!strcmp(csTmp,"jh5")) {
+            PutField_CString(hOut,"bank_update_date",csValue[i]);
+}
+if (!strcmp(csTmp,"jh6")) {
+            PutField_CString(hOut,"acc_year",csValue[i]);
+}
+if (!strcmp(csTmp,"jh7")) {
+            PutField_CString(hOut,"acc_month",csValue[i]);
+}
+if (!strcmp(csTmp,"jh8")) {
+            PutField_CString(hOut,"ref_no",csValue[i]);
+}
+if (!strcmp(csTmp,"jh9")) {
+            PutField_CString(hOut,"product_code",csValue[i]);
+}
+if (!strcmp(csTmp,"jh10")) {
+            PutField_CString(hOut,"country_code",csValue[i]);
+}
+if (!strcmp(csTmp,"jh11")) {
+            PutField_CString(hOut,"remarks",csValue[i]);
+}
+if (!strcmp(csTmp,"jh12")) {
+            PutField_CString(hOut,"status",csValue[i]);
+}
+if (!strcmp(csTmp,"jh13")) {
+            PutField_CString(hOut,"disabled",csValue[i]);
+}
+if (!strcmp(csTmp,"jh14")) {
+            PutField_CString(hOut,"create_timestamp",csValue[i]);
+}
+if (!strcmp(csTmp,"jh15")) {
+            PutField_CString(hOut,"create_user",csValue[i]);
+}
+if (!strcmp(csTmp,"jh16")) {
+            PutField_CString(hOut,"update_timestamp",csValue[i]);
+}
+if (!strcmp(csTmp,"jh17")) {
+            PutField_CString(hOut,"update_user",csValue[i]);
+}
+if (!strcmp(csTmp,"jh18")) {
+            PutField_CString(hOut,"approve_timestamp",csValue[i]);
+}
+if (!strcmp(csTmp,"jh19")) {
+            PutField_CString(hOut,"approve_user",csValue[i]);
+}
+
+        }
+
+	FREE_ME(csTmp);
+	FREE_ME(csAttr);
+        return iRet;
+}
+
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csPtr;
+
+DEBUGLOG(("initReplyFromRequest()\n"));
+	if (GetField_CString(hRequest,"txn_code",&csPtr)) {
+DEBUGLOG(("initReplyFromRequest()txn_code = [%s]\n",csPtr));
+		PutField_CString(hResponse,"reply_txn_code",csPtr);
+	}
+	if (GetField_CString(hRequest,"org_txn_seq",&csPtr)) {
+DEBUGLOG(("initReplyFromRequest()txn_seq = [%s]\n",csPtr));
+		PutField_CString(hResponse,"org_txn_seq",csPtr);
+	}
+
+DEBUGLOG(("initReplyFromRequest() ret = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int FormatDTMsg(const hash_t* hIn,unsigned char *outMsg, const int iCnt)
+{
+	int 	iRet = PD_OK;
+	int 	i;
+	int 	iPtr;
+	char    csTag[PD_TAG_LEN +1];
+	char*	csBuf;
+	char*	csTmp;
+
+	csBuf = (char*) malloc (PD_TMP_MSG_BUF_LEN +1);
+	csTmp = (char*) malloc (PD_TMP_BUF_LEN +1);
+
+	for(i=0;i<iCnt;i++){
+
+		sprintf(csBuf,"<%s %s='%d'>",PD_DT_ELEMENT,PD_ID_ELEMENT,i+1);
+		strcat((char*)outMsg,csBuf);
+
+		sprintf(csTag,"ret_%d",i+1);
+		if (GetField_Int(hIn,csTag,&iPtr)) {
+DEBUGLOG(("FormatDTMsg <%s> = <%d>\n",csTag,iPtr));
+			sprintf(csBuf,"<ret>%d</ret>",iPtr);
+			strcat((char*)outMsg,csBuf);
+		}
+		sprintf(csBuf,"</%s>",PD_DT_ELEMENT);
+		strcat((char*)outMsg,csBuf);
+	}
+
+	FREE_ME(csBuf);
+	FREE_ME(csTmp);
+DEBUGLOG(("FormatDTMsg() ret = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int FormatMultiMsg(const hash_t* hIn,unsigned char *outMsg, const int iCnt)
+{
+        int iRet = PD_OK;
+        int i, iTmp;
+        double  dTmp;
+        char*   csPtr;
+        char    csTag[PD_TAG_LEN +1];
+        char*   csBuf;
+        char*   csTmp;
+
+        csBuf = (char*) malloc (PD_TMP_MSG_BUF_LEN +1);
+        csTmp = (char*) malloc (PD_TMP_BUF_LEN +1);
+
+        for(i=1;i<=iCnt;i++){
+
+                sprintf(csTag,"txnid_%d",i);
+                if (GetField_CString(hIn,csTag,&csPtr)) {
+                        strcpy(csTag,"txnid");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csPtr));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csPtr,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"psp_id_%d",i);
+                if (GetField_CString(hIn,csTag,&csPtr)) {
+                        strcpy(csTag,"psp_id");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csPtr));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csPtr,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"fundin_date_%d",i);
+                if (GetField_CString(hIn,csTag,&csPtr)) {
+                        strcpy(csTag,"psp_fundindate");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csPtr));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csPtr,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"ccy_%d",i);
+                if (GetField_CString(hIn,csTag,&csPtr)) {
+                        strcpy(csTag,"ccy");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csPtr));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csPtr,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"to_ccy_%d",i);
+                if (GetField_CString(hIn,csTag,&csPtr)) {
+                        strcpy(csTag,"to_ccy");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csPtr));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csPtr,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"accept_amt_%d",i);
+                if (GetField_Double(hIn,csTag,&dTmp)) {
+                        sprintf((char*)csTmp,"%.2f",dTmp);
+                        strcpy(csTag,"accept_amt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"pending_amt_%d",i);
+                if (GetField_Double(hIn,csTag,&dTmp)) {
+                        sprintf((char*)csTmp,"%.2f",dTmp);
+                        strcpy(csTag,"pending_amt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"accept_cnt_%d",i);
+                if (GetField_Int(hIn,csTag,&iTmp)) {
+                        sprintf((char*)csTmp,"%d",iTmp);
+                        strcpy(csTag,"accept_cnt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"pending_cnt_%d",i);
+                if (GetField_Int(hIn,csTag,&iTmp)) {
+                        sprintf((char*)csTmp,"%d",iTmp);
+                        strcpy(csTag,"pending_cnt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"reserved_amt_%d",i);
+                if (GetField_Double(hIn,csTag,&dTmp)) {
+                        sprintf((char*)csTmp,"%.2f",dTmp);
+                        strcpy(csTag,"reserved_amt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"dest_amt_%d",i);
+                if (GetField_Double(hIn,csTag,&dTmp)) {
+                        sprintf((char*)csTmp,"%.2f",dTmp);
+                        strcpy(csTag,"dest_amt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"mu_amt_%d",i);
+                if (GetField_Double(hIn,csTag,&dTmp)) {
+                        sprintf((char*)csTmp,"%.2f",dTmp);
+                        strcpy(csTag,"mu_amt");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+                sprintf(csTag,"rate_%d",i);
+                if (GetField_Double(hIn,csTag,&dTmp)) {
+                        sprintf((char*)csTmp,"%.2f",dTmp);
+                        strcpy(csTag,"rate");
+DEBUGLOG(("FormatMsg <%s id='%d'> = <%s>\n",csTag,i,csTmp));
+                        sprintf(csBuf,"<%s id='%d'>%s</%s>",csTag,i,csTmp,csTag);
+                        strcat((char*)outMsg,csBuf);
+                }
+
+	}
+	FREE_ME(csBuf);
+        FREE_ME(csTmp);
+DEBUGLOG(("FormatMultiMsg() ret = [%d]\n",iRet));
+        return iRet;
+}

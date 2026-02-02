@@ -1,0 +1,487 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[18];
+};
+static struct sqlcxp sqlfpn =
+{
+    17,
+    "payout_confirm.pc"
+};
+
+
+static unsigned int sqlctx = 10169283;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+PDProtech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProtech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/03/13              LokMan Chow
+Add delay					   2018/12/20		   David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cs_batch_id[PD_TXN_SEQ_LEN+1];
+char    cs_user[PD_USER_LEN + 1];
+
+static char cDebug = 'Y';
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 3) {
+        printf("usage: -b batch_id -u user \n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = PD_OK;
+
+	char	*csTxnSeq;
+	//char	*csBatchId;
+	char	*csTmp;
+	char    csTag[PD_TAG_LEN +1];
+	char    csLocalTxnDateTime[PD_DATETIME_LEN+1];
+        char    csTmDate[PD_DATE_LEN+1];
+        char    csTmTime[PD_TIME_LEN+1];
+	double	dTmp=0.0;
+	unsigned long	lBatchId;
+	int	iTmp = 0;
+	//int	iStatus = 0;
+	int	iCnt = 0;
+	int	i = 0;
+	char	*csIdentityId;
+	int	iChk = 0;
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	hash_t  *hRequest;
+        hRequest = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRequest,0);
+
+	hash_t  *hContext;
+        hContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hContext,0);
+
+	hash_t  *hResponse;
+        hResponse = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hResponse,0);
+
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS) {
+                printf("usage: -b batch_id -u user\n");
+                return (iRet);
+        }
+
+DEBUGLOG(("Authorize\n"));
+
+DEBUGLOG(("Authorize::batch_id= [%s]\n",cs_batch_id));
+		lBatchId = ctol((const unsigned char *)cs_batch_id,strlen(cs_batch_id));
+		PutField_CString(hTxn,"batch_id",cs_batch_id);
+		PutField_CString(hRequest,"batch_id",cs_batch_id);
+
+DEBUGLOG(("Authorize::add_user= [%s]\n",cs_user));
+	PutField_CString(hRequest,"add_user",cs_user);
+	PutField_CString(hTxn,"update_user",cs_user);
+
+
+	// Add delay
+	sleep(1);
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","MatchBatchStatus_ForUpdate");
+	iChk = (unsigned long) ((*DBObjPtr)(cs_batch_id,PD_PAYOUTFILE_PROCESSING));
+	if(iChk==PD_NOT_FOUND){
+		iRet=INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::the file is not for confirm!!\n"));
+ERRLOG("payout_confirm:Authorize::the file is not for confirm!!\n");
+	}
+
+
+	char csTmpDate[PD_DATETIME_LEN +1];
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","FindCode");
+
+        if ((unsigned long)(*DBObjPtr)("CTPHDATE",csTmpDate) == FOUND) {
+DEBUGLOG(("Authorize:Current Processor Hub Date= [%s]\n",csTmpDate));
+                PutField_CString(hContext,"PHDATE",csTmpDate);
+        }
+        else {
+DEBUGLOG(("Authorize:NOT RECORD\n"));
+                iRet = INT_ERR;
+ERRLOG("Authorize::Internal Error:WEB Channel:SystemControl Record Not Found\n");
+        }
+	PutField_CString(hRequest,"txn_code",PD_PAYOUT_CONFIRM);
+
+	if(iRet == PD_OK){
+DEBUGLOG(("Authorize::call BOPayout->GetPayoutRecords\n"));
+		PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_UPLOADED);
+                BOObjPtr = CreateObj(BOPtr,"BOPayout","GetPayoutRecords");
+                iRet = (unsigned long)(*BOObjPtr)(hTxn,hContext,hRequest);
+        }
+
+	if(iRet == PD_OK){
+DEBUGLOG(("Authorize::call BOMerchant->GetMerchantTxnInfo\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+
+                if(GetField_Int(hContext,"allow_payout",&iTmp)){
+                        if(iTmp!=PD_TRUE){
+                                iRet = INT_INVALID_TXN;
+                                PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnMgtByUsPOC::Authorize() merchant acct not allow payout\n");
+DEBUGLOG(("Authorize::merchat acct not allow payout\n"));
+                        }
+                }
+        }
+
+
+	if(iRet == PD_OK && GetField_Int(hContext,"total_cnt", &iCnt)){
+DEBUGLOG(("TxnMgtByUsPOC::Authorize() total_cnt= [%d]\n",iCnt));
+       		for(i=0; i<iCnt; i++){
+DEBUGLOG(("TxnMgtByUsPOC::Authorize() current index= [%d]\n",i));
+			sprintf(csTag,"merchant_id_%d",i);
+                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                PutField_CString(hContext,"merchant_id",csTmp);
+                                PutField_CString(hRequest,"merchant_id",csTmp);
+                        }
+                        sprintf(csTag,"merchant_client_id_%d",i);
+                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                PutField_CString(hRequest,"client_id",csTmp);
+                        }
+                        sprintf(csTag,"service_code_%d",i);
+                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                PutField_CString(hContext,"service_code",csTmp);
+                                PutField_CString(hRequest,"service_code",csTmp);
+                        }
+                        sprintf(csTag,"txn_country_%d",i);
+                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                PutField_CString(hContext,"txn_country",csTmp);
+                                PutField_CString(hRequest,"txn_country",csTmp);
+                        }
+                        sprintf(csTag,"merchant_ref_%d",i);
+                        if(GetField_CString(hRequest,csTag,&csTmp)){
+                                PutField_CString(hRequest,"merchant_ref",csTmp);
+                        }
+                        sprintf(csTag,"bank_name_%d",i);
+                        if(GetField_CString(hRequest,csTag,&csTmp)){
+                                PutField_CString(hRequest,"bank_name",csTmp);
+                        }
+			sprintf(csTag,"txn_ccy_%d",i);
+                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                PutField_CString(hContext,"net_ccy",csTmp);
+                                PutField_CString(hContext,"txn_ccy",csTmp);
+                                PutField_CString(hRequest,"txn_ccy",csTmp);
+                        }
+                        sprintf(csTag,"txn_amt_%d",i);
+                        if(GetField_Double(hRequest,csTag,&dTmp)){
+                                PutField_Double(hContext,"txn_amt",dTmp);
+				sprintf(csTag,"status_%d",i);
+				if(dTmp<=0.0){
+					PutField_Int(hRequest,csTag,PAYOUT_MASTER_TRANSACTION_CANCELLED);
+				}
+				else{
+					PutField_Int(hRequest,csTag,PAYOUT_MASTER_TRANSACTION_CONFIRMED);
+				}
+                        }
+
+			sprintf(csTag,"txn_country_%d",i);
+			if(GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("TxnMgtByUsPOC::Authorize() txn_country= [%s]\n",csTmp));
+				sprintf(csTag,"identity_id_%d",i);
+				if(!strcmp(csTmp,PD_TAIWAN) && GetField_CString(hRequest,csTag,&csIdentityId)){
+DEBUGLOG(("TxnMgtByUsPOC::Authorize() identity_id= [%s]\n",csIdentityId));
+					if(islower(csIdentityId[0])){
+						//update
+						csIdentityId[0] = toupper(csIdentityId[0]);
+						PutField_CString(hRequest,csTag,csIdentityId);
+DEBUGLOG(("TxnMgtByUsPOC::Authorize() identity_id = [%s]\n",csIdentityId));
+					}
+					if(islower(csIdentityId[1])){
+						//update
+						csIdentityId[1] = toupper(csIdentityId[1]);
+						PutField_CString(hRequest,csTag,csIdentityId);
+DEBUGLOG(("TxnMgtByUsPOC::Authorize() identity_id = [%s]\n",csIdentityId));
+					}
+				}
+			}
+
+DEBUGLOG(("Authorize: Call GetNextBatchTxnSeq\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextBatchTxnSeq");
+			csTxnSeq  = strdup((*DBObjPtr)());
+DEBUGLOG(("Authorize: GenerateBatchSeq: [%s]\n",csTxnSeq));
+			PutField_CString(hContext,"txn_seq",csTxnSeq);
+			sprintf(csTag,"txn_seq_%d",i);
+			PutField_CString(hContext,csTag,csTxnSeq);
+			FREE_ME(csTxnSeq);
+
+			PutField_CString(hContext,"process_type","0000");
+			PutField_CString(hContext,"process_code","000000");
+			PutField_CString(hContext,"txn_code",PD_PAYOUT_APPROVE);
+			PutField_CString(hContext,"channel_code","MGT");
+			PutField_Int(hContext,"do_logging",PD_TRUE);
+
+			strcpy(csLocalTxnDateTime,getdatetime());
+			sprintf(csTmDate,"%.*s",PD_DATE_LEN,csLocalTxnDateTime);
+			PutField_CString(hContext,"local_tm_date",csTmDate);
+
+			sprintf(csTmTime,"%.*s",PD_TIME_LEN,&csLocalTxnDateTime[PD_DATE_LEN]);
+			PutField_CString(hContext,"local_tm_time",csTmTime);
+
+DEBUGLOG(("Authorize::Call MGTChannel:AddTxnLog\n"));
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+			if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest))!=PD_OK){
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnLog Failed\n"));
+					break;
+			}
+
+			if(iRet==PD_OK){
+				PutField_CString(hContext,"sub_status",PD_UPLOAD_CONFIRMED);
+				PutField_Char(hContext,"status",PD_TO_PSP);
+				PutField_Int(hContext,"internal_code",PD_OK);
+				PutField_CString(hContext,"response_code","0");
+DEBUGLOG(("Authorize::Call MGTChannel:UpdateTxnLog\n"));
+				ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnLog");
+				if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnLog Failed\n"));
+					break;
+				}
+				PutField_Int(hContext,"do_logging",PD_FALSE);
+
+				if(iRet == PD_OK){
+DEBUGLOG(("Authorize::Call MGTChannel:UpdateTxnDetailLog\n"));
+					ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnDetailLog");
+					if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnDetailLog Failed\n"));
+						break;
+					}
+				}
+
+			}
+
+		}
+	}
+
+        if(iRet == PD_OK){
+DEBUGLOG(("Authorize::call BOPayout->UpdateDetail\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOPayout","UpdateDetail");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+        }
+
+	if(iRet==PD_OK)
+		PutField_Int(hTxn,"status",PD_PAYOUTFILE_APPROVED);
+	else 
+		PutField_Int(hTxn,"status",PD_PAYOUTFILE_CONFIRM_FAIL);
+		
+	if(iRet!=INT_INVALID_TXN){
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","UpdateHeader");
+		if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileHeader:Add Failed\n"));
+ERRLOG("Authorize::DBMerchantUploadFileHeader:Add Failed\n");
+		}	
+	}
+
+DEBUGLOG(("TxnMgtByUsPOC Normal Exit() iRet = [%d]\n",iRet));
+	FREE_ME(hTxn);
+	FREE_ME(hRequest);
+	FREE_ME(hContext);
+	FREE_ME(hResponse);
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_batch_id,"");
+        strcpy(cs_user,"");
+
+        while ((c = getopt(argc,argv,"b:u:")) != EOF) {
+                switch (c) {
+                        case 'b':
+                                strcpy(cs_batch_id, optarg);
+                                break;
+                        case 'u':
+                                strcpy(cs_user, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_batch_id,"") && !strcmp(cs_user,""))
+                return FAILURE;
+
+        return SUCCESS;
+}

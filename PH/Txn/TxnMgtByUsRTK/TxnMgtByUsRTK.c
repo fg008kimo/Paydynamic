@@ -1,0 +1,127 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/01/12              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsRTK.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+void TxnMgtByUsRTK(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csOrgTxnSeq;
+	char*	csTmp;
+
+        hash_t  *hReq;
+
+        hReq = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hReq,0);
+
+	char    csBatchTxnSeq[PD_TXN_SEQ_LEN +1];
+
+DEBUGLOG(("TxnMgtByUsRTK Authorize()\n"));
+
+/* txn_seq */
+	if (GetField_CString(hRequest,"org_txn_seq",&csOrgTxnSeq)) {
+DEBUGLOG(("Authorize org_txn_seq = [%s]\n",csOrgTxnSeq));
+		PutField_CString(hReq,"txn_seq",csOrgTxnSeq);
+		PutField_CString(hContext,"org_txn_seq",csOrgTxnSeq);
+	}
+	else {
+		iRet = INT_TXN_ID_MISSING;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* batch_txn_seq */
+	if (!GetField_CString(hRequest, "batchid", &csBatchTxnSeq)) {
+DEBUGLOG(("Authorize::Find MaxBatchID\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnAckRetry","FindMaxBatchID");
+		if ((*DBObjPtr)(csOrgTxnSeq, &csBatchTxnSeq) == PD_OK) {
+DEBUGLOG(("Authorize::Max Batch ID = [%s]\n", csBatchTxnSeq));
+                	PutField_CString(hReq,"batch_txn_seq",csBatchTxnSeq);
+                }
+                else {
+DEBUGLOG(("Authorize::Call DBTxnAckRetry:FindMaxBatchID Fail!\n"));
+                	iRet = INT_ERR;
+                	PutField_Int(hContext,"internal_error",iRet);
+                }
+	}
+
+/* user */
+	if (GetField_CString(hRequest, "add_user", &csTmp)) {
+		PutField_CString(hReq, "update_user", csTmp);
+DEBUGLOG(("Authorize::user = [%s]\n", csTmp));
+	}
+
+
+
+/* status */
+//	PutField_Char(hReq,"status",PD_COMPLETE);
+
+/* counter */
+//	PutField_Int(hReq,"counter", 0);
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBTxnAckRetry:CounterReset\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnAckRetry","CounterReset");
+		if ((*DBObjPtr)(hReq) != PD_OK) {
+DEBUGLOG(("Authorize::Call DBTxnAckRetry:CounterReset Fail!\n"));
+ERRLOG("TxnMgtByUsRTK::Authorize::Call DBTxnAckRetry:CounterReset Fail!\n");
+			iRet = INT_ERR;
+		}
+
+/*
+		if ((*DBObjPtr)(hReq) == PD_OK) {
+
+DEBUGLOG(("Authorize::Call DBTxnWebByUsACK:Authorize\n"));
+
+			TxnObjPtr = CreateObj(TxnPtr,"TxnWebByUsACK","Authorize");
+			iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+DEBUGLOG(("Authorize::Call DBTxnWebByUsACK return [%d]\n", iRet));
+		}
+*/
+
+	}
+
+	hash_destroy(hReq);
+	FREE_ME(hReq);
+
+/*
+        if (iRet != PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+*/
+
+
+DEBUGLOG(("TxnMgtByUsRTK Normal Exit() iRet = [%d]\n",iRet));
+
+	return iRet;
+}

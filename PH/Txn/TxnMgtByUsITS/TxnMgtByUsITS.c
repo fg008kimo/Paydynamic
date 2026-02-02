@@ -1,0 +1,170 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/12/12              LokMan Chow
+Add enc_txn_seq					   2017/07/27		   Elvis Wong
+Reduce log					   2017/08/09		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsITS.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+OBJPTR(DB);
+OBJPTR(BO);
+void TxnMgtByUsITS(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	//char*	csPtr = NULL;
+	char	csTmpTxnSeq[PD_TXN_SEQ_LEN + 1];
+	char*	csOrgTxnSeq = strdup("");
+	char*	csEncTxnSeq = NULL;
+	char*	csSuccUrl = NULL;
+	char*	csFailUrl = NULL;
+	char	cArInd = 'X';
+	char	cStatus = 'X';
+	hash_t  *hRec;
+	//double	dTmp = 0.0;
+	int iSuccess = PD_FALSE;
+	
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+	
+
+DEBUGLOG(("TxnMgtByUsITS Authorize()\n"));
+
+	memset(csOrgTxnSeq,0,PD_TXN_SEQ_LEN);
+
+	if (GetField_CString(hRequest,"org_txn_seq",&csOrgTxnSeq)) {
+		PutField_CString(hResponse,"txn_seq",csOrgTxnSeq);
+DEBUGLOG(("org_txn_seq = [%s]\n",csOrgTxnSeq));
+	}
+	else{
+		if (GetField_CString(hRequest,"enc_txn_seq",&csEncTxnSeq)) {
+DEBUGLOG(("enc_txn_seq = [%s]\n",csEncTxnSeq));		
+			BOObjPtr = CreateObj(BOPtr,"BOSecurity","Decrypt3DESTxnSeq");
+                	(BOObjPtr)(csEncTxnSeq,csTmpTxnSeq);
+			sprintf(csOrgTxnSeq, csTmpTxnSeq);
+DEBUGLOG(("org_txn_seq = [%s]\n",csOrgTxnSeq));
+			PutField_CString(hResponse,"txn_seq",csOrgTxnSeq);
+			PutField_CString(hResponse,"org_txn_seq",csOrgTxnSeq);
+		}
+		else{
+			iRet = INT_TXN_ID_MISSING;
+DEBUGLOG(("txn_id is missing !!!!\n"));
+		}
+	}
+
+	//GetTxnHeader
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+                if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG((" found record = [%s]\n",csOrgTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+/*
+                                if (GetField_CString(hRec,"merchant_id",&csPtr)) {
+DEBUGLOG(("merchant_id= [%s]\n",csPtr));
+                                }
+                                if (GetField_CString(hRec,"merchant_ref",&csPtr)) {
+DEBUGLOG(("merchant_ref= [%s]\n",csPtr));
+                                }
+*/
+                                if (GetField_Char(hRec,"status",&cStatus)) {
+DEBUGLOG(("status= [%c]\n",cStatus));
+                                }
+                                if (GetField_Char(hRec,"ar_ind",&cArInd)) {
+DEBUGLOG(("ar_ind= [%c]\n",cArInd));
+                                }
+/*
+                                if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("txn_amt= [%lf]\n",dTmp));
+                                }
+*/
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                }
+                else {
+                        iRet = INT_INVALID_TXN;
+DEBUGLOG(("not found record for [%s]\n",csOrgTxnSeq));
+                }
+                RecordSet_Destroy(rRecordSet);
+	}
+
+	//GetTxnDetail
+	if (iRet == PD_OK) {
+        	recordset_init(rRecordSet,0);
+        	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+        	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                       	 	if (GetField_CString(hRec,"success_url",&csSuccUrl)) {
+//DEBUGLOG(("success_url= [%s]\n",csSuccUrl));
+                        	}
+                       	 	if (GetField_CString(hRec,"failure_url",&csFailUrl)) {
+//DEBUGLOG(("failure_url= [%s]\n",csFailUrl));
+                        	}
+                       		hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if(cStatus == PD_COMPLETE){
+			if(cArInd == PD_ACCEPT){
+				iSuccess = PD_TRUE;
+			}
+			PutField_Char(hResponse,"txn_status",cArInd);
+		}
+		else{
+			PutField_Char(hResponse,"txn_status",PD_TO_PSP);
+		}
+
+
+		if(iSuccess){
+			PutField_CString(hResponse,"redirect_url",csSuccUrl);
+DEBUGLOG(("redirect_url[succ]= [%s]\n",csSuccUrl));
+		}
+		else{
+			PutField_CString(hResponse,"redirect_url",csFailUrl);
+DEBUGLOG(("redirect_url[fail]= [%s]\n",csFailUrl));
+		}
+	}
+
+	if(iRet!=PD_OK)
+			PutField_Int(hContext,"internal_error",iRet);
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+	FREE_ME(csOrgTxnSeq);
+
+DEBUGLOG(("TxnMgtByUsITS Normal Exit [%d]\n",iRet));
+	return iRet;
+}

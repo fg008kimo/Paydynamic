@@ -1,0 +1,407 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/06/13              [MSN]
+Amend to support update payout_split_limit         2012/08/16              [SWK]
+Add rej_small_delta_amt                            2013/04/16              [STP]
+Add psp_remark                                     2013/06/13              [SWK]
+Add proc_name                                      2013/09/02              [SWK]
+Add pid_grp                                        2013/10/29              [MSN]
+Add MOB_CHANNEL_FE_DISPLAY                         2015/08/26              [MSN]
+Add UpdateRemark2NULL                              2015/12/14              [WMC]
+Add card_type                                      2016/09/29	           [WMC]
+Add nbxa_pid_grp                                   2017/07/13              [WMC]
+Add UpdatePIDGroup2NULL	                           2017/08/01              [WWK]
+PRD151 add 5 fields for PSP accout update          2018/09/11              [TNY]
+PRD281 add a field settle_prd_str                  2020/08/06              [ANC]
+PRD290
+ - Add amt_diff
+ - Add 4 fields for PSP amount difference range    2020/11/20              [ZBL]
+PRD305 allow amt_type = 'F'			   2021/02/08		   [MSN]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsCPD.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define PD_DETAIL_TAG	"dt"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsCPD(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+	          hash_t* hRequest,
+	          hash_t* hResponse)
+{
+	int iRet = PD_OK;
+
+	char	*csTmp;
+	char	cTmp;
+	int	iTmp;
+	long	lTmp;
+	double dTmp;
+	int	iRemarkNull = PD_FALSE;
+	int	iPIDGroupNull = PD_FALSE;
+	int	iNBXAPIDGroupNull = PD_FALSE;
+/* PRD290 PSP Actual Amount From Deposit Callback */
+	int	iAmtDiff = PD_FALSE;
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+DEBUGLOG(("Authorize\n"));
+
+
+	if (GetField_CString(hRequest,"psp_id",&csTmp)) {
+DEBUGLOG(("Authorize::psp_id = [%s]\n", csTmp));
+		PutField_CString(hTxn,"psp_id",csTmp);
+	} 
+	else {
+DEBUGLOG(("Authorize::psp_id not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::psp_id not found!!\n");
+		iRet=INT_PSP_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	} 
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+/* PRD290 PSP Actual Amount From Deposit Callback */
+		/* create_user */
+		PutField_CString(hTxn, "create_user", csTmp);
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+		PutField_CString(hTxn,"update_user",csTmp);
+	}
+
+
+	if(GetField_CString(hRequest,"name",&csTmp)){
+DEBUGLOG(("Authorize::psp_name = [%s]\n",csTmp));
+		PutField_CString(hTxn,"psp_name",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"txn_type",&csTmp)){
+DEBUGLOG(("Authorize::txn_type = [%s]\n",csTmp));
+		cTmp = csTmp[0];
+		if(!(cTmp==PD_TYPE_DEPOSIT || cTmp==PD_TYPE_PAYOUT || cTmp==PD_TYPE_ALL)){
+DEBUGLOG(("Authorize::invalid txn_type!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid txn_type!!\n");
+			iRet=INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else{
+			PutField_CString(hTxn,"txn_type",csTmp);
+		}
+	}
+
+	if (GetField_CString(hRequest, "status", &csTmp)){
+		PutField_CString(hTxn, "status", csTmp);
+DEBUGLOG(("Authorize::status = [%s]\n",csTmp));
+	}
+	else{
+		PutField_CString(hTxn, "status",PD_ACC_OPEN);
+DEBUGLOG(("Authorize::status = [%s]\n",PD_ACC_OPEN));
+	}
+
+	if (GetField_CString(hRequest, "po_split_limit", &csTmp)) {
+		iTmp = atoi(csTmp);
+		PutField_Int(hTxn, "payout_split_limit", iTmp);
+DEBUGLOG(("Authorize::po_split_limit = [%d]\n", iTmp));
+	}
+
+	if (GetField_CString(hRequest, "rej_small_delta_amt", &csTmp)) {
+		iTmp = atoi(csTmp);
+		PutField_Int(hTxn, "rej_small_delta_amt", iTmp);
+DEBUGLOG(("Authorize::rej_small_delta_amt = [%d]\n", iTmp));
+	}
+
+	if(GetField_CString(hRequest,"remark",&csTmp)){
+DEBUGLOG(("Authorize::psp_remark = [%s]\n",csTmp));
+		PutField_CString(hTxn,"psp_remark",csTmp);
+	} else {
+DEBUGLOG(("Authorize::psp_remark = [NULL]\n"));
+		iRemarkNull = PD_TRUE;
+	}
+
+	if(GetField_CString(hRequest,"proc_name",&csTmp)){
+DEBUGLOG(("Authorize::proc_name = [%s]\n",csTmp));
+		PutField_CString(hTxn,"processor_name",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"pid_grp",&csTmp)){
+DEBUGLOG(("Authorize::pid_grp = [%s]\n",csTmp));
+		PutField_CString(hTxn,"pid_group",csTmp);
+        } else {
+DEBUGLOG(("Authorize::pid_grp = [NULL]\n"));
+		iPIDGroupNull = PD_TRUE;
+	}
+
+	if(GetField_CString(hRequest,"nbxa_pid_grp",&csTmp)){
+DEBUGLOG(("Authorize::nbxa_pid_grp = [%s]\n",csTmp));
+		PutField_CString(hTxn,"nbxa_pid_group",csTmp);
+	} else {
+DEBUGLOG(("Authorize::nbxa_pid_grp = [NULL]\n"));
+		iNBXAPIDGroupNull = PD_TRUE;
+	}
+
+	if(GetField_CString(hRequest,"mob_fe_display",&csTmp)){
+DEBUGLOG(("Authorize::mob_fe_display = [%s]\n",csTmp));
+		PutField_CString(hTxn,"mob_channel_fe_display",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"card_type",&csTmp)){
+		cTmp = csTmp[0];
+DEBUGLOG(("Authorize::card_type = [%c]\n",cTmp));
+		PutField_Char(hTxn,"card_type",cTmp);
+	} else {
+		PutField_Char(hTxn, "card_type", PD_DEPOSIT_CARD_TYPE_DEBIT);
+DEBUGLOG(("Authorize::card_type (default) = [%c]\n", PD_DEPOSIT_CARD_TYPE_DEBIT));
+   	}
+
+/* PRD151 PSP Account Update */
+	if(GetField_CString(hRequest,"backend",&csTmp)){
+DEBUGLOG(("Authorize::backend = [%s]\n",csTmp));
+		PutField_CString(hTxn,"backend",csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::backend = []\n"));
+		PutField_CString(hTxn,"backend","");
+	}
+		
+
+	if(GetField_CString(hRequest,"txn_amt_lmt",&csTmp)){
+		lTmp = atol(csTmp);
+DEBUGLOG(("Authorize::txn_amt_lmt = [%ld]\n",lTmp));
+		PutField_Long(hTxn,"txn_amt_lmt",lTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::invalid txn_amt_lmt!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid txn_amt_lmt!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"settle_prd",&csTmp)){
+DEBUGLOG(("Authorize::setlmnt_prd = [%s]\n",csTmp));
+		PutField_CString(hTxn,"settle_prd",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"add_cost",&csTmp)){
+		if(sscanf(csTmp,"%lf",&dTmp)==PD_TRUE){
+DEBUGLOG(("Authorize::add_cost = [%lf]\n",dTmp));
+			PutField_Double(hTxn,"add_cost",dTmp);
+		}
+	}
+	else {
+DEBUGLOG(("Authorize::invalid add_cost!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid add_cost!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"max_deposit",&csTmp)){
+		lTmp = atol(csTmp);
+DEBUGLOG(("Authorize::max_deposit = [%ld]\n",lTmp));
+		PutField_Long(hTxn,"max_deposit",lTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::invalid max_deposit!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::max_deposit!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+/* End - PRD151 PSP Account Update */
+
+/* PRD281 PSP Account Settlement Period Setting Enhancement */
+	if(GetField_CString(hRequest,"settle_prd_str",&csTmp)){
+DEBUGLOG(("Authorize::settle_prd_str = [%s]\n",csTmp));
+		PutField_CString(hTxn,"settle_prd_str",csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::settle_prd_str  = []\n"));
+		PutField_CString(hTxn,"settle_prd_str","");
+	}
+/* End - PRD281 PSP Account Settlement Period Setting Enhancement */
+
+/* PRD290 PSP Actual Amount From Deposit Callback */
+	/* amt_diff */
+	if (GetField_CString(hRequest, "amt_diff", &csTmp)) {
+		iAmtDiff = atoi(csTmp);
+DEBUGLOG(("Authorize::amt_diff = [%d]\n", iAmtDiff));
+		PutField_Int(hTxn, "allow_amt_diff", iAmtDiff);
+	}
+
+	if (iAmtDiff == PD_TRUE) {
+		/* amt_type */
+		if (GetField_CString(hRequest, "amt_type", &csTmp)) {
+			cTmp = csTmp[0];
+DEBUGLOG(("Authorize::amt_type = [%c]\n", cTmp));
+
+			if (cTmp != PD_PRECENTAGE && cTmp != PD_FIXED_AMOUNT) {
+DEBUGLOG(("Authorize::invalid amt_type!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_type!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else
+				PutField_Char(hTxn, "type", cTmp);
+		}
+		else {
+DEBUGLOG(("Authorize::invalid amt_type!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_type!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		/* amt_sign */
+		if (GetField_CString(hRequest, "amt_sign", &csTmp)) {
+			cTmp = csTmp[0];
+DEBUGLOG(("Authorize::amt_sign = [%c]\n", cTmp));
+
+			if (cTmp != PD_AMT_DIFF_SIGN_UPPER_RANGE && cTmp != PD_AMT_DIFF_SIGN_LOWER_RANGE && cTmp != PD_AMT_DIFF_SIGN_UPPER_AND_LOWER_RANGE) {
+DEBUGLOG(("Authorize::invalid amt_sign!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_sign!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else
+				PutField_Char(hTxn, "sign", cTmp);
+		}
+		else {
+DEBUGLOG(("Authorize::invalid amt_sign!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_sign!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		/* diff_val */
+		if (GetField_CString(hRequest, "diff_val", &csTmp)) {
+			char	*csPtr = NULL;
+			int	iCheck = PD_FALSE;
+
+			csPtr = (char*)strchr(csTmp, '.');
+
+			if (csPtr == NULL) {
+				iCheck = is_numeric(csTmp);
+
+				if (iCheck != PD_FALSE) {
+					if (sscanf(csTmp, "%lf", &dTmp) == PD_TRUE) {
+DEBUGLOG(("Authorize::diff_val = [%lf]\n", dTmp));
+						PutField_Double(hTxn, "value", dTmp);
+					}
+				}
+
+			}
+			else {
+				if (sscanf(csTmp, "%lf", &dTmp) == PD_TRUE) {
+DEBUGLOG(("Authorize::diff_val = [%lf]\n", dTmp));
+					PutField_Double(hTxn, "value", dTmp);
+
+					iCheck = PD_TRUE;
+				}
+			}
+
+			if (iCheck == PD_FALSE) {
+DEBUGLOG(("Authorize::invalid diff_val!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid diff_val!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+		else {
+DEBUGLOG(("Authorize::invalid diff_val!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid diff_val!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		/* disabled - Default is enabled */
+		PutField_Int(hTxn, "disabled", !PD_DISABLED);
+	}
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+
+	if(iRet==PD_OK){
+
+		// Update PspDetail
+DEBUGLOG(("Authorize::Call PspDetail:Update\n")); 
+		DBObjPtr = CreateObj(DBPtr,"DBPspDetail","Update");
+		if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+			iRet = INT_ERR; 
+		}
+DEBUGLOG(("Authorize::PspDetail:Update: iRet[%d]\n",iRet)); 
+		
+		// Update remark NULL	
+		if ((iRet==PD_OK)&&(iRemarkNull==PD_TRUE)){
+DEBUGLOG(("Authorize::Call PspDetail:UpdateRemark2NULL\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspDetail","UpdateRemark2NULL");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+			}
+DEBUGLOG(("Authorize::PspDetail:UpdateRemark2NULL: iRet[%d]\n",iRet));			
+		}
+
+		// Update pid_grp NULL
+		if ((iRet==PD_OK)&&(iPIDGroupNull==PD_TRUE)){
+DEBUGLOG(("Authorize::Call PspDetail:UpdatePIDGroup2NULL\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspDetail","UpdatePIDGroup2NULL");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+			}
+DEBUGLOG(("Authorize::PspDetail:UpdatePIDGroup2NULL: iRet[%d]\n",iRet));
+		}
+
+		// Update nbxa_pid_grp NULL
+		if ((iRet==PD_OK)&&(iNBXAPIDGroupNull==PD_TRUE)){
+DEBUGLOG(("Authorize::Call PspDetail:UpdateNBXAPIDGroup2NULL\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspDetail","UpdateNBXAPIDGroup2NULL");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+			}
+DEBUGLOG(("Authorize::PspDetail:UpdateNBXAPIDGroup2NULL: iRet[%d]\n",iRet));
+		}
+
+/* PRD290 PSP Actual Amount From Deposit Callback */
+		// Update PSP Amount Difference Range Configuration
+		if ((iRet == PD_OK) && (iAmtDiff == PD_TRUE)) {
+DEBUGLOG(("Authorize::Call PspAmtDiffRange:Update\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspAmtDiffRange", "Update");
+
+			if ((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK)
+				iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspAmtDiffRange:Update: iRet = [%d]\n", iRet));
+		}
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+	}
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+DEBUGLOG(("TxnMgtByUsCPD Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

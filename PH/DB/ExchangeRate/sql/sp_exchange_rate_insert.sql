@@ -1,0 +1,66 @@
+CREATE OR REPLACE FUNCTION sp_exchange_rate_insert(
+	in_from_ccy_id		exchange_rate.ex_from_ccy_id%type,
+	in_to_ccy_id		exchange_rate.ex_to_ccy_id%type,
+	in_rate			exchange_rate.ex_rate%type,
+	in_bid			exchange_rate.ex_bid%type,
+	in_max_ask		exchange_rate.ex_max_ask%type,
+	in_med_ask		exchange_rate.ex_med_ask%type,
+	in_min_ask		exchange_rate.ex_min_ask%type,
+	in_max_bid		exchange_rate.ex_max_bid%type,
+	in_med_bid		exchange_rate.ex_med_bid%type,
+	in_min_bid		exchange_rate.ex_min_bid%type,
+	in_meanminmax		exchange_rate.ex_meanminmax_src2dst%type,
+	in_minmax		exchange_rate.ex_minmax_src2dst%type,
+	in_effect_date		varchar,
+	in_create_user		exchange_rate.ex_create_user%type)
+  RETURN NUMBER IS
+
+BEGIN
+  INSERT INTO exchange_rate(
+	ex_from_ccy_id,
+	ex_to_ccy_id,
+	ex_rate,
+	ex_bid,
+	ex_max_ask,
+	ex_med_ask,
+	ex_min_ask,
+	ex_max_bid,
+	ex_med_bid,
+	ex_min_bid,
+	ex_meanminmax_src2dst,
+	ex_minmax_src2dst,
+	ex_effect_date,
+	ex_create_date,
+	ex_create_user
+	)
+
+  VALUES(
+	in_from_ccy_id,
+	in_to_ccy_id,
+	in_rate,
+	in_bid,
+	in_max_ask,
+	in_med_ask,
+	in_min_ask,
+	in_max_bid,
+	in_med_bid,
+	in_min_bid,
+	in_meanminmax,
+	in_minmax,
+	to_date(in_effect_date, 'YYYYMMDDHH24:MI:SS'),
+	sysdate,
+	in_create_user
+	);
+
+  IF SQL%ROWCOUNT = 0 THEN
+     RETURN 1;
+  ELSE
+     RETURN 0;
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+
+END sp_exchange_rate_insert;
+/

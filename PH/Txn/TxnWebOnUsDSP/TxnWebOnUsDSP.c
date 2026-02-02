@@ -1,0 +1,441 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/08/31              Cody Chan
+Add Post Txn                                       2011/04/28              Cody Chan
+Add Post Cal Fee				   2011/11/29	           Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnWebOnUsDSP.h"
+#include "myrecordset.h"
+
+char cDebug;
+OBJPTR(Txn);
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+void TxnWebOnUsDSP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+	char*   csHandler = NULL;
+        int     iRet = PD_OK;
+	char*	csTmp = NULL;
+	char	csValue[PD_VALUE_LEN +1];
+	char*	csPspId;
+	char*	csPspChannel;
+	double	dTmp;
+	hash_t	*hReq,*hRps;
+
+	hReq = (hash_t*) malloc (sizeof(hash_t));
+	hRps = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_init(hReq,0);
+	hash_init(hRps,0);
+
+	//double	dTmp;
+
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): Authroize()\n"));
+
+/* txn_code */
+	if (GetField_CString(hContext,"txn_code",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): txn_code = [%s]\n",csTmp));
+		PutField_CString(hReq,"txn_code",csTmp);
+	}
+
+/* txn_seq */
+	if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): txn_seq = [%s]\n",csTmp));
+		PutField_CString(hReq,"order_num",csTmp);
+		PutField_CString(hContext,"from_txn_seq",csTmp);
+/* eSkyPay */
+                PutField_CString(hResponse,"txn_seq",csTmp);
+	}
+
+/* psp Url */
+	if (GetField_CString(hContext,"psp_url",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): psp_url = [%s]\n",csTmp));
+		PutField_CString(hReq,"psp_url",csTmp);
+	}
+
+/* eSkey */
+/* psp merchant id */
+	if (GetField_CString(hContext,"psp_merchant_id",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): psp_merchant_id = [%s]\n",csTmp));
+		PutField_CString(hResponse,"psp_merchant_id",csTmp);
+	}
+/* request_function */
+	if (GetField_CString(hContext,"request_function",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): request_function = [%s]\n",csTmp));
+		PutField_CString(hReq,"request_function",csTmp);
+	}
+
+/* psp_key */
+	if (GetField_CString(hContext,"psp_key",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): psp_key = [%s]\n",csTmp));
+		PutField_CString(hReq,"psp_key",csTmp);
+	}
+/* psp_id */
+	if (GetField_CString(hContext,"psp_key_id",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): psp_key_id = [%s]\n",csTmp));
+		PutField_CString(hReq,"psp_key_id",csTmp);
+	}
+
+/* txn_ccy */
+	if (GetField_CString(hContext,"dst_txn_ccy",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): dst_txn_ccy = [%s]\n",csTmp));
+		PutField_CString(hReq,"psp_txn_ccy",csTmp);
+/* eSkyPay */
+                PutField_CString(hResponse,"psp_txn_ccy",csTmp);
+	}
+
+
+/* psp_txn_amt */
+	if (GetField_Double(hContext,"dst_net_amt",&dTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): new_net_amt = [%f]\n",dTmp));
+		PutField_Double(hReq,"psp_txn_amt",dTmp);
+/* eSkyPay */
+               PutField_Double(hResponse,"psp_txn_amt",dTmp);
+	}
+
+/* txn desc */
+	if (GetField_CString(hContext,"txn_desc",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): txn_desc = [%s]\n",csTmp));
+		PutField_CString(hReq,"txn_desc",csTmp);
+	}
+
+/* fe_url */
+	if (GetField_CString(hResponse,"fe_url",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): fe_url = [%s]\n",csTmp));
+		PutField_CString(hReq,"fe_url",csTmp);
+	}
+/* return_url */
+
+	if (GetField_CString(hContext,"return_url",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): return_url = [%s]\n",csTmp));
+		PutField_CString(hReq,"return_url",csTmp);
+	}
+
+/* return_url_only */
+
+	if (GetField_CString(hContext,"return_url_only",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): return_url_only= [%s]\n",csTmp));
+		PutField_CString(hResponse,"return_url_only",csTmp);
+	}
+
+
+
+/* request_function */
+	if (GetField_CString(hContext,"request_function",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): request_function = [%s]\n",csTmp));
+		PutField_CString(hReq,"request_function",csTmp);
+	}
+
+/* action */
+	if (GetField_CString(hContext,"action",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): action = [%s]\n",csTmp));
+		PutField_CString(hReq,"action",csTmp);
+	}
+
+/* url_method */
+	if (GetField_CString(hContext,"url_method",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): url_method = [%s]\n",csTmp));
+		PutField_CString(hReq,"url_method",csTmp);
+	}
+
+/* psp id */
+	if (GetField_CString(hContext,"psp_id",&csPspId)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): psp_id = [%s]\n",csPspId));
+		PutField_CString(hResponse,"psp_id",csPspId);
+	}
+	else {
+		PutField_Int(hContext,"internal_error",INT_ERR);
+ERRLOG("TxnWebOnUsDSP::Authorize() can't find PSP ID\n");
+		iRet = INT_ERR;
+	}
+
+/* psp channel code */
+	if (GetField_CString(hContext,"psp_channel_code",&csPspChannel)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): psp_channel_code = [%s]\n",csPspChannel));
+		PutField_CString(hResponse,"psp_channel_code",csPspChannel);
+	}
+	else {
+		PutField_Int(hContext,"internal_error",INT_ERR);
+ERRLOG("TxnWebOnUsDSP::Authorize() can't find PSP Channel Code\n");
+		iRet = INT_ERR;
+	}
+
+/* bank_code */
+        //if (GetField_CString(hContext,"internal_bank_code",&csTmp)) {
+        if (GetField_CString(hContext,"bank_code",&csTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize(): bank_code = [%s]\n",csTmp));
+                char    csOutBankCode[PD_EXT_BANK_CODE_LEN + 1];
+		char	*csOrgTxnCountry;
+
+
+		GetField_CString(hRequest,"txn_country",&csOrgTxnCountry);
+
+                DBObjPtr = CreateObj(DBPtr,"DBBankMapping","i2eBankCodeMapping");
+                if ((DBObjPtr)(csTmp,csPspChannel,csOrgTxnCountry,csOutBankCode)) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() channel bank code = [%s]\n",csOutBankCode));
+                        PutField_CString(hResponse,"bank_code",csOutBankCode);
+                }
+                else {
+DEBUGLOG(("TxnWebOnUsDSP:: Authorize() can't find channel bank code [%s] for channel [%s]\n",csTmp,csPspChannel));
+ERRLOG("TxnWebOnUsDSP:: Authorize() can't find channel bank code [%s] for channel [%s]\n",csTmp,csPspChannel);
+                        iRet = INT_BANK_CODE_NOT_FOUND;
+                }
+        }
+
+	if(iRet==PD_OK){
+DEBUGLOG(("TxnWebOnUsDSP:: Call BOTxnElements:AddTxnAmtElement\n"));
+                 BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+                 iRet = (unsigned long)(*BOObjPtr)(hContext);
+DEBUGLOG(("TxnWebOnUsDSP:: ret from AddTxnAmtElements = [%d]\n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+		BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+		iRet = (unsigned long)(*BOObjPtr)(hContext);
+DEBUGLOG(("TxnWebOnUsDSP:: BOTxnElements: AddTxnFeeElements result = [%d]\n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+
+		PutField_CString(hReq,"telegram_kind","060");
+                PutField_CString(hReq,"claim_kana","testing");
+                PutField_CString(hReq,"claim_kanji","試験");
+        	csHandler = (char*) malloc (20);
+        	sprintf(csHandler,"TxnWebOnUs2%s",csPspChannel);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Txn Object [%s]\n",csHandler));
+        	TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+        	FREE_ME(csHandler);
+        	iRet = (unsigned long)(*TxnObjPtr)(hContext,hReq,hRps);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() iRet = [%d]\n",iRet));	
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Format Sucess Resp\n"));
+		if (GetField_CString(hContext,"local_tm_date",&csTmp)) {
+			PutField_CString(hResponse,"local_tm_date",csTmp);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Format local_tm_date = [%s]\n",csTmp));
+		}
+		if (GetField_CString(hContext,"local_tm_time",&csTmp)) {
+			PutField_CString(hResponse,"local_tm_time",csTmp);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Format local_tm_time = [%s]\n",csTmp));
+		}
+/* hardcode */
+/*
+		PutField_CString(hResponse,"service_fee","1");
+		PutField_CString(hResponse,"service_currency","HKD");
+*/
+
+		if (GetField_Double(hContext,"net_amt",&dTmp)) {
+			dtoc(dTmp,PD_DIGIT_LEN,0,(unsigned char*)csTmp);
+			trim_leading_zero(csValue,csTmp);
+			PutField_CString(hResponse,"net_amount",csValue);
+			PutField_Double(hResponse,"net_amt",dTmp);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Format net_amt = [%s]\n",csValue));
+		}
+
+		if (GetField_CString(hContext,"based_ccy",&csTmp)) {
+			PutField_CString(hResponse,"net_ccy",csTmp);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Format net_ccy = [%s]\n",csTmp));
+		}
+		if (GetField_CString(hContext,"redirect_url",&csTmp)) {
+			PutField_CString(hResponse,"redirect_url",csTmp);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Format redirect_url = [%s]\n",csTmp));
+		}
+	}
+
+	FREE_ME(csTmp);
+	FREE_ME(csPspId);
+	
+	hash_destroy(hReq);
+	hash_destroy(hRps);
+	FREE_ME(hReq);
+	FREE_ME(hRps);
+DEBUGLOG(("TxnWebOnUsDSP::Authorize() Normal exit iret = [%d]\n",iRet));	
+	return iRet;
+}
+int     PostTxn(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+	int 	iRet = PD_OK;
+	hash_t  *hReq;
+        hash_t  *hCon;
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn()\n"));
+
+/**** POST ***/
+
+        if (iRet == PD_OK) {
+/* POST */
+                double  dTmp;
+                char*   csPtr;
+
+                hReq = (hash_t*)  malloc (sizeof(hash_t));
+                hash_init(hReq,0);
+
+                hCon = (hash_t*)  malloc (sizeof(hash_t));
+                hash_init(hCon,0);
+
+                PutField_Char(hCon,"post_txn",PD_YES);
+/* txn_seq */
+                if (GetField_CString(hContext,"org_txn_seq",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn txn_seq = [%s]\n",csPtr));
+                        PutField_CString(hCon,"txn_seq",csPtr);
+                        //PutField_CString(hCon,"from_txn_seq",csPtr);
+                }
+/* txn_code */
+                if (GetField_CString(hContext,"txn_code",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn txn_code = [%s]\n",csPtr));
+                        PutField_CString(hCon,"txn_code",csPtr);
+                }
+
+/* dst_txn_amt */
+                if (GetField_Double(hContext,"org_dst_txn_amt",&dTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn dst_txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hCon,"dst_txn_amt",dTmp);
+                }
+/* dst_txn_ccy */
+                if (GetField_CString(hContext,"org_dst_txn_ccy",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn dst_txn_ccy = [%s]\n",csPtr));
+                        PutField_CString(hCon,"dst_txn_ccy",csPtr);
+                }
+
+/* txn_amt */
+                if (GetField_Double(hContext,"org_txn_amt",&dTmp)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hCon,"txn_amt",dTmp);
+                }
+/* txn_country */
+                if (GetField_CString(hContext,"org_txn_country",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn txn_country = [%s]\n",csPtr));
+                        PutField_CString(hReq,"txn_country",csPtr);
+                }
+/* txn_ccy */
+                if (GetField_CString(hContext,"org_txn_ccy",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn txn_ccy = [%s]\n",csPtr));
+                        PutField_CString(hReq,"txn_ccy",csPtr);
+                }
+/* channel_code */
+                if (GetField_CString(hContext,"org_channel_code",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn channel_code = [%s]\n",csPtr));
+                        PutField_CString(hCon,"channel_code",csPtr);
+                }
+/* service_code */
+                if (GetField_CString(hContext,"org_service_code",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn service_code = [%s]\n",csPtr));
+                        PutField_CString(hReq,"service_code",csPtr);
+                }
+/* merchant_id */
+                if (GetField_CString(hContext,"org_merchant_id",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn merchant_id = [%s]\n",csPtr));
+                        PutField_CString(hReq,"merchant_id",csPtr);
+                }
+/* merchant_client_id */
+                if (GetField_CString(hContext,"org_client_id",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn merchant_client_id = [%s]\n",csPtr));
+                        PutField_CString(hCon,"merchant_client_id",csPtr);
+                }
+
+/* org_pay_method */
+                if (GetField_CString(hContext,"org_pay_method",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn org_pay_method = [%s]\n",csPtr));
+                        PutField_CString(hCon,"selected_pay_method",csPtr);
+                }
+
+		if (iRet == PD_OK) {
+DEBUGLOG(("TxnWebOnUsDSP:: Call BOFee\n"));
+                        BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+                        iRet = (unsigned long)(*BOObjPtr)(hCon,hReq);
+DEBUGLOG(("TxnWebOnUsDSP:: GetTxnFee result = [%d]\n",iRet));
+                }
+/*
+		if (iRet == PD_OK) {
+                        BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+                        iRet = (unsigned long)(*BOObjPtr)(hCon);
+DEBUGLOG(("TxnWebOnUsDSP:: BOTxnElements: AddTxnFeeElements result = [%d]\n",iRet));
+                }
+*/
+                hash_destroy(hReq);
+                FREE_ME(hReq);
+                hash_destroy(hCon);
+                FREE_ME(hCon);
+
+	}
+
+/**************/
+/* Get ReserveAmount */
+
+/*
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: Call BOReserve\n"));
+	BOObjPtr = CreateObj(BOPtr,"BOReserve","GetReserveAmount");
+        iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: GetReserve result = [%d]\n",iRet));
+
+	if (iRet == PD_OK) {
+
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: Call BOTxnFee\n"));
+	BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+        iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: GetTxnFee result = [%d]\n",iRet));
+	}
+*/
+	
+/* precal psp fee if define */
+	if (iRet == PD_OK) {
+		/* Update Stat */
+		PutField_Char(hContext,"txn_type",PD_TYPE_DEPOSIT);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: Call BOPsp CalPspCosts\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOPsp","CalPspCosts");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: BOStat::CalPspFee() result = [%d]\n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+		/* Update Balance */
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: Call BOBalance\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateTxnAmount");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: updatetxnamount result = [%d]\n",iRet));
+	}
+
+
+	if (iRet == PD_OK) {
+		/* Update Stat */
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: Call BOStat\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOStat","UpdateDspStat");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: BOStat::UpdateDspStat() result = [%d]\n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+		/* Update Stat */
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: Call BOStat\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOStat","UpdateDspMerchantStat");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn():: BOStat::UpdateDspMerchantStat() result = [%d]\n",iRet));
+	}
+
+
+DEBUGLOG(("TxnWebOnUsDSP::PostTxn() Normal exit iret = [%d]\n",iRet));	
+	return iRet;
+}

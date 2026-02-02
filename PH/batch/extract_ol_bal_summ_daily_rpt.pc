@@ -1,0 +1,1548 @@
+/*
+PDProTech (c)2019. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                            Change Date     Change By
+------------------------------------------    ------------    --------------
+Init Version                                  2019/11/20      Elvis Wong
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_REC_ENABLED     0
+#define PD_FILE_PREFIX	   "ol_bal_summary"
+
+OBJPTR(DB);
+
+char csDate[PD_DATE_LEN + 1];
+char csInMerchantId[PD_MERCHANT_ID_LEN+1];
+char csInCcyId[PD_COUNTRY_CODE_LEN+1];
+char csInCountryCode[PD_CCY_ID_LEN+1];
+char csInServiceCode[PD_SERVICE_CODE_LEN+1];
+
+static char cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+
+int process_data(const char* csTxnDate); 
+
+int process_single_acct(const char* csTxnDate,
+                        const char* csMerchantId,
+                        const char* csCcyId,
+                        const char* csCountryCode,
+                        const char* csServiceCode);
+
+int process_balsumm(const char* csMerchantId,
+                     const char* csCcyId,
+                     const char* csCountryCode,
+                     const char* csServiceCode,
+                     const char* csReportDate,
+                     FILE *fp);
+
+int process_openbal(const char* csMerchantId,
+					const char* csCcyId,
+					const char* csCountryCode,
+					const char* csServiceCode,
+					const char* csReportDate,
+					FILE *fp);
+					
+int process_closebal(const char* csMerchantId,
+					const char* csCcyId,
+					const char* csCountryCode,
+					const char* csServiceCode,
+					const char* csReportDate,
+					FILE *fp);
+					 
+					 
+int mkFullPathDir(const char* csYearMthDy);
+
+char* getYYYY(const char* csTxnDate);
+
+char* getYYYYMM(const char* csTxnDate);
+
+int chkSpInMID(const char* csMerchantId);
+
+void format_commas(double dInNum, char* csOutNum);
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 3) {
+		printf("usage: -d Date\n");
+
+		return FAILURE;
+	}
+	else if (argc > 3 && argc < 11) {
+		printf("usage: -d Date"
+		       " -m Merchant_ID"
+		       " -o Country_code"
+		       " -c CCY_ID"
+		       " -s Service_code\n"
+		);
+
+		return FAILURE;
+	}
+	else
+  		return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet;
+
+	iRet = parse_arg(argc,argv);
+         
+	if (iRet != SUCCESS) {
+		if (argc < 3)
+			printf("usage: -d Date\n");
+		else if (argc > 3 && argc < 11) {
+			printf("usage: -d Date"
+			       " -m Merchant_ID"
+			       " -o Country_code"
+			       " -c CCY_ID"
+			       " -s Service_code\n"
+			);
+		}
+
+		return (iRet);
+	}
+
+	if (argc == 3){
+		iRet = process_data(csDate);
+	}
+	else
+	{
+		iRet = process_single_acct(csDate,csInMerchantId,csInCcyId,
+		                           csInCountryCode,csInServiceCode);
+	}
+
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_data(const char* csTxnDate)
+{               
+	int     iRet = SUCCESS;
+	int	iCnt = 0;
+	char    csMerchantId[PD_MERCHANT_ID_LEN+1];
+	char    csCountryCode[PD_COUNTRY_CODE_LEN+1];
+	char    csCcyId[PD_CCY_ID_LEN+1];
+	char    csServiceCode[PD_SERVICE_CODE_LEN+1];
+	char    csUploadFilename[PD_UPLOAD_FILENAME_LEN+1];
+	char    csUploadFullFile[PD_PATH_LEN+1];
+	char    csTmp[PD_TMP_BUF_LEN+1];
+	char    csTmpCmd[PD_TMP_BUF_LEN+1];
+	char    csYear[PD_YYYY_LEN+1];
+	char    csYearMth[PD_YYYYMM_LEN+1];
+	FILE    *fp;
+	hash_t* hBalSumm;
+	hBalSumm = (hash_t*) malloc (sizeof(hash_t));
+	
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN+1];
+		varchar v_service_code[PD_SERVICE_CODE_LEN+1];
+		varchar v_country_code[PD_COUNTRY_CODE_LEN+1];
+		varchar v_ccy_id[PD_CCY_ID_LEN+1];
+    
+		short   ind_merchant_id  = -1;
+		short   ind_service_code = -1;
+		short   ind_country_code = -1;
+		short   ind_ccy_id       = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE c_cursor_getolmerchbal CURSOR FOR
+		SELECT OM_MERCHANT_ID,
+		       OM_COUNTRY_ID,
+		       OM_CURRENCY_ID,
+		       OM_SERVICE_CODE
+		FROM OL_MERCHANT_BALANCE
+		ORDER BY OM_MERCHANT_ID,OM_COUNTRY_ID,OM_CURRENCY_ID,OM_SERVICE_CODE
+		;
+
+	EXEC SQL OPEN c_cursor_getolmerchbal;
+
+	do {
+		EXEC SQL FETCH c_cursor_getolmerchbal
+		INTO :v_merchant_id:ind_merchant_id,
+		     :v_country_code:ind_country_code,
+		     :v_ccy_id:ind_ccy_id,
+		     :v_service_code:ind_service_code;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Extract report data */
+		hash_init(hBalSumm,0);
+		PutField_CString(hBalSumm,"report_code",PD_OL_BAL_SUMM_REPORT_CODE);
+/* Table Field merchant_id */
+		if (ind_merchant_id >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_merchant_id.len,v_merchant_id.arr);
+			strcpy(csMerchantId, csTmp); 
+			PutField_CString(hBalSumm,"merchant_id",csTmp);
+		}
+  
+/* Table Field country */
+		if (ind_country_code >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_country_code.len,v_country_code.arr);
+			strcpy(csCountryCode, csTmp);
+			PutField_CString(hBalSumm,"country",csTmp);
+		}
+
+/* Table Field CCY_ID */
+		if (ind_ccy_id >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_ccy_id.len,v_ccy_id.arr);
+			strcpy(csCcyId, csTmp);
+			PutField_CString(hBalSumm,"ccy",csTmp);
+		}
+
+/* Table Field service_code */
+		if (ind_service_code >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_service_code.len,v_service_code.arr);
+			strcpy(csServiceCode, csTmp);
+			PutField_CString(hBalSumm,"service_code",csTmp);
+		}
+
+/* Table Field disabled*/
+		PutField_Int(hBalSumm,"disabled",PD_REC_ENABLED);
+
+/* Addition field Report Data */
+		if (strlen(csTxnDate) > 0)
+		{
+			PutField_CString(hBalSumm,"report_date",csTxnDate);
+		}
+
+		/* Skip the record if MID contains space */ 
+		if (chkSpInMID(csMerchantId) == PD_ERR)
+			continue;
+
+		
+		sprintf(csUploadFilename, 
+				"%s_%s_%s_%s_%s_%s.zip",
+				PD_FILE_PREFIX,
+				csMerchantId,
+				csCountryCode,
+				csCcyId,
+				csServiceCode,
+				csTxnDate);
+
+/* Addition field Filename */
+		PutField_CString(hBalSumm,"filename",csUploadFilename);
+
+/* Addition field Update_user */
+		PutField_CString(hBalSumm,"user",PD_UPDATE_USER);
+
+/* Extract year and year month */
+		strcpy(csYear, getYYYY(csTxnDate));
+
+		strcpy(csYearMth, getYYYYMM(csTxnDate));
+
+/* Check and make current balance report folder */
+		if (mkFullPathDir(csTxnDate) != PD_OK)
+		{
+DEBUGLOG(("process_data:unable to create path [%s %s %s]\n",csYear, csYearMth, csTxnDate));
+			return FAILURE;
+		}
+
+		sprintf(csUploadFullFile,"%s/%s/%s/%s/%s/%s_%s_%s_%s_%s_%s.xls",  
+		        getenv("OL_PREGEN_RPT_HOME"), PD_FILE_PREFIX, csYear, csYearMth, csTxnDate, PD_FILE_PREFIX,
+		        csMerchantId, csCountryCode, csCcyId, csServiceCode, 
+		        csTxnDate);
+		        
+		fp = fopen(csUploadFullFile,"w");
+		if (fp == NULL) {
+DEBUGLOG(("process_data:unable to open [%s]\n",csUploadFullFile));
+			return FAILURE;
+		}
+
+/* create xml header */
+		fprintf(fp,"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+		fprintf(fp,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+		fprintf(fp,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\txmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+		fprintf(fp,"\t xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+		fprintf(fp,"\t xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\t xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+		fprintf(fp,"<Styles>\n");
+		fprintf(fp,"\t<Style ss:ID=\"shd\">\n");
+		fprintf(fp,"\t\t<ss:Font ss:Bold=\"1\"/>\n");
+		fprintf(fp,"\t\t<Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"\t<Style ss:ID=\"sdt\">\n");
+		fprintf(fp,"\t\t<NumberFormat ss:Format=\"yyyy-mm-dd hh:mm:ss\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"</Styles>\n");
+		fprintf(fp,"<Worksheet ss:Name=\"Balance Summary\">\n");
+		fprintf(fp,"<Table>\n");
+		
+/* create open bal header */
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Opening Balance</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+/* process Open balance data */
+		if (process_openbal(csMerchantId,
+		                     csCcyId,
+		                     csCountryCode,
+		                     csServiceCode,
+		                     csTxnDate,
+		                     fp
+		    ) == PD_OK){
+/* Addition field Status */
+		}
+		else
+		{
+/* Addition field Status */
+			iRet=PD_ERR;
+DEBUGLOG(("process_openbal failed!!!!!!\n"));
+		}
+
+/* process balance summary data */
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Sub Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Count</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Credit</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Debit</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+/* process balance summary data */
+		if(iRet==PD_OK){
+			if (process_balsumm(csMerchantId,
+						csCcyId,
+						csCountryCode,
+						csServiceCode,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_balsumm failed!!!!!!\n"));
+			}
+		}
+		
+
+		
+/* create close bal header */
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+		fprintf(fp,"<Row>\n");
+                fprintf(fp,"</Row>\n");
+
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Closing Balance</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+		
+
+/* process close balance data */
+		if(iRet==PD_OK){
+			if (process_closebal(csMerchantId,
+						csCcyId,
+						csCountryCode,
+						csServiceCode,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_closebal failed!!!!!!\n"));
+			}
+		}
+		
+		if(iRet==PD_OK){
+/* Addition field Status */
+			PutField_Char(hBalSumm,"status",PD_PREGEN_RPT_COMPLETED); 
+		}
+		else{
+/* Addition field Status */
+			PutField_Char(hBalSumm,"status",PD_PREGEN_RPT_FAILURE);
+		}
+		
+		
+		
+		
+
+/* create xml footer */
+		fprintf(fp, "</Table>\n");
+		fprintf(fp, "</Worksheet>\n");
+		fprintf(fp, "</Workbook>\n");
+
+		fclose(fp);
+
+/* zip the report */
+		sprintf(csTmpCmd, 
+		        "zip_ol_pregenrpt.sh %s %s %s %s %s %s %s 1>/dev/null",
+			csTxnDate,
+			getenv("OL_PREGEN_RPT_HOME"),
+			PD_FILE_PREFIX,
+		        csMerchantId,
+		        csCountryCode,
+		        csCcyId,
+		        csServiceCode);
+		
+		if (system(csTmpCmd) == PD_ERR)
+		{
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::zip: fail %s\n", iCnt,csTmpCmd));
+		}
+		else
+		{
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::zip: success %s\n", iCnt,csTmpCmd));
+		}
+
+
+/* ChkExist Insert/update ol_pregen_daily_report */
+		DBObjPtr = CreateObj(DBPtr,"DBOLPregenDailyReport","ChkExist");
+		if ((*DBObjPtr)(hBalSumm) != PD_OK) 
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBOLPregenDailyReport","UpdateStatus");
+			if ((*DBObjPtr)(hBalSumm) == PD_OK)
+			{
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport updatestatus: success\n", iCnt));
+			}
+			else
+			{ 
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport updatestatus: fail\n", iCnt));
+				iRet = PD_ERR;
+			}
+		}
+		else
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBOLPregenDailyReport","Add");
+			if ((*DBObjPtr)(hBalSumm) == PD_OK)
+			{
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport add: success\n", iCnt));
+			}
+			else
+			{
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport add: fail\n", iCnt));
+				iRet = PD_ERR;
+			}
+		}
+
+		if (iRet == PD_OK)
+		{
+DEBUGLOG(("[%d]extract_ol_bal_summ_daily_rpt::commit: MerchantId[%s] Country[%s] CcyId[%s] ServiceCode[%s] TxnDate[%s]\n", iCnt,csMerchantId,csCountryCode,csCcyId,csServiceCode,csTxnDate));
+			TxnCommit();
+		}
+	
+		iCnt++;
+
+		hash_destroy(hBalSumm);
+
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getolmerchbal;
+
+	if (hBalSumm)
+	{
+		FREE_ME(hBalSumm);
+	}
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::process_data: error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getolmerchbal;
+	EXEC SQL ROLLBACK RELEASE;
+
+	if (hBalSumm) 
+	{
+		hash_destroy(hBalSumm);
+	}
+   	FREE_ME(hBalSumm);
+
+	return PD_ERR;
+}
+
+int process_single_acct(const char* csTxnDate,
+                        const char* csMerchantId,
+                        const char* csCcyId,
+                        const char* csCountryCode,
+                        const char* csServiceCode)
+{               
+	int     iRet = SUCCESS;
+	char    csUploadFilename[PD_UPLOAD_FILENAME_LEN+1];
+	char    csUploadFullFile[PD_PATH_LEN+1];
+	char    csTmpCmd[PD_TMP_BUF_LEN+1];
+	char    csYear[PD_YYYY_LEN+1];
+	char    csYearMth[PD_YYYYMM_LEN+1];
+	FILE    *fp;
+	hash_t* hBalSumm;
+
+
+/* Report data */
+	hBalSumm = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBalSumm,0);
+ 
+ 	PutField_CString(hBalSumm,"report_code",PD_OL_BAL_SUMM_REPORT_CODE);
+	
+/* Table Field merchant_id */
+	if (strlen(csMerchantId) > 0)
+	{
+		PutField_CString(hBalSumm,"merchant_id",csMerchantId);
+	}
+  
+/* Table Field country */
+	if (strlen(csCountryCode) > 0)
+	{
+		PutField_CString(hBalSumm,"country",csCountryCode);
+	}
+
+/* Table Field CCY_ID */
+	if (strlen(csCcyId) > 0)
+	{
+		PutField_CString(hBalSumm,"ccy",csCcyId);
+	}
+
+/* Table Field service_code */
+	if (strlen(csServiceCode) >= 0)
+	{
+		PutField_CString(hBalSumm,"service_code",csServiceCode);
+	}
+
+
+/* Addition field Report Data */
+	if (strlen(csTxnDate) > 0)
+	{
+		PutField_CString(hBalSumm,"report_date",csTxnDate);
+	}
+
+	sprintf(csUploadFilename, 
+	        "%s_%s_%s_%s_%s_%s.zip", PD_FILE_PREFIX, csMerchantId, csCountryCode,
+	        csCcyId, csServiceCode, csTxnDate);
+
+/* Addition field Filename */
+	PutField_CString(hBalSumm,"filename",csUploadFilename);
+
+/* Addition field Update_user */
+	PutField_CString(hBalSumm,"user",PD_UPDATE_USER);
+
+/* Extract year and year month */
+	strcpy(csYear, getYYYY(csTxnDate));
+
+	strcpy(csYearMth, getYYYYMM(csTxnDate));
+
+/* Check and make current balance report folder */
+	if (mkFullPathDir(csTxnDate) != PD_OK)
+	{
+DEBUGLOG(("process_data:unable to create path [%s]\n", csTxnDate));
+		return FAILURE;
+	}
+	
+	sprintf(csUploadFullFile,"%s/%s/%s/%s/%s/%s_%s_%s_%s_%s_%s.xls",  
+	        getenv("OL_PREGEN_RPT_HOME"), PD_FILE_PREFIX, csYear, csYearMth, csTxnDate, PD_FILE_PREFIX,
+	        csMerchantId, csCountryCode, csCcyId, csServiceCode, 
+	        csTxnDate);
+
+	fp = fopen(csUploadFullFile,"w");
+	if (fp == NULL) {
+DEBUGLOG(("process_data:unable to open [%s]\n",csUploadFullFile));
+		return FAILURE;
+	}
+
+/* create xml header */
+	fprintf(fp,"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+	fprintf(fp,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+	fprintf(fp,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+	fprintf(fp,"\txmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+	fprintf(fp,"\t xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+	fprintf(fp,"\t xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+	fprintf(fp,"\t xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+	fprintf(fp,"<Styles>\n");
+	fprintf(fp,"\t<Style ss:ID=\"shd\">\n");
+	fprintf(fp,"\t\t<ss:Font ss:Bold=\"1\"/>\n");
+	fprintf(fp,"\t\t<Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\"/>\n");
+	fprintf(fp,"\t</Style>\n");
+	fprintf(fp,"\t<Style ss:ID=\"sdt\">\n");
+	fprintf(fp,"\t\t<NumberFormat ss:Format=\"yyyy-mm-dd hh:mm:ss\"/>\n");
+	fprintf(fp,"\t</Style>\n");
+	fprintf(fp,"</Styles>\n");
+	fprintf(fp,"<Worksheet ss:Name=\"Balance Summary\">\n");
+	fprintf(fp,"<Table>\n");
+	fprintf(fp,"<Row>\n");
+
+/* create open bal header */
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Opening Balance</Data></Cell>\n");
+	
+	fprintf(fp,"</Row>\n");
+
+/* process Open balance data */
+		if (process_openbal(csMerchantId,
+		                     csCcyId,
+		                     csCountryCode,
+		                     csServiceCode,
+		                     csTxnDate,
+		                     fp
+		    ) == PD_OK){
+/* Addition field Status */
+		}
+		else
+		{
+/* Addition field Status */
+			iRet=PD_ERR;
+DEBUGLOG(("process_openbal failed!!!!!!\n"));
+		}
+
+/* create balance summary txn header */
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Sub Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Count</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Credit</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Debit</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+/* process balance summary data */
+		if(iRet==PD_OK){
+			if (process_balsumm(csMerchantId,
+						csCcyId,
+						csCountryCode,
+						csServiceCode,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_balsumm failed!!!!!!\n"));
+			}
+		}
+			
+
+		
+/* create close bal header */
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Closing Balance</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+		
+
+/* process close balance data */
+		if(iRet==PD_OK){
+			if (process_closebal(csMerchantId,
+						csCcyId,
+						csCountryCode,
+						csServiceCode,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_closebal failed!!!!!!\n"));
+			}
+		}
+		
+		if(iRet==PD_OK){
+/* Addition field Status */
+			PutField_Char(hBalSumm,"status",PD_PREGEN_RPT_COMPLETED); 
+		}
+		else{
+/* Addition field Status */
+			PutField_Char(hBalSumm,"status",PD_PREGEN_RPT_FAILURE);
+		}
+		
+		
+/* create xml footer */
+	fprintf(fp, "</Table>\n");
+	fprintf(fp, "</Worksheet>\n");
+	fprintf(fp, "</Workbook>\n");
+
+	fclose(fp);
+
+/* zip the report */
+	sprintf(csTmpCmd, 
+		"zip_ol_pregenrpt.sh %s %s %s %s %s %s %s 1>/dev/null",
+		csTxnDate,
+		getenv("OL_PREGEN_RPT_HOME"),
+		PD_FILE_PREFIX,
+		csMerchantId,
+		csCountryCode,
+		csCcyId,
+		csServiceCode);
+
+	if (system(csTmpCmd) == PD_ERR)
+	{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::zip: fail %s\n", csTmpCmd));
+	}
+	else
+	{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::zip: success %s\n", csTmpCmd));
+	}
+
+/* ChkExist Insert/update ol_pregen_daily_report */
+	DBObjPtr = CreateObj(DBPtr,"DBOLPregenDailyReport","ChkExist");
+	if ((*DBObjPtr)(hBalSumm) > 0) 
+	{
+		DBObjPtr = CreateObj(DBPtr,"DBOLPregenDailyReport","UpdateStatus");
+		if ((*DBObjPtr)(hBalSumm) == PD_OK)
+		{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport updatestatus: success\n"));
+		}
+		else
+		{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport updatestatus: fail\n"));
+			iRet = PD_ERR;
+		}
+	}
+	else
+	{
+		DBObjPtr = CreateObj(DBPtr,"DBOLPregenDailyReport","Add");
+		if ((*DBObjPtr)(hBalSumm) == PD_OK)
+		{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport add: success\n"));
+		}
+		else
+		{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::DBOLPregenDailyReport add: fail\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK)
+	{
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt::commit: MerchantId[%s] Country[%s] CcyId[%s] ServiceCode[%s] TxnDate[%s]\n", csMerchantId,csCountryCode,csCcyId,csServiceCode,csTxnDate));
+		TxnCommit();
+	}
+
+	if (hBalSumm)
+	{
+		hash_destroy(hBalSumm);
+		FREE_ME(hBalSumm);
+	}
+
+
+	return iRet;
+}
+
+
+
+int process_openbal(const char* csMerchantId,
+                     const char* csCcyId,
+                     const char* csCountryCode,
+                     const char* csServiceCode,
+                     const char* csReportDate,
+                     FILE *fp)
+{
+	int   	iRet = SUCCESS;
+
+	double  dOpenBalance;
+	char csTmp[PD_TMP_BUF_LEN+1];
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO openbal_sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar hv_service_code[PD_SERVICE_CODE_LEN];
+		varchar hv_country_code[PD_COUNTRY_CODE_LEN];
+		varchar hv_ccy_id[PD_CCY_ID_LEN];
+		varchar	hv_report_date[PD_DATE_LEN];
+    
+		double  v_open_balance;
+
+		short   ind_open_balance = -1;	
+		
+		
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("process_openbal:Begin\n"));
+
+	if(strlen(csMerchantId) > 0)
+	{
+		hv_merchant_id.len = strlen(csMerchantId);
+		strncpy((char *)hv_merchant_id.arr, csMerchantId, hv_merchant_id.len);
+DEBUGLOG(("process_openbal:merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+	} else {
+DEBUGLOG(("process_openbal:merchant_id is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_openbal: merchant_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCcyId) > 0)
+	{
+		hv_ccy_id.len = strlen(csCcyId);
+		strncpy((char *)hv_ccy_id.arr, csCcyId, hv_ccy_id.len);
+DEBUGLOG(("process_openbal:ccy_id = [%.*s]\n",hv_ccy_id.len,hv_ccy_id.arr));
+	} else {
+DEBUGLOG(("process_openbal:ccy_id is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_openbal: ccy_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCountryCode) > 0)
+	{
+		hv_country_code.len = strlen(csCountryCode);
+		strncpy((char *)hv_country_code.arr, csCountryCode, hv_country_code.len);
+DEBUGLOG(("process_openbal:country = [%.*s]\n",hv_country_code.len,hv_country_code.arr));
+	} else {
+DEBUGLOG(("process_openbal:country is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_openbal: country is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csServiceCode) > 0)
+	{
+		hv_service_code.len = strlen(csServiceCode);
+		strncpy((char *)hv_service_code.arr, csServiceCode, hv_service_code.len);
+DEBUGLOG(("process_openbal:service_code = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+	} else {
+DEBUGLOG(("process_openbal:service_code is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_openbal: service_code is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csReportDate) > 0)
+	{
+		hv_report_date.len = strlen(csReportDate);
+		strncpy((char *)hv_report_date.arr, csReportDate, hv_report_date.len);
+DEBUGLOG(("process_openbal:report_date = [%.*s]\n",hv_report_date.len,hv_report_date.arr));
+	} else {
+DEBUGLOG(("process_openbal:report_date is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_openbal: report_date is missing\n");
+		return PD_ERR;
+	}
+
+
+	EXEC SQL DECLARE c_cursor_getopenbal CURSOR FOR
+		SELECT SUM (MERCH_BAL.BAL) AS OPEN_BALANCE 
+		FROM 
+		(
+			SELECT	NVL (OTD_CURRENT_BAL, 0)
+               			+ NVL (OTD_CURRENT_BAL_SETTLEMENT, 0)
+               			- NVL (OTD_TOTAL_RESERVED_AMOUNT, 0)
+               			- NVL (OTD_TOTAL_HOLD, 0)
+               			- NVL (OTD_TOTAL_HOLD_SETTLEMENT, 0)
+                   		AS BAL
+          		FROM 
+			(  
+				SELECT  /*+ INDEX_DESC(OL_TXN_HEADER OL_TXN_HEADER_IDX21) INDEX(OL_TXN_DETAIL OL_TXN_DETAIL_IDX03) */
+                         		NVL (OTD_CURRENT_BAL, 0) AS OTD_CURRENT_BAL,
+                         		NVL (OTD_CURRENT_BAL_SETTLEMENT, 0) AS OTD_CURRENT_BAL_SETTLEMENT,
+                         		NVL (OTD_TOTAL_RESERVED_AMOUNT, 0) AS OTD_TOTAL_RESERVED_AMOUNT,
+                         		NVL (OTD_TOTAL_HOLD, 0) AS OTD_TOTAL_HOLD,
+                         		NVL (OTD_TOTAL_HOLD_SETTLEMENT, 0) AS OTD_TOTAL_HOLD_SETTLEMENT
+                    		FROM 	OL_TXN_DETAIL, 
+					OL_TXN_HEADER
+                   		WHERE 	OTH_APPROVAL_TIMESTAMP < TO_DATE (:hv_report_date, 'yyyymmdd')
+                         	AND 	OTH_MERCHANT_ID = :hv_merchant_id
+                         	AND 	OTH_AR_IND = 'A'
+                         	AND 	OTH_SERVICE_CODE = :hv_service_code
+                         	AND 	OTH_NET_CCY = :hv_ccy_id
+                         	AND 	OTH_TXN_ID = OTD_TXN_ID
+                         	AND 	OTD_TXN_COUNTRY = :hv_country_code
+                		ORDER BY OTH_APPROVAL_TIMESTAMP DESC
+			)
+         		WHERE ROWNUM = 1
+        		UNION ALL
+       	 		SELECT 0 FROM DUAL
+		) MERCH_BAL;
+	EXEC SQL OPEN c_cursor_getopenbal;
+
+
+
+	do {
+		EXEC SQL FETCH c_cursor_getopenbal
+		INTO
+			:v_open_balance:ind_open_balance
+		;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		fprintf(fp,"<Row>\n");
+
+/* v_open_balance */
+		if(ind_open_balance >= 0)
+		{
+			dOpenBalance  = v_open_balance;
+/* debug */
+			format_commas(dOpenBalance, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dOpenBalance);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csCcyId);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_openbal v_open_balance = [%f]\n",v_open_balance));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+
+	} while (PD_TRUE);
+
+	
+	EXEC SQL CLOSE c_cursor_getopenbal;
+	
+
+	return iRet;
+
+openbal_sql_error:
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt:process_openbal code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getopenbal;
+	EXEC SQL ROLLBACK RELEASE;
+
+	return PD_ERR;
+}
+
+
+
+
+int process_closebal(const char* csMerchantId,
+                     const char* csCcyId,
+                     const char* csCountryCode,
+                     const char* csServiceCode,
+                     const char* csReportDate,
+                     FILE *fp)
+{
+	int   	iRet = SUCCESS;
+
+	double  dCloseBalance;
+	char csTmp[PD_TMP_BUF_LEN+1];
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO closebal_sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar hv_service_code[PD_SERVICE_CODE_LEN];
+		varchar hv_country_code[PD_COUNTRY_CODE_LEN];
+		varchar hv_ccy_id[PD_CCY_ID_LEN];
+		varchar	hv_report_date[PD_DATE_LEN];
+    
+		double  v_close_balance;
+
+		short   ind_close_balance = -1;	
+		
+		
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("process_closebal:Begin\n"));
+
+	if(strlen(csMerchantId) > 0)
+	{
+		hv_merchant_id.len = strlen(csMerchantId);
+		strncpy((char *)hv_merchant_id.arr, csMerchantId, hv_merchant_id.len);
+DEBUGLOG(("process_closebal:merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+	} else {
+DEBUGLOG(("process_closebal:merchant_id is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_closebal: merchant_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCcyId) > 0)
+	{
+		hv_ccy_id.len = strlen(csCcyId);
+		strncpy((char *)hv_ccy_id.arr, csCcyId, hv_ccy_id.len);
+DEBUGLOG(("process_closebal:ccy_id = [%.*s]\n",hv_ccy_id.len,hv_ccy_id.arr));
+	} else {
+DEBUGLOG(("process_closebal:ccy_id is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_closebal: ccy_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCountryCode) > 0)
+	{
+		hv_country_code.len = strlen(csCountryCode);
+		strncpy((char *)hv_country_code.arr, csCountryCode, hv_country_code.len);
+DEBUGLOG(("process_closebal:country = [%.*s]\n",hv_country_code.len,hv_country_code.arr));
+	} else {
+DEBUGLOG(("process_closebal:country is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_closebal: country is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csServiceCode) > 0)
+	{
+		hv_service_code.len = strlen(csServiceCode);
+		strncpy((char *)hv_service_code.arr, csServiceCode, hv_service_code.len);
+DEBUGLOG(("process_closebal:service_code = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+	} else {
+DEBUGLOG(("process_closebal:service_code is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_closebal: service_code is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csReportDate) > 0)
+	{
+		hv_report_date.len = strlen(csReportDate);
+		strncpy((char *)hv_report_date.arr, csReportDate, hv_report_date.len);
+DEBUGLOG(("process_closebal:report_date = [%.*s]\n",hv_report_date.len,hv_report_date.arr));
+	} else {
+DEBUGLOG(("process_closebal:report_date is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_closebal: report_date is missing\n");
+		return PD_ERR;
+	}
+
+	
+	EXEC SQL DECLARE c_cursor_getclosebal CURSOR FOR
+		SELECT SUM (MERCH_BAL.BAL) AS CLOSE_BALANCE
+                FROM
+                (
+                        SELECT  NVL (OTD_CURRENT_BAL, 0)
+                                + NVL (OTD_CURRENT_BAL_SETTLEMENT, 0)
+                                - NVL (OTD_TOTAL_RESERVED_AMOUNT, 0)
+                                - NVL (OTD_TOTAL_HOLD, 0)
+                                - NVL (OTD_TOTAL_HOLD_SETTLEMENT, 0)
+                                AS BAL
+                        FROM
+                        (
+                                SELECT  /*+ INDEX_DESC(OL_TXN_HEADER OL_TXN_HEADER_IDX21) INDEX(OL_TXN_DETAIL OL_TXN_DETAIL_IDX03) */
+                                        NVL (OTD_CURRENT_BAL, 0) AS OTD_CURRENT_BAL,
+                                        NVL (OTD_CURRENT_BAL_SETTLEMENT, 0) AS OTD_CURRENT_BAL_SETTLEMENT,
+                                        NVL (OTD_TOTAL_RESERVED_AMOUNT, 0) AS OTD_TOTAL_RESERVED_AMOUNT,
+                                        NVL (OTD_TOTAL_HOLD, 0) AS OTD_TOTAL_HOLD,
+                                        NVL (OTD_TOTAL_HOLD_SETTLEMENT, 0) AS OTD_TOTAL_HOLD_SETTLEMENT
+                                FROM    OL_TXN_DETAIL,
+                                        OL_TXN_HEADER
+                                WHERE   OTH_APPROVAL_TIMESTAMP < TO_DATE (:hv_report_date, 'yyyymmdd') + 1
+                                AND     OTH_MERCHANT_ID = :hv_merchant_id
+                                AND     OTH_AR_IND = 'A'
+                                AND     OTH_SERVICE_CODE = :hv_service_code
+                                AND     OTH_NET_CCY = :hv_ccy_id
+                                AND     OTH_TXN_ID = OTD_TXN_ID
+                                AND     OTD_TXN_COUNTRY = :hv_country_code
+                                ORDER BY OTH_APPROVAL_TIMESTAMP DESC
+                        )
+                        WHERE ROWNUM = 1
+                        UNION ALL
+                        SELECT 0 FROM DUAL
+                ) MERCH_BAL;
+	EXEC SQL OPEN c_cursor_getclosebal;
+		
+
+	do {
+		EXEC SQL FETCH c_cursor_getclosebal
+		INTO
+			:v_close_balance:ind_close_balance
+		;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		fprintf(fp,"<Row>\n");
+
+/* v_close_balance */
+		if(ind_close_balance >= 0)
+		{
+			dCloseBalance  = v_close_balance;
+/* debug */
+			format_commas(dCloseBalance, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dCloseBalance);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csCcyId);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_closebal v_close_balance = [%f]\n",v_close_balance));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+	} while (PD_TRUE);
+
+	
+	EXEC SQL CLOSE c_cursor_getclosebal;
+	
+
+	return iRet;
+
+closebal_sql_error:
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt:process_closebal code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getclosebal;
+	EXEC SQL ROLLBACK RELEASE;
+
+	return PD_ERR;
+}
+
+
+
+
+
+int process_balsumm(const char* csMerchantId,
+                     const char* csCcyId,
+                     const char* csCountryCode,
+                     const char* csServiceCode,
+                     const char* csReportDate,
+                     FILE *fp)
+{
+	int   	iRet = SUCCESS;
+
+	char    csTxnDesc[PD_DESC_LEN+1];
+	char    csTxnElementTypeDesc[PD_DESC_LEN+1];
+	char    csTxnCcy[PD_CCY_ID_LEN+1];
+	double  dCredit;
+	double  dDebit;
+	
+	char csTmp[PD_TMP_BUF_LEN+1];
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO balsumm_sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar hv_service_code[PD_SERVICE_CODE_LEN];
+		varchar hv_country_code[PD_COUNTRY_CODE_LEN];
+		varchar hv_ccy_id[PD_CCY_ID_LEN];
+		varchar	hv_report_date[PD_DATE_LEN];
+    
+		
+		varchar v_txn_desc[PD_DESC_LEN+1];
+		varchar v_txn_element_type_desc[PD_DESC_LEN+1];
+		varchar v_txn_ccy[PD_CCY_ID_LEN+1];
+		int		v_count;
+		double  v_credit;
+		double  v_debit;
+		
+		
+		short   ind_txn_desc = -1;
+		short   ind_txn_element_type_desc = -1;
+		short   ind_txn_ccy = -1;		
+		short   ind_count = -1;
+		short   ind_credit = -1;
+		short   ind_debit = -1;
+		
+
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("process_balsumm:Begin\n"));
+
+	if(strlen(csMerchantId) > 0)
+	{
+		hv_merchant_id.len = strlen(csMerchantId);
+		strncpy((char *)hv_merchant_id.arr, csMerchantId, hv_merchant_id.len);
+DEBUGLOG(("process_balsumm:merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+	} else {
+DEBUGLOG(("process_balsumm:merchant_id is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_balsumm: merchant_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCcyId) > 0)
+	{
+		hv_ccy_id.len = strlen(csCcyId);
+		strncpy((char *)hv_ccy_id.arr, csCcyId, hv_ccy_id.len);
+DEBUGLOG(("process_balsumm:ccy_id = [%.*s]\n",hv_ccy_id.len,hv_ccy_id.arr));
+	} else {
+DEBUGLOG(("process_balsumm:ccy_id is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_balsumm: ccy_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCountryCode) > 0)
+	{
+		hv_country_code.len = strlen(csCountryCode);
+		strncpy((char *)hv_country_code.arr, csCountryCode, hv_country_code.len);
+DEBUGLOG(("process_balsumm:country = [%.*s]\n",hv_country_code.len,hv_country_code.arr));
+	} else {
+DEBUGLOG(("process_balsumm:country is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_balsumm: country is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csServiceCode) > 0)
+	{
+		hv_service_code.len = strlen(csServiceCode);
+		strncpy((char *)hv_service_code.arr, csServiceCode, hv_service_code.len);
+DEBUGLOG(("process_balsumm:service_code = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+	} else {
+DEBUGLOG(("process_balsumm:service_code is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_balsumm: service_code is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csReportDate) > 0)
+	{
+		hv_report_date.len = strlen(csReportDate);
+		strncpy((char *)hv_report_date.arr, csReportDate, hv_report_date.len);
+DEBUGLOG(("process_balsumm:report_date = [%.*s]\n",hv_report_date.len,hv_report_date.arr));
+	} else {
+DEBUGLOG(("process_balsumm:report_date is missing\n"));
+ERRLOG("extract_ol_bal_summ_daily_rpt::process_balsumm: report_date is missing\n");
+		return PD_ERR;
+	}
+		
+/* TXN */
+	EXEC SQL DECLARE c_cursor_getbalsumm CURSOR FOR
+	
+	SELECT	TXN_CODE_DESC AS TXN_DESC,
+         	TXN_ELEMENT_TYPE_DESC AS TXN_ELEMENT_DESC,
+         	TXN_CCY AS TXN_CCY,
+         	COUNT (*) AS COUNTER,
+         	SUM (CREDIT_AMOUNT) AS CREDIT_AMT,
+         	SUM (DEBIT_AMOUNT) AS DEBIT_AMT
+    	FROM 
+	(
+		SELECT 	TC_DESC AS TXN_CODE_DESC,
+                 	NVL (MT_DESC, DT_DESC) AS TXN_ELEMENT_TYPE_DESC,
+                 	OTE_CCY AS TXN_CCY,
+                 	CASE WHEN (OTE_AMT_TYPE = 'CR') THEN OTE_AMOUNT ELSE 0 END AS CREDIT_AMOUNT,
+                 	CASE WHEN (OTE_AMT_TYPE = 'DR') THEN OTE_AMOUNT ELSE 0 END AS DEBIT_AMOUNT
+            	FROM 	OL_TXN_DETAIL,
+                 	(SELECT	OTE_TXN_ID,
+                         	OTH_TXN_CODE,
+                         	OTE_TXN_ELEMENT_TYPE,
+                         	DT_DESC,
+                         	OTE_AMOUNT,
+                         	OTE_CCY,
+                         	OTE_AMT_TYPE,
+                         	TC_DESC
+                    	FROM 	OL_TXN_ELEMENTS,
+                         	(SELECT	OTH_TXN_ID, 
+					OTH_TXN_CODE
+                            	FROM 	OL_TXN_HEADER
+                           	WHERE 	OTH_APPROVAL_TIMESTAMP >= TO_DATE (:hv_report_date, 'yyyymmdd')
+                               	AND 	OTH_APPROVAL_TIMESTAMP < TO_DATE (:hv_report_date, 'yyyymmdd') + 1
+                              	AND 	OTH_MERCHANT_ID = :hv_merchant_id
+                                AND 	OTH_AR_IND = 'A'
+                                AND 	OTH_TXN_CODE NOT IN ('RLS', 'RLA')
+                                AND 	OTH_SERVICE_CODE = :hv_service_code) OL_TXN_HEADER,
+                         	DEF_ELEMENT_TYPE,
+                         	TXN_CODE
+                   	WHERE  	OTE_TXN_ELEMENT_TYPE IN	('TAMT',
+                                                     	 'TFEE',
+                                                    	 'TRNF',
+                                                     	 'RAMT',
+                                                     	 'UAMT',
+                                                      	 'HAMT',
+                                                      	 'MFIN',
+                                                      	 'MPOR',
+                                                      	 'MAPO',
+                                                      	 'MAPF',
+                                                      	 'MFLT',
+                                                      	 'HOPO',
+                                                      	 'UOPO')
+                       	AND OTE_PARTY_TYPE = 'M'
+                       	AND OTE_CCY = :hv_ccy_id
+                       	AND OTE_TXN_ID = OL_TXN_HEADER.OTH_TXN_ID
+                       	AND OTE_TXN_ELEMENT_TYPE = DT_TYPE
+                       	AND OL_TXN_HEADER.OTH_TXN_CODE = TC_CODE)
+              	LEFT JOIN MAP_TXN_ELEMENT
+               		ON OTE_TXN_ELEMENT_TYPE = MT_ELEMENT
+             		AND OTH_TXN_CODE = MT_TXN_CODE
+           	WHERE OTD_TXN_ID = OTE_TXN_ID AND OTD_TXN_COUNTRY = :hv_country_code
+	)
+	GROUP BY TXN_CODE_DESC, TXN_ELEMENT_TYPE_DESC, TXN_CCY
+	ORDER BY TXN_CODE_DESC, TXN_ELEMENT_TYPE_DESC;
+
+	EXEC SQL OPEN c_cursor_getbalsumm;
+	
+	do {
+	
+		EXEC SQL FETCH c_cursor_getbalsumm
+		INTO
+			:v_txn_desc:ind_txn_desc,
+			:v_txn_element_type_desc:ind_txn_element_type_desc,
+			:v_txn_ccy:ind_txn_ccy,
+			:v_count:ind_count,
+			:v_credit:ind_credit,
+			:v_debit:ind_debit
+		;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		
+		fprintf(fp,"<Row>\n");
+
+/* txn_desc */
+		if(ind_txn_desc >= 0)
+		{
+			v_txn_desc.arr[v_txn_desc.len] = '\0';
+			strcpy(csTxnDesc,(const char*)v_txn_desc.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnDesc);
+/*DEBUGLOG(("process_balsumm v_txn_desc = [%s]\n", v_txn_desc.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/* v_txn_element_type_desc */
+		if (ind_txn_element_type_desc >= 0)
+		{
+			v_txn_element_type_desc.arr[v_txn_element_type_desc.len] = '\0';
+			strcpy(csTxnElementTypeDesc,(const char*)v_txn_element_type_desc.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnElementTypeDesc);
+/*DEBUGLOG(("process_balsumm v_txn_element_type_desc = [%s]\n", v_txn_element_type_desc.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/* v_txn_ccy */
+		if (ind_txn_ccy >= 0)
+		{
+			v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+			strcpy(csTxnCcy,(const char*)v_txn_ccy.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnCcy);
+/*DEBUGLOG(("process_balsumm v_txn_ccy = [%s]\n", v_txn_ccy.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/* v_count */
+		if (ind_count >= 0)
+		{
+			//v_count.arr[v_count.len] = '\0';
+			//strcpy(csTxnCcy,(const char*)v_count.arr);
+			sprintf(csTmp, "%d", v_count);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_balsumm v_count = [%s]\n", v_count.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+			
+/* v_credit */
+		if (ind_credit >= 0)
+		{
+			dCredit = v_credit;
+			format_commas(dCredit, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dCredit);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_balsumm v_credit = [%f]\n",v_credit));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+
+/* v_debit */
+		if(ind_debit >= 0)
+		{
+			dDebit = v_debit;
+			format_commas(dDebit, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dDebit);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_balsumm v_debit = [%f]\n",v_debit));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+
+		fprintf(fp,"</Row>\n");
+
+	} while (PD_TRUE);
+	
+	EXEC SQL CLOSE c_cursor_getbalsumm;
+		
+	return iRet;
+
+balsumm_sql_error:
+DEBUGLOG(("extract_ol_bal_summ_daily_rpt:process_balsumm code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getbalsumm;
+	EXEC SQL ROLLBACK RELEASE;
+
+	return PD_ERR;
+}
+
+
+
+int mkFullPathDir(const char * csYearMthDy) 
+{
+	int  iRet = SUCCESS;
+	char csTmpCmd[PD_TMP_BUF_LEN+1];
+
+	
+	sprintf(csTmpCmd, 
+			"mkdir_ol_pregenrpt_tree.sh %s %s %s 1> /dev/null",		
+			csYearMthDy, getenv("OL_PREGEN_RPT_HOME"),PD_FILE_PREFIX);
+	
+	if (system(csTmpCmd) == PD_ERR)
+	{
+		iRet = PD_ERR;
+	}
+
+	return iRet;
+}
+
+char* getYYYY(const char* csTxnDate)
+{
+	static char csTmpYYYY[PD_YYYY_LEN+1];
+
+	strncpy(csTmpYYYY, csTxnDate, PD_YYYY_LEN);
+	csTmpYYYY[PD_YYYY_LEN] = '\0';
+
+	return csTmpYYYY;
+}
+
+char* getYYYYMM(const char* csTxnDate)
+{
+	static char csTmpYYYYMM[PD_YYYYMM_LEN+1];
+
+	strncpy(csTmpYYYYMM, csTxnDate, PD_YYYYMM_LEN);
+	csTmpYYYYMM[PD_YYYYMM_LEN] = '\0';
+
+	return csTmpYYYYMM;
+}
+
+int chkSpInMID(const char* csMerchantId)
+{
+	int iCnt;
+
+	for (iCnt = 0; iCnt < strlen(csMerchantId); iCnt++)
+		if (csMerchantId[iCnt] == 32)
+			return PD_ERR;
+
+	return SUCCESS;
+}
+
+void format_commas(double dInNum, char* csOutNum)
+{
+	char csTmpNum[PD_TMP_BUF_LEN+1];
+	int  iCnt;
+	int  iCnt2;
+
+	sprintf(csTmpNum, "%.2f", dInNum);
+
+	if (strlen(csTmpNum) <= 6)
+	{
+		strcpy (csOutNum, csTmpNum);
+
+		return;
+	}
+	
+	/* Reverse order */
+	iCnt2 = 0;
+	for (iCnt = strlen(csTmpNum) - 1; iCnt >= 0; iCnt--)
+	{
+		csOutNum[iCnt2] = csTmpNum[iCnt];
+		iCnt2++;
+	}
+	csOutNum[iCnt2] = '\0';
+
+	csTmpNum[0] = csOutNum[0];
+	csTmpNum[1] = csOutNum[1];
+	csTmpNum[2] = csOutNum[2];
+	iCnt2=3;
+	for (iCnt = 3; iCnt < strlen(csOutNum); iCnt++)
+	{
+		csTmpNum[iCnt2] = csOutNum[iCnt];
+		iCnt2++;
+		if (((iCnt+1) % 3 == 0) && (iCnt+1 < strlen(csOutNum)))
+		{
+			csTmpNum[iCnt2] = ',';
+			iCnt2++;
+		}
+	}
+	csTmpNum[iCnt2] = '\0';
+
+	/* Reverse order */
+	iCnt2 = 0;
+	for (iCnt = strlen(csTmpNum) - 1; iCnt >= 0; iCnt--)
+	{
+		csOutNum[iCnt2] = csTmpNum[iCnt];
+		iCnt2++;
+	}
+	csOutNum[iCnt2] = '\0';
+	
+	return;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char c;
+	strcpy(csDate,"");
+	strcpy(csInMerchantId,"");
+	strcpy(csInCcyId,"");
+	strcpy(csInCountryCode,"");
+	strcpy(csInServiceCode,"");
+
+	while ((c = getopt(argc,argv,"d:m:c:o:s:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(csDate, optarg);
+				break;
+			case 'm':
+				strcpy(csInMerchantId, optarg);
+				break;
+			case 'c':
+				strcpy(csInCcyId, optarg);
+				break;
+			case 'o':
+				strcpy(csInCountryCode, optarg);
+				break;
+			case 's':
+				strcpy(csInServiceCode, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csDate,""))
+		return FAILURE;
+
+	if (argc > 3) {
+		if (!strcmp(csInMerchantId,""))
+			return FAILURE;
+
+		if (!strcmp(csInCcyId,""))
+			return FAILURE;
+
+		if (!strcmp(csInCountryCode,""))
+			return FAILURE;
+
+		if (!strcmp(csInServiceCode,""))
+			return FAILURE;
+	}
+
+	return SUCCESS;
+}
+

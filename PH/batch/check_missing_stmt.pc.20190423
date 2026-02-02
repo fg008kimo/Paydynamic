@@ -1,0 +1,376 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/01/17              [ETN] 
+Revise SQL					   2018/01/25              [WWK] 
+Revise SQL					   2018/01/25              [WWK] 
+Empty Provider when err [5040,5042,5062]	   2018/04/03		   [WWK]
+Revise SQL					   2018/09/14		   [WMC]
+PRD183 Change scan DB and check missing deposit    2018/11/29              [TNY]
+bank statement from last 15 to 10 mins
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_nature[PD_TAG_LEN+1];
+char cs_alert_ts[PD_DATETIME_LEN+1];
+int i_interval;
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+static char cDebug='Y';
+int iCnt=0;
+int iDynCnt=0;
+
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	hash_t *hContext;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("check_missing_stmt Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_acct_type[PD_ACCT_TYPE_LEN];
+		varchar	hv_bank_acct_status[PD_ACCOUNT_STATUS_LEN];
+		int	hv_sys_switch;
+		varchar	hv_baid_status[PD_ACCOUNT_STATUS_LEN];
+		varchar	hv_pid_status[PD_ACCOUNT_STATUS_LEN];
+		varchar	hv_alert_ts[PD_DATETIME_LEN];
+		int	hv_interval;
+		int	hv_offline_deposit;
+		int	hv_auto_upload_provider_disabled;
+
+		varchar	v_client_name[PD_CLIENT_NAME_LEN+1];
+		varchar	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar v_bank_acct_short_name[PD_BANK_ACCT_SHORT_NAME_LEN+1];
+		varchar	v_bank_acct_num[PD_BANK_ACCT_NUM_LEN+1];
+		varchar	v_last_stmt_filename[PD_UPLOAD_FILENAME_LEN+1];
+		varchar	v_last_stmt_upload_ts[PD_TIMESTAMP_LEN + 1];
+		varchar	v_create_user[PD_CREATE_USER_LEN + 1];
+
+		short	ind_client_name = -1;
+		short	ind_bank_name = -1;
+		short	ind_bank_acct_short_name = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_last_stmt_filename = -1;
+		short	ind_last_stmt_upload_ts = -1;
+		short	ind_create_user = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_acct_type.len = strlen(cs_nature);
+	memcpy(hv_acct_type.arr,cs_nature,hv_acct_type.len);
+/*PRD183 change from 15 to 10 mins
+DEBUGLOG(("hv_acct_type = [%s]\n",hv_acct_type.arr));
+*/
+DEBUGLOG(("hv_acct_type = [%.*s]\n",hv_acct_type.len, hv_acct_type.arr));
+
+	hv_bank_acct_status.len = strlen(PD_BANK_ACCT_STATUS_ACTIVE);
+	memcpy(hv_bank_acct_status.arr,PD_BANK_ACCT_STATUS_ACTIVE,hv_bank_acct_status.len);
+/*PRD183 change from 15 to 10 mins
+DEBUGLOG(("hv_bank_acct_status = [%s]\n",hv_bank_acct_status.arr));
+*/
+DEBUGLOG(("hv_bank_acct_status = [%.*s]\n",hv_bank_acct_status.len, hv_bank_acct_status.arr));
+
+	hv_sys_switch = PD_TRUE;
+DEBUGLOG(("hv_sys_switch = [%d]\n", PD_TRUE));
+
+	hv_baid_status.len = strlen(PD_BAID_STATUS_OPEN);
+	memcpy(hv_baid_status.arr,PD_BAID_STATUS_OPEN,hv_baid_status.len);
+/*PRD183 change from 15 to 10 mins
+DEBUGLOG(("hv_baid_status = [%s]\n",hv_baid_status.arr));
+*/
+DEBUGLOG(("hv_baid_status = [%.*s]\n",hv_baid_status.len, hv_baid_status.arr));
+
+	hv_pid_status.len = strlen(PD_ACC_OPEN);
+	memcpy(hv_pid_status.arr,PD_ACC_OPEN,hv_pid_status.len);
+/*PRD183 change from 15 to 10 mins
+DEBUGLOG(("hv_pid_status = [%s]\n",hv_pid_status.arr));
+*/
+DEBUGLOG(("hv_pid_status = [%.*s]\n",hv_pid_status.len, hv_pid_status.arr));
+
+	hv_alert_ts.len = strlen(cs_alert_ts);
+	memcpy(hv_alert_ts.arr,cs_alert_ts,hv_alert_ts.len);
+/*PRD183 change from 15 to 10 mins
+DEBUGLOG(("hv_alert_ts = [%s]\n",hv_alert_ts.arr));
+*/
+DEBUGLOG(("hv_alert_ts = [%.*s]\n",hv_alert_ts.len, hv_alert_ts.arr));
+
+	hv_interval = i_interval;
+DEBUGLOG(("hv_interval = [%d]\n", i_interval));
+
+	hv_offline_deposit = PD_TRUE;
+DEBUGLOG(("hv_offline_deposit = [%d]\n", PD_TRUE));
+
+	hv_auto_upload_provider_disabled = PD_FALSE;
+DEBUGLOG(("auto_upload_provider_disabled = [%d]\n", PD_FALSE));
+
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		SELECT	PM_CLIENT_NAME,
+			BANK_NAME,
+			OB_BANK_ACCT_SHORT_NAME,
+			OB_BANK_ACCT_NUM,
+			OLSH_ORG_FILENAME, 
+			TO_CHAR(OLSH_CREATE_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS') OLSH_CREATE_TIMESTAMP,
+			OLSH_CREATE_USER  
+		FROM 	OL_STATEMENT_HEADER,
+			(SELECT	OAUBD_INT_BANK_CODE, 
+				OAUBD_BANK_ACCT_NUM, 
+				MAX(OLSH_CREATE_TIMESTAMP) AS MAX_OLSH_CREATE_TIMESTAMP, 
+				MAX(OLSH_FILE_ID) AS MAX_OLSH_FILE_ID
+			 FROM	OL_STATEMENT_HEADER,
+				(SELECT	OAUBD_INT_BANK_CODE, 
+					OAUBD_BANK_ACCT_NUM
+				 FROM	OL_AUTO_UPLOAD_BANK_DETAIL
+				 WHERE	OAUBD_DISABLED = 0
+				 AND	OAUBD_INT_BANK_CODE IN (SELECT OAUBD_INT_BANK_CODE 
+								FROM   OL_AUTO_UPLOAD_BANK_DETAIL 
+								WHERE  OAUBD_BANK_ACCT_NUM='000' 
+								AND    OAUBD_ACCT_TYPE = :hv_acct_type
+								AND    OAUBD_DISABLED = 0)
+				 AND	OAUBD_ACCT_TYPE = :hv_acct_type) 
+			 WHERE	OLSH_INT_BANK_CODE = OAUBD_INT_BANK_CODE 
+			 AND	OLSH_BANK_ACCT_NUM = OAUBD_BANK_ACCT_NUM 
+			 GROUP BY 
+				OAUBD_INT_BANK_CODE, 
+				OAUBD_BANK_ACCT_NUM),
+			OL_AUTO_UPLOAD_STMT_SETTING, 
+			OL_BANK_ACCTS,
+			BANK_DESC,
+			OL_BANK_ACCT_ID,
+			OL_PSP_DETAIL,
+			PSP_MASTER
+		WHERE	OAUBD_INT_BANK_CODE = OB_INT_BANK_CODE
+		AND	OAUBD_BANK_ACCT_NUM = OB_BANK_ACCT_NUM
+		AND	OAUBD_INT_BANK_CODE = INTERNAL_BANK_CODE
+		AND	OB_INT_BANK_CODE = OBAI_INT_BANK_CODE
+		AND	OB_BANK_ACCT_NUM = OBAI_BANK_ACCT_NUM
+		AND	OBAI_PSP_ID = OPD_PSP_ID
+		AND	OPD_CLIENT_ID = PM_CLIENT_ID 
+		AND	PM_CLIENT_ID = OAUS_PROVIDER_ID
+		AND	OB_ACCT_TYPE = OAUS_NATURE
+		AND	OFFLINE_DEPOSIT = :hv_offline_deposit
+		AND	OAUS_DISABLED = :hv_auto_upload_provider_disabled
+		AND	OB_ACCT_TYPE = :hv_acct_type
+		AND	OB_STATUS_TYPE = :hv_bank_acct_status
+		AND	OB_SYS_SWITCH_ENABLED = :hv_sys_switch
+		AND	OBAI_STATUS = :hv_baid_status
+		AND	OPD_STATUS = :hv_pid_status
+		AND 	OLSH_FILE_ID = MAX_OLSH_FILE_ID
+		AND	OLSH_CREATE_TIMESTAMP < TO_DATE(:hv_alert_ts,'YYYYMMDDHH24MISS') - (1/24/60)*:hv_interval
+		ORDER BY
+			PM_CLIENT_NAME,
+			BANK_NAME,
+			OB_BANK_ACCT_SHORT_NAME,
+			OB_BANK_ACCT_NUM;
+	
+	EXEC SQL OPEN c_cursor_getinfo;
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_client_name:ind_client_name,
+			:v_bank_name:ind_bank_name,
+			:v_bank_acct_short_name:ind_bank_acct_short_name,
+			:v_bank_acct_num:ind_bank_acct_num,
+			:v_last_stmt_filename:ind_last_stmt_filename,
+			:v_last_stmt_upload_ts:ind_last_stmt_upload_ts,
+			:v_create_user:ind_create_user;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+DEBUGLOG(("No data found!\n"));
+			}
+			break;
+		}
+
+		if (ind_client_name >= 0) {
+                        sprintf(csTag, "fclient_name-%d", iCnt);
+                        sprintf(csTmp, "%.*s", v_client_name.len, v_client_name.arr);
+                        iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("cleint_name: %s\n", csTmp));
+                }
+
+		if (ind_bank_name >= 0) {
+			sprintf(csTag, "fbank_name-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_bank_name.len, v_bank_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("bank_name: %s\n", csTmp));
+		}
+
+		if (ind_bank_acct_short_name >= 0) {	
+			sprintf(csTag, "fbank_acct_short_name-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_bank_acct_short_name.len, v_bank_acct_short_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("bank_acct_short: %s\n", csTmp));
+		}
+
+		if (ind_bank_acct_num >= 0) {
+			sprintf(csTag, "fbank_acct_num-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_bank_acct_num.len, v_bank_acct_num.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("bank_acct_num: %s\n", csTmp));
+		}
+
+		if (ind_last_stmt_filename >= 0) {
+			sprintf(csTag, "flast_stmt_filename-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_last_stmt_filename.len, v_last_stmt_filename.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);		
+DEBUGLOG(("last_stmt_filename: %s\n", csTmp));
+		}
+		if (ind_last_stmt_upload_ts >= 0) {
+			sprintf(csTag, "flast_stmt_upload_ts-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_last_stmt_upload_ts.len, v_last_stmt_upload_ts.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("last_stmt_upload: %s\n", csTmp));
+		}
+		if (ind_create_user >= 0) {
+			sprintf(csTag, "fcreate_user-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_create_user.len, v_create_user.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("create_User: %s\n", csTmp));
+		}
+
+		iCnt++;
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+	if (iCnt > 0) {
+		/*alert time */
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stimestamp-0", "SEC", "stimestamp-0", 0);
+		iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, "ftimestamp-0", "STR", "stimestamp-0", write_tpl_timestamp()); 
+		/*table head*/
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+
+		/*table body*/
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+		/*email title*/
+		if (!strcmp(cs_nature,PD_NATURE_DEPOSIT)) {
+			strcpy(cs_nature,PD_NATURE_DEPOSIT_NAME);
+		} else if (!strcmp(cs_nature,PD_NATURE_PAYOUT)) {
+			strcpy(cs_nature,PD_NATURE_PAYOUT_NAME);
+		} else if (!strcmp(cs_nature,PD_NATURE_INTERMEDIATE)) {
+			strcpy(cs_nature,PD_NATURE_INTERMEDIATE_NAME);
+		}
+		sprintf(csTmp, "Auto Upload %s Bank Statement - Missing Bank Statements", cs_nature);
+		iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, "MAIL_SUBJECT", "GLO", "STR", csTmp);
+
+		PutField_CString(hContext, "source", PD_EML_SOURCE_BATCH);
+		PutField_CString(hContext, "funct", PD_EML_FUNCT_CHK_MISS_STMT);
+		PutField_Char(hContext, "party_type", PD_TYPE_GLOBAL);
+		PutField_CString(hContext, "party_id", PD_EML_PARTY_ID_BATCH);
+
+		PutField_Int(hContext, "total_dyn", iDynCnt);
+
+		BOObjPtr = CreateObj(BOPtr, "BOAlertEmail", "ProcessTpl");
+		if ((unsigned long)((*BOObjPtr)(hContext) != PD_OK)){
+			iRet=INT_CODE_ERROR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_new_baid_alert BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+		}
+		else
+		{
+DEBUGLOG(("BOAlertEmail:ProcessTpl Success\n"));
+		}
+	}
+
+DEBUGLOG(("Missing Statements Alert normal exit!\n"));
+
+	FREE_ME(hContext);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("checking_missing_stmt error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /*EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;*/
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_nature,"");
+	strcpy(cs_alert_ts,"");
+
+	if (argc < 4) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"n:t:i:")) != EOF) {
+		switch (c) {
+			case 'n':
+				strcpy(cs_nature,optarg);
+				break;
+			case 't':
+				strcpy(cs_alert_ts,optarg);
+				break;
+			case 'i':
+				i_interval = atoi(optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_nature,"") || !strcmp(cs_alert_ts,""))
+		return FAILURE;
+
+
+        return SUCCESS;
+}

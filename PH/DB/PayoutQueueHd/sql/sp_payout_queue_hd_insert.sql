@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION sp_payout_queue_hd_insert(
+	in_batch_id		payout_queue_hd.pq_batch_id%type,
+	in_queue_seq		payout_queue_hd.pq_queue_seq%type,
+	in_txn_date		payout_queue_hd.pq_txn_date%type,
+	in_merchant_id		payout_queue_hd.pq_merchant_id%type,
+	in_service_code		payout_queue_hd.pq_service_code%type,
+	in_psp_id		payout_queue_hd.pq_psp_id%type,
+	in_num_of_record	payout_queue_hd.pq_num_of_record%type,
+	in_status		payout_queue_hd.pq_status%type)
+  RETURN NUMBER IS
+
+BEGIN
+
+  INSERT INTO payout_queue_hd(
+	pq_batch_id,
+	pq_queue_seq,
+	pq_txn_date,
+	pq_merchant_id,
+	pq_service_code,
+	pq_psp_id,
+	pq_num_of_record,
+	pq_status,
+	pq_create_timestamp,
+	pq_update_timestamp,
+	pq_create_user,
+	pq_update_user
+	)
+
+  VALUES(
+	in_batch_id,
+	in_queue_seq,
+	in_txn_date,
+	in_merchant_id,
+	in_service_code,
+	in_psp_id,
+	in_num_of_record,
+	in_status,
+	sysdate,
+	sysdate,
+	'SYSTEM',
+	'SYSTEM'
+	);
+
+  IF SQL%ROWCOUNT = 0 THEN
+     RETURN 1;
+  ELSE
+     RETURN 0;
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+
+END sp_payout_queue_hd_insert;
+/

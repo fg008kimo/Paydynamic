@@ -1,0 +1,497 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/08/22              Stan Poon
+Preview						   2014/11/27		   Stan Poon
+Change GetDtlByBankAcct to GetBankAcctIdDtl	   2015/02/11		   Elvis Wong
+Reduce Debug Log				   2016/12/09		   Elvis Wong
+*/
+
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsBSC.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnOmtByUsBSC(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int iRet = PD_OK, iDtlRet = PD_OK, iTmpRet = PD_OK;
+	char *csFileId = NULL, *csFormatId = NULL, *csBAID = NULL;
+	char *csIntBankCode = NULL, *csBankAcctNum = NULL, *csPspId = NULL, *csUser = NULL;
+	char cAction, cStatus;
+	int iVer = 0;
+	char csCountry[PD_COUNTRY_LEN + 1], *csCcy = NULL;
+	int iIsAlreadyLocked = PD_FALSE;
+
+	int iTotalCount, iSmsCount, iSkipCount, iHoldCount, iAcceptCount;
+	char *csTmp;
+	int iTmp, iResultCnt;
+	int iAllowFlag = 0;
+
+	char csSysCmd[PD_TMP_BUF_LEN*3];
+
+	hash_t *hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec, 0);
+
+	recordset_t *myFormat = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(myFormat, 0);
+
+	recordset_t *myFile = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(myFile, 0);
+
+	PutField_CString(hContext,"input_channel",PD_BANK_STATEMENT);
+
+/* action */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "action", &csTmp)) {
+			cAction = csTmp[0];
+			PutField_Char(hContext,"action",cAction);
+DEBUGLOG(("Authorize() action = [%c]\n", cAction));
+		} else {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() action is missing!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() action is missing!!!\n");
+		}
+	}
+/* file_id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "file_id", &csFileId)) {
+			PutField_CString(hContext,"file_id",csFileId);
+DEBUGLOG(("Authorize() file_id = [%s]\n", csFileId));
+		} else {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() file_id is missing!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() file_id is missing!!!\n");
+		}
+	}
+/* user */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "add_user", &csUser)) {
+			PutField_CString(hContext,"create_user",csUser);
+			PutField_CString(hContext,"update_user",csUser);
+DEBUGLOG(("Authorize() user = [%s]\n", csUser));
+		} else {
+			iRet = INT_USER_NOT_FOUND;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() user is missing!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() user is missing!!!\n");
+		}
+	}
+
+/* Lock file_id */
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatement::GetFileIdForUpdateNoWait()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetFileIdForUpdateNoWait");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csFileId);
+		if (iTmpRet != PD_OK) {
+			iIsAlreadyLocked = PD_TRUE;
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLStatement::GetFileIdForUpdateNoWait() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStatement::GetFileIdForUpdateNoWait() FAILURE!!!\n");
+		}
+	}
+
+/* Get Statement Header*/
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtHdr");
+		if ((unsigned long)(*DBObjPtr)(csFileId, hContext) != PD_OK) {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStatement::GetStmtHdr() FAILURE!!!\n");
+		} else {
+			if (!GetField_CString(hContext,"in_file_name",&csTmp)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() in_file_name NOT FOUND!!!\n"));
+			} else if (!GetField_CString(hContext,"int_bank_code",&csIntBankCode)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() int_bank_code NOT FOUND!!!\n"));
+			} else if (!GetField_CString(hContext,"bank_acct_num",&csBankAcctNum)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() bank_acct_num NOT FOUND!!!\n"));
+			} else if (!GetField_CString(hContext,"baid",&csBAID)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() baid NOT FOUND!!!\n"));
+			} else if (!GetField_CString(hContext,"format_id",&csFormatId)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() format_id NOT FOUND!!!\n"));
+			} else if (!GetField_Int(hContext,"message_code",&iTmp)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() message_code NOT FOUND!!!\n"));
+			} else if (!GetField_Int(hContext,"ver",&iVer)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() ver NOT FOUND!!!\n"));
+			} else if (!GetField_Char(hContext,"status",&cStatus)) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() status NOT FOUND!!!\n"));
+			} else {
+				if (cStatus != PD_STMT_PENDING) {
+					iRet = INT_INVALID_TXN;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLStatement::GetStmtHdr() status NOT SUPPORT!!!\n"));
+				}
+			}
+		}
+	}
+
+if (!iIsAlreadyLocked) {
+	if (cAction == PD_STMT_PREVIEW || cAction == PD_STMT_REUPLOAD) {
+		PutField_Int(hContext,"ver",++iVer);
+
+
+	/* get BAID */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLBankAcctId::GetBankAcctIdDtl()\n"));
+                  	DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdDtl");
+                      	if ((unsigned long)(*DBObjPtr)(csBAID, hRec) != PD_OK) {
+                          	iRet = INT_INVALID_BAID;
+                             	PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLBankAcctId::GetBankAcctIdDtl() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLBankAcctId::GetBankAcctIdDtl() FAILURE!!!\n");
+                  	} else {
+                             	if (!GetField_CString(hRec,"org_baid",&csTmp)) {
+                                 	iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLBankAcctId::GetBankAcctIdDtl() baid NOT FOUND!!!\n"));
+                           	}
+					
+				if (iRet == PD_OK) {
+					if (GetField_CString(hRec,"psp_id",&csPspId)) {
+						PutField_CString(hContext, "psp_id", csPspId);
+					} else {
+                                               	iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLBankAcctId::GetBankAcctIdDtl() psp_id NOT FOUND!!!\n"));
+					}
+                               	}
+                    	}			
+		}
+
+
+	/* get country */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBBankDesc::GetBankCountry()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBBankDesc","GetBankCountry");
+			if ((unsigned long)(*DBObjPtr)(csIntBankCode,csCountry) != FOUND) {
+				iRet = INT_NO_BANK_AVAILABLE;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBBankDesc::GetBankCountry() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBBankDesc::GetBankCountry() FAILURE!!!\n");
+			} else {
+				PutField_CString(hContext,"country",csCountry);
+			}
+		}
+
+	/* get acct_ccy, sys_switch, restricted */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLBankAccts::GetBankAccts()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "GetBankAccts");
+			if ((unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, hContext) != PD_OK) {
+				iRet = INT_BANK_ACCT_NOT_AVAILABLE;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLBankAccts::GetBankAccts() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLBankAccts::GetBankAccts() FAILURE!!!\n");
+			} else {
+				if (!GetField_CString(hContext,"acct_ccy",&csCcy)) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLBankAccts::GetBankAccts() acct_ccy NOT FOUND!!!\n"));
+				}
+
+				if (!GetField_Int(hContext,"sys_switch_enabled",&iTmp)) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLBankAccts::GetBankAccts() sys_switch NOT FOUND!!!\n"));
+				} else {
+					if (iTmp != 1) {
+						iRet = INT_BANK_ACCT_NOT_AVAILABLE;
+						PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLBankAccts::GetBankAccts() sys_switch NOT ENABLED!!!\n"));
+					}
+				}
+			}
+		}
+
+	/* check bank acct status */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLAcctStatusAction::GetAllowActionFlag()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLAcctStatusAction", "GetAllowActionFlag");
+			if ((unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, PD_AC_ACTION_BANK_STMT_ULD, &iAllowFlag) != PD_OK) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLAcctStatusAction::GetAllowActionFlag() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLAcctStatusAction::GetAllowActionFlag() FAILURE!!!\n");
+			} else {
+				if (!iAllowFlag) {
+					iRet = INT_BANK_ACCT_NOT_AVAILABLE;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLAcctStatusAction::GetAllowActionFlag() status NOT SUPPORTED!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLAcctStatusAction::GetAllowActionFlag() status NOT SUPPORTED!!!\n");
+				}
+			}
+		}
+
+	/* get bank_acct_type */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLPspDetail::GetPspDetail()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+			if ((unsigned long)(*DBObjPtr)(csPspId, hContext) != PD_OK) {
+				iRet = INT_INVALID_BAID;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPspDetail::GetPspDetail() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLPspDetail::GetPspDetail() FAILURE!!!\n");
+			} else {
+				if (!GetField_CString(hContext,"bank_acct_type",&csTmp)) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLPspDetail::GetPspDetail() acct_type NOT FOUND!!!\n"));
+				}
+			}
+		}
+
+
+
+	/* get stmt file format */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStmtFormat::GetByFormatId()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLStmtFormat","GetByFormatId");
+			if ((unsigned long)(*DBObjPtr)(csFormatId, myFormat) != PD_OK) {
+				iRet = INT_FORMAT_TEMPLATE_ERROR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLStmtFormat::GetByFormatId() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStmtFormat::GetByFormatId() FAILURE!!!\n");
+			}
+		}
+
+
+
+	/* Process Stmt Tmp */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call BOOLBankStmt::ProcessStmtTmp()\n"));
+			BOObjPtr = CreateObj(BOPtr, "BOOLBankStmt", "ProcessStmtTmp");
+			iRet = (unsigned long)(*BOObjPtr)(hContext, hRequest, myFormat, myFile);
+// DEBUGLOG(("Authorize() call BOOLBankStmt::ProcessStmtTmp() Ret = [%d]\n",iRet));
+		}
+
+
+
+	/* Process Stmt Detail */
+		if (iRet == PD_OK) {
+			if (cAction == PD_STMT_PREVIEW) {
+				PutField_Int(hContext,"validate_into_table",0);//
+			}
+
+DEBUGLOG(("Authorize() call BOOLBankStmt::ProcessStmtDetail()\n"));
+			BOObjPtr = CreateObj(BOPtr, "BOOLBankStmt", "ProcessStmtDetail");
+			iRet = (unsigned long)(*BOObjPtr)(hContext, hRequest, myFile);
+// DEBUGLOG(("Authorize() call BOOLBankStmt::ProcessStmtDetail() Ret = [%d]\n",iRet));
+		}
+
+
+
+	/* RESULT */
+		PutField_Int(hContext,"message_code",iRet);
+
+
+
+	/* SUCCESS */
+		if (iRet == PD_OK) {
+			if (cAction == PD_STMT_REUPLOAD) {
+			/* Status */
+				PutField_Char(hContext,"status",PD_STMT_APPROVED);
+
+			/* Update Header */
+				if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatement:: UpdateHeader()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "UpdateHeader");
+					iDtlRet = (unsigned long)(*DBObjPtr)(hContext);
+					if (iDtlRet != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement:: UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStatement:: UpdateHeader() FAILURE!!!\n");
+					}
+				}
+
+			/* Txn Commit */
+				if (iDtlRet == PD_OK) {
+					TxnCommit();
+DEBUGLOG(("Authorize() call TxnCommit()\n"));
+				}
+
+			/* Email Alert */
+				if (iDtlRet == PD_OK) {
+					snprintf(csSysCmd, sizeof(csSysCmd), "bank_stmt_alert.sh %s", csFileId);
+DEBUGLOG(("Authorize() call email alert\n"));
+DEBUGLOG(("Authorize() call system command [%s][%d]\n", csSysCmd, strlen(csSysCmd)));
+					iDtlRet = system(csSysCmd);
+DEBUGLOG(("Authorize() iDtlRet = [%d]\n", iDtlRet));
+
+					if (WIFEXITED(iDtlRet)) {
+						int status = WEXITSTATUS(iDtlRet);
+DEBUGLOG(("Authorize() status = [%d]\n", status));
+						if (status == SUCCESS) {
+DEBUGLOG(("Authorize() Exited, status %d, No email sent\n",status));
+						} else if (status == FAILURE) {
+DEBUGLOG(("Authorize() Exited, status %d, Email sent\n",status));
+						} else {
+							iRet = INT_EMAIL_ALERT_FAILURE;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() Exited, status %d, Email FAILURE!!!\n",status));
+ERRLOG("TxnOmtByUsBSC::Authorize() Exited, status %d, Email FAILURE!!!\n",status);
+							}
+
+					} else if (WIFSIGNALED(iDtlRet)) {
+						iRet = INT_EMAIL_ALERT_FAILURE;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() Killed by signal %d, Email FAILURE!!!\n", WTERMSIG(iDtlRet)));
+ERRLOG("TxnOmtByUsBSC::Authorize() Killed by signal %d, Email FAILURE!!!\n", WTERMSIG(iDtlRet));
+
+					} else {
+						iRet = INT_EMAIL_ALERT_FAILURE;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() Others, Email FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() Others, Email FAILURE!!!\n");
+
+					}
+				}
+			}
+
+	/* FAILURE */
+		} else if (GetField_Int(hContext,"internal_error",&iTmp)) {
+		/* Txn Abort */
+			if (iDtlRet == PD_OK) {
+				TxnAbort();
+DEBUGLOG(("Authorize() call TxnAbort()\n"));
+			}
+
+		/* Status */
+			if (GetField_Int(hContext,"result_cnt",&iResultCnt)) {
+				PutField_Char(hContext,"status",PD_STMT_PENDING);
+DEBUGLOG(("Authorize() ** ResultCnt = [%d]\n",iResultCnt));
+			} else {
+				PutField_Char(hContext,"status",PD_STMT_DECLINED);
+			}
+
+		/* Update Header */
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatement:: UpdateHeader()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "UpdateHeader");
+				iDtlRet = (unsigned long)(*DBObjPtr)(hContext);
+				if (iDtlRet != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement:: UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStatement:: UpdateHeader() FAILURE!!!\n");
+				}
+			}
+
+			if (GetField_Int(hContext,"result_cnt",&iResultCnt)) {
+			/* Add Error */
+				if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatementTmp::AddError()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLStatementTmp", "AddError");
+					iDtlRet = (unsigned long)(*DBObjPtr)(hContext);
+					if (iDtlRet != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatementTmp::AddError() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStatementTmp::AddError() FAILURE!!!\n");
+					} else {
+						iRet = PD_OK;
+						RemoveField_Int(hContext,"internal_error");
+					}
+				}
+			}
+		}
+
+	} else if (cAction == PD_STMT_CANCEL) {
+
+		if (iRet == PD_OK) {
+		/* Status */
+			PutField_Char(hContext,"status",PD_STMT_CANCELLED);
+
+		/* Update Header */
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatement:: UpdateHeader()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "UpdateHeader");
+				iDtlRet = (unsigned long)(*DBObjPtr)(hContext);
+				if (iDtlRet != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatement:: UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() call DBOLStatement:: UpdateHeader() FAILURE!!!\n");
+				}
+			}
+		}
+
+		/* Disable Tmp */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLStatementTmp::DisableAllDetail()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLStatementTmp", "DisableAllDetail");
+			iRet = (unsigned long)(*DBObjPtr)(hContext, hRequest, myFile);
+			if (iRet != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLStatementTmp::DisableAllDetail() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsBSU::Authorize() call DBOLStatementTmp::DisableAllDetail() FAILURE!!!\n");
+			}
+		}
+
+	} else {
+
+		iRet = INT_INVALID_TXN;
+		PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() action INVALID!!!\n"));
+ERRLOG("TxnOmtByUsBSC::Authorize() action INVALID!!!\n");
+
+	}
+}
+
+
+
+/* Result */
+	PutField_CString(hResponse,"batch_id",csFileId);
+	iTotalCount=0;
+	GetField_Int(hContext,"total_count",&iTotalCount);
+	PutField_Int(hResponse,"total",iTotalCount);
+	iSmsCount=0;
+	GetField_Int(hContext,"sms_count",&iSmsCount);
+	PutField_Int(hResponse,"sms",iSmsCount);
+	iSkipCount=0;
+	GetField_Int(hContext,"skip_count",&iSkipCount);
+	PutField_Int(hResponse,"skip",iSkipCount);
+	iHoldCount=0;
+	GetField_Int(hContext,"hold_count",&iHoldCount);
+	PutField_Int(hResponse,"hold",iHoldCount);
+	iAcceptCount=0;
+	GetField_Int(hContext,"accept_count",&iAcceptCount);
+	PutField_Int(hResponse,"accept",iAcceptCount);
+
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+
+	_RecordSet_Destroy(myFile);
+	FREE_ME(myFile);
+	_RecordSet_Destroy(myFormat);
+	FREE_ME(myFormat);
+
+DEBUGLOG(("Authorize() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+}
+

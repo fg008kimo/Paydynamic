@@ -1,0 +1,1082 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/05/03              Cody Chan
+Add GetPayoutTxnFee				   2011/06/08		   Lok Man
+Add Tier Level, Custom Tag			   2011/12/06		   Cody Chan
+Assign default pay method to Payout/Settlement	   2012/01/19		   Lok Man
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOFee.h"
+
+#define	PD_PREFIX	"org"
+char    cDebug;
+OBJPTR(DB);
+
+void BOFee(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+double CalFee(const char* csCcy,char cType,double dTxnAmt,double dValue, double dAddValue,double dMin,double dMax);
+int ApplyMarkup(hash_t *hContext,const hash_t* hRequest);
+int GetNetAmount(hash_t *hContext,const hash_t* hRequest);
+int GetTFFNetAmount(hash_t *hContext,const hash_t* hRequest);
+int GetDspAmount(hash_t *hContext,const hash_t* hRequest);
+int GetPayoutAmount(hash_t *hContext,const hash_t* hRequest);
+
+int	FindFee(hash_t* hReq,
+		 	double	dTxnAmt,
+		 	double	dDstTxnAmt,
+			const char* csFeeType,
+			const char* csCountry,
+			const char* csChannelCode,
+			const char* csServiceCode,
+			const char* csTxnCode,
+			const char* csCcy,
+			const char* csDstCcy,
+			const char* csMerchantId,
+			const char* csMerchantClientId,
+			const char* csPayMethod);
+
+int GetTxnFee(hash_t *hContext, const hash_t *hRequest)
+{
+	int iRet = 0;
+	double	dTxnAmt = 0.0;
+	double	dDstTxnAmt = 0.0;
+
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csDstTxnCcy;
+	char	*csOrgChannelCode;
+	char	*csOrgServiceCode;
+	char	*csOrgMerchantId;
+	char	*csOrgMerchantClientId;
+	char	*csTxnCode;
+	char	*csAdjTxnCode;
+	char	csOrgPayMethod[PD_SELECTED_PAY_METHOD_LEN+1];
+	char	*csPtr;
+	char	csTag[PD_TAG_LEN + 1];
+	char	cPostTxn = PD_NO;
+
+	double	dTotalSrcFee = 0.0;
+	double	dTotalDstFee = 0.0;
+	int	iInitMode = PD_FALSE;
+
+	int     iAdjTxn = PD_FALSE;
+
+	hash_t	*hRec;
+	
+//DEBUGLOG(("BOFee::GetTxnFee() Call ApplyMarkup\n"));
+/*apply markup*/
+//        ApplyMarkup(hContext,hRequest);
+//DEBUGLOG(("BOFee::GetTxnFee() After Call ApplyMarkup\n"));
+
+	GetField_Int(hContext,"init_mode",&iInitMode);
+DEBUGLOG(("BOFee::GetTxnFee() init_mode = [%d]\n",iInitMode));
+
+	GetField_Double(hContext,"total_src_txn_fee",&dTotalSrcFee);
+	GetField_Double(hContext,"total_dst_txn_fee",&dTotalDstFee);
+DEBUGLOG(("BOFee::GetTxnFee() total src txn fee = [%lf]\n",dTotalSrcFee));
+DEBUGLOG(("BOFee::GetTxnFee() total dst txn fee = [%lf]\n",dTotalDstFee));
+	
+	
+/* txn amt */
+	
+	if (GetField_Double(hContext,"dst_txn_amt",&dDstTxnAmt)) {
+DEBUGLOG(("BOFee::GetTxnFee()  dst_txn_amt = [%lf]\n",dDstTxnAmt));
+		if (GetField_CString(hContext,"dst_txn_ccy",&csDstTxnCcy)) {
+DEBUGLOG(("BOFee::GetTxnFee()  dst_txn_ccy = [%s]\n",csDstTxnCcy));
+			PutField_CString(hContext,"dst_txn_fee_ccy",csDstTxnCcy);
+		}
+		else {
+DEBUGLOG(("BOFee::GetTxnFee()  dst_txn_ccy is missing!!!\n"));
+//ERRLOG("BOFee::GetTxnFee()  dst_txn_ccy is missing!!!\n");
+		}
+	}
+
+	if (iInitMode)
+		sprintf(csTag,"%s_txn_amt",PD_PREFIX);
+	else
+		strcpy(csTag,"txn_amt");
+	
+	if (GetField_Double(hContext,csTag,&dTxnAmt)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%f]\n",csTag,dTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s not found!!!\n",csTag));
+	}
+
+/* txn code */
+	if (iInitMode)
+		sprintf(csTag,"%s_txn_code",PD_PREFIX);
+	else
+		strcpy(csTag,"txn_code");
+	if (GetField_CString(hContext,csTag,&csTxnCode)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csTxnCode));
+	}
+	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s not found!!!\n",csTag));
+	}
+
+/* adj_txn_code */
+	strcpy(csTag, "code");
+        if (GetField_CString(hContext,csTag,&csAdjTxnCode)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csAdjTxnCode));
+		iAdjTxn = PD_TRUE;
+        }
+        else {
+DEBUGLOG(("BOFee::GetTxnFee() %s not found!!!\n",csTag));
+        }
+
+
+/*org txn country */
+	if (iInitMode) {
+		sprintf(csTag,"%s_txn_country",PD_PREFIX);
+        	if (GetField_CString(hContext,csTag,&csTxnCountry)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csTxnCountry));
+        	}
+        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        	}
+	}
+	else {
+		strcpy(csTag,"txn_country");
+        	if (GetField_CString(hRequest,csTag,&csTxnCountry)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csTxnCountry));
+        	}
+        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        	}
+	}
+
+
+/*org txn ccy */
+	if (iInitMode) {
+                sprintf(csTag,"%s_txn_ccy",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csTxnCcy)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csTxnCcy));
+			PutField_CString(hContext,"src_txn_fee_ccy",csTxnCcy);
+                }
+                else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"txn_ccy");
+                if (GetField_CString(hRequest,csTag,&csTxnCcy)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csTxnCcy));
+			PutField_CString(hContext,"src_txn_fee_ccy",csTxnCcy);
+                }
+                else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+                }
+        }
+/*org channel code */
+	if (iInitMode)
+		sprintf(csTag,"%s_channel_code",PD_PREFIX);
+	else
+		strcpy(csTag,"channel_code");
+        if (GetField_CString(hContext,csTag,&csOrgChannelCode)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgChannelCode));
+        }
+        else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        }
+
+/*slected pay method */
+	strcpy(csTag,"selected_pay_method");
+        if (GetField_CString(hContext,csTag,&csPtr)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csPtr));
+		sprintf(csOrgPayMethod,"%s",csPtr);
+        }
+        else if (GetField_CString(hRequest,"pay_method",&csPtr)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csPtr));
+		sprintf(csOrgPayMethod,"%s",csPtr);
+        }
+        else {
+		if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)||
+		   !strcmp(csTxnCode,PD_WITHDRAW_BATCH_TXN_CODE)||
+		   !strcmp(csTxnCode,PD_VOID_TXN_CODE) ||
+   		   iAdjTxn == PD_TRUE)	 {
+			sprintf(csOrgPayMethod,"%s",PD_ALL_METHOD);
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,PD_ALL_METHOD));
+		}
+		else{
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+ERRLOG("FATAL ERROR BOFee:GetTxnFee() %s is missing!!!\n",csTag);
+		}
+        }
+
+/*org service code */
+	if (iInitMode) {
+		sprintf(csTag,"%s_service_code",PD_PREFIX);
+        	if (GetField_CString(hContext,csTag,&csOrgServiceCode)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgServiceCode));
+        	}
+        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        	}
+	}
+	else {
+		strcpy(csTag,"service_code");
+        	if (GetField_CString(hRequest,csTag,&csOrgServiceCode)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgServiceCode));
+        	}
+        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        	}
+	}
+
+
+
+/*org merchant id */
+	if (iInitMode) {
+		sprintf(csTag,"%s_merchant_id",PD_PREFIX);
+        	if (GetField_CString(hContext,csTag,&csOrgMerchantId)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgMerchantId));
+        	}
+        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        	}
+	}
+	else {
+		strcpy(csTag,"merchant_id");
+        	if (GetField_CString(hRequest,csTag,&csOrgMerchantId)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgMerchantId));
+        	}
+        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+        	}
+
+/*
+		if (iAdjTxn == PD_TRUE)	 {
+			sprintf(csTag, "psp_id");
+        		if (GetField_CString(hRequest,csTag,&csOrgMerchantId)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgMerchantId));
+        		}
+	        	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+			}
+
+		}
+*/
+	}
+
+
+/*org merchant client id */
+	if (iInitMode) {
+		sprintf(csTag,"%s_client_id",PD_PREFIX);
+	}
+	else {
+		strcpy(csTag,"merchant_client_id");
+	}
+
+       	if (GetField_CString(hContext,csTag,&csOrgMerchantClientId)) {
+DEBUGLOG(("BOFee::GetTxnFee() %s = [%s]\n",csTag,csOrgMerchantClientId));
+       	}
+       	else {
+DEBUGLOG(("BOFee::GetTxnFee() %s is missing!!!\n",csTag));
+       	}
+
+/* find txn fee */
+	hRec = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hRec,0); 
+
+	if (GetField_Char(hContext,"post_txn",&cPostTxn)) {
+DEBUGLOG(("BOFee::GetTxnFee() post_txn = [%c]\n",cPostTxn));
+		PutField_Char(hRec,"post_txn",cPostTxn);
+	}
+
+/* custom tag */
+	if (GetField_CString(hContext,"bank_code",&csPtr)) {
+DEBUGLOG(("BOFee::GetTxnFee() custom_tag bank_code = [%s]\n",csPtr));
+		PutField_CString(hRec,"bank_code",csPtr);
+	}
+
+	iRet = FindFee(hRec,
+		dTxnAmt,
+		dDstTxnAmt,
+		PD_TXN_CHG_TYPE_FEE,
+		csTxnCountry,
+		csOrgChannelCode,
+		csOrgServiceCode,
+		csTxnCode,
+		csTxnCcy,
+		csDstTxnCcy,
+		csOrgMerchantId,
+		csOrgMerchantClientId,
+               	csOrgPayMethod);
+DEBUGLOG(("BOFee: Call txn Fee = [%d]\n",iRet));
+	if (iRet == PD_OK) {
+		double	dTmp;
+		if (GetField_Double(hRec,"src_txn_fee",&dTmp)) {
+			dTotalSrcFee += dTmp;
+			PutField_Double(hContext,"src_txn_fee",dTmp);
+DEBUGLOG(("BOFee: src_txn_fee = [%lf]\n",dTmp));
+DEBUGLOG(("BOFee: total src fee = [%lf]\n",dTotalSrcFee));
+		}
+		if (GetField_Double(hRec,"dst_txn_fee",&dTmp)) {
+			dTotalDstFee += dTmp;
+			PutField_Double(hContext,"dst_txn_fee",dTmp);
+DEBUGLOG(("BOFee: dst_txn_fee = [%lf]\n",dTmp));
+DEBUGLOG(("BOFee: total dst fee = [%lf]\n",dTotalDstFee));
+		}
+	}
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+
+DEBUGLOG(("BOFee::GetTxnFee() total src txn fee = [%lf]\n",dTotalSrcFee));
+DEBUGLOG(("BOFee::GetTxnFee() total dst txn fee = [%lf]\n",dTotalDstFee));
+	PutField_Double(hContext,"total_src_txn_fee",dTotalSrcFee);
+	PutField_Double(hContext,"total_dst_txn_fee",dTotalDstFee);
+
+	//if(iRet==PD_OK){
+	iRet = GetNetAmount(hContext,hRequest);
+	//}
+DEBUGLOG(("BOFee exit = [%d]\n",iRet));
+	//return iRet;
+	return 0;
+}
+double CalFee(const char* csCcy,char cType,double dTxnAmt,double dValue, double dAddValue, double dMin,double dMax)
+{
+	double	dResult = 0.0;
+
+DEBUGLOG(("BOFee:CalFee() [%c] TxnAmt[%lf] Value[%lf] AddValue[%lf] i[%lf] x[%lf]\n",cType,dTxnAmt,dValue,dAddValue,dMin,dMax));
+	if (cType == PD_PRECENTAGE) {
+DEBUGLOG(("BOFee:CalFee() [%c]\n",PD_PRECENTAGE));
+        	double dTmp = 0;
+                dTmp = dTxnAmt * (dValue/100);
+                dResult = newround(dTmp,PD_DECIMAL_LEN);
+        }
+        else if (cType == PD_FIXED_AMOUNT) {
+DEBUGLOG(("BOFee:CalFee() [%c]\n",PD_FIXED_AMOUNT));
+       		dResult = newround(dValue,PD_DECIMAL_LEN);
+        }
+        else if (cType == PD_PRECENT_WITH_FIX) {
+DEBUGLOG(("BOFee:CalFee() [%c]\n",PD_PRECENT_WITH_FIX));
+        	double dTmp = 0;
+                dTmp = dTxnAmt * (dValue/100) + dAddValue;
+                dResult = newround(dTmp,PD_DECIMAL_LEN);
+	}
+
+DEBUGLOG(("BOFee:CalFee() Fee = [%lf]\n",dResult));
+	if (dMin >= 1) {
+		if (dResult < dMin) {
+DEBUGLOG(("BOFee:CalFee() Fee = [%lf] = min[%lf]\n",dResult,dMin));
+			dResult = dMin;
+		}
+	}
+
+	if (dMax >= 1) {
+		if (dResult > dMax) {
+DEBUGLOG(("BOFee:CalFee() [%lf] > [%lf] &&  max[%lf] > 0.0\n",dResult,dMax,dMax));
+			dResult = dMax;
+		}
+	}
+DEBUGLOG(("BOFee:CalFee() after min max Fee = [%lf]\n",dResult));
+	DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+        if ((unsigned long)((DBObjPtr)(csCcy))!=PD_TRUE){
+DEBUGLOG(("BOFee:CalFee() [%s] doesn't support decimal\n",csCcy));
+		dResult = newround(dResult,0);
+DEBUGLOG(("BOFee:CalFee() new min max Fee = [%lf]\n",dResult));
+        }
+
+	return dResult;
+}
+
+int     FindFee(hash_t	*hReq,
+			double dTxnAmt,
+			double dDstTxnAmt,
+			const char* csFeeType,
+                        const char* csCountry,
+                        const char* csChannelCode,
+                        const char* csServiceCode,
+                        const char* csTxnCode,
+			const char* csCcy,
+			const char* csDstCcy,
+                        const char* csMerchantId,
+                        const char* csMerchantClientId,
+			const char* csPayMethod)
+
+{
+	int	iRet = PD_OK;
+	int	iRuleId /*,iTierId*/ ;
+	int	iVal = 0;
+	char*	csCustomTag;
+	char*	csCustomValue;
+	double	dMinVal = 0.0;
+	double	dMaxVal = 0.0;
+	hash_t  *hRec;
+	char	cPostTxn = PD_NO;
+	
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+
+	GetField_Char(hReq,"post_txn",&cPostTxn);
+DEBUGLOG(("BOFree Find Fee PostTxn = [%c]\n",cPostTxn));
+/* TFF */
+	if (!strcmp(csTxnCode, PD_MERCHANT_BAL_TFF)) {
+		dTxnAmt = dDstTxnAmt;
+	}
+DEBUGLOG(("BOFree Find Fee for [%s]\n",csFeeType));
+	DBObjPtr = CreateObj(DBPtr,"DBRuleTxnFee","Find");
+        if ((*DBObjPtr)(csFeeType,
+			csCountry, 
+		        csChannelCode,
+                        csServiceCode,
+                        csTxnCode,
+			csCcy,
+                        csMerchantId,
+			csMerchantClientId,
+			csPayMethod,
+                        rRecordSet) != PD_OK) {
+                iRet = INT_ERR;
+DEBUGLOG(("BOFee::GetTxnFee() call FindFee failed!!!\n"));
+        }
+	else {
+		int	iFound = PD_FALSE;
+		int	iCustomTag = PD_FALSE;
+		char	*csValue;
+		//hash_t  *hVal;
+		recordset_t     *rVal;
+		recordset_t     *rRec;
+        	rVal = (recordset_t*) malloc (sizeof(recordset_t));
+        	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+	
+		recordset_init(rRec,0);
+		hRec = RecordSet_GetFirst(rRecordSet);
+DEBUGLOG(("BOFee::GetTxnFee() check if use custome_tag\n"));
+                while (hRec && iFound == PD_FALSE) {
+                        if (GetField_Int(hRec,"rule_id",&iRuleId)) {
+DEBUGLOG(("BOFee::GetTxnFee() rule_id = [%d]\n",iRuleId));
+                        }
+
+			/*
+                        if (GetField_Int(hRec,"tier_id",&iTierId)) {
+DEBUGLOG(("BOFee::GetTxnFee() tier_id = [%d]\n",iTierId));
+                        }
+			*/
+
+                        if (GetField_Double(hRec,"min_value",&dMinVal)) {
+DEBUGLOG(("BOFee::GetTxnFee() minval = [%f]\n", dMinVal));
+                        }
+                        if (GetField_Double(hRec,"max_value",&dMaxVal)) {
+DEBUGLOG(("BOFee::GetTxnFee() maxval = [%f]\n",dMaxVal));
+                        }
+
+			if (GetField_CString(hRec,"custom_tag",&csCustomTag) && GetField_CString(hRec,"custom_value",&csCustomValue)) {
+DEBUGLOG(("BOFee::GetTxnFee() custom_tag = [%s]\n",csCustomTag));
+DEBUGLOG(("BOFee::GetTxnFee() custom_value = [%s]\n",csCustomValue));
+				if  (GetField_CString(hReq,csCustomTag,&csValue)) {
+DEBUGLOG(("BOFee::GetTxnFee() request value = [%s] for custom_tag [%s]\n",csValue,csCustomTag));
+					if (!strcmp(csValue,csCustomValue)) {
+DEBUGLOG(("BOFee::GetTxnFee() **** will use custome tag request value = [%s] = value [%s] for custom_tag [%s]\n",csValue,csCustomValue,csCustomTag));
+						if (iCustomTag == PD_FALSE) {
+							recordset_destroy(rRec);
+							recordset_init(rRec,0);
+						}
+						iCustomTag = PD_TRUE;
+						RecordSet_Add(rRec,hRec);
+					}
+				}
+				else {
+DEBUGLOG(("BOFee::GetTxnFee() custom_tag[%s] not found in Request\n",csCustomTag));
+				}
+			}
+			if (iCustomTag == PD_FALSE) {
+				RecordSet_Add(rRec,hRec);
+			}
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+DEBUGLOG(("BOFee::GetTxnFee() check if use custome_tag end ***\n"));
+		hRec = RecordSet_GetFirst(rRec);
+                while (hRec && iFound == PD_FALSE) {
+                        if (GetField_Int(hRec,"rule_id",&iRuleId)) {
+DEBUGLOG(("BOFee::GetTxnFee() rule_id = [%d]\n",iRuleId));
+                        }
+
+			/*
+                        if (GetField_Int(hRec,"tier_id",&iTierId)) {
+DEBUGLOG(("BOFee::GetTxnFee() tier_id = [%d]\n",iTierId));
+                        }
+			*/
+
+			if (GetField_CString(hRec,"custom_tag",&csCustomTag)) {
+DEBUGLOG(("BOFee::GetTxnFee() custom_tag = [%s]\n",csCustomTag));
+			}
+
+			if (GetField_CString(hRec,"custom_value",&csCustomValue)) {
+DEBUGLOG(("BOFee::GetTxnFee() custom_value = [%s]\n",csCustomValue));
+			}
+
+
+			dMinVal = 0.0;
+			dMaxVal = 0.0;
+
+			if (GetField_Double(hRec,"min_value",&dMinVal)) {
+DEBUGLOG(("BOFee::GetTxnFee() minval = [%f]\n", dMinVal));
+			}
+			if (GetField_Double(hRec,"max_value",&dMaxVal)) {
+DEBUGLOG(("BOFee::GetTxnFee() maxval = [%f]\n", dMaxVal));
+			}
+
+			if (dTxnAmt > dMinVal && (dTxnAmt <= dMaxVal || dMaxVal == 0.0)) {
+DEBUGLOG(("BOFee::GetTxnFee() ****min_value[%f] max_value[%f] will be applied\n",dMinVal, dMaxVal));
+                        	iVal = iRuleId;
+                                iFound = PD_TRUE;
+                                break;
+                        }
+
+/*
+DEBUGLOG(("BOFee:Init\n"));
+			recordset_init(rVal,0);
+			DBObjPtr = CreateObj(DBPtr,"DBRuleTier","FindID");
+        		if ((unsigned long)(*DBObjPtr)(iTierId,rVal) == PD_FOUND) {
+				hVal = RecordSet_GetFirst(rVal);
+				while (hVal) {
+					dMinVal = 0.0;
+					dMaxVal = 0.0;
+
+					if (GetField_Double(hVal,"min_value",&dMinVal)) {
+DEBUGLOG(("BOFee::GetTxnFee() tier_id[%d] minval = [%f]\n",iTierId,dMinVal));
+					}
+					if (GetField_Double(hVal,"max_value",&dMaxVal)) {
+DEBUGLOG(("BOFee::GetTxnFee() tier_id[%d] maxval = [%f]\n",iTierId,dMaxVal));
+					}
+
+					if (dTxnAmt > dMinVal && (dTxnAmt <= dMaxVal || dMaxVal == 0.0)) {
+DEBUGLOG(("BOFee::GetTxnFee() ****tier_id[%d] will be applied\n",iTierId));
+						iVal = iRuleId;
+						iFound = PD_TRUE;
+						break;
+					}
+                        		hVal = RecordSet_GetNext(rVal);
+				}
+			}
+
+			RecordSet_Destroy(rVal);
+*/
+                        hRec = RecordSet_GetNext(rRec);
+                }
+
+        	FREE_ME(rVal);
+		RecordSet_Destroy(rRec);
+        	FREE_ME(rRec);
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+	if (iVal != 0 ) {
+	        char            cChgType;
+                char            cPartyType;
+                char            cP1PartyType;
+                char            cP2PartyType;
+                char            cType;
+                char            cP1Type;
+                char            cP2Type;
+                double          dValue;
+                double          dP1Value;
+                double          dP2Value;
+                double          dAddValue;
+                double          dP1AddValue;
+                double          dP2AddValue;
+		double		dMin;
+		double		dP1Min;
+		double		dP2Min;
+		double		dMax;
+		double		dP1Max;
+		double		dP2Max;
+                
+                int             iCnt = 0 ,iFound;
+                recordset_t     *rRecordSet;
+                hash_t          *hRec;
+                rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(rRecordSet,0);
+
+DEBUGLOG(("BOFee::FindFee() rule fee def id = [%d]\n",iVal));
+                DBObjPtr = CreateObj(DBPtr,"DBRuleTxnFeeDef","FindID");
+                iFound = (unsigned long)(*DBObjPtr)(iVal,rRecordSet);
+DEBUGLOG(("BOFee::FindFee() rule fee def id found = [%d]\n",iFound));
+		if (iFound == PD_FOUND) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {  
+                                
+                                if (GetField_Char(hRec,"chg_type",&cChgType)) {
+DEBUGLOG(("BOFee::FindFee() charge type = [%c]\n",cChgType));
+                                }
+                                
+                                if (GetField_Char(hRec,"chg_party_type",&cPartyType)) {
+//DEBUGLOG(("BOFee::GetTxnFee() party type = [%c]\n",cPartyType));
+                                }
+                                
+                                if (GetField_Char(hRec,"type",&cType)) {
+//DEBUGLOG(("BOFee::GetTxnFee() type = [%c]\n",cType));
+                                }
+                                if (GetField_Double(hRec,"value",&dValue)) {
+//DEBUGLOG(("BOFee::GetTxnFee() value = [%lf]\n",dValue));
+                                }
+                                if (GetField_Double(hRec,"add_value",&dAddValue)) {
+//DEBUGLOG(("BOFee::GetTxnFee() add_value = [%lf]\n",dAddValue));
+                                }
+                                if (GetField_Double(hRec,"min_value",&dMin)){
+//DEBUGLOG(("BOFee::GetTxnFee() min_value = [%lf]\n",dMin));
+                                }
+                                if (GetField_Double(hRec,"max_value",&dMax)){
+//DEBUGLOG(("BOFee::GetTxnFee() max_value = [%lf]\n",dMax));
+                                }
+                                
+                                if (iCnt == 0) {
+                                        cP1PartyType = cPartyType;
+                                        cP1Type = cType;
+                                        dP1Value = dValue;
+                                        dP1AddValue = dAddValue;
+					dP1Min = dMin;
+					dP1Max = dMax;
+DEBUGLOG(("BOFee::FindFee()[%d] p1 party type = [%c]\n",iCnt,cP1PartyType));
+DEBUGLOG(("BOFee::FindFee()[%d] p1 type = [%c]\n",iCnt,cP1Type));
+DEBUGLOG(("BOFee::FindFee()[%d] p1 value = [%lf]\n",iCnt,dP1Value));
+DEBUGLOG(("BOFee::FindFee()[%d] p1 add value = [%lf]\n",iCnt,dP1AddValue));
+DEBUGLOG(("BOFee::FindFee()[%d] p1 min value = [%lf]\n",iCnt,dP1Min));
+DEBUGLOG(("BOFee::FindFee()[%d] p1 max value = [%lf]\n",iCnt,dP1Max));
+                                }
+                                else {
+                                        cP2PartyType = cPartyType;
+                                        cP2Type = cType;
+                                        dP2Value = dValue;
+                                        dP2AddValue = dAddValue;
+					dP2Min = dMin;
+					dP2Max = dMax;
+DEBUGLOG(("BOFee::FindFee()[%d] p2 party type = [%c]\n",iCnt,cP2PartyType));
+DEBUGLOG(("BOFee::FindFee()[%d] p2 type = [%c]\n",iCnt,cP2Type));
+DEBUGLOG(("BOFee::FindFee()[%d] p2 value = [%lf]\n",iCnt,dP2Value));
+DEBUGLOG(("BOFee::FindFee()[%d] p2 add value = [%lf]\n",iCnt,dP2AddValue));
+DEBUGLOG(("BOFee::FindFee()[%d] p2 min value = [%lf]\n",iCnt,dP2Min));
+DEBUGLOG(("BOFee::FindFee()[%d] p2 max value = [%lf]\n",iCnt,dP2Max));
+                                }
+
+                                iCnt++;
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+
+DEBUGLOG(("BOFee::FindFee() chg type*****= [%c]\n",cChgType));
+			double dMfee = 0.0;
+                        double dCfee = 0.0;
+
+			if (cChgType == PD_CHG_POST_SRC && cPostTxn != PD_YES) {
+DEBUGLOG(("BOFee::FindFee()  None Post Txn Mode skip for now!!!!\n"));
+			}
+			else if (cChgType !=  PD_CHG_POST_SRC && cPostTxn == PD_YES) {
+DEBUGLOG(("BOFee::FindFee()  None Post Change Type with Post Txn, skip!!!!\n"));
+			}
+			else {
+
+	                        if (cP1PartyType == PD_CHG_PARTY_SRC) {
+       		                 	dMfee = CalFee(csCcy,cType,dTxnAmt,dP1Value,dP1AddValue,dP1Min,dP1Max);
+DEBUGLOG(("BOFee::FindFee() src txn fee = [%f]\n",dMfee));
+       	                	} 
+                        	else if (cP1PartyType == PD_CHG_PARTY_DST) {
+                       			dCfee = CalFee(csCcy,cType,dDstTxnAmt,dP1Value,dP1AddValue,dP1Min,dP1Max);
+DEBUGLOG(("BOFee::FindFee() dst txn fee = [%f]\n",dCfee));
+                        	}
+
+                        	if (cP2PartyType == PD_CHG_PARTY_SRC) {
+                       			dMfee = CalFee(csCcy,cType,dTxnAmt,dP2Value,dP2AddValue,dP2Min,dP1Max);
+DEBUGLOG(("BOFee::FindFee() src txn fee = [%f]\n",dMfee));
+                        	}
+                        	else if (cP2PartyType == PD_CHG_PARTY_DST) {
+                        		dCfee = CalFee(csCcy,cType,dDstTxnAmt,dP2Value,dP2AddValue,dP2Min,dP2Max);
+DEBUGLOG(("BOFee::FindFee() dst txn fee = [%f]\n",dCfee));
+                        	}
+				if (cChgType == PD_CHG_NORMAL) {
+                                	if (cP1PartyType == PD_CHG_PARTY_SRC) {
+                                       		 PutField_Double(hReq,"src_txn_fee",dMfee);
+DEBUGLOG(("BOFee::FindFee() src txn fee = [%f]\n",dMfee));
+                                	}
+					else if (cP1PartyType == PD_CHG_PARTY_DST) {
+                                       		 PutField_Double(hReq,"dst_txn_fee",dCfee);
+DEBUGLOG(("BOFee::FindFee() dst txn fee = [%f]\n",dMfee));
+                                	}
+                        	}
+				else if (cChgType == PD_CHG_BOTH ) {
+DEBUGLOG(("BOFee::FindFee() src txn fee = [%f]\n",dMfee));
+                                	PutField_Double(hReq,"src_txn_fee",dMfee);
+DEBUGLOG(("BOFee::FindFee() dst txn fee = [%f]\n",dCfee));
+                                	PutField_Double(hReq,"dst_txn_fee",dCfee);
+				}
+				else if (cChgType == PD_CHG_MAX ) {
+					if (dMfee >= dCfee) {	
+DEBUGLOG(("BOFee::FindFee() Pay by src txn fee = [%lf]\n",dMfee));
+                                        	PutField_Double(hReq,"src_txn_fee",dMfee);
+					}
+					else {
+DEBUGLOG(("BOFee::FindFee() Pay by dst txn fee = [%lf]\n",dCfee));
+                                        	PutField_Double(hReq,"dst_txn_fee",dCfee);
+					}	
+				}
+				else if (cChgType == PD_CHG_MIN ) {
+                                	if (dMfee <= dCfee) {
+DEBUGLOG(("BOFee::FindFee() Pay by src txn fee = [%lf]\n",dMfee));
+                                        	PutField_Double(hReq,"src_txn_fee",dMfee);
+                                	}
+                                	else {
+DEBUGLOG(("BOFee::FindFee() Pay by dst txn fee = [%lf]\n",dCfee));
+                                       		 PutField_Double(hReq,"dst_txn_fee",dCfee);
+                                	}
+                        	}
+				if (cChgType == PD_CHG_POST_SRC) {
+                                       	 PutField_Double(hReq,"src_txn_fee",dMfee);
+DEBUGLOG(("BOFee::FindFee() src txn fee = [%f]\n",dMfee));
+				}
+			} //if not post mode
+                }
+                else {
+DEBUGLOG(("BOFee::FindFee() rule fee def id record not found!!! skip\n"));
+                }
+        }
+	return iRet;
+}
+
+int UpdateAmt(hash_t *hContext, const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+	char	*csOrgTxnSeq;
+	char	*csTxnCcy;
+	double	dTmp;
+	double	dTxnAmt;
+	double	dNetAmt;
+	double	dFee = 0.0;
+
+	hash_t		*hRec;
+	recordset_t     *rRecordSet;
+
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+	
+/*org txn seq */
+        if (GetField_CString(hContext,"org_txn_seq",&csOrgTxnSeq)) {
+DEBUGLOG(("BOFee:UpdateAmt() org_txn_seq = [%s]\n",csOrgTxnSeq));
+        }
+        else {
+DEBUGLOG(("BOFee:UpdateAmt() org_txn_seq is missing!!!\n"));
+        }
+
+/*org txn amt */
+        if (GetField_Double(hContext,"org_txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOFee:UpdateAmt() org_txn_amt = [%lf]\n",dTxnAmt));
+		dNetAmt = dTxnAmt;
+        }
+	else {
+DEBUGLOG(("BOFee:UpdateAmt() org_txn_amt is missing!!!\n"));
+	}
+
+/* get all merchant charge */
+	DBObjPtr = CreateObj(DBPtr,"DBTxnElements","GetFeeChgDetailByType");
+	if ((unsigned long)(*DBObjPtr)(csOrgTxnSeq,PD_ELEMENT_TXN_FEE,PD_TYPE_MERCHANT,rRecordSet) == PD_OK) {
+        	hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {  
+			if (GetField_CString(hRec,"ccy",&csTxnCcy)) {
+DEBUGLOG(("BOFee:UpdateAmt() ccy = [%s]\n",csTxnCcy));
+			}
+			if (GetField_Double(hRec,"amount",&dTmp)) {
+DEBUGLOG(("BOFee:UpdateAmt() fee = [%lf]\n",dTmp));
+				dFee += dTmp;
+				dNetAmt -= dTmp;
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+
+DEBUGLOG(("BOFee:UpdateAmt() service_fee = [%lf]\n",dFee));
+DEBUGLOG(("BOFee:UpdateAmt() net_amt = [%lf]\n",dNetAmt));
+		PutField_Double(hContext,"service_fee",dFee);
+		PutField_Double(hContext,"net_amt",dNetAmt);
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+	
+DEBUGLOG(("BOFee:UpdateAmt() iRet= [%d]\n",iRet));
+	return	iRet;
+}
+
+int GetNetAmount(hash_t *hContext,const hash_t* hRequest)
+{
+	int	iRet = PD_OK;
+	double	dTxnAmt = 0.0;
+	double	dSrcTxnFee = 0.0;
+	char*	csTxnCode;
+	char*	csTmp;
+	double  dNetAmt = 0.0;
+	double	dMarkupAmt = 0.0;
+
+
+DEBUGLOG(("BOFee:GetNETAmount()\n"));
+	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+		if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOFee:GetNETAmount() txn amt = [%lf]\n",dTxnAmt));
+		}
+		if (GetField_Double(hContext,"src_txn_fee",&dSrcTxnFee)) {
+DEBUGLOG(("BOFee:GetNETAmount() src_txn_fee = [%lf]\n",dSrcTxnFee));
+		}
+//        	if (GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+//DEBUGLOG(("BOFee:ApplyMarkup() markup_amt = [%lf]\n",dMarkupAmt));
+//			dSrcTxnFee+=dMarkupAmt;
+//        	}
+
+/* TFT */
+		if (!strcmp(csTxnCode, PD_MERCHANT_BAL_TFT)) {
+			dNetAmt = dTxnAmt + dSrcTxnFee;	
+DEBUGLOG(("BOFee:GetNETAmount() net amt for TFT = [%lf]\n",dNetAmt));
+			PutField_Double(hContext,"net_amt",dNetAmt);
+		}
+/* TFF */
+		else if (!strcmp(csTxnCode, PD_MERCHANT_BAL_TFF)) {
+			iRet = GetTFFNetAmount(hContext,hRequest);
+		}
+/* DSI DSP */
+		else if (!strcmp(csTxnCode, PD_INITIAL_REQ_TXN_CODE) ||
+			 !strcmp(csTxnCode, PD_DEPOSIT_TXN_CODE)) {
+			iRet = GetDspAmount(hContext,hRequest);
+		}
+/*WTB WTD*/
+		else if (!strcmp(csTxnCode, PD_WITHDRAW_BATCH_TXN_CODE) ||
+			 !strcmp(csTxnCode, PD_WITHDRAW_TXN_CODE)) {
+			iRet = GetPayoutAmount(hContext,hRequest);
+		}
+/*WTV*/
+		else if(!strcmp(csTxnCode, PD_WITHDRAW_VOID_TXN_CODE)){
+			dNetAmt = dTxnAmt - dSrcTxnFee - dMarkupAmt;
+DEBUGLOG(("BOFee:GetNETAmount() net amt for WTV = [%lf]\n",dNetAmt));
+			PutField_Double(hContext,"net_amt",dNetAmt);
+		}
+/*STR*/		
+		else if(!strcmp(csTxnCode, PD_SETTLEMENT_REQUEST)){
+			dNetAmt = dTxnAmt; //+ dSrcTxnFee;
+DEBUGLOG(("BOFee:GetNETAmount() net amt for STR = [%lf]\n",dNetAmt));
+        		PutField_Double(hContext,"net_amt",dNetAmt);
+		}
+/*VOT*/		
+		else if(!strcmp(csTxnCode, PD_VOID_TXN_CODE)){
+			if (GetField_Double(hContext,"net_amt",&dTxnAmt)) {
+DEBUGLOG(("BOFee:GetNETAmount() Org net amt = [%lf]\n",dTxnAmt));
+			}
+
+			if(!GetField_CString(hContext,"sub_txn_code",&csTmp)){
+				iRet = PD_ERR;
+DEBUGLOG(("BOFee:GetNETAmount() sub txn code is missing\n"));
+ERRLOG("BOFee:GetNETAmount() sub txn code is missing\n");
+			}
+			if(!strcmp(csTmp, PD_SETTLEMENT_VOID)){
+				dNetAmt = dTxnAmt - dSrcTxnFee;
+DEBUGLOG(("BOFee:GetNETAmount() net amt for VST = [%lf]\n",dNetAmt));
+			}
+			else if(!strcmp(csTmp, PD_DEPOSIT_VOID)){
+				dNetAmt = dTxnAmt + dSrcTxnFee;
+DEBUGLOG(("BOFee:GetNETAmount() net amt for VDS = [%lf]\n",dNetAmt));
+			}
+			else if(!strcmp(csTmp, PD_PAYOUT_VOID)){
+				dNetAmt = dTxnAmt; //- dSrcTxnFee;
+DEBUGLOG(("BOFee:GetNETAmount() net amt for VPO = [%lf]\n",dNetAmt));
+			}
+			
+        		PutField_Double(hContext,"net_amt",dNetAmt);
+		}
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("BOFee:GetNETAmount() txn code is missing\n"));
+ERRLOG("BOFee:GetNETAmount() txn code is missing\n");
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+	
+
+	return iRet;
+}
+
+int GetTFFNetAmount(hash_t *hContext,const hash_t* hRequest)
+{
+	int	iRet = PD_OK;
+	double	dTotalFee = 0.0;
+	double	dDstTxnAmt = 0.0;
+	double	dMarkupAmt = 0.0;
+	double	dNetAmt = 0.0;
+	char*	csTxnCcy;
+
+
+DEBUGLOG(("BOFee:GetTFFNETAmount()\n"));
+/* set fee ccy to dst */
+	if (GetField_CString(hContext,"dst_txn_ccy",&csTxnCcy)) {
+		PutField_CString(hContext,"src_txn_fee_ccy",csTxnCcy);
+DEBUGLOG(("BOFee:GetTFFNETAmount()  set fee ccy as dst \n"));
+	}
+	
+	if (GetField_Double(hContext,"dst_txn_amt",&dDstTxnAmt)){
+DEBUGLOG(("BOFee:GetTFFNETAmount() dst_txn_amt = [%lf]\n",dDstTxnAmt));
+        }
+       	if (GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+DEBUGLOG(("BOFee:GetTFFNETAmount() markup_amt = [%lf]\n",dMarkupAmt));
+        }
+
+        GetField_Double(hContext,"src_txn_fee",&dTotalFee);
+DEBUGLOG(("BOFee:GetTFFNETAmount() src txn fee = [%lf]\n",dTotalFee));
+
+        dNetAmt = dDstTxnAmt - dTotalFee - dMarkupAmt;
+DEBUGLOG(("BOFee:GetTFFNETAmount() net_amount = [%lf]\n",dNetAmt));
+        PutField_Double(hContext,"net_amt",dNetAmt);
+	return iRet;
+}
+
+int GetDspAmount(hash_t *hContext,const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+        double  dTotalSrcFee = 0.0;
+        double  dNetAmt = 0.0;
+        double  dTxnAmt = 0.0;
+
+        double  dDstTxnAmt = 0.0;
+	double	dConvertedAmt = 0.0;
+	//double	dMarkupAmt = 0.0;
+        double  dTotalDstFee = 0.0;
+
+
+DEBUGLOG(("BOFee:GetDspAmount()\n"));
+
+/* net amt */
+        if (GetField_Double(hContext,"org_txn_amt",&dTxnAmt)){
+DEBUGLOG(("BOFee:GetDspAmount() org txn_amt = [%lf]\n",dTxnAmt));
+	}
+        else if (GetField_Double(hContext,"txn_amt",&dTxnAmt)){
+DEBUGLOG(("BOFee:GetDspAmount() txn_amt = [%lf]\n",dTxnAmt));
+        }
+
+/*	if (GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+DEBUGLOG(("BOFee:GetDSpAmount() markup_amt = [%lf]\n",dMarkupAmt));
+        }
+*/
+        GetField_Double(hContext,"src_txn_fee",&dTotalSrcFee);
+DEBUGLOG(("BOFee:GetDspAmount() src txn fee = [%lf]\n",dTotalSrcFee));
+
+        dNetAmt = dTxnAmt - dTotalSrcFee;// - dMarkupAmt;
+DEBUGLOG(("BOFee:GetDspAmount() net amount = [%lf]\n",dNetAmt));
+        PutField_Double(hContext,"net_amt",dNetAmt);
+
+/* psp txn amt */
+/* converted amt */
+        if (GetField_Double(hContext,"dst_txn_amt",&dConvertedAmt)){
+DEBUGLOG(("BOFee:GetDspAmount() dst_txn_amt = [%lf]\n",dConvertedAmt));
+        }
+
+
+        GetField_Double(hContext,"dst_txn_fee",&dTotalDstFee);
+DEBUGLOG(("BOFee:GetDspAmount() dst txn fe = [%lf]\n",dTotalDstFee));
+        dDstTxnAmt = dConvertedAmt + dTotalDstFee;
+DEBUGLOG(("BOFee:GetDspAmount() dst net amt = [%lf]\n",dDstTxnAmt));
+        PutField_Double(hContext,"dst_net_amt",dDstTxnAmt);
+
+DEBUGLOG(("BOFee:GetDspAmount() exit = [%d]\n",iRet));
+        return iRet;
+}
+
+
+int GetPayoutAmount(hash_t *hContext,const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+        double  dTotalSrcFee = 0.0;
+        double  dNetAmt = 0.0;
+        double  dTxnAmt = 0.0;
+
+        double  dDstTxnAmt = 0.0;
+	double	dConvertedAmt = 0.0;
+	//double	dMarkupAmt = 0.0;
+        double  dTotalDstFee = 0.0;
+
+
+DEBUGLOG(("BOFee:GetPayoutAmount()\n"));
+
+/* net amt */
+        if (GetField_Double(hContext,"org_txn_amt",&dTxnAmt)){
+DEBUGLOG(("BOFee:GetPayoutAmount() org txn_amt = [%lf]\n",dTxnAmt));
+	}
+        else if (GetField_Double(hContext,"txn_amt",&dTxnAmt)){
+DEBUGLOG(("BOFee:GetPayoutAmount() txn_amt = [%lf]\n",dTxnAmt));
+        }
+/*
+       	if (GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+DEBUGLOG(("BOFee:GetPayoutAmount() markup_amt = [%lf]\n",dMarkupAmt));
+        }
+*/
+        GetField_Double(hContext,"src_txn_fee",&dTotalSrcFee);
+DEBUGLOG(("BOFee:GetPayoutAmount() src txn fee = [%lf]\n",dTotalSrcFee));
+
+        dNetAmt = dTxnAmt + dTotalSrcFee;// + dMarkupAmt;
+DEBUGLOG(("BOFee:GetPayoutAmount() net amount = [%lf]\n",dNetAmt));
+        PutField_Double(hContext,"net_amt",dNetAmt);
+
+/* psp txn amt */
+/* converted amt */
+        if (GetField_Double(hContext,"dst_txn_amt",&dConvertedAmt)){
+DEBUGLOG(("BOFee:GetPayoutAmount() dst_txn_amt = [%lf]\n",dConvertedAmt));
+        }
+
+
+        GetField_Double(hContext,"dst_txn_fee",&dTotalDstFee);
+DEBUGLOG(("BOFee:GetPayoutAmount() dst txn fe = [%lf]\n",dTotalDstFee));
+        dDstTxnAmt = dConvertedAmt - dTotalDstFee;
+DEBUGLOG(("BOFee:GetPayoutAmount() dst net amt = [%lf]\n",dDstTxnAmt));
+        PutField_Double(hContext,"dst_net_amt",dDstTxnAmt);
+
+DEBUGLOG(("BOFee:GetPayoutAmount() exit = [%d]\n",iRet));
+        return iRet;
+}
+
+
+int ApplyMarkup(hash_t *hContext,const hash_t* hRequest)
+{
+	int	iRet = PD_OK;
+	double	dMarkupAmt = 0.0;
+	double	dDstTxnAmt = 0.0;
+	double	dNewAmt = 0.0;
+	char*	csTxnCode;
+
+DEBUGLOG(("BOFee:ApplyMarkup()!!!!\n"));
+	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("BOFee:ApplyMarkup() TxnCode = [%s]\n",csTxnCode));
+	}
+	else {
+DEBUGLOG(("BOFee:ApplyMarkup() TxnCode not found\n"));
+	}
+	/* dst txn amt */
+        if (GetField_Double(hContext,"dst_txn_amt",&dDstTxnAmt)){
+DEBUGLOG(("BOFee:ApplyMarkup() dst_txn_amt = [%lf]\n",dDstTxnAmt));
+        }
+        if (GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+DEBUGLOG(("BOFee:ApplyMarkup() markup_amt = [%lf]\n",dMarkupAmt));
+        }
+	if (!strcmp(csTxnCode,PD_DEPOSIT_TXN_CODE) || !strcmp(csTxnCode,PD_INITIAL_REQ_TXN_CODE )) {
+		dNewAmt = dDstTxnAmt + dMarkupAmt;
+	}
+	else {
+		dNewAmt = dDstTxnAmt - dMarkupAmt;
+	}
+DEBUGLOG(("BOFee:ApplyMarkup() dst_txn_amt = [%lf]\n",dNewAmt));
+	PutField_Double(hContext,"dst_txn_amt",dNewAmt);
+
+	return iRet;
+
+}

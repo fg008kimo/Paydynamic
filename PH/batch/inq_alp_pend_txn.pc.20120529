@@ -1,0 +1,209 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/05/22              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "inq_alp_pend_txn.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(Txn);
+
+char    cDebug='Y';
+
+int	iTimeInterval = 0;
+recordset_t *rRecordSet;
+
+int parse_arg(int argc,char **argv);
+int process_gettxn();
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 2) {
+		printf("usage: -t time_interval (in hour)\n");
+		return FAILURE;
+	}
+	else 
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet;
+	
+
+	
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+    		printf("usage: -t time_interval (in hour)\n");
+		return (iRet);
+	}
+
+	iRet = process_gettxn();
+
+
+	return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+                        
+int parse_arg(int argc,char **argv)
+{               
+        char    c;
+	char	csTmp[PD_TMP_BUF_LEN + 1];
+                        
+        while ((c = getopt(argc,argv,"t:")) != EOF) {
+                switch (c) {
+                        case 't':
+				memset(csTmp, 0, sizeof(csTmp));
+                                strcpy(csTmp, optarg);
+				iTimeInterval = atoi(csTmp);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }       
+        
+DEBUGLOG(("TimeInteval[%d]\n",iTimeInterval));
+                
+        return SUCCESS; 
+}               
+
+
+int process_gettxn()
+{
+	int iRet = SUCCESS;
+
+	int iTmpRet = FAILURE;
+
+        hash_t          *hContext, *hRequest, *hResponse;
+        hContext = (hash_t *)malloc(sizeof(hash_t));
+        hRequest = (hash_t *)malloc(sizeof(hash_t));
+        hResponse= (hash_t *)malloc(sizeof(hash_t));
+
+        hash_init(hContext,  0);
+        hash_init(hRequest,  0);
+        hash_init(hResponse, 0);
+
+
+DEBUGLOG(("process_gettxn start\n"));
+	rRecordSet = (recordset_t*) malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int	hv_time_interval;
+		
+		varchar	v_txn_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_txn_id = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_time_interval = iTimeInterval;
+
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+                select  th_txn_id
+                   from txn_psp_detail,
+                        txn_header,
+			psp_detail
+                  where tp_txn_id = th_txn_id
+                    and th_status = 'W'
+                    and tp_create_timestamp > sysdate - (:hv_time_interval/24)
+                    and tp_create_timestamp < sysdate - (0.5/24)
+                    and tp_psp_id = psp_id
+		    and psp_channel_code = 'ALP'
+                    and disabled = 0
+                    and th_txn_code in ('DSI', 'DSP')
+		order by th_create_timestamp ;
+
+        EXEC SQL OPEN c_cursor_gettxn;
+	do {
+		EXEC SQL FETCH c_cursor_gettxn
+		INTO	:v_txn_id:ind_txn_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+
+		if (ind_txn_id >= 0) {
+			v_txn_id.arr[v_txn_id.len] = '\0';
+DEBUGLOG(("pending txn_id = [%s]\n", v_txn_id.arr));
+
+			// special handling
+			PutField_CString(hContext, "psp_id", (const char*)v_txn_id.arr);
+
+DEBUGLOG(("Calling TxnAlpByUsPOL::Authorize\n"));
+			TxnObjPtr = CreateObj(TxnPtr,"TxnAlpByUsPOL","Authorize");
+			iTmpRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+			if (iTmpRet == PD_OK) {
+DEBUGLOG(("txn_id = [%s] commit\n", v_txn_id.arr));
+				TxnCommit();
+			} else {
+DEBUGLOG(("txn_id = [%s] abort\n", v_txn_id.arr));
+				TxnAbort();
+			}
+
+		}
+
+
+	} while (PD_TRUE && iRet == SUCCESS);
+
+	EXEC SQL CLOSE c_cursor_gettxn;
+
+
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("process_gettxn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_gettxn;
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;
+
+}

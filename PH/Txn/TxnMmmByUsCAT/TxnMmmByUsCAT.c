@@ -1,0 +1,410 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/06/24              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmmByUsCAT.h"
+#include "myrecordset.h"
+
+char cDebug;
+
+OBJPTR(BO);
+
+void TxnMmmByUsCAT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                  hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	int	iBalCnt = 0;
+	int	iFxCnt = 0;
+	int	iAcrInd = PD_TRUE;
+	int	i = 0;
+
+	double	dTxnAmt = 0.0;
+	double	dTotalNatAmt = 0.0;
+	double	dTotalFxAmt = 0.0;
+	double	dAffFxAmt = 0.0;
+	double	dNonAffFxAmt = 0.0;
+	double	dTotalAffFxAmt = 0.0;
+	double	dTotalNonAffFxAmt = 0.0;
+	double	dTmp = 0.0;
+
+	char	cTmp;
+
+	char* 	csTxnSeq = NULL;
+	char*   csTmp = NULL;
+
+	char    csTag[PD_TAG_LEN + 1];
+
+	hash_t  *hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	cTmp = ' ';
+
+DEBUGLOG(("Authorize()\n"));
+
+/* txn_seq */
+       	if (GetField_CString(hContext,"txn_seq",&csTxnSeq)) {
+DEBUGLOG(("Authorize: txn_seq = [%s]\n",csTxnSeq));
+		PutField_CString(hData, "txn_seq", csTxnSeq);
+  	} else {
+DEBUGLOG(("Authorize:: txn_id missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: txn_id missing!!\n");
+                iRet = INT_TXN_ID_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);	
+	}
+
+/* txn_ccy */
+        if (GetField_CString(hContext,"txn_ccy",&csTmp)) {
+DEBUGLOG(("Authorize: txn_ccy = [%s]\n",csTmp));
+                PutField_CString(hData, "txn_ccy", csTmp);
+        } else {
+DEBUGLOG(("Authorize:: txn_ccy missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: txn_ccy missing!!\n");
+                iRet = INT_MMS_CCY_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* txn_amt */
+        if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("Authorize: txn_amt = [%lf]\n",dTxnAmt));
+                PutField_Double(hData, "txn_amt", dTxnAmt);
+        } else {
+DEBUGLOG(("Authorize:: txn_amt missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: txn_amt missing!!\n");
+                iRet = INT_MMS_AMT_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* fee_amt */
+	if (GetField_CString(hRequest,"fee_amt",&csTmp)) {
+                //dTmp = atof(csTmp);
+		dTmp = string2double((const unsigned char*)csTmp);
+DEBUGLOG(("Authorize: fee_amt = [%lf]\n",dTmp));
+                PutField_Double(hData, "fee_amt", dTmp);
+        }
+
+/* remark */
+        if (GetField_CString(hContext,"remark",&csTmp)) {
+DEBUGLOG(("Authorize: remark = [%s]\n",csTmp));
+                PutField_CString(hData, "remark", csTmp);
+		PutField_CString(hContext, "remark", csTmp);
+        }
+
+/* code */
+        if (GetField_CString(hRequest,"code",&csTmp)) {
+DEBUGLOG(("Authorize: code = [%s]\n",csTmp));
+                PutField_CString(hData, "code", csTmp);
+		PutField_CString(hContext, "txn_code", csTmp);
+        } else {
+DEBUGLOG(("Authorize:: code missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: code missing!!\n");
+                iRet = INT_MMS_TXN_CODE_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* eid (entity_id) */
+        if (GetField_CString(hContext,"entity_id",&csTmp)) {
+DEBUGLOG(("Authorize: eid = [%s]\n",csTmp));
+		PutField_CString(hData, "entity_id", csTmp);
+        } else {
+DEBUGLOG(("Authorize:: eid missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: eid missing!!\n");
+                iRet = INT_MMS_ENTITY_ID_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* cl_type */
+        if (GetField_CString(hRequest,"txn_data.cl_type",&csTmp)) {
+                cTmp = csTmp[0];
+DEBUGLOG(("Authorize: cl_type = [%c]\n",cTmp));
+                PutField_Char(hData, "cl_type", cTmp);
+        }
+
+/* cl_rate */
+        if (GetField_CString(hRequest,"txn_data.cl_rate",&csTmp)) {
+		dTmp = string2double((const unsigned char*)csTmp);
+DEBUGLOG(("Authorize: cl_rate = [%lf]\n",dTmp));
+                PutField_Double(hData, "cl_rate", dTmp);
+        }
+
+/* cl_frate */
+        if (GetField_CString(hRequest,"txn_data.cl_frate",&csTmp)) {
+		dTmp = string2double((const unsigned char*)csTmp);
+DEBUGLOG(("Authorize: cl_frate = [%lf]\n",dTmp));
+                PutField_Double(hData, "cl_frate", dTmp);
+        }
+
+/* cl_amt */
+        if (GetField_CString(hRequest,"txn_data.cl_amt",&csTmp)) {
+		dTmp = string2double((const unsigned char*)csTmp);
+DEBUGLOG(("Authorize: cl_amt = [%lf]\n",dTmp));
+                PutField_Double(hData, "cl_amt", dTmp);
+        }
+
+/* bal_cnt */
+	if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("Authorize: bal_cnt = [%d]\n",iBalCnt));
+		PutField_Int(hData, "bal_cnt", iBalCnt);
+        } else {
+DEBUGLOG(("Authorize:: bal_cnt missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: bal_cnt missing!!\n");
+                iRet = INT_MMS_BAL_CNT_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+	if (iRet == PD_OK) {
+
+                for (i=1; i<=iBalCnt; i++) {
+
+/* nat_amt */
+			sprintf(csTag,"bal.%d.amt",i);
+                        if (GetField_Double(hContext,csTag,&dTmp)) {
+DEBUGLOG(("Authorize: nat_amt_%d = [%lf]\n",i,dTmp));
+				dTotalNatAmt += dTmp;
+				PutField_Double(hData, csTag, dTmp);
+			} else {
+DEBUGLOG(("Authorize:: nat_amt missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: nat_amt missing!!\n");
+                		iRet = INT_MMS_NATURE_AMT_NOT_FOUND;
+                		PutField_Int(hContext,"internal_error",iRet);
+			}
+	
+/* nat_id */
+			sprintf(csTag,"bal.%d.nature_id",i);
+                        if (GetField_CString(hContext,csTag,&csTmp)) {
+DEBUGLOG(("Authorize: nat_id_%d = [%s]\n",i,csTmp));
+				PutField_CString(hData, csTag, csTmp);
+                        } else {
+DEBUGLOG(("Authorize:: nat_id missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: nat_id missing!!\n");
+                                iRet = INT_MMS_NATURE_ID_NOT_FOUND;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+		}
+
+/* total_nat_amt */
+		if (iRet == PD_OK) {
+			if (iBalCnt > 0) {
+DEBUGLOG(("Authorize: total_nat_amt = [%lf]\n",dTotalNatAmt));
+        			if (dTotalNatAmt != dTxnAmt) {
+DEBUGLOG(("Authorize:: total_nat_amt [%lf] != txn_amt [%lf], total_nat_amt invalid!!\n", dTotalNatAmt, dTxnAmt));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: total_nat_amt invalid!!\n");
+        	        		iRet = INT_MMS_INVALID_AMT;
+        	        		PutField_Int(hContext,"internal_error",iRet);
+        			}
+			}
+		}
+	}
+
+/* aff_fx_amt */
+	if (GetField_Double(hContext,"aff_fx_amt",&dAffFxAmt)) {
+DEBUGLOG(("Authorize: aff_fx_amt = [%lf]\n",dAffFxAmt));
+                PutField_Double(hData, "aff_fx_amt", dAffFxAmt);
+        } else {
+/*
+DEBUGLOG(("Authorize:: aff_fx_amt missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: aff_fx_amt missing!!\n");
+                iRet = INT_MMS_AFF_FX_AMT_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+*/ 
+		dAffFxAmt = 0.0;
+DEBUGLOG(("Authorize: aff_fx_amt (by default) = [%lf]\n",dAffFxAmt)); 
+        }	
+	
+/* non_aff_fx_amt */
+	if (GetField_Double(hContext,"non_aff_fx_amt",&dNonAffFxAmt)) {
+DEBUGLOG(("Authorize: non_aff_fx_amt = [%lf]\n",dNonAffFxAmt));
+                PutField_Double(hData, "non_aff_fx_amt", dNonAffFxAmt);
+        } else {
+/*
+DEBUGLOG(("Authorize:: non_aff_fx_amt missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: non_aff_fx_amt missing!!\n");
+                iRet = INT_MMS_NON_AFF_FX_AMT_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+*/
+		dNonAffFxAmt = 0.0;
+DEBUGLOG(("Authorize: non_aff_fx_amt (by default) = [%lf]\n",dNonAffFxAmt));  	
+	}
+
+/* fx_cnt */
+        if (GetField_Int(hContext,"fx_cnt",&iFxCnt)) {
+DEBUGLOG(("Authorize: fx_cnt = [%d]\n",iFxCnt));
+		PutField_Int(hData, "fx_cnt", iFxCnt);
+        } else {
+DEBUGLOG(("Authorize:: fx_cnt missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: fx_cnt missing!!\n");
+                iRet = INT_MMS_FX_CNT_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        if (iRet == PD_OK) {
+
+                for (i=1; i<=iFxCnt; i++) {
+
+/* fx_acr_ind */
+			sprintf(csTag,"fx.%d.acr_ind",i);
+                        if (GetField_Int(hContext,csTag,&iAcrInd)) {
+DEBUGLOG(("Authorize: fx_acr_ind_%d = [%d]\n",i,iAcrInd));
+                                PutField_Int(hData, csTag, iAcrInd);
+                        } else {
+DEBUGLOG(("Authorize:: fx_acr_ind missing!!\n"));
+ERRLOG("TxnMmsByUsCCAT:: Authorize:: fx_acr_ind missing!!\n");
+                                iRet = INT_MMS_FX_ACR_IND_NOT_FOUND;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+
+/* fx_occy */
+                        sprintf(csTag,"fx.%d.occy",i);
+                        if (GetField_CString(hContext,csTag,&csTmp)) {
+DEBUGLOG(("Authorize: fx_occy_%d = [%s]\n",i,csTmp));
+                                PutField_CString(hData, csTag, csTmp);
+                        } else {
+DEBUGLOG(("Authorize:: fx_occy missing!!\n"));
+ERRLOG("TxnMmsByUsCCAT:: Authorize:: fx_occy missing!!\n");
+                                iRet = INT_MMS_FX_ORG_CCY_NOT_FOUND;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+
+/* fx_ccy */
+                        sprintf(csTag,"fx.%d.ccy",i);
+                        if (GetField_CString(hContext,csTag,&csTmp)) {
+DEBUGLOG(("Authorize: fx_ccy_%d = [%s]\n",i,csTmp));
+                                PutField_CString(hData, csTag, csTmp);
+                        } else {
+DEBUGLOG(("Authorize:: fx_ccy missing!!\n"));
+ERRLOG("TxnMmsByUsCCAT:: Authorize:: fx_ccy missing!!\n");
+                                iRet = INT_MMS_FX_CCY_NOT_FOUND;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+
+/* fx_amt */
+                        sprintf(csTag,"fx.%d.amt",i);
+                        if (GetField_Double(hContext,csTag,&dTmp)) {
+DEBUGLOG(("Authorize: fx_amt_%d = [%lf]\n",i,dTmp));		
+				if (iAcrInd == PD_TRUE) {		
+					dTotalAffFxAmt += dTmp;
+				} else if (iAcrInd == PD_FALSE) {
+					dTotalNonAffFxAmt += dTmp;					
+				}
+				dTotalFxAmt += dTmp;
+                                PutField_Double(hData, csTag, dTmp);
+                        } else {
+DEBUGLOG(("Authorize:: fx_amt missing!!\n"));
+ERRLOG("TxnMmsByUsCCAT:: Authorize:: fx_amt missing!!\n");
+                                iRet = INT_MMS_FX_AMT_NOT_FOUND;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+		}
+
+/* total_aff_fx_amt */
+                if (iRet == PD_OK) {
+			if (iFxCnt > 0) {
+DEBUGLOG(("Authorize: total_aff_fx_amt = [%lf]\n",dTotalAffFxAmt));
+                        	if (dTotalAffFxAmt != dAffFxAmt) {
+DEBUGLOG(("Authorize:: total_aff_fx_amt [%lf] != input_aff_fx_amt [%lf], total_aff_fx_amt invalid!!\n", dTotalAffFxAmt, dAffFxAmt));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: total_aff_fx_amt invalid!!\n");
+                        	        iRet = INT_MMS_INVALID_AMT;
+                        	        PutField_Int(hContext,"internal_error",iRet);
+                        	}
+			}
+                }
+
+/* total_non_aff_fx_amt */
+                if (iRet == PD_OK) {
+			if (iFxCnt > 0) {
+DEBUGLOG(("Authorize: total_non_aff_fx_amt = [%lf]\n",dTotalNonAffFxAmt));
+                        	if (dTotalNonAffFxAmt != dNonAffFxAmt) {
+DEBUGLOG(("Authorize:: total_non_aff_fx_amt [%lf] != non_aff_fx_amt [%lf], total_non_aff_fx_amt invalid!!\n", dTotalNonAffFxAmt, dNonAffFxAmt));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: total_non_aff_fx_amt invalid!!\n");
+                        	        iRet = INT_MMS_INVALID_AMT;
+                        	        PutField_Int(hContext,"internal_error",iRet);
+                        	}
+			}
+                }
+
+/* total_fx_amt */
+		if (iRet == PD_OK) {
+			if (iFxCnt > 0) {
+DEBUGLOG(("Authorize: total_fx_amt = [%lf]\n",dTotalFxAmt));
+                        	if (dTotalFxAmt != dTxnAmt) {
+DEBUGLOG(("Authorize:: total_fx_amt [%lf] != txn_amt [%lf], total_fx_amt invalid!!\n", dTotalFxAmt, dTxnAmt));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: total_fx_amt invalid!!\n");
+                        	        iRet = INT_MMS_INVALID_AMT;
+                        	        PutField_Int(hContext,"internal_error",iRet);
+                        	}
+			}
+                }
+	}
+
+/* user */
+	if (GetField_CString(hRequest,"user",&csTmp)) {
+DEBUGLOG(("Authorize: user = [%s]\n",csTmp));
+		PutField_CString(hData, "user", csTmp);
+		PutField_CString(hContext,"add_user",csTmp);
+		PutField_CString(hContext,"create_user",csTmp);
+                PutField_CString(hContext,"update_user",csTmp);
+	} else {
+DEBUGLOG(("Authorize:: user missing!!\n"));
+ERRLOG("TxnMmsByUsCAT:: Authorize:: user missing!!\n");
+		iRet = INT_USER_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	// Process Entity Nature Balance
+	if (iRet == PD_OK) {
+
+DEBUGLOG(("Authorize:: Call BOMMSAdjustment ProcessEntityNatureBalance\n"));
+         	BOObjPtr = CreateObj(BOPtr, "BOMMSAdjustment","ProcessEntityNatureBalance");
+              	iRet = (unsigned long)(*BOObjPtr)(hContext,hData);
+              	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOMMSAdjustment:: ProcessEntityNatureBalance:: Success!!!\n"));
+            	} else {
+DEBUGLOG(("Authorize:: Call BOMMSAdjustment:: ProcessEntityNatureBalance:: Failure!!!, iRet = [%d]\n", iRet));
+ERRLOG("TxnOmtByUsCAT::Authorize::Call BOMMSAdjustment::ProcessEntityNatureBalance:: Failure!!!, iRet = [%d]\n", iRet);
+             	}
+	}
+
+	// Process Fx Balance
+	if (iRet == PD_OK) {
+
+DEBUGLOG(("Authorize:: Call BOMMSAdjustment ProcessFxBalance\n"));
+                BOObjPtr = CreateObj(BOPtr, "BOMMSAdjustment","ProcessFxBalance");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hData);
+                if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOMMSAdjustment:: ProcessFxBalance:: Success!!!\n"));
+                } else {
+DEBUGLOG(("Authorize:: Call BOMMSAdjustment:: ProcessFxBalance:: Failure!!!, iRet = [%d]\n", iRet));
+ERRLOG("TxnOmtByUsCAT::Authorize::Call BOMMSAdjustment::ProcessFxBalance:: Failure!!!, iRet = [%d]\n", iRet);
+                }
+        }
+
+	// Response
+	PutField_CString(hResponse,"reply_txn_code",PD_TXN_CODE_MMS_ADJUSTMENT_TXN);
+	PutField_CString(hResponse,"txn_seq",csTxnSeq);
+	PutField_Int(hResponse,"ret",iRet);
+
+	hash_destroy(hData);
+        FREE_ME(hData);
+
+DEBUGLOG(("TxnMmsByUsCAT Normal Exit() reply_txn_code = [%s], txn_seq = [%s], iRet = [%d]\n",PD_TXN_CODE_MMS_ADJUSTMENT_TXN,csTxnSeq,iRet));
+	return iRet;
+}

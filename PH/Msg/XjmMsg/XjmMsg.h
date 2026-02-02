@@ -1,0 +1,37 @@
+#ifndef _XJMMSG_H
+#define	_XJMMSG_H
+
+#include "myhash.h"
+
+
+#define	MY_XJM_TOKEN		"&"
+#define	MY_XJM_FIELD_TOKEN	"="
+#define PD_P0_CMD		"Buy"
+#define PD_PA_FRPID_EC		"Nocard_H5"
+#define PD_PA_FRPID_VNET	"OnlinePay"
+
+#define PD_P0_CMD_INQ		"QueryOrdDetail"
+#define PD_R4_CUR		"CNY"
+#define PD_P5_PID		"PAY"
+#define PD_R9_BTYPE		"2"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int FormatMsg(const hash_t* table,unsigned char *outMsg, int *outLen);
+int BreakDownMsg(hash_t *table,const unsigned char *inMsg,int inLen);
+int initReplyFromRequest(const hash_t*, hash_t*);
+int BuildAuthData(hash_t* hIn);
+int BuildRspAuthData(hash_t* hIn);
+int FormatInqMsg(const hash_t *hIn, unsigned char *outMsg, int *outLen);
+int BuildInqAuthData(hash_t *hIn);
+int BreakDownInqRspMsg(hash_t *hContext, hash_t *hOut, const unsigned char *inMsg, int inLen);
+int BuildInqRspAuthData(hash_t *hIn);
+int BuildCallbackAuthData(hash_t *hIn);
+int FormatCallbackMsg(hash_t *hContext, hash_t *hIn, unsigned char *outMsg, int *outLen);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

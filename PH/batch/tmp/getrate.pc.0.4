@@ -1,0 +1,242 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "getrate.h"
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+#include "ExchangeRate.h"
+
+
+OBJPTR(DB);
+char    cDebug;
+
+struct string
+{
+	char *ptr;
+	size_t len;
+};
+
+void init_string(struct string *s)
+{
+	s->len = 0;
+	s->ptr = malloc(s->len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "malloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	s->ptr[0] = '\0';
+}
+
+size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s)
+{
+	size_t new_len = s->len + size*nmemb;
+	s->ptr = realloc(s->ptr, new_len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "realloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	memcpy(s->ptr+s->len, ptr, size*nmemb);
+	s->ptr[new_len] = '\0';
+	s->len = new_len;
+
+	return size*nmemb;
+}
+
+
+int checkRespString(struct string *s, rData *oResp)
+{
+	int bResult = 0;
+	char sRespHeader[RESP_HEADER_LEN]={0};
+
+	strncpy(sRespHeader, s->ptr, RESP_HEADER_LEN);
+
+	if(strncmp(RESP_HEADER,sRespHeader,RESP_HEADER_LEN)!=0)
+	{
+		DEBUGLOG(("Error: %s\n", s->ptr));
+	}
+
+	else
+	{
+		char *sRate = strstr(s->ptr,"GMT");
+
+		strncpy(oResp->sDate, sRate-strlen("dd mon yyyy hh:mi:ss "), strlen("dd mon yyyy hh:mi:ss"));
+		oResp->sDate[strlen("dd mon yyyy hh:mi:ss")]='\0';
+
+		int rc =sscanf(sRate+4,"%s %s %s %s %s %s", oResp->min_bid, oResp->bid, oResp->max_bid, oResp->min_ask, oResp->ask, oResp->max_ask);
+		if( (rc!=6))
+		{
+			DEBUGLOG(("Output Invalid: %s\n",sRate+4));
+		}
+		else
+		{
+
+			if((strncmp("na",oResp->bid,2)!=0)&&(strncmp("na",oResp->ask,2)!=0))
+			{
+				if(strncmp("na",oResp->min_bid,2)==0) strcpy(oResp->min_bid,oResp->bid);
+				if(strncmp("na",oResp->max_bid,2)==0) strcpy(oResp->max_bid,oResp->bid);
+				if(strncmp("na",oResp->min_ask,2)==0) strcpy(oResp->min_ask,oResp->ask);
+				if(strncmp("na",oResp->max_ask,2)==0) strcpy(oResp->max_ask,oResp->ask);
+
+				bResult=1;
+			}
+			else
+				DEBUGLOG(("All return values are 'na'\n"));
+		}
+	}
+
+	return bResult;
+
+}
+
+
+
+int batch_init(int argc, char* argv[])
+{
+//DEBUGLOG(("batch_init\n"));
+	if(argc<2)
+	{
+		DEBUGLOG(("Please input enought arguments\n"));
+		return FAILURE;
+	}
+	else  {
+        	return SUCCESS;
+//DEBUGLOG(("exit batch_init\n"));
+	}
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	hash_t *hRate;
+	CURL *curl;
+	CURLcode res;
+	char sReqString[REQ_STRING_LEN];
+	char sDate[DATE_LEN]={0};
+	rData oRespData;
+
+	double nRate;
+	double nBid;
+	double dMaxBid;
+	double dMedBid;
+	double dMinBid;
+	double dMaxAsk;
+	double dMedAsk;
+	double dMinAsk;
+	double dMidMax;
+	double dMeadMidMax;
+
+
+	int rc;
+	time_t temp;
+	struct tm *timeptr;
+
+	temp = time(NULL);
+	timeptr = localtime(&temp);
+
+	int nGMT = timeptr->tm_hour - 8;
+	if(nGMT<0)
+		nGMT += 24;
+	timeptr->tm_hour = nGMT;
+
+	mktime(timeptr);
+
+	rc = strftime(sDate,sizeof(sDate),"%a %d %b %Y %H:%M:%S", timeptr); //i.e. Mon 26 Aug 2010 03:23:49
+
+	//////construct the request URL with all parameters//////
+	snprintf(sReqString,sizeof(sReqString), "%s%s&Quotecurrency: %s&Basecurrency: %s&Date: %s GMT&Quotetype: %s",REQUEST_URL,REQUEST_HEADER,argv[1],argv[2],sDate,QUOTE_TYPE);
+	DEBUGLOG(("The request string = [%s]\n", sReqString));
+
+//DEBUGLOG(("curl init\n"));
+	curl = curl_easy_init();
+	if(curl)
+	{
+		struct string sBuffer;
+		init_string(&sBuffer);
+
+		curl_easy_setopt(curl, CURLOPT_URL,sReqString);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sBuffer);
+		res = curl_easy_perform(curl);
+
+		curl_easy_cleanup(curl);
+
+		//////check the response code which stored in the file//////
+		if(checkRespString(&sBuffer, &oRespData))
+		{
+			dMaxBid =  atof(oRespData.max_bid);
+			dMedBid =  atof(oRespData.bid);
+			dMinBid =  atof(oRespData.min_bid);
+			nBid 	=  atof(oRespData.bid);
+			dMaxAsk =  atof(oRespData.max_ask);
+			dMedAsk =  atof(oRespData.ask);
+                        dMinAsk =  atof(oRespData.min_ask);
+
+			nRate =1;
+			dMeadMidMax=1;
+			dMidMax=1;
+			
+			DEBUGLOG(("id[%s %s] date[%s] values[%f %f %f %f %f %f] rate[%f] MeadMidMax[%f] MidMax[%f]\n",argv[1], argv[2], oRespData.sDate, dMinBid, dMedBid, dMaxBid, dMinAsk, dMedAsk, dMaxAsk, nRate, dMeadMidMax, dMidMax));
+
+			free(sBuffer.ptr);
+
+			hRate = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hRate,0);
+
+			PutField_CString(hRate,"from_ccy_id",argv[1]);
+			PutField_CString(hRate,"to_ccy_id",argv[2]);
+			PutField_CString(hRate,"user",PD_UPDATE_USER);
+			PutField_CString(hRate,"effect_date",oRespData.sDate);
+			
+			PutField_Double(hRate,"rate",nRate);
+			PutField_Double(hRate,"bid",nBid);
+			PutField_Double(hRate,"max_bid",dMaxBid);
+			PutField_Double(hRate,"med_bid",dMedBid);
+			PutField_Double(hRate,"min_bid",dMinBid);
+			PutField_Double(hRate,"max_ask",dMaxAsk);
+                        PutField_Double(hRate,"med_ask",dMedAsk);
+                        PutField_Double(hRate,"min_ask",dMinAsk);
+			PutField_Double(hRate,"min_max",dMidMax);
+			PutField_Double(hRate,"mean_min_max",dMeadMidMax);
+
+			DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","Add");
+			
+                	if ((*DBObjPtr)(hRate) == PD_OK) {
+			}
+			else {
+				DEBUGLOG(("Add Rate Error\n"));
+			}
+	
+		}
+	}
+
+	return SUCCESS;
+
+/*
+sql_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;    
+*/
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+

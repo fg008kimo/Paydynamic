@@ -1,0 +1,368 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2017/03/16              Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsOOG.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+
+char cDebug;
+OBJPTR(DB);
+
+void TxnOmtByUsOOG(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+        int     iDtlRet = PD_OK;
+	char	*csDate;
+	char	*csUser;
+	char	*csBatchId;
+	char	*csTxnId;
+	char	*csPspGrp;
+	char	*csMerGrp;
+	char	*csTmp;
+	int	iTmp;
+
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+/*
+	hash_t  *hUpd;
+        hUpd = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hUpd,0);
+
+	hash_t  *hChk;
+        hChk = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hChk,0);
+
+	hash_t	*hOlTxnHd;
+	hOlTxnHd = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOlTxnHd,0);
+*/
+
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	hash_t *hRec;
+
+
+DEBUGLOG(("Authorize\n"));
+
+// batch_id
+        if(GetField_CString(hRequest,"batch_id",&csBatchId)){
+                PutField_CString(hTxn,"batch_id",csBatchId);
+DEBUGLOG(("Authorize: batch_id[%s]\n",csBatchId));
+        } else {
+		iRet = INT_BATCH_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnOmyByUsOOG:Authorize: batch_id NOT FOUND!!\n");
+	}
+
+// po_grp
+	if(GetField_CString(hRequest,"po_grp",&csPspGrp)){
+DEBUGLOG(("Authorize::Call DBOLDefPayoutGroup:IsDefaultPayoutGroup\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLDefPayoutGroup","IsDefaultPayoutGroup");
+		iRet = (unsigned long)(*DBObjPtr)(csPspGrp);
+
+		if (iRet != PD_TRUE) {
+			iRet = INT_NEW_PAYOUT_GRP_NOT_SUPPORT;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize: po_group [%s] NOT SUPPORT!!\n", csPspGrp));
+ERRLOG("TxnOmtByUsOOG::Authorize: po_group [%s] NOT SUPPORT!!\n", csPspGrp);
+		} else {
+			iRet = PD_OK;
+			PutField_CString(hTxn,"po_grp",csPspGrp);
+DEBUGLOG(("  new psp group[%s]\n",csPspGrp));
+		}
+	} else {
+		iRet = INT_NEW_PAYOUT_GRP_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize: po_grp NOT FOUND!!\n"));
+ERRLOG("TxnOmyByUsOOG:Authorize: po_grp NOT FOUND!!\n");
+	}
+
+// user
+	if(GetField_CString(hRequest,"add_user",&csUser)){
+		PutField_CString(hTxn,"add_user",csUser);
+DEBUGLOG(("Authorize: add_user[%s]\n",csUser));
+	}
+
+// PHDATE
+	if(GetField_CString(hContext,"PHDATE",&csDate)){
+		PutField_CString(hTxn,"posting_date",csDate);
+DEBUGLOG(("Authorize: PHDATE [%s]\n",csDate));
+	}
+
+// (1) Check if any payout action in process
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Call DBPayoutActionLock::CheckTheActionCtl\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","CheckTheActionCtl");
+		iRet = (unsigned long)(*DBObjPtr)(PD_OFFLINE);
+
+		if(iRet!=PD_OK){
+			iRet = INT_OTHER_PAYOUT_PROCESSING;
+DEBUGLOG(("  Other Payout Processing!!\n"));
+ERRLOG("TxnOmtByUsOOG:: Other Payout Processing!!\n");
+		}
+	}
+
+
+// (2) Check batch_id exists
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLPayoutApiBatchDT:GetDetailByBatchId\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLPayoutApiBatchDT","GetDetailByBatchId");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn,rRecordSet);
+
+		//if batch count <= 0 return error
+		if (iRet != PD_OK) {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error",iRet);
+DEBUGLOG(("Authorize::Call DBOLPayoutApiBatchDT:GetDetailByBatchId return [%d]\n",iRet));
+ERRLOG("TxnOmtByUsOOG::Authorize::Call DBOLPayoutApiBatchDT:GetDetailByBatchId return [%d]\n",iRet);
+		}
+	}
+
+
+// (3) Loop each txn_id in batchID
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("  Loop DBOLPayoutApiBatchDT\n"));
+		hRec = RecordSet_GetFirst(rRecordSet);
+
+		//loop each txn_id within the batch_id
+		while (hRec && iDtlRet==PD_OK) {
+
+			hash_t  *hUpd;
+			hUpd = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hUpd,0);
+
+			hash_t  *hChk;
+			hChk = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hChk,0);
+
+			if (GetField_CString(hRec,"txn_seq",&csTxnId)) {
+DEBUGLOG(("  GetOLPayoutRequest txn_id = [%s]\n",csTxnId));
+			} else {
+				iDtlRet = INT_ERR;
+DEBUGLOG(("  txn_seq NOT FOUND!!\n"));
+ERRLOG("TxnOmyByUsOOG::Authorize::Call DBOLPayoutApiBatchDT:GetDetailByBatchId - txn_seq NOT FOUND\n");
+			}
+
+
+// (3.1) Get OLPayoutRequest information (By TxnID)
+
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLPayoutRequest:GetOLPayoutRequest\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLPayoutRequest","GetOLPayoutRequest");
+				iDtlRet = (unsigned long)(*DBObjPtr)(csTxnId,hUpd);
+
+				if (iDtlRet == PD_OK) {
+// (3.1.1) Check original payout group != A/B/C/D/M
+
+					if (GetField_CString(hUpd,"merchant_payout_grp",&csMerGrp)) {
+DEBUGLOG(("  GetOLPayoutRequest merchant_payout_grp = [%s]\n",csMerGrp));
+DEBUGLOG(("Authorize::Call DBOLDefPayoutGroup:IsDefaultPayoutGroup\n"));
+						DBObjPtr = CreateObj(DBPtr,"DBOLDefPayoutGroup","IsDefaultPayoutGroup");
+						iDtlRet = (unsigned long)(*DBObjPtr)(csMerGrp);
+
+						if (iDtlRet == PD_TRUE) {
+							iDtlRet = INT_ORG_PAYOUT_GRP_NOT_SUPPORT;
+DEBUGLOG(("  GetOLPayoutRequest:: ERROR!! Original Payout Group not support [%d]\n",iDtlRet));
+ERRLOG("TxnOmtByUsOOG:: Call DBOLPayoutRequest:GetOLPayoutRequest ERROR!! Original Payout Group not support [%d]\n",iDtlRet);
+						} else {
+							iDtlRet = PD_OK;
+						}
+					}
+
+					if (GetField_CString(hUpd,"psp_payout_grp",&csTmp)) {
+DEBUGLOG(("  GetOLPayoutRequest psp_payout_grp = [%s]\n",csTmp));
+					}
+
+// (3.1.2) Check status = 65 (Approved) / 69 (Pending)
+
+					if (GetField_Int(hUpd,"status",&iTmp)){
+						if (iTmp == PAYOUT_MASTER_TRANSACTION_APPROVED ||
+						    iTmp == PAYOUT_MASTER_TRANSACTION_CONFIRMED) {
+DEBUGLOG(("  status = [%d]\n",iTmp));
+						} else {
+							iDtlRet = INT_PAYOUT_STATUS_NOT_SUPPORT;
+DEBUGLOG(("  GetOLPayoutRequest:: ERROR!! Status not allow [%d]\n",iDtlRet));
+ERRLOG("TxnOmtByUsOOG:: Call DBOLPayoutRequest:GetOLPayoutRequest ERROR!! Status not allow [%d]\n",iDtlRet);
+						}
+					}
+
+				} else {
+					iDtlRet = INT_ERR;
+DEBUGLOG(("Authorize::Call DBOLPayoutRequest:GetOLPayoutRequest FAILED!!!\n"));
+ERRLOG("TxnOmtByUsOOG::Authorize::Call DBOLPayoutRequest:GetOLPayoutRequest FAILED!!!\n");
+				}
+			}
+
+
+// (4) Update PSP Payout Group
+
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize:: Update PSP Payout Group\n"));
+
+				PutField_CString(hUpd,"txn_seq",csTxnId);
+DEBUGLOG(("  txn_seq = [%s]\n",csTxnId));
+				PutField_CString(hUpd,"psp_payout_grp",csPspGrp);
+DEBUGLOG(("  psp_payout_grp = [%s]\n",csPspGrp));
+				PutField_CString(hUpd,"update_user",csUser);
+DEBUGLOG(("  update_user = [%s]\n",csUser));
+
+DEBUGLOG(("Authorize::Call DBOLPayoutRequest:Update\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLPayoutRequest","Update");
+				iDtlRet = (unsigned long)(*DBObjPtr)(hUpd);
+
+				if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize::DBOLPayoutRequest:Update Success!\n"));
+				} else {
+					iDtlRet = INT_ERR;
+DEBUGLOG(("Authorize::DBOLPayoutRequest:Update FAILED iRet = [%d]n",iRet));
+ERRLOG("TxnOmyByUsOOG: Authorize::DBOLPayoutRequest:Update FAILED iRet = [%d]n",iRet);
+				}
+			}
+
+
+// (5) Update OL_TXN_HEADER:: oth_update_timestamp, oth_update_user
+
+			if (iDtlRet == PD_OK) {
+
+				//Lock ol_txn_header for update timestamp and user
+DEBUGLOG(("Authorize::LOCK OL_TXN_HEADER\n"));
+DEBUGLOG(("  Call DBOLTransaction:GetTxnIdForUpdate to lock ol_txn_header\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnIdForUpdate");
+				if ((unsigned long)(*DBObjPtr)(csTxnId) != PD_OK) {
+
+					iDtlRet = INT_ERR;
+DEBUGLOG(("    DBOLTransaction:GetTxnIdForUpdate return FAILED!!!\n"));
+ERRLOG("TxnOmtByUsOOG::Call DBOLTransaction:GetTxnIdForUpdate return FAILED!!!\n");
+
+				} else {
+
+DEBUGLOG(("Authorize::Update OL_TXN_HEADER user and timestamp\n"));
+DEBUGLOG(("Authorize::Call DBOLTransaction::Update\n"));
+					hash_t  *hOlTxnHd;
+					hOlTxnHd = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(hOlTxnHd,0);
+
+					PutField_CString(hOlTxnHd,"txn_seq",csTxnId);
+					PutField_CString(hOlTxnHd,"update_user",csUser);
+DEBUGLOG(("  txn_seq = [%s]\n",csTxnId));
+
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","Update");
+					iDtlRet = (unsigned long)(*DBObjPtr)(hOlTxnHd);
+					if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLTransaction::Update Success!\n"));
+					} else {
+DEBUGLOG(("Authorize::Call DBOLTransaction::Update FAILED iRet = [%d]\n",iRet));
+ERRLOG("TxnOmyByUsOOG: Authorize::DBOLTransaction::Update FAILED iRet = [%d]\n",iRet);
+					}
+
+					FREE_ME(hOlTxnHd);
+
+				}
+
+			}
+
+
+			if (iDtlRet != PD_OK) {
+				iRet = iDtlRet;
+			} else {
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+			FREE_ME(hUpd);
+			FREE_ME(hChk);
+		}
+	}
+
+
+// Rollback if any error found
+	if (iRet != PD_OK) {
+		TxnAbort();
+	}
+
+
+// (5) Update OLPayoutApiBatchHD.oah_ret_code
+
+DEBUGLOG(("Authorize:: Call DBOLPayoutApiBatchHD:Update\n"));
+
+	PutField_Char(hTxn,"status",PD_COMPLETE);
+DEBUGLOG(("  status = [%c]\n",PD_COMPLETE));
+	PutField_Int(hTxn,"ret_code",iRet);
+DEBUGLOG(("  ret_code = [%d]\n",iRet));
+	PutField_CString(hTxn,"update_user",csUser);
+DEBUGLOG(("  update_user = [%s]\n",csUser));
+
+	DBObjPtr = CreateObj(DBPtr,"DBOLPayoutApiBatchHD","Update");
+	iDtlRet = (unsigned long)(*DBObjPtr)(hTxn);
+
+	if (iDtlRet == PD_OK) {
+DEBUGLOG(("  DBOLPayoutApiBatchHD:Update success\n"));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("  DBOLPayoutApiBatchHD:Update FAILED!!!\n"));
+ERRLOG("TxnOmtByUsOOG: Authorize:: DBOLPayoutApiBatchHD:Update FAILED!!!\n");
+	}
+
+
+// (6) Update OLPayoutApiBatchDT.oad_ret_code
+//     --> SKIP, Update HD table ONLY for this API
+/*
+DEBUGLOG(("Authorize:: Call DBOLPayoutApiBatchDT:UpdateByBatchId\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBOLPayoutApiBatchDT","UpdateByBatchId");
+	iDtlRet = (unsigned long)(*DBObjPtr)(hTxn);
+
+	if (iDtlRet == PD_OK) {
+DEBUGLOG(("  DBOLPayoutApiBatchDT:UpdateByBatchId success\n"));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("  DBOLPayoutApiBatchDT:UpdateByBatchId FAILED!!!\n"));
+ERRLOG("TxnOmtByUsOOG: Authorize:: DBOLPayoutApiBatchDT:UpdateByBatchId FAILED!!!\n");
+	}
+*/
+
+	if (iRet != PD_OK) {
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	FREE_ME(hTxn);
+//	FREE_ME(hUpd);
+//	FREE_ME(hChk);
+//	FREE_ME(hOlTxnHd);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("TxnOmtByUsOOG Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

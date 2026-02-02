@@ -1,0 +1,1428 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/06/17              Cody Chan
+Add Processing cost				   2015/07/21		   Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOMMSTxnEng.h"
+
+char    cDebug;
+double	ldOpenAcctBal = 0.0;
+double	ldOpenIntransit = 0.0;
+double	ldOpenLien = 0.0;
+double	ldOpenPrepaid = 0.0;
+double	ldCurrAcctBal = 0.0;
+double	ldCurrIntransit = 0.0;
+double	ldCurrLien = 0.0;
+double	ldCurrPrepaid = 0.0;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+int VerifyTxn(const char* csTxnId,const char* csTxnCode);
+int CheckBalanceAndLock(hash_t* hContext,hash_t* hReq);
+int RemoveFromIntransit(hash_t* hContext,const hash_t* hRequest);
+int UpdateRecvContext(hash_t* hContext);
+int CreditToAcctBal(hash_t* hContext,const hash_t* hRequest);
+int CreateAmtDiff(hash_t* hContext, hash_t* hReq);
+int CostAmt(hash_t *hContext,const hash_t* hRequest);
+
+int GetOpen(hash_t* hContext);
+int PutOpen(hash_t* hContext);
+int GetCurr(hash_t* hContext);
+int PutCurr(hash_t* hContext);
+
+void BOMMSTxnEng(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int RemitTxn(hash_t* hContext,const hash_t* hReq)
+{
+	int	iRet = PD_ERR;
+	int	iBalCnt = 0,i;
+	char	csTag[PD_TAG_LEN +1];
+	char	cSelType;
+	char	*csNatureId;
+	char	*csPtr;
+	char    cCostCal = ' ';
+        double  dCostAmt = 0.0;
+	double	dTmp;
+
+	hash_t	*hData;
+DEBUGLOG(("BOMMSTxnEng:RemitTxn()\n"));
+
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() bal_cnt = [%d]\n",iBalCnt));
+		iRet = PD_OK;
+	}
+
+/* set sub stauts to completed */
+
+	for (i= 0 ; i < iBalCnt; i++ ) {
+        	hash_init(hData,0);
+		sprintf(csTag,"bal.%d.sel_type",i+1);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() [%s]\n",csTag));
+		if (GetField_Char(hContext,csTag,&cSelType )) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() select_type = [%c]\n",cSelType));
+		}
+		else {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() select_type not found\n"));
+ERRLOG("BOMMSTxnEng:RemitTxn() select_type not found\n");
+			iRet = INT_MMS_SELECTE_TYPE_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+			break;
+		}
+
+/* nature_id */
+		sprintf(csTag,"bal.%d.nature_id",i+1);
+		if (GetField_CString(hContext,csTag,&csNatureId)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() [%s] = [%sa]\n",csTag,csNatureId));
+		}
+		else {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() Nature Id Not Found\n"));
+ERRLOG("BOMMSTxnEng:RemitTxn() Nature Id Not Found\n");
+			iRet = PD_ERR;
+		}
+
+		if (iRet == PD_OK) {
+			if (cSelType != PD_MMS_SELECT_TXN) {
+/* check balance with credit limit */
+
+/* credit limit however system re-cal by using cl_rate and cl_frate */
+				if (GetField_Double(hContext,"cl_amt",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() cl_amt = [%lf]\n",dTmp));
+					PutField_Double(hData,"cl_amt",dTmp);
+				}
+				if (GetField_Double(hContext,"cl_rate",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() cl_rate = [%lf]\n",dTmp));
+					PutField_Double(hData,"cl_rate",dTmp);
+				}
+
+				if (GetField_Double(hContext,"cl_flat_rate",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() cl_flat_rate = [%lf]\n",dTmp));
+					PutField_Double(hData,"cl_flat_rate",dTmp);
+				}
+/* txn_amt */
+				if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_amt = [%lf]\n",dTmp));
+					PutField_Double(hData,"txn_amt",dTmp);
+				}
+/* txn_country */
+				if (GetField_CString(hReq,"txn_country",&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_country = [%s]\n",csPtr));
+					PutField_CString(hData,"txn_country",csPtr);
+					PutField_CString(hData,"country",csPtr);
+				}
+/* txn_ccy */
+				if (GetField_CString(hReq,"txn_ccy",&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_ccy = [%s]\n",csPtr));
+					PutField_CString(hData,"txn_ccy",csPtr);
+					PutField_CString(hData,"ccy",csPtr);
+				}
+				iRet = CheckBalanceAndLock(hContext,hData);
+				if (iRet == PD_OK) {
+/* store opening balace */
+					PutOpen(hContext);
+        				if (GetField_Char(hContext,"cost_cal",&cCostCal)) {
+DEBUGLOG(("BOMMSTxnEng:cost_cal = [%c]\n",cCostCal));
+       						if (GetField_Double(hContext,"cost_amt",&dCostAmt)) {
+DEBUGLOG(("BOMMSTxnEng:cost_amt = [%lf]\n",dCostAmt));
+                				}
+                				iRet = CostAmt(hContext,hReq);
+					}
+				}
+				if (iRet == PD_OK) {
+/* Debit from txn id's nature id acct_bal*/
+			                BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance","DebitAcctBal");
+                			iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+				}
+			}
+/* Verify Txn */
+			else if (cSelType == PD_MMS_SELECT_TXN) {
+				int	iTidCnt = 0,j;
+				char	*csTxnId;
+
+				iRet = PD_ERR;
+				sprintf(csTag,"bal.%d.tid_cnt",i+1);
+				GetField_Int(hContext,csTag,&iTidCnt);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s = %d\n",csTag,iTidCnt));
+				for (j = 0; j < iTidCnt; j++) {
+					sprintf(csTag,"bal.%d.tid.%d.txn_id",i+1,j+1);
+					if (GetField_CString(hContext,csTag,&csTxnId)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s = %s\n",csTag,csTxnId));
+						if (VerifyTxn(csTxnId,NULL) != PD_OK) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s not found\n",csTxnId));
+ERRLOG("BOMMSTxnEng:RemitTxn() %s not found\n",csTxnId);
+							iRet = INT_ORG_TXN_NOT_FOUND;
+							PutField_Int(hContext,"internal_error",iRet);
+						}
+						else  {
+							iRet = PD_OK;
+							if (GetField_CString(hReq,"txn_ccy",&csPtr)) {
+								sprintf(csTag,"bal.%d.nature_txn_ccy",i+1);
+								PutField_CString(hContext,csTag,csPtr);
+
+								sprintf(csTag,"bal.%d.nature_net_ccy",i+1);
+								PutField_CString(hContext,csTag,csPtr);
+							}
+
+							PutField_CString((hash_t*)hReq,"txn_id",csTxnId);
+							PutField_CString((hash_t*)hReq,"nature_id",csNatureId);
+							iRet = RemoveFromIntransit(hContext,hReq);
+							if (iRet == PD_OK) {
+								if (GetField_Double(hContext,"nature_txn_amt",&dTmp)) {
+									sprintf(csTag,"bal.%d.net_amt",i+1);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s = [%lf]\n",csTag,dTmp));
+                                                			PutField_Double(hContext,csTag,dTmp);
+								}
+							}
+							if (iRet == PD_OK) {
+        				        		hash_t  *hTmpContext;
+
+                						hTmpContext = (hash_t*) malloc (sizeof(hash_t));
+                						hash_init(hTmpContext,0);
+
+/* update sub status to complete */
+/* reset remaining amount */
+                						PutField_Double(hTmpContext,"remaining_amt",0.0);
+                						PutField_CString(hTmpContext,"txn_seq",csTxnId);
+                						PutField_CString(hTmpContext,"sub_status",PD_COMPLETED);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() update the txn_id [%s] to completed\n",csTxnId));
+                						BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","UpdateTxnHd");
+                						iRet = (unsigned long)(BOObjPtr)(hTmpContext,hReq);
+                						FREE_ME(hTmpContext);
+        						}
+						}
+					}
+				}
+			}
+		}
+	}
+
+
+
+
+	if (iRet == PD_OK) {
+/* set sub stauts to completed */
+		if (iRet == PD_OK) {
+			if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_amt = [%lf] cost cal = [%c]\n",dTmp,cCostCal));
+				if (cCostCal == PD_MMS_COST_CAL_ADD) {
+					dTmp += dCostAmt;
+				}
+				else {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() override_txn_amt = [%lf]\n",dTmp - dCostAmt));
+					PutField_Double(hContext,"override_txn_amt",dTmp - dCostAmt);
+				}
+				PutField_Double(hContext,"net_amt",dTmp);
+			}
+			PutField_CString(hContext,"sub_status",PD_PENDING);
+		}
+		GetOpen(hContext);
+	}
+
+	if (iRet == PD_OK) {
+/* new dst txn */
+		BOObjPtr = CreateObj(BOPtr,"TxnMmmByUsCFI","Authorize");
+		iRet = (unsigned long)(BOObjPtr)(hContext,hReq,NULL);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() iRet = [%d] from CreateRecvIntransitTxn\n",iRet));
+	}
+
+	FREE_ME(hData);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int RecvTxn(hash_t* hContext,const hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	int	iTxnCnt = 0,i;
+	double	dTxnAmt;
+	double	dRemainingAmt;
+	double	dDiffAmt;
+	char	*csTxnId;
+	char	csTag[PD_TAG_LEN + 1];
+	char	*csPtr;
+	char	cRecvType;
+	char	cHandleType;
+	hash_t	*hData;
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	hash_t	*hRsp;
+	hRsp = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRsp,0);
+DEBUGLOG(("BOMMSTxnEng:RecvTxn()\n"));
+
+	if (GetField_Int(hContext,"txn_cnt",&iTxnCnt)) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() txn_cnt = [%d]\n",iTxnCnt));
+	}
+	else {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() txn_cnt not found\n"));
+ERRLOG("BOMMSTxnEng:RecvTxn() txn_cnt not found\n");
+		iRet = PD_ERR;
+	}
+
+	if (iRet == PD_OK) {
+		for (i = 0; i < iTxnCnt ; i ++) {
+			sprintf(csTag,"tid.%d.txn_id",i+1);
+			if (GetField_CString(hContext,csTag,&csTxnId)) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn(): %s = [%s]\n",csTag,csTxnId));
+				if (VerifyTxn(csTxnId,PD_TXN_CODE_MMS_RECV_INTRANSIT) != PD_OK) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s not found\n",csTxnId));
+ERRLOG("BOMMSTxnEng:RemitTxn() %s not found\n",csTxnId);
+                           		iRet = INT_ORG_TXN_NOT_FOUND;
+                                        PutField_Int(hContext,"internal_error",iRet);
+                            	}
+				else {
+					PutField_CString(hContext,"related_txn_id",csTxnId);
+				}
+			}
+			else {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn(): %s not found\n"));
+ERRLOG("BOMMSTxnEng:RecvTxn(): %s not found\n");
+				iRet = PD_ERR;
+				break;
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (GetField_Char(hContext,"recv_type",&cRecvType)) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() recv_type = [%c]\n",cRecvType));
+		}
+		else {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() recv_type is missing\n"));
+		}
+
+
+		if (GetField_CString(hContext,"amt_reason",&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() amt_reason = [%s]\n",csPtr));
+		}
+	}
+
+	if (iRet == PD_OK) {
+/* check balance */
+		if (GetField_Double(hContext,"txn_amt",&dTxnAmt))
+			PutField_Double(hContext,"net_amt",dTxnAmt);
+
+		BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","GetTxnInfo");
+               	iRet = (unsigned long)(BOObjPtr)(csTxnId,hRsp);
+
+		if (iRet == PD_OK) {
+			
+			if (GetField_Double(hRsp,"remaining_amt",&dRemainingAmt)) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn(): remaining = [%lf]\n",dRemainingAmt));
+
+				if (cRecvType == PD_PARTIAL_RECEIVE)  {
+					if (dTxnAmt > dRemainingAmt) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn(): txn amount [%lf] is greant than reaming_amt [%lf]\n",dTxnAmt,dRemainingAmt));
+ERRLOG("BOMMSTxnEng:RecvTxn(): txn amount [%lf] is greant than reaming_amt [%lf]\n",dTxnAmt,dRemainingAmt);
+						iRet = INT_INSUFFICIENT_FUND;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+				}
+/* check if txn amount + amt diff is equal to the remaining amount */
+				else {
+					if (GetField_Double(hContext,"amt_diff",&dDiffAmt)){
+DEBUGLOG(("BOMMSTxnEng:ReccTxn: Diff Amt = [%lf]\n",dDiffAmt));
+					}
+DEBUGLOG(("BOMMSTxnEng:RecvTxn  [%lf] ==? [%lf]\n",dTxnAmt, dRemainingAmt));
+					if (dTxnAmt != dRemainingAmt) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn [%lf] != [%lf]\n",dTxnAmt, dRemainingAmt));
+ERRLOG("BOMMSTxnEng:RecvTxn [%lf] != [%lf]\n",dTxnAmt, dRemainingAmt);
+						iRet = INT_MMS_INVALID_AMT;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+					
+				}
+					
+				if (iRet == PD_OK)  {
+			
+					dRemainingAmt -= dTxnAmt;
+DEBUGLOG(("BOMMSTxnEng:RecvTxn(): reaming_amt = [%lf]\n",dRemainingAmt));
+					if (dRemainingAmt < 0.0)
+						dRemainingAmt = 0.0;
+				}
+			}
+			else {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn(): reaming_amt is missing\n"));
+ERRLOG("BOMMSTxnEng:RecvTxn(): reaming_amt is missing\n");
+				iRet = PD_ERR;
+			}
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		UpdateRecvContext(hContext);
+                iRet = RemoveFromIntransitForRecv(hContext,hData);
+
+                if (iRet == PD_OK) {
+			PutOpen(hContext);
+                }
+		if (iRet == PD_OK) {
+                	iRet = CreditToAcctBal(hContext,hData);
+		}
+		if (iRet == PD_OK) {
+/* create txn element */
+			if (cRecvType == PD_FULL_RECEIVE && dRemainingAmt != 0.0)  {
+			}
+		}
+		if (iRet == PD_OK) {
+			GetOpen(hContext);
+		}
+        }
+
+	if (iRet == PD_OK) {
+		BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","UpdateRelatedTxnSubStatus");
+               	iRet = (unsigned long)(BOObjPtr)(cRecvType,csTxnId,dRemainingAmt);
+	}
+DEBUGLOG(("BOMMSTxnEng RecvTxn cRecvType [%c] dDiffAmt [%lf]\n",cRecvType,dDiffAmt));
+
+	if (iRet == PD_OK) {
+		if (cRecvType == PD_FULL_RECEIVE && dDiffAmt != 0.0)  {
+			if (GetField_Char(hContext,"all_handle_type",&cHandleType)) {
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() handletype = [%c]\n",cHandleType));
+			}
+			if (cHandleType == PD_AMOUNT_HANDLE_AMOUNT ) {
+/* create diff amt txn */
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() Create new Diff Amt Txn\n"));
+				iRet = CreateAmtDiff(hContext,(hash_t*)hReq);
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() Create new Diff Amt Txn return from CreateAmtDiff = [%d]\n",iRet));
+			}
+			else {
+/* create prepaid */
+			}
+		}
+	}
+	FREE_ME(hData);
+	FREE_ME(hRsp);
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int VerifyTxn(const char* csTxnId,const char* csTxnCode) 
+{
+	int	iRet = PD_OK;
+	hash_t	*hData;
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+DEBUGLOG(("VerifyTxn()\n"));
+
+/* txn_seq */
+DEBUGLOG(("VerifyTxn() txn_seq = [%s]\n",csTxnId));
+	PutField_CString(hData,"txn_seq",csTxnId);
+
+/* status */
+	PutField_Char(hData,"status",PD_COMPLETE);
+
+/* ar_ind */
+	PutField_Char(hData,"ar_ind",PD_ACCEPT);
+
+/* sub_status_cnt */
+	PutField_Int(hData,"sub_status_cnt",2);
+
+/* sub_status */
+	PutField_CString(hData,"sub_status_0",PD_PENDING);
+
+/* sub_status */
+	PutField_CString(hData,"sub_status_1",PD_IN_PROCESS);
+
+	if (csTxnCode != NULL)
+		PutField_CString(hData,"txn_code",csTxnCode);
+
+	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","MatchTxnStatusForUpdate");
+
+	if (((unsigned long)(DBObjPtr)(hData)) == PD_FOUND) {
+DEBUGLOG(("VerifyTxn() txn record [%s] found\n",csTxnId));
+		iRet = PD_OK;
+	}
+	else {
+DEBUGLOG(("VerifyTxn() txn record [%s] not found\n",csTxnId));
+		iRet = PD_ERR;
+	}
+
+	FREE_ME(hData);
+DEBUGLOG(("VerifyTxn() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int CheckBalanceAndLock(hash_t* hContext,hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	double	dClAmt = 0.0;
+	double	dClRate = 0.0;
+	double	dClFlatRate = 0.0;
+	double	dTxnAmt = 0.0;
+	double	dCostAmt = 0.0;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	cCostCal = ' ';
+
+	double	dOpenAcctBal = 0.0;
+	
+	hash_t  *hData;
+DEBUGLOG(("CheckBalanceAndLock()\n"));
+
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);	
+
+/* cost_amt */
+	if (GetField_Double(hContext,"cost_amt",&dCostAmt)) {
+DEBUGLOG(("CheckBalanceAndLock() cost_amt = [%lf]\n",dCostAmt));
+	}
+
+/* cost_cal */
+	if (GetField_Char(hContext,"cost_cal",&cCostCal)) {
+DEBUGLOG(("CheckBalanceAndLock() cost_cal = [%c]\n",cCostCal));
+	}
+
+/* cl_amt */
+	if (GetField_Double(hContext,"cl_amt",&dClAmt)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_amt = [%lf]\n",dClAmt));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() cl_amt is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() cl_amt is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* cl_rate */
+	if (GetField_Double(hContext,"cl_rate",&dClRate)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_rate = [%lf]\n",dClRate));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() cl_rate is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() cl_rate is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* cl_flat_rate */
+	if (GetField_Double(hContext,"cl_flat_rate",&dClFlatRate)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_flat_rate = [%lf]\n",dClFlatRate));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() cl_flat_rate is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() cl_flat_rate is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_amt */
+	if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_flat_rate = [%lf]\n",dTxnAmt));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() txn_amt is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() txn_amt is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_country */
+	if (GetField_CString(hReq,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("CheckBalanceAndLock() txn_country = [%s]\n",csTxnCountry));
+		PutField_CString(hData,"country",csTxnCountry);
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() txn_country is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() txn_country is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_ccy */
+	if (GetField_CString(hReq,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("CheckBalanceAndLock() txn_ccy = [%s]\n",csTxnCcy));
+		PutField_CString(hData,"ccy",csTxnCcy);
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() txn_ccy is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() txn_ccy is missing\n");
+		iRet = PD_ERR;
+	}
+
+
+	if (iRet == PD_OK) {
+		BOObjPtr = CreateObj(DBPtr,"BOMMSEntityBalance","SelectEntityBalanceForUpdate");
+		iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+	}
+
+	if (iRet == PD_OK) {
+		double	dTotalAllow = 0.0;
+		GetField_Double(hContext,"open_acct_bal",&dOpenAcctBal);
+		if (dOpenAcctBal < 0.0)
+			dOpenAcctBal = 0.0;
+DEBUGLOG(("CheckBalanceAndLock() open_acct_bal = [%lf]\n",dOpenAcctBal));
+		if (dClAmt != 0.0 ) {
+			dTotalAllow = dOpenAcctBal * dClRate + dClFlatRate;
+DEBUGLOG(("CheckBalanceAndLock() dTotalAllow [%lf] = [%lf] * [%lf] + [%lf]\n",dTotalAllow, dOpenAcctBal, dClRate,dClFlatRate));
+		}
+		else {
+			dTotalAllow = dOpenAcctBal;
+DEBUGLOG(("CheckBalanceAndLock() dTotalAllow [%lf] = [%lf]\n",dTotalAllow, dOpenAcctBal));
+		}
+	
+/* if additonal cost */
+		if  (cCostCal == PD_MMS_COST_CAL_ADD) {
+DEBUGLOG(("CheckBalanceAndLock() total txn amt with cost [%lf] = [%lf] + [%lf]\n",dTxnAmt+ dCostAmt,dTxnAmt,dCostAmt));
+			dTxnAmt += dCostAmt;
+		}
+		if (dTxnAmt > dTotalAllow) {
+			iRet = INT_INSUFFICIENT_FUND;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("CheckBalanceAndLock() Insufficient Fund txn amount [%lf] > Total Allow [%lf]\n",dTxnAmt,dTotalAllow));
+ERRLOG("CheckBalanceAndLock() Insufficient Fund txn amount [%lf] > Total Allow [%lf]\n",dTxnAmt,dTotalAllow);
+
+		}
+	}
+
+
+
+	FREE_ME(hData);
+DEBUGLOG(("CheckBalanceAndLock() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int RemoveFromIntransit(hash_t* hContext,const hash_t* hRequest) 
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	*csTxnId;
+	char	*csEntityId;
+//	char	*csNatureId;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	double	dTxnAmt;
+	hash_t  *hData;
+	hash_t  *hCon;
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+
+
+DEBUGLOG(("RemoveFromIntransit()\n"));
+	hCon = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hCon,0);
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+/* txn seq*/
+        if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("RemoveFromIntransit() txn_seq = [%s]\n",csPtr));
+                PutField_CString(hData,"txn_seq",csPtr);
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() txn_seq not found\n"));
+        }
+
+/* Entity Id */
+        if (GetField_CString(hContext,"entity_id",&csEntityId)) {
+DEBUGLOG(("RemoveFromIntransit() Entity ID = [%s]\n",csEntityId));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() Entity ID not found\n"));
+        }
+
+/* nature_id */
+/*
+        if (GetField_CString(hRequest,"nature_id",&csNatureId)) {
+DEBUGLOG(("RemoveFromIntransit() nature_id = [%s]\n",csNatureId));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() nature_id not found\n"));
+        }
+*/
+
+/* txn_country */
+        if (GetField_CString(hRequest,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("RemoveFromIntransit() txn_country = [%s]\n",csTxnCountry));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() txn_country not found\n"));
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("RemoveFromIntransit() from_ccy = [%s]\n",csTxnCcy));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() txn_ccy not found\n"));
+        }
+/* txn_amt */
+        if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("RemoveFromIntransit() txn_amt = [%lf]\n",dTxnAmt));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() txn_amt not found\n"));
+        }
+
+
+/* txn_id */
+        if (GetField_CString(hRequest,"txn_id",&csTxnId)) {
+DEBUGLOG(("RemoveFromIntransit() txn_id = [%s]\n",csTxnId));
+/* related txn id */
+		PutField_CString(hContext,"related_txn_id",csTxnId);
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransit() txn_id not found\n"));
+        }
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","GetTxnNatureDetail");
+	iRet = (unsigned long)(DBObjPtr)(csTxnId,rRecordSet);
+
+DEBUGLOG(("RemoveFromIntransit() iRet = [%d] from GetTxnNatureDetail\n",iRet));
+	if (iRet == PD_OK) {
+		double	dTmp;
+
+		iRet = PD_ERR;
+		hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+			iRet = PD_OK;
+        		hash_init(hData,0);
+/*entity_id */
+			if (GetField_CString(hRec,"entity_id",&csPtr)) {
+				PutField_CString(hData,"entity_id",csPtr);
+DEBUGLOG(("RemoveFromIntransit() entity_id = [%s]\n",csPtr));
+			}
+/* nature_id */
+			if (GetField_CString(hRec,"nature_id",&csPtr)) {
+				PutField_CString(hData,"nature_id",csPtr);
+DEBUGLOG(("RemoveFromIntransit() nature_id = [%s]\n",csPtr));
+			}
+/* txn_ccy */
+			if (GetField_CString(hRec,"txn_ccy",&csPtr)) {
+				PutField_CString(hData,"ccy",csPtr);
+DEBUGLOG(("RemoveFromIntransit() txn_ccy = [%s]\n",csPtr));
+			}
+/* txn_country */
+			PutField_CString(hData,"country",csTxnCountry);
+/* txn_amt */
+			if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+				PutField_Double(hData,"txn_amt",dTmp);
+				PutField_Double(hContext,"nature_txn_amt",dTmp);
+DEBUGLOG(("RemoveFromIntransit() txn_amt = [%lf]\n",dTmp));
+			}
+
+			PutField_CString(hData,"amt_type",PD_DR);
+			PutField_CString(hData,"bal_amt","intransit");
+/* debit from txn id's nature id intransit*/
+			BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance","UpdateNatureBalance");
+			iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+			if (iRet != PD_OK)  {
+				break;
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}	
+	}
+	else {
+DEBUGLOG(("RemoveFromIntransit() txn_id [%s] not found\n",csTxnId));
+ERRLOG("RemoveFromIntransit() txn_id [%s] not found\n",csTxnId);
+		iRet = PD_ERR;
+	}
+
+	FREE_ME(hData);
+	FREE_ME(hCon);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("RemoveFromIntransit() Normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int RemoveFromIntransitForRecv(hash_t* hContext,const hash_t* hRequest) 
+{
+	int	iRet = PD_OK;
+	int	iBalCnt = 0,i;
+	char	*csEntityId;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csPtr;
+	char	csTag[PD_TAG_LEN +1];
+	double	dTmp;
+
+	hash_t  *hData;
+
+
+DEBUGLOG(("RemoveFromIntransitForRecv()\n"));
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+/* Entity Id */
+        if (GetField_CString(hContext,"entity_id",&csEntityId)) {
+DEBUGLOG(("RemoveFromIntransitForRecv() Entity ID = [%s]\n",csEntityId));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransitForRecv() Entity ID not found\n"));
+        }
+
+
+/* txn_country */
+        if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("RemoveFromIntransitForRecv() txn_country = [%s]\n",csTxnCountry));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransitForRecv() txn_country not found\n"));
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("RemoveFromIntransitForRecv() txn_ccy = [%s]\n",csTxnCcy));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransitForRecv() txn_ccy not found\n"));
+        }
+
+/* bal_cnt */
+        if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("RemoveFromIntransitForRecv() bal_cnt = [%d]\n",iBalCnt));
+        }
+        else {
+DEBUGLOG(("RemoveFromIntransitForRecv() bal_cnt not found\n"));
+        }
+
+	for (i = 0; i < iBalCnt; i++) {
+/*entity_id */
+		PutField_CString(hData,"entity_id",csEntityId);
+/* nature_id */
+		sprintf(csTag,"bal.%d.nature_id",i+1);
+		if (GetField_CString(hContext,csTag,&csPtr)) {
+               		PutField_CString(hData,"nature_id",csPtr);
+DEBUGLOG(("RemoveFromIntransitForRecv() nature_id = [%s]\n",csPtr));
+           	}
+		else {
+DEBUGLOG(("RemoveFromIntransitForRecv() %s not found\n",csTag));
+		}
+/* txn_ccy */
+		PutField_CString(hData,"ccy",csTxnCcy);
+/* txn_country */
+                PutField_CString(hData,"country",csTxnCountry);
+/* txn_amt */
+		sprintf(csTag,"bal.%d.amt",i+1);
+		if (GetField_Double(hContext,csTag,&dTmp)) {
+                	PutField_Double(hData,"txn_amt",dTmp);
+                        PutField_Double(hContext,"nature_txn_amt",dTmp);
+DEBUGLOG(("RemoveFromIntransit() txn_amt = [%lf]\n",dTmp));
+                }
+
+                PutField_CString(hData,"amt_type",PD_DR);
+                PutField_CString(hData,"bal_amt","intransit");
+/* debit from txn id's nature id intransit*/
+                BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance","UpdateNatureBalance");
+                iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+	}
+
+	FREE_ME(hData);
+
+DEBUGLOG(("RemoveFromIntransitForRecv() Normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int UpdateRecvContext(hash_t* hContext)
+{
+        int     iRet = PD_OK;
+        int     iTxnCnt = 0,i;
+        char    *csPtr;
+        char    *csTxnCountry;
+        char    *csTxnCcy;
+        double  dTmp,dTotalAmt = 0;
+        double  dTxnAmt;
+        char    csTag[PD_TAG_LEN +1];
+        hash_t  *hRec;
+        recordset_t     *rRecordSet;
+
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext()\n"));
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+/* txn_ccy */
+        if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() txn_ccy = [%s]\n",csTxnCcy));
+        }
+
+/* txn_country */
+        if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() txn_country = [%s]\n",csTxnCountry));
+        }
+
+/* txn_amt */
+        if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() txn_amt = [%lf]\n",dTxnAmt));
+        }
+
+/* txn_cnt */
+	if (GetField_Int(hContext,"txn_cnt",&iTxnCnt)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() txn_cnt = [%d]\n",iTxnCnt));
+        }
+
+	for (i = 0 ; i < iTxnCnt; i++) {
+                sprintf(csTag,"tid.%d.txn_id",i+1);
+                if (GetField_CString(hContext,csTag,&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() [%s] = [%s]\n",csTag,csPtr));
+                        DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","GetTxnNatureDetail");
+                        if (((unsigned long)(DBObjPtr)(csPtr,rRecordSet)) == PD_OK) {
+                                hRec =  RecordSet_GetFirst(rRecordSet);
+                                while (hRec) {
+                                        if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+                                                dTotalAmt += dTmp;
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() txn_amt = [%lf] [%lf]\n",dTmp,dTotalAmt));
+                                        }
+                                        hRec = RecordSet_GetNext(rRecordSet);
+                                }
+                        }
+                        else {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() Error Return from DBMmsTransaction:GetTxnNatureDetail\n"));
+ERRLOG("BOMMSTxnEng:UpdateRecvContext() Error Return from DBMmsTransaction:GetTxnNatureDetail\n");
+                                iRet = PD_ERR;
+                                break;
+                        }
+                        if (iRet == PD_OK) {
+                                int j = 0;
+                                double  dNatureTxnAmt = 0.0;
+                                double  dRemainingAmt = dTxnAmt;
+				double	dRemainingPercent = 1.0;
+				double	dPercent = 0.0;
+                                hRec =  RecordSet_GetFirst(rRecordSet);
+                                while (hRec) {
+                                        if (GetField_CString(hRec,"nature_id",&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() nature_id = [%s]\n",csPtr));
+                                        }
+                                        if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() txn_amt = [%lf]\n",dTmp));
+                                        }
+/* last record */
+                                        if (i == (iTxnCnt -1 )) {
+                                                dNatureTxnAmt = dRemainingAmt;
+					 	dPercent = dRemainingPercent;	
+                                        }
+                                        else {
+						dPercent = newround((dTmp / dTotalAmt),5);
+                                                dNatureTxnAmt = newround(dTxnAmt * dPercent,PD_DECIMAL_LEN);
+                                                dRemainingAmt -= dNatureTxnAmt;
+						dRemainingPercent -= dPercent;
+                                        }
+
+					
+                                        sprintf(csTag,"bal.%d.percent",j+1);
+                                        PutField_Double(hContext,csTag,dPercent);
+/* nature id */
+                                        sprintf(csTag,"bal.%d.nature_id",j+1);
+                                        PutField_CString(hContext,csTag,csPtr);
+
+                                        sprintf(csTag,"bal.%d.nature_txn_ccy",j+1);
+                                        PutField_CString(hContext,csTag,csTxnCcy);
+
+                                        sprintf(csTag,"bal.%d.nature_net_ccy",j+1);
+                                        PutField_CString(hContext,csTag,csTxnCcy);
+
+                                        sprintf(csTag,"bal.%d.amt",j+1);
+                                        PutField_Double(hContext,csTag,dNatureTxnAmt);
+
+                                        sprintf(csTag,"bal.%d.net_amt",j+1);
+                                        PutField_Double(hContext,csTag,dNatureTxnAmt);
+
+                                        j++;
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() nature txn amt = [%lf]\n",dNatureTxnAmt));
+                                        hRec = RecordSet_GetNext(rRecordSet);
+                                }
+                                PutField_Int(hContext,"bal_cnt",j);
+                        }
+
+                }
+        }
+
+        FREE_ME(rRecordSet);
+DEBUGLOG(("BOMMSTxnEng:UpdateRecvContext() Normal Exit iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+int CreditToAcctBal(hash_t* hContext,const hash_t* hRequest) 
+{
+	int	iRet = PD_OK;
+	int	iBalCnt = 0,i;
+	char	*csEntityId;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csPtr;
+	char	csTag[PD_TAG_LEN +1];
+	double	dTmp;
+
+	hash_t  *hData;
+
+
+DEBUGLOG(("CreditToAcctBal()\n"));
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+/* Entity Id */
+        if (GetField_CString(hContext,"entity_id",&csEntityId)) {
+DEBUGLOG(("CreditToAcctBal() Entity ID = [%s]\n",csEntityId));
+        }
+        else {
+DEBUGLOG(("CreditToAcctBal() Entity ID not found\n"));
+        }
+
+
+/* txn_country */
+        if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("CreditToAcctBal() txn_country = [%s]\n",csTxnCountry));
+        }
+        else {
+DEBUGLOG(("CreditToAcctBal() txn_country not found\n"));
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("CreditToAcctBal() txn_ccy = [%s]\n",csTxnCcy));
+        }
+        else {
+DEBUGLOG(("CreditToAcctBal() txn_ccy not found\n"));
+        }
+
+/* bal_cnt */
+        if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("CreditToAcctBal() bal_cnt = [%d]\n",iBalCnt));
+        }
+         {
+DEBUGLOG(("CreditToAcctBal() bal_cnt not found\n"));
+        }
+
+	for (i = 0; i < iBalCnt; i++) {
+/*entity_id */
+		PutField_CString(hData,"entity_id",csEntityId);
+/* nature_id */
+		sprintf(csTag,"bal.%d.nature_id",i+1);
+		if (GetField_CString(hContext,csTag,&csPtr)) {
+               		PutField_CString(hData,"nature_id",csPtr);
+DEBUGLOG(("CreditToAcctBal() nature_id = [%s]\n",csPtr));
+           	}
+		else {
+DEBUGLOG(("CreditToAcctBal() %s not found\n",csTag));
+		}
+/* txn_ccy */
+		PutField_CString(hData,"ccy",csTxnCcy);
+/* txn_country */
+                PutField_CString(hData,"country",csTxnCountry);
+/* txn_amt */
+		sprintf(csTag,"bal.%d.amt",i+1);
+		if (GetField_Double(hContext,csTag,&dTmp)) {
+                	PutField_Double(hData,"txn_amt",dTmp);
+                        PutField_Double(hContext,"nature_txn_amt",dTmp);
+DEBUGLOG(("CreditToAcctBal() txn_amt = [%lf]\n",dTmp));
+                }
+
+/* Credit from txn id's nature id acct_bal*/
+                BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance","CreditAcctBal");
+                iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+	}
+
+	FREE_ME(hData);
+
+DEBUGLOG(("CreditToAcctBal() Normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int CreateAmtDiff(hash_t* hContext,hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	int	iBalCnt = 0,i;
+	int	iNewBalCnt = 0;
+	hash_t	*hDataContext,*hData;
+	char	csTag[PD_TAG_LEN +1];
+	char	*csTxnCcy;
+	char	*csTxnCountry;
+	char	*csEntityId;
+	char	*csPtr;
+
+	double	dAmtDiff = 0.0;
+	double	dRemainingAmt  = 0.0;
+	double	dPercent = 0.0;
+	double	dTxnAmt = 0.0;
+	double	dTmp;
+
+DEBUGLOG(("CreateAmtDiff()\n"));
+	hDataContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hDataContext,0);
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+	
+/* txn_seq */
+	if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("CreateAmtDiff txn_seq = [%s]\n",csPtr));
+		PutField_CString(hDataContext,"txn_seq",csPtr);
+	}
+
+/* entity_id */
+	if (GetField_CString(hContext,"entity_id",&csEntityId)) {
+DEBUGLOG(("CreateAmtDiff entity_id = [%s]\n",csEntityId));
+		PutField_CString(hDataContext,"entity_id",csEntityId);
+	}
+
+/* txn_country */
+        if (GetField_CString(hReq,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("CreateAmtDiff() country = [%s]\n",csTxnCountry));
+                PutField_CString(hData,"country",csTxnCountry);
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hReq,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("CreateAmtDiff() ccy = [%s]\n",csTxnCcy));
+                PutField_CString(hData,"ccy",csTxnCcy);
+        }
+
+	if (GetField_Double(hContext,"amt_diff",&dAmtDiff)) {
+DEBUGLOG(("CreateAmtDiff() amt_diff = [%lf]\n",dAmtDiff));
+		dRemainingAmt = dAmtDiff;
+		PutField_Double(hDataContext,"txn_amt",abs(dAmtDiff));
+	}
+
+	if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("CreateAmtDiff() BalCnt = [%d]\n",iBalCnt));
+		iNewBalCnt = iBalCnt;
+		PutField_Int(hDataContext,"bal_cnt",iBalCnt);
+	}
+/* amount reason */
+	if (GetField_CString(hContext,"amt_reason",&csPtr)) {
+DEBUGLOG(("CreateAmtDiff() amt_reasone = [%s]\n",csPtr));
+		PutField_CString(hDataContext,"override_element_type",csPtr);
+	}
+
+	for (i = 0; i < iBalCnt; i ++) {
+		iNewBalCnt++;
+/* nature_id */
+         	sprintf(csTag,"bal.%d.nature_id",i+1);
+		if (GetField_CString(hContext,csTag,&csPtr)) {
+DEBUGLOG(("CreateAmtDiff() %s = [%s]\n",csTag,csPtr));
+			PutField_CString(hDataContext,csTag,csPtr);
+
+         		sprintf(csTag,"bal.%d.nature_id",iNewBalCnt);
+			PutField_CString(hContext,csTag,csPtr);
+		}
+
+/* nature_txn_ccy */
+              	sprintf(csTag,"bal.%d.nature_txn_ccy",iNewBalCnt);
+               	PutField_CString(hContext,csTag,csTxnCcy);
+
+/* nature_net_ccy */
+             	sprintf(csTag,"bal.%d.nature_net_ccy",iNewBalCnt);
+                PutField_CString(hContext,csTag,csTxnCcy);
+
+	 	sprintf(csTag,"bal.%d.percent",i+1);
+		GetField_Double(hContext,csTag,&dPercent);
+DEBUGLOG(("CreateAmtDiff() [%s] = [%lf]\n",csTag,dPercent));
+
+		if (i == iBalCnt - 1) {
+			dTxnAmt = dRemainingAmt;
+		}
+		else {
+			dTxnAmt = newround(dAmtDiff * dPercent,PD_DECIMAL_LEN);
+		}
+
+/*amt */
+               	sprintf(csTag,"bal.%d.amt",i+1);
+                PutField_Double(hDataContext,csTag,dTxnAmt);
+
+               	sprintf(csTag,"bal.%d.amt",iNewBalCnt);
+                PutField_Double(hDataContext,csTag,dTxnAmt);
+
+/*net amt */
+                sprintf(csTag,"bal.%d.net_amt",iNewBalCnt);
+                PutField_Double(hContext,csTag,dTxnAmt);
+	}
+
+	if (iRet == PD_OK) {
+/* Debit from txn id's nature id acct_bal*/
+                BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance","DebitAcctBal");
+                iRet = (unsigned long)(BOObjPtr)(hDataContext,hData);
+	}
+
+	if (iRet == PD_OK) {
+/* curr_acct_bal */
+		if (GetField_Double(hDataContext,"curr_acct_bal",&dTmp)) {
+DEBUGLOG(("CreateAmtDiff curr_acct_bal = [%lf]\n",dTmp));
+			PutField_Double(hContext,"curr_acct_bal",dTmp);
+		}
+
+/* curr_prepaid */
+		if (GetField_Double(hDataContext,"curr_prepaid",&dTmp)) {
+DEBUGLOG(("CreateAmtDiff curr_prepaid = [%lf]\n",dTmp));
+			PutField_Double(hContext,"curr_prepaid",dTmp);
+		}
+
+/* curr_intransit */
+		if (GetField_Double(hDataContext,"curr_intransit",&dTmp)) {
+DEBUGLOG(("CreateAmtDiff curr_intransit = [%lf]\n",dTmp));
+			PutField_Double(hContext,"curr_intransit",dTmp);
+		}
+
+/* curr_lien */
+		if (GetField_Double(hDataContext,"curr_lien",&dTmp)) {
+DEBUGLOG(("CreateAmtDiff curr_lien = [%lf]\n",dTmp));
+			PutField_Double(hContext,"curr_lien",dTmp);
+		}
+	}
+
+
+	FREE_ME(hDataContext);
+	FREE_ME(hData);
+DEBUGLOG(("CreateAmtDiff() exit iRet = [%d]\n",iRet));
+	return	iRet;
+}
+
+int CostAmt(hash_t *hContext,const hash_t* hRequest)
+{
+	int	iRet = PD_OK;
+	int	iBalCnt= 0, i;
+	char	*csPtr;
+	char	csTag[PD_TAG_LEN +1];
+	char    cCostCal = ' ';
+	double	dCostAmt = 0.0;
+	double	dPercent = 0.0;
+	double	dRemainingAmt = 0.0;
+	double	dTxnAmt = 0.0;
+	double	dTmp;
+
+	hash_t	*hDataContext;
+	hDataContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hDataContext,0);
+	hash_t	*hData;
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+	
+DEBUGLOG(("CostAmt() \n"));
+	PutField_CString(hDataContext,"override_element_type",PD_ELEMENT_COST);
+
+	if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("CostAmt() bal_cnt = [%d]\n",iBalCnt));
+		PutField_Int(hDataContext,"bal_cnt",iBalCnt);
+	}
+
+	if (GetField_Double(hContext,"cost_amt",&dCostAmt)) {
+		PutField_Double(hDataContext,"txn_amt",dCostAmt);
+DEBUGLOG(("CostAmt() cost_amt = [%lf]\n",dCostAmt));
+		GetField_Char(hContext,"cost_cal",&cCostCal);
+DEBUGLOG(("CostAmt() cost_cal = [%c]\n",cCostCal));
+		dRemainingAmt = dCostAmt;
+	}
+/* txn_seq */
+	if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("CostAmt() txn_seq = [%s]\n",csPtr));
+		PutField_CString(hDataContext,"txn_seq",csPtr);
+        }
+
+
+/* entity_id */
+	if (GetField_CString(hContext,"entity_id",&csPtr)) {
+DEBUGLOG(("CostAmt() Entity ID = [%s]\n",csPtr));
+		PutField_CString(hDataContext,"entity_id",csPtr);
+        }
+
+/* txn_country */
+	if (GetField_CString(hRequest,"txn_country",&csPtr)) {
+DEBUGLOG(("CostAmt() country = [%s]\n",csPtr));
+		PutField_CString(hData,"country",csPtr);
+        }
+/* txn_ccy */
+	if (GetField_CString(hRequest,"txn_ccy",&csPtr)) {
+DEBUGLOG(("CostAmt() ccy = [%s]\n",csPtr));
+		PutField_CString(hData,"ccy",csPtr);
+        }
+
+
+
+	for (i = 0; i < iBalCnt; i ++) {
+/* nature_id */
+                sprintf(csTag,"bal.%d.nature_id",i+1);
+                if (GetField_CString(hContext,csTag,&csPtr)) {
+DEBUGLOG(("CostAmt() %s = [%s]\n",csTag,csPtr));
+                        PutField_CString(hDataContext,csTag,csPtr);
+                }
+		else {
+DEBUGLOG(("CostAmt() %s not found\n",csTag));
+ERRLOG("BOMMSTxnEng:CostAmt() %s not found\n",csTag);
+			iRet = PD_ERR;
+			break;
+		}
+/* precent */
+                sprintf(csTag,"bal.%d.percent",i+1);
+                if (GetField_Double(hContext,csTag,&dPercent)) {
+DEBUGLOG(("CostAmt() %s = [%lf]\n",csTag,dPercent));
+                }
+		else {
+DEBUGLOG(("CostAmt() %s not found\n",csTag));
+ERRLOG("BOMMSTxnEng:CostAmt() %s not found\n",csTag);
+			iRet = PD_ERR;
+			break;
+		}
+
+		if (iRet == PD_OK) {
+			if (i == iBalCnt -1) {
+				dTxnAmt = dRemainingAmt;
+			}
+			else {
+				dTxnAmt = newround(dTxnAmt * dPercent,PD_DECIMAL_LEN);
+				dRemainingAmt -= dTxnAmt;
+			}
+DEBUGLOG(("CostAmt() cost = [%lf]\n",dTxnAmt));
+/* amt */
+	                sprintf(csTag,"bal.%d.amt",i+1);
+			PutField_Double(hDataContext,csTag,dTxnAmt);
+
+			
+/* override nature txn amt */
+			if (GetField_Double(hContext,csTag,&dTmp))  {
+DEBUGLOG(("CostAmt() %s = [%lf]\n",csTag,dTmp));
+				if (cCostCal == PD_MMS_COST_CAL_NET) {
+					dTmp -= dTxnAmt;
+	                		sprintf(csTag,"bal.%d.override_amt",i+1);
+					PutField_Double(hContext,csTag,dTmp);
+DEBUGLOG(("CostAmt() %s = [%lf]\n",csTag,dTmp));
+				}
+			}
+			
+		}
+        }
+
+
+	if (iRet == PD_OK) {
+		BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance","DebitAcctBal");
+DEBUGLOG(("CostAmt from from DebitAcctBal = [%d]\n",iRet));
+                iRet = (unsigned long)(BOObjPtr)(hDataContext,hData);
+	}
+
+	if (iRet == PD_OK) {
+		PutCurr(hDataContext);
+		GetCurr(hContext);
+	}
+
+
+	FREE_ME(hDataContext);
+	FREE_ME(hData);
+DEBUGLOG(("CostAmtm() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+
+}
+
+int PutOpen(hash_t* hContext)
+{
+	int iRet = PD_OK;
+DEBUGLOG(("PutOpen()\n"));
+/*open_acct_bal */
+	if (GetField_Double(hContext,"open_acct_bal",&ldOpenAcctBal)) {
+DEBUGLOG(("PutOpen() open_acct_bal = [%lf]\n",ldOpenAcctBal));
+        }
+
+/*opening_prepaid */
+        if (GetField_Double(hContext,"open_prepaid",&ldOpenPrepaid)) {
+DEBUGLOG(("PutOpen() open_prepaid = [%lf]\n",ldOpenPrepaid));
+        }
+
+/*opening_intransit */
+        if (GetField_Double(hContext,"open_intransit",&ldOpenIntransit)) {
+DEBUGLOG(("PutOpen() open_intransit = [%lf]\n",ldOpenIntransit));
+        }
+/*opening_lien */
+        if (GetField_Double(hContext,"open_lien",&ldOpenLien)) {
+DEBUGLOG(("PutOpen() open_lien = [%lf]\n",ldOpenLien));
+        }
+
+DEBUGLOG(("PutOpen Normal Exit()\n"));
+	return iRet;
+}
+
+int GetOpen(hash_t* hContext)
+{
+	int iRet = PD_OK;
+DEBUGLOG(("GetOpen()\n"));
+
+/*open_acct_bal */
+DEBUGLOG(("GetOpen() open_acct_bal = [%lf]\n",ldOpenAcctBal));
+	PutField_Double(hContext,"open_acct_bal",ldOpenAcctBal);
+
+/*opening_prepaid */
+DEBUGLOG(("GetOpen() open_prepaid = [%lf]\n",ldOpenPrepaid));
+        PutField_Double(hContext,"open_prepaid",ldOpenPrepaid);
+
+/*opening_intransit */
+DEBUGLOG(("GetOpen() open_intransit = [%lf]\n",ldOpenIntransit));
+        PutField_Double(hContext,"open_intransit",ldOpenIntransit);
+
+/*opening_lien */
+DEBUGLOG(("GetOpen() open_lien = [%lf]\n",ldOpenLien));
+        PutField_Double(hContext,"open_lien",ldOpenLien);
+
+DEBUGLOG(("GetOpen Normal Exit()\n"));
+	return iRet;
+}
+
+int PutCurr(hash_t* hContext)
+{
+	int iRet = PD_OK;
+DEBUGLOG(("PutCurr()\n"));
+/*curr_acct_bal */
+	if (GetField_Double(hContext,"curr_acct_bal",&ldCurrAcctBal)) {
+DEBUGLOG(("PutCurr() curr_acct_bal = [%lf]\n",ldCurrAcctBal));
+        }
+
+/*curr_prepaid */
+        if (GetField_Double(hContext,"curr_prepaid",&ldCurrPrepaid)) {
+DEBUGLOG(("PutCurr() curr_prepaid = [%lf]\n",ldCurrPrepaid));
+        }
+
+/*curr_intransit */
+        if (GetField_Double(hContext,"curr_intransit",&ldCurrIntransit)) {
+DEBUGLOG(("PutCurr() curr_intransit = [%lf]\n",ldCurrIntransit));
+        }
+/*curr_lien */
+        if (GetField_Double(hContext,"curr_lien",&ldCurrLien)) {
+DEBUGLOG(("PutCurr() curr_lien = [%lf]\n",ldCurrLien));
+        }
+
+DEBUGLOG(("PutCurr Normal Exit()\n"));
+	return iRet;
+}
+
+int GetCurr(hash_t* hContext)
+{
+	int iRet = PD_OK;
+DEBUGLOG(("GetCurr()\n"));
+
+/*curr_acct_bal */
+DEBUGLOG(("GetCurr() curr_acct_bal = [%lf]\n",ldCurrAcctBal));
+	PutField_Double(hContext,"curr_acct_bal",ldCurrAcctBal);
+
+/*curr_prepaid */
+DEBUGLOG(("GetCurr() curr_prepaid = [%lf]\n",ldCurrPrepaid));
+        PutField_Double(hContext,"curr_prepaid",ldCurrPrepaid);
+
+/*curr_intransit */
+DEBUGLOG(("GetCurr() curr_intransit = [%lf]\n",ldCurrIntransit));
+        PutField_Double(hContext,"curr_intransit",ldCurrIntransit);
+
+/*curr_lien */
+DEBUGLOG(("GetCurr() curr_lien = [%lf]\n",ldCurrLien));
+        PutField_Double(hContext,"curr_lien",ldCurrLien);
+
+DEBUGLOG(("GetCurr Normal Exit()\n"));
+	return iRet;
+}

@@ -1,0 +1,77 @@
+CREATE OR REPLACE FUNCTION sp_psp_txn_chk_rpt_log_insert(
+	in_rpt_gen_id		psp_txn_check_rpt_log.pl_rpt_gen_id%type,
+	in_rpt_gen_datetime	psp_txn_check_rpt_log.pl_rpt_gen_datetime%type,
+	in_rpt_type		psp_txn_check_rpt_log.pl_rpt_type%type,
+	in_seq			psp_txn_check_rpt_log.pl_seq%type,
+	in_party_type		psp_txn_check_rpt_log.pl_party_type%type,
+	in_party_id		psp_txn_check_rpt_log.pl_party_id%type,
+	in_party_name		psp_txn_check_rpt_log.pl_party_name%type,
+	in_bank_code		psp_txn_check_rpt_log.pl_bank_code%type,
+	in_bank_name		psp_txn_check_rpt_log.pl_bank_name%type,
+	in_dur_start		varchar,
+	in_dur_end		varchar,
+	in_succ_cnt		psp_txn_check_rpt_log.pl_succ_cnt%type,
+	in_pend_cnt		psp_txn_check_rpt_log.pl_pend_cnt%type,
+	in_total_cnt		psp_txn_check_rpt_log.pl_total_cnt%type,
+	in_create_user		psp_txn_check_rpt_log.pl_create_user%type)
+  RETURN NUMBEr IS
+BEGIN
+
+	INSERT INTO psp_txn_check_rpt_log (
+		pl_rpt_gen_id,
+		pl_rpt_gen_datetime,
+		pl_rpt_type,
+		pl_seq,
+		pl_party_type,
+		pl_party_id,
+		pl_party_name,
+		pl_bank_code,
+		pl_bank_name,
+		pl_dur_start,
+		pl_dur_end,
+		pl_succ_cnt,
+		pl_pend_cnt,
+		pl_total_cnt,
+		pl_create_timestamp,
+		pl_create_user,
+		pl_update_timestamp,
+		pl_update_user
+		)
+	VALUES (
+		in_rpt_gen_id,
+		in_rpt_gen_datetime,
+		in_rpt_type,
+		decode(in_seq, 0, (
+			select nvl(max(pl_seq), 0) + 1
+			from psp_txn_check_rpt_log
+			where pl_rpt_gen_id = in_rpt_gen_id
+			and pl_rpt_gen_datetime = in_rpt_gen_datetime
+			and pl_rpt_type = in_rpt_type), in_seq),
+		in_party_type,
+		in_party_id,
+		in_party_name,
+		in_bank_code,
+		in_bank_name,
+		to_date(in_dur_start,'DD-MON-YYYY HH24:MI:SS'),
+		to_date(in_dur_end,'DD-MON-YYYY HH24:MI:SS'),
+		in_succ_cnt,
+		in_pend_cnt,
+		in_total_cnt,
+		sysdate,
+		in_create_user,
+		sysdate,
+		in_create_user
+		);
+
+	IF SQL%ROWCOUNT = 0 THEN
+		RETURN 1;
+	ELSE
+		RETURN 0;
+	END IF;
+
+EXCEPTION
+	WHEN OTHERS THEN	
+		RETURN 9;
+
+END sp_psp_txn_chk_rpt_log_insert;
+/

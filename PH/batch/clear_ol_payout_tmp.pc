@@ -1,0 +1,422 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/05/21              LokMan Chow
+Add house-keep for API Batch HD & DT		   2017/05/10		   LokMan Chow
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define NUM_OF_EXPIRY_DAY	14
+int	num_of_day = NUM_OF_EXPIRY_DAY;
+
+char    cDebug  = 'Y';
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int delete_gen_tmp();
+int get_api_batch(recordset_t     *rBatch);
+int delete_api_batch_dt(const char* batch_id);
+int delete_api_batch_hd(const char* batch_id);
+int get_gen_batch(recordset_t     *rBatch);
+int delete_gen_batch_dt(const char* batch_id);
+int delete_gen_batch_hd(const char* batch_id);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+	char	*csBatchId = NULL;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	hash_t *hRec;
+
+	iRet = parse_arg(argc,argv);
+	if(iRet == SUCCESS)
+		iRet = delete_gen_tmp();
+
+	if(iRet == SUCCESS){
+
+		if(get_api_batch(rRecordSet)==SUCCESS){
+
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"batch_id",&csBatchId)){
+					if(delete_api_batch_dt(csBatchId)==SUCCESS){
+						iRet = delete_api_batch_hd(csBatchId);
+					}
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		RecordSet_Destroy(rRecordSet);
+
+
+		if(get_gen_batch(rRecordSet)==SUCCESS){
+
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"batch_id",&csBatchId)){
+					if(delete_gen_batch_dt(csBatchId)==SUCCESS){
+						iRet = delete_gen_batch_hd(csBatchId);
+					}
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		RecordSet_Destroy(rRecordSet);
+
+	}
+
+
+	FREE_ME(rRecordSet);
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int delete_gen_tmp()
+{
+	int	iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO delete_gen_tmp_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		int	hv_num_of_day;
+
+        EXEC SQL END DECLARE SECTION;
+
+	hv_num_of_day = num_of_day;
+
+        EXEC SQL 
+		delete from ol_payout_generated_tmp
+		where opt_create_timestamp < sysdate - :hv_num_of_day;
+
+	return iRet;
+
+delete_gen_tmp_error:
+DEBUGLOG(("delete_gen_tmp error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int get_api_batch(recordset_t     *rBatch)
+{
+	int     iRet = SUCCESS;
+	int	iCnt = 0;
+	hash_t *myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_api_batch_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int     hv_num_of_day;
+
+		varchar	v_batch_id[PD_TXN_SEQ_LEN+1];
+		short	ind_batch_id = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_num_of_day = num_of_day;
+
+	EXEC SQL DECLARE c_cursor_get_api_batch CURSOR FOR
+		select	oah_batch_id
+		from	ol_payout_api_batch_hd,
+			ol_payout_api_batch_dt
+		where oah_batch_id = oad_batch_id
+		and oah_create_timestamp < sysdate - :hv_num_of_day
+		group by oah_batch_id;
+
+
+	EXEC SQL OPEN c_cursor_get_api_batch;
+	do {
+		EXEC SQL FETCH c_cursor_get_api_batch
+		INTO
+			:v_batch_id:ind_batch_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+		if (ind_batch_id >= 0) {
+			v_batch_id.arr[v_batch_id.len] ='\0';
+			PutField_CString(myHash,"batch_id",(const char*)v_batch_id.arr);
+		}
+
+		RecordSet_Add(rBatch,myHash);
+	}
+	while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_get_api_batch;
+
+	if (iCnt > 0 )
+		iRet = SUCCESS;
+	else
+		iRet = FAILURE;
+
+	return	iRet;
+
+get_api_batch_error:
+DEBUGLOG(("get_api_batch_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_get_api_batch;
+        return FAILURE;
+}
+
+
+
+int delete_api_batch_dt(const char* batch_id)
+{
+        int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO delete_api_batch_dt_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar     hv_batch_id[PD_TXN_SEQ_LEN];
+
+
+        EXEC SQL END DECLARE SECTION;
+
+	hv_batch_id.len = strlen(batch_id);
+	memcpy(hv_batch_id.arr,batch_id,hv_batch_id.len);        
+
+        EXEC SQL
+                delete from ol_payout_api_batch_dt
+                where  oad_batch_id = :hv_batch_id;
+
+        return iRet;
+
+delete_api_batch_dt_error:
+DEBUGLOG(("delete_api_batch_dt error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int delete_api_batch_hd(const char* batch_id)
+{
+        int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO delete_api_batch_hd_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar     hv_batch_id[PD_TXN_SEQ_LEN];
+
+
+        EXEC SQL END DECLARE SECTION;
+
+	hv_batch_id.len = strlen(batch_id);
+	memcpy(hv_batch_id.arr,batch_id,hv_batch_id.len);        
+
+        EXEC SQL
+                delete from ol_payout_api_batch_hd
+                where oah_batch_id = :hv_batch_id;
+
+        return iRet;
+
+delete_api_batch_hd_error:
+DEBUGLOG(("delete_api_batch_hd error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int get_gen_batch(recordset_t     *rBatch)
+{
+	int     iRet = SUCCESS;
+	int	iCnt = 0;
+	hash_t *myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_gen_batch_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int     hv_num_of_day;
+
+		varchar	v_batch_id[PD_TXN_SEQ_LEN+1];
+		short	ind_batch_id = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_num_of_day = num_of_day;
+
+	EXEC SQL DECLARE c_cursor_get_gen_batch CURSOR FOR
+		select	oap_batch_id
+		from	ol_payout_api_pregen_hd,
+			ol_payout_api_pregen_dt
+		where oap_batch_id = oag_batch_id
+		and oap_create_timestamp < sysdate - :hv_num_of_day
+		group by oap_batch_id;
+
+
+	EXEC SQL OPEN c_cursor_get_gen_batch;
+	do {
+		EXEC SQL FETCH c_cursor_get_gen_batch
+		INTO
+			:v_batch_id:ind_batch_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+		if (ind_batch_id >= 0) {
+			v_batch_id.arr[v_batch_id.len] ='\0';
+			PutField_CString(myHash,"batch_id",(const char*)v_batch_id.arr);
+		}
+
+		RecordSet_Add(rBatch,myHash);
+	}
+	while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_get_gen_batch;
+
+	if (iCnt > 0 )
+		iRet = SUCCESS;
+	else
+		iRet = FAILURE;
+
+	return	iRet;
+
+get_gen_batch_error:
+DEBUGLOG(("get_gen_batch_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_get_gen_batch;
+        return FAILURE;
+}
+
+
+
+int delete_gen_batch_dt(const char* batch_id)
+{
+        int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO delete_gen_batch_dt_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar     hv_batch_id[PD_TXN_SEQ_LEN];
+
+
+        EXEC SQL END DECLARE SECTION;
+
+	hv_batch_id.len = strlen(batch_id);
+	memcpy(hv_batch_id.arr,batch_id,hv_batch_id.len);        
+
+        EXEC SQL
+                delete from ol_payout_api_pregen_dt
+                where  oag_batch_id = :hv_batch_id;
+
+        return iRet;
+
+delete_gen_batch_dt_error:
+DEBUGLOG(("delete_gen_batch_dt error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int delete_gen_batch_hd(const char* batch_id)
+{
+        int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO delete_gen_batch_hd_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar     hv_batch_id[PD_TXN_SEQ_LEN];
+
+
+        EXEC SQL END DECLARE SECTION;
+
+	hv_batch_id.len = strlen(batch_id);
+	memcpy(hv_batch_id.arr,batch_id,hv_batch_id.len);        
+
+        EXEC SQL
+                delete from ol_payout_api_pregen_hd
+                where oap_batch_id = :hv_batch_id;
+
+        return iRet;
+
+delete_gen_batch_hd_error:
+DEBUGLOG(("delete_gen_batch_hd error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                num_of_day = atoi(optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        return SUCCESS;
+}

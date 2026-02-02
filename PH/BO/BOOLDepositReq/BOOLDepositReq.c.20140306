@@ -1,0 +1,1073 @@
+/*
+Partnerdelight (c)2013. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/09/27              Stan Poon
+Check Merchant Ref				   2013/11/14		   Stan Poon
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define __USE_XOPEN
+#include <time.h>
+#include "math.h"
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "mymd5.h"
+#include "ctype.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "BOOLDepositReq.h"
+
+char    cDebug;
+
+#define	PD_FILE_DELIMITER	","
+
+#define	PD_FILE_CHECKSUM_LEN	8
+#define PD_FILE_DATETIME_FORMAT	"%Y-%m-%d %H:%M"
+
+
+/* File Format Version 2 */
+
+char *csHeaderVer2[4] = {"Merchant ID","Service Code","Total Records","CheckSum"};
+char *csHeaderTagVer2[4] = {"merchant_id","service_code","total_count","check_sum"};
+int iHeaderMaxLengthVer2[4] = {15,3,6,32};
+int iHeaderMinLengthVer2[4] = { 1,3,1, 8};
+char *csDetailVer2[8] = {"Sequence Number","Merchant Reference","Country","Deposit Amount","Deposit Currency","Deposit Bank","Depositor Provided Reference","Checksum"};
+char *csDetailTagVer2[8] = {"deposit_seq","merch_ref","country","deposit_amount","deposit_ccy","deposit_bank","deposit_ref","check_sum"};
+int iDetailMaxLengthVer2[8] = {6,25,2,12,3,150,150,32};
+int iDetailMinLengthVer2[8] = {1, 1,2, 1,3,  1,  0, 8};
+
+char *csHeaderCheckSumVer2[2] = {"merchant_id","total_count"};
+char *csDetailCheckSumVer2[4] = {"deposit_seq","merch_ref","deposit_amount","deposit_bank"};
+
+
+/* File Format Version 1 */
+
+char *csDetailVer1[6] = {"Deposit Date/Time","Merchant Reference","Deposit Currency","Deposit Amount","Deposit Bank","Depositor Provided Reference"};
+char *csDetailTagVer1[6] = {"deposit_datetime","merch_ref","deposit_ccy","deposit_amount","deposit_bank","deposit_ref"};
+int iDetailMaxLengthVer1[6] = {16,25,3,11,150,150};
+int iDetailMinLengthVer1[6] = {16, 1,3, 1,  1,  0};
+
+
+void BOOLDepositReq(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+OBJPTR(DB);
+
+int strcicmp(char const *a, char const *b) {
+	for (;; a++, b++) {
+		int d = tolower(*a) - tolower(*b);
+		if (d != 0 || !*a)
+			return d;
+	}
+}
+
+int splitLine(char *cs_input_buf, char **csTag, int iTagSize, char **csCheckSum, int iCheckSize, hash_t *hContext);
+int ProcessDepositReq(hash_t *hContext, hash_t *hRequest)
+{
+        int     iRet = PD_OK, iDtlRet = PD_OK;
+	char	*csMerchantID, *csIntBankCode, *csBankAcctNum;
+	char	*csInFileName, *csFileName, *csUser;
+	char	*csServiceCode, *csDefaultCcy, *csDefaultCountry;
+	char	*csMerchantRef;
+	int	iSupportDecimal = 1, iDepositReqVer, iMerchRefDup; 
+
+	char	**csField, **csFieldTag;
+	int	*iFieldMaxLength, *iFieldMinLength;
+
+	double	dAcceptAmount = 0.0;
+	int	iTotalCount = 0, iAcceptCount = 0;
+
+	FILE	*fin = NULL;
+	char	*csTmp;
+	int	iTmp;
+	char	cs_input_buf[PD_TMP_MSG_BUF_LEN];
+	char	cs_tmp_buf1[PD_TMP_MSG_BUF_LEN];
+	char	cs_tmp_buf2[PD_TMP_MSG_BUF_LEN];
+	strcpy(cs_tmp_buf2, "");
+
+	char	*csTag = (char*) malloc (64);
+	hash_t	*hRec;
+	hash_t	*hMerchRef = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMerchRef,0);
+
+/* merchant_id */
+	if (GetField_CString(hContext, "merchant_id", &csMerchantID)) {
+DEBUGLOG(("ProcessDepositReq() merchant_id = [%s]\n", csMerchantID));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() merchant_id NOT FOUND!!!\n"));
+	}
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ProcessDepositReq() int_bank_code = [%s]\n", csIntBankCode));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() int_bank_code NOT FOUND!!!\n"));
+	}
+/* bank_acct_num */
+	if (GetField_CString(hContext, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("ProcessDepositReq() bank_acct_num = [%s]\n", csBankAcctNum));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() bank_acct_num NOT FOUND!!!\n"));
+	}
+/* in_file_name */
+	if (GetField_CString(hContext, "filename", &csInFileName)) {
+DEBUGLOG(("ProcessDepositReq() in_file_name = [%s]\n", csInFileName));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() in_file_name NOT FOUND!!!\n"));
+	}
+/* in_full_file_name */
+	if (GetField_CString(hContext, "in_full_filename", &csFileName)) {
+DEBUGLOG(("ProcessDepositReq() in_full_filename = [%s]\n", csFileName));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() in_full_filename NOT FOUND!!!\n"));
+	}
+/* user */
+	if (GetField_CString(hContext, "create_user", &csUser)) {
+DEBUGLOG(("ProcessDepositReq() user = [%s]\n", csUser));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq()  NOT FOUND!!!\n"));
+	}
+
+/* deposit_request_ver */
+	if (GetField_Int(hContext, "deposit_req_ver", &iDepositReqVer)) {
+DEBUGLOG(("ProcessDepositReq() deposit_request_ver = [%d]\n", iDepositReqVer));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() deposit_request_ver NOT FOUND!!!\n"));
+	}
+/* service_code */
+	if (GetField_CString(hContext, "service_code", &csServiceCode)) {
+DEBUGLOG(("ProcessDepositReq() service_code = [%s]\n", csServiceCode));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() service_code NOT FOUND!!!\n"));
+	}
+/* acct_ccy */
+	if (GetField_CString(hContext, "acct_ccy", &csDefaultCcy)) {
+DEBUGLOG(("ProcessDepositReq() acct_ccy = [%s]\n", csDefaultCcy));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() acct_ccy NOT FOUND!!!\n"));
+	}
+/* country */
+	if (GetField_CString(hContext, "country", &csDefaultCountry)) {
+DEBUGLOG(("ProcessDepositReq() country = [%s]\n", csDefaultCountry));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() country NOT FOUND!!!\n"));
+	}
+
+/* supportDecimal */
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+		if ((unsigned long)((DBObjPtr)(csDefaultCcy)) != PD_TRUE){
+			iSupportDecimal = 0;
+		}
+
+		if(!strcmp(csDefaultCountry,PD_TAIWAN)) {
+			iSupportDecimal = 0;
+		}
+DEBUGLOG(("ProcessDepositReq() [%s][%s] support decimal=[%d]\n",csDefaultCcy,csDefaultCountry,iSupportDecimal));
+	}
+/* file */
+	if (iRet == PD_OK) {
+		fin = fopen(csFileName, "r");
+		if (fin == NULL) {
+			iRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() cannot open file [%s]!!!\n", csInFileName));
+ERRLOG("BOOLDepositReq:: ProcessDepositReq() cannot open file [%s]!!!\n", csInFileName);
+		}
+	}
+
+/* Deposit Header */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessDepositReq() Process Deposit Header\n"));
+		strcpy(cs_tmp_buf2, "");
+		hRec = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hRec, 0);
+
+		int iFieldSize = 0;
+		int iCheckSize = 0;
+		csField = csHeaderVer2;
+		csFieldTag = csHeaderTagVer2;
+		iFieldMaxLength = iHeaderMaxLengthVer2;
+		iFieldMinLength = iHeaderMinLengthVer2;
+
+	/* Process */
+		if (iDepositReqVer==2) {
+			fgets(cs_input_buf, sizeof(cs_input_buf), fin); 
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			iFieldSize = (int)sizeof(csHeaderTagVer2) / (int)sizeof(*csHeaderTagVer2);
+			iCheckSize = (int)sizeof(csHeaderCheckSumVer2) / (int)sizeof(*csHeaderCheckSumVer2);
+			iDtlRet = splitLine(cs_input_buf, csHeaderTagVer2, iFieldSize, csHeaderCheckSumVer2, iCheckSize, hRec);
+		}
+
+	/* Count */
+		while (fgets(cs_tmp_buf1, sizeof(cs_tmp_buf1), fin) != NULL) {
+			if (cs_tmp_buf1[strlen(cs_tmp_buf1) - 1] == 0x0A) cs_tmp_buf1[strlen(cs_tmp_buf1) - 1] = '\0';
+			if (cs_tmp_buf1[strlen(cs_tmp_buf1) - 1] == 0x0D) cs_tmp_buf1[strlen(cs_tmp_buf1) - 1] = '\0';
+			if (strcmp(cs_tmp_buf1,"")) iTotalCount++;
+		}
+
+	/* Check Length */
+		if (iDtlRet == PD_OK) {
+			int i, iStrLen;
+			for (i=0;i<iFieldSize;i++) {
+				csTmp = NULL;
+				if (GetField_CString(hRec,csFieldTag[i],&csTmp)) {
+					iStrLen = strlen(csTmp);
+				} else {
+					iStrLen = 0;
+				}
+				if (iStrLen > iFieldMaxLength[i]) {
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(%s TOO LONG)",csField[i]);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+					iDtlRet = INT_HEADER_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() %s [%s] TOO LONG!!!\n",csFieldTag[i],csTmp));
+				} else if (iStrLen < iFieldMinLength[i]) {
+					if (iStrLen == 0) {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(%s Not Found)",csField[i]);
+					} else {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(%s Too Short)",csField[i]);
+					}
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+					iDtlRet = INT_HEADER_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() %s [%s] TOO SHORT!!!\n",csFieldTag[i],csTmp));
+				} else {
+// DEBUGLOG(("ProcessDepositReq() %s [%s] length okay\n",csFieldTag[i],csTmp));
+				}
+			}
+		}
+
+	/* Check Field */
+		if (iDtlRet == PD_OK && iDepositReqVer==2) {
+		/* merchnat_id */
+			if (GetField_CString(hRec,"merchant_id",&csTmp)) {
+				if (strcmp(csTmp, csMerchantID)) {
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Merchant ID[%s])",csTmp);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+					iDtlRet = INT_HEADER_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() merchant_id [%s] FAILURE!!!\n",csTmp));
+				}
+			}
+		/* service_code */
+			if (GetField_CString(hRec,"service_code",&csTmp)) {
+				if (strcmp(csTmp, csServiceCode)) {
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Service Code[%s])",csTmp);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+					iDtlRet = INT_HEADER_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() service_code[%s] FAILURE!!!\n",csTmp));
+				}
+			}
+		/* total_count */
+			if (GetField_CString(hRec,"total_count",&csTmp)) {
+				iTmp = atoi(csTmp);
+				if (iTmp != iTotalCount) {
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Total Record[%i])",iTmp);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+					iDtlRet = INT_HEADER_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() count[%s] FAILURE!!!\n",csTmp));
+				}
+			}
+		}
+
+		if (iDtlRet != PD_OK) {
+			iRet = iDtlRet;
+			PutField_Int(hContext, "internal_error", iRet);
+			if (iDtlRet == INT_CHECKSUM_ERROR) {
+				sprintf(cs_tmp_buf2,"(CheckSum)");
+			}
+			PutField_Int(hContext, "result_cnt", 1);
+			PutField_CString(hContext, "msg_1", "Header Field Error");
+			PutField_CString(hContext, "desc_1", cs_tmp_buf2);
+			PutField_CString(hContext, "line_1", cs_input_buf);
+			//PutField_Int(hContext, "line_1", 1);
+DEBUGLOG(("ProcessDepositReq() Header Field ERROR!!!\n"));
+		}
+
+		hash_destroy(hRec);
+		FREE_ME(hRec);
+	}
+
+
+/* Deposit Detail */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessDepositReq() Process Deposit Detail\n"));
+		int	iCurrLine = 0, iCount = 0;
+		double	dAmt = 0.0;
+		long	lAmt;
+		int iFieldSize = 0;
+		int iCheckSize = 0;
+
+		if (iDepositReqVer==2) {
+			iFieldSize = (int)sizeof(csDetailTagVer2) / (int)sizeof(*csDetailTagVer2);
+			iCheckSize = (int)sizeof(csDetailCheckSumVer2) / (int)sizeof(*csDetailCheckSumVer2);
+			csField = csDetailVer2;
+			csFieldTag = csDetailTagVer2;
+			iFieldMaxLength = iDetailMaxLengthVer2;
+			iFieldMinLength = iDetailMinLengthVer2;
+		} else {
+			iFieldSize = (int)sizeof(csDetailTagVer1) / (int)sizeof(*csDetailTagVer1);
+			iCheckSize = 0;
+			csField = csDetailVer1;
+			csFieldTag = csDetailTagVer1;
+			iFieldMaxLength = iDetailMaxLengthVer1;
+			iFieldMinLength = iDetailMinLengthVer1;
+		}
+
+		rewind(fin);
+		if (iDepositReqVer==2) fgets(cs_input_buf, sizeof(cs_input_buf), fin); 
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+ DEBUGLOG(("ProcessDepositReq() cs_input_buf = [%s]\n",cs_input_buf));
+			strcpy(cs_tmp_buf2, "");
+			iCurrLine++;
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			if (!strcmp(cs_input_buf,"")) continue;
+
+			hRec = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hRec, 0);
+
+		/* Process */
+			if (iDepositReqVer==2) {
+				iDtlRet = splitLine(cs_input_buf, csDetailTagVer2, iFieldSize, csDetailCheckSumVer2, iCheckSize, hRec);
+			} else {
+				iDtlRet = splitLine(cs_input_buf, csDetailTagVer1, iFieldSize, NULL, iCheckSize, hRec);
+			}
+
+		/* Check Length */
+			if (iDtlRet == PD_OK) {
+				int i, iStrLen;
+				for (i=0;i<iFieldSize;i++) {
+					csTmp = NULL;
+					if (GetField_CString(hRec,csFieldTag[i],&csTmp)) {
+						iStrLen = strlen(csTmp);
+					} else {
+						iStrLen = 0;
+					}
+					if (iStrLen > iFieldMaxLength[i]) {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(%s TOO LONG)",csField[i]);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+						iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() %s [%s] TOO LONG!!!\n",csFieldTag[i],csTmp));
+					} else if (iStrLen < iFieldMinLength[i]) {
+						if (iStrLen == 0) {
+							snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(%s Not Found)",csField[i]);
+						} else {
+							snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(%s Too Short)",csField[i]);
+						}
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+						iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() %s [%s] TOO SHORT!!!\n",csFieldTag[i],csTmp));
+					} else {
+// DEBUGLOG(("ProcessDepositReq() %s [%s] length okay\n",csFieldTag[i],csTmp));
+					}
+				}
+			}
+
+		/* Check Field */
+			if (iDtlRet == PD_OK) {
+			/* deposit_datetime */
+				if (GetField_CString(hRec,"deposit_datetime",&csTmp)) {
+					int nDays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+					struct  tm tStruct;
+					tStruct.tm_year = 101;
+					tStruct.tm_mon = 0;
+					tStruct.tm_mday = 1;
+					tStruct.tm_hour = 0;
+					tStruct.tm_min = 0;
+					tStruct.tm_sec = 0;
+					char csOutDateTime[strlen(PD_FILE_DATETIME_FORMAT)+2 + 1];
+
+					strptime(csTmp, PD_FILE_DATETIME_FORMAT, &tStruct);
+
+					if ((tStruct.tm_year+1900)%4 == 0) nDays[1]=29;
+					if ((tStruct.tm_year+1900)%100 == 0) nDays[1]=28;
+					if ((tStruct.tm_year+1900)%400 == 0) nDays[1]=29;
+
+					if (tStruct.tm_mday > nDays[tStruct.tm_mon]) {
+						tStruct.tm_mday-=nDays[tStruct.tm_mon];
+						tStruct.tm_mon++;
+					}
+
+					strftime(csOutDateTime, sizeof(csOutDateTime), PD_FILE_DATETIME_FORMAT, &tStruct);
+
+					if (strcmp(csTmp,csOutDateTime)) {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Deposit Date/Time[%s])",csTmp);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+						iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() datetime [%s] FAILURE!!!\n",csTmp));
+					}
+				}
+			/* country */
+				if (GetField_CString(hRec,"country",&csTmp)) {
+					if (strcmp(csDefaultCountry, csTmp)) {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Country[%s])",csTmp);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+						iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() country [%s] FAILURE!!!\n",csTmp));
+					}
+				} else {
+					PutField_CString(hRec,"country",csDefaultCountry);
+				}
+			/* ccy */
+				if (GetField_CString(hRec,"deposit_ccy",&csTmp)) {
+					if (!strcmp(csTmp, PD_CCY_ISO_RMB)) {
+						strcpy(csTag, PD_CCY_ISO_CNY);
+						PutField_CString(hRec,"deposit_ccy",csTag);
+					} else {
+						strcpy(csTag, csTmp);
+					}
+					if (strcmp(csDefaultCcy, csTag)) {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Deposit Currency[%s])",csTmp);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+						iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() currency [%s] FAILURE!!!\n",csTmp));
+					}
+				}
+			/* amount */
+				if (GetField_CString(hRec,"deposit_amount",&csTmp)) {
+					if(is_numeric(csTmp)){
+						dAmt = myctod((const unsigned char *)csTmp,strlen(csTmp)-PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+						PutField_Double(hRec,"deposit_amount",dAmt);
+						if (iSupportDecimal==0) {
+							lAmt = (long)dAmt;
+							if (dAmt > lAmt) {
+								snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Deposit Amount Unsupported[%s])",csTmp);
+								strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+								iDtlRet = INT_DETAIL_FIELD_ERROR;
+							}
+						}
+					} else {
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Deposit Amount[%s])",csTmp);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+						iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() amount [%s] FAILURE!!!\n",csTmp));
+					}
+				}
+			/* merch_ref */
+				if (GetField_CString(hRec,"merch_ref",&csMerchantRef)) {
+					iMerchRefDup = 0;
+				/* across file */
+// DEBUGLOG(("ProcessDepositReq() MerchantRef File Check\n"));
+					int i;
+					for (i=1;i<=iAcceptCount;i++) {
+						sprintf(csTag,"ref_%d",i);
+						if (GetField_CString(hMerchRef,csTag,&csTmp) && !strcmp(csMerchantRef,csTmp)) {
+							iMerchRefDup = 1;
+							snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Merchant Reference[%s])",csMerchantRef);
+							strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+							iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() MerchantId[%s][%s]Duplicate (file) Merchant Ref!!!\n",csMerchantID,csMerchantRef));
+							break;
+						}
+					}
+				/* across DBOLDepositRequest */
+					if (iMerchRefDup == 0) {
+// DEBUGLOG(("ProcessDepositReq() DBOLDepositRequest::CheckUploadedMerchantRef\n"));
+						DBObjPtr = CreateObj(DBPtr,"DBOLDepositRequest","CheckUploadedMerchantRef");
+						if ((unsigned long)(DBObjPtr)(csMerchantID,csMerchantRef) != NOT_FOUND) {
+							iMerchRefDup = 1;
+							snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Merchant Reference[%s])",csMerchantRef);
+							strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+							iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() MerchantId[%s][%s]Duplicate (uploaded) Merchant Ref!!!\n",csMerchantID,csMerchantRef));
+						}
+					}
+				/* across DBOLTransaction */
+					if (iMerchRefDup == 0) {
+// DEBUGLOG(("ProcessDepositReq() DBOLTransaction::MatchMerchantRef\n"));
+						DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","MatchMerchantRef");
+						if ((unsigned long)(DBObjPtr)(csMerchantID,csMerchantRef) != NOT_FOUND) {
+							iMerchRefDup = 1;
+							snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Merchant Reference[%s])",csMerchantRef);
+							strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+							iDtlRet = INT_DETAIL_FIELD_ERROR;
+DEBUGLOG(("ProcessDepositReq() MerchantId[%s][%s]Duplicate (txn) Merchant Ref!!!\n",csMerchantID,csMerchantRef));
+						}
+					}
+				} 
+			}
+
+		/* Add Detail */
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("ProcessDepositReq() call DBOLDepositRequest::AddDetail()\n"));
+				PutField_CString(hRec,"filename",csInFileName);
+				PutField_Int(hRec,"deposit_seq",(iAcceptCount+1));
+				PutField_CString(hRec,"create_user",csUser);
+
+				DBObjPtr = CreateObj(DBPtr,"DBOLDepositRequest","AddDetail");
+				iDtlRet = (unsigned long)(*DBObjPtr)(hRec);
+				if (iDtlRet == PD_OK) {
+					iAcceptCount++;
+					dAcceptAmount+=dAmt;
+					sprintf(csTag,"ref_%d",iAcceptCount);
+					PutField_CString(hMerchRef,csTag,csMerchantRef);
+				} else {
+					iDtlRet = INT_ERR;
+DEBUGLOG(("ProcessDepositReq() call DBOLDepositRequest::AddDetail() line [%d] FAILURE!!!\n",iCurrLine));
+ERRLOG("BOOLDepositReq::ProcessDepositReq() call DBOLDepositRequest::AddDetail() line [%d] FAILURE!!!\n",iCurrLine);
+					break;
+				}
+			}
+
+			if (iDtlRet != PD_OK) {
+				iRet = iDtlRet;
+				PutField_Int(hContext, "internal_error", iRet);
+				if (iDtlRet == INT_CHECKSUM_ERROR) {
+					sprintf(cs_tmp_buf2,"(CheckSum)");
+				}
+				iCount++;
+				PutField_Int(hContext, "result_cnt", iCount);
+				sprintf(csTag, "msg_%d", iCount);
+				PutField_CString(hContext, csTag, "Detail Field Error");
+				sprintf(csTag, "desc_%d", iCount);
+				PutField_CString(hContext, csTag, cs_tmp_buf2);
+				sprintf(csTag, "line_%d", iCount);
+				PutField_CString(hContext, csTag, cs_input_buf);
+				//PutField_Int(hContext, csTag, iCurrLine);
+DEBUGLOG(("ProcessDepositReq() Process Deposit Detail line [%d] FAILURE!!!\n",iCurrLine));
+			}
+
+			hash_destroy(hRec);
+			FREE_ME(hRec);
+		}
+	}
+
+	if(fin) {
+		fclose(fin);
+		fin = NULL;
+	}
+
+	PutField_Int(hContext,"total_count",iTotalCount);
+	if (iAcceptCount > 0 && fabs(iAcceptCount) > 1E-9) {
+		PutField_Int(hContext,"accept_count",iAcceptCount);
+		PutField_Double(hContext,"accept_amount",dAcceptAmount);
+	}
+DEBUGLOG(("ProcessStmtFile Result: Accept[%d](%.2lf)/Total[%d]\n", iAcceptCount, dAcceptAmount, iTotalCount));
+
+	FREE_ME(csTag);
+	hash_destroy(hMerchRef);
+	FREE_ME(hMerchRef);
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int splitLine(char *cs_input_buf, char **csTag, int iTagSize, char **csCheckSum, int iCheckSize, hash_t *hContext)
+{
+	int	iRet = PD_OK;
+	char	csTmpBuf[PD_TMP_MSG_BUF_LEN];
+	char	csTmpField[PD_TMP_MSG_BUF_LEN];
+	char	csCalMD5[PD_MD5_SUM_LEN + 1];
+	char	*csField;
+	int	i = 0;
+
+/* UTF-8 BOM */
+	if (i==0 && (unsigned char)cs_input_buf[0] == 0xEF
+		 && (unsigned char)cs_input_buf[1] == 0xBB && (unsigned char)cs_input_buf[2] == 0xBF) {
+		char *src, *dst = cs_input_buf;
+		for (src = cs_input_buf+3; *src != '\0'; src++) {
+			*dst = *src;
+			dst++;
+		}
+		*dst = '\0';
+	}
+
+	strcpy(csTmpBuf, cs_input_buf);
+	csField = mystrtok(csTmpBuf, PD_FILE_DELIMITER);
+	while (csField != NULL && i < iTagSize) { 
+		strcpy(csTmpField, TrimAll((const unsigned char*)csField, strlen(csField)));
+// DEBUGLOG(("[%s] [%s]\n",csTag[i],csTmpField));
+		if (strcmp(csTmpField,"")) {
+			PutField_CString(hContext,csTag[i],csTmpField);
+		}
+		csField = mystrtok(NULL, PD_FILE_DELIMITER);
+		i++;
+	}
+
+/* CheckSum */
+	if (iRet == PD_OK && iCheckSize > 0) {
+		strcpy(csTmpField,"");
+		for (i=0; i<iCheckSize; i++) {
+			if (GetField_CString(hContext,csCheckSum[i],&csField)) {
+				strncat(csTmpField,csField,sizeof(csTmpField)-strlen(csTmpField)-1);
+			} else {
+//				iRet = INT_CHECKSUM_ERROR;
+// DEBUGLOG(("ProcessDepositReq() checksum [%s] NOT FOUND!!!\n",csCheckSum[i]));
+			}
+		}
+		md5sum(csTmpField,strlen(csTmpField),csCalMD5);
+		if (!GetField_CString(hContext,"check_sum",&csField)) {
+			iRet = INT_CHECKSUM_ERROR;
+DEBUGLOG(("ProcessDepositReq() checksum NOT FOUND!!!\n"));
+		}
+
+		if (iRet == PD_OK) {
+			csCalMD5[PD_FILE_CHECKSUM_LEN] = '\0';
+			if(strcicmp(csCalMD5,csField)) {
+DEBUGLOG(("ProcessDepositReq() MD5(%s) = [%s] FAILURE!!!\n",csTmpField,csCalMD5));
+				iRet = INT_CHECKSUM_ERROR;
+			} else {
+DEBUGLOG(("ProcessDepositReq() MD5(%s) = [%s] Passed\n",csTmpField,csCalMD5));
+			}
+		}
+	}
+
+	return iRet;
+}
+
+
+int ConfirmDepositReq(hash_t *hContext, hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+
+	char	*csInFileName = NULL;
+	char	*csService = NULL, *csPayMethod = NULL;
+	char	*csMerchantID = NULL, *csIntBankCode = NULL, *csBankAcctNum = NULL;
+	char	*csUser = NULL;
+	char	*csMerchantRef = NULL;
+
+	char	csNewTxnSeq[PD_TXN_SEQ_LEN + 1];
+	char	csOrgDepositBank[PD_BANK_NAME_LEN + 1], csDepositBankCode[PD_BANK_CODE_LEN + 1];
+	char	*csDepositBank;
+	char	csTxnDateTime[PD_DATETIME_LEN + 1];
+
+	int	iTmp;
+	double	dTmp;
+	char	*csTmp;
+
+	hash_t *hTxnRec;
+
+	recordset_t *myRec = (recordset_t*) malloc (sizeof(recordset_t));
+	hash_t *hRec;
+
+
+/* merchant_id */
+	if (GetField_CString(hContext, "merchant_id", &csMerchantID)) {
+DEBUGLOG(("ConfirmDepositReq() merchant_id = [%s]\n", csMerchantID));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() merchant_id NOT FOUND!!!\n"));
+	}
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ConfirmDepositReq() int_bank_code = [%s]\n", csIntBankCode));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() int_bank_code NOT FOUND!!!\n"));
+	}
+/* bank_acct_num */
+	if (GetField_CString(hContext, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("ConfirmDepositReq() bank_acct_num = [%s]\n", csBankAcctNum));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() bank_acct_num NOT FOUND!!!\n"));
+	}
+/* in_file_name */
+	if (GetField_CString(hContext, "filename", &csInFileName)) {
+DEBUGLOG(("ConfirmDepositReq() in_file_name = [%s]\n", csInFileName));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() in_file_name NOT FOUND!!!\n"));
+	}
+/* service_code */
+	if (GetField_CString(hContext, "service_code", &csService)) {
+DEBUGLOG(("ConfirmDepositReq() service_code = [%s]\n", csService));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() service_code NOT FOUND!!!\n"));
+	}
+/* user */
+	if (GetField_CString(hContext, "create_user", &csUser)) {
+DEBUGLOG(("ConfirmDepositReq() user = [%s]\n", csUser));
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq()  NOT FOUND!!!\n"));
+	}
+
+
+/* Get pay_method */
+	if (iRet == PD_OK) {
+		recordset_init(myRec, 0);
+
+		char*	csValueTmp;
+		int iCnt;
+		csValueTmp = (char*) malloc (128);
+
+DEBUGLOG(("ConfirmDepositReq() Call DBSystemParameter FindCode\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+		if ((unsigned long)(DBObjPtr)(PD_SERVICE_PAY_METHOD,csValueTmp) == FOUND) {
+DEBUGLOG(("ConfirmDepositReq() %s [%s]\n",PD_SERVICE_PAY_METHOD,csValueTmp));
+			if(strcmp(csValueTmp,"Y")==0){
+				iCnt = 0;
+DEBUGLOG(("ConfirmDepositReq() Call DBServicePayMethod FindPayMethod\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBServicePayMethod","FindPayMethod");
+				if ((unsigned long)(DBObjPtr)(csService,myRec) == PD_OK) {
+					hRec = RecordSet_GetFirst(myRec);
+					if (GetField_CString(hRec,"pay_method",&csPayMethod)) {
+						iCnt++;
+DEBUGLOG(("ConfirmDepositReq() pay_method [%s]\n",csPayMethod));
+DEBUGLOG(("ConfirmDepositReq() Call DBMerchantPayMethod:Add\n"));
+					}
+				}
+				if(iCnt==0){
+					iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() cannot find pay_method from service[%s]\n",csService));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() cannot find pay_method from service\n");
+				}
+			} else {
+				//csValueTmp not "Y" ->  do nothing
+			}
+		} else {
+			iRet = INT_ERR;
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() DBSystemParameter FindCode fail!!!\n");
+		}
+		FREE_ME(csValueTmp);
+
+		RecordSet_Destroy(myRec);
+	}
+
+
+/* Add Txn */
+	if (iRet == PD_OK) {
+		recordset_init(myRec, 0);
+
+/* Get Deposit Detail */
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::GetDepositDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLDepositRequest", "GetDepositDetail");
+		iRet = (unsigned long)(*DBObjPtr)(csInFileName, myRec);
+		if (iRet != PD_OK) {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::GetDepositDetail() FAILURE!!!\n"));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() call DBOLDepositRequest::GetDepositDetail() FAILURE!!!\n");
+		} else {
+			hRec = RecordSet_GetFirst(myRec);
+			while(hRec && iRet == PD_OK) { 
+				hTxnRec = (hash_t*) malloc (sizeof(hash_t*));
+				hash_init(hTxnRec,0);
+
+				if (GetField_CString(hRec,"merch_ref",&csMerchantRef)) {
+					PutField_CString(hTxnRec,"merchant_ref",csMerchantRef);
+
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","MatchMerchantRef");
+					if ((unsigned long)(DBObjPtr)(csMerchantID,csMerchantRef) != NOT_FOUND) {
+						iRet = INT_DUP_MERCHANT_REF;
+						PutField_Int(hContext, "internal_error", iRet);
+						/* * */
+						TxnAbort();
+						/* * */
+DEBUGLOG(("ConfirmDepositReq() MerchantId[%s][%s]Duplicate Merchant Ref\n",csMerchantID,csMerchantRef));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() MerchantId[%s][%s]Duplicate Merchant Ref\n",csMerchantID,csMerchantRef);
+					}
+				} else {
+					iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() MerchantId[%s]Merchant Ref NOT FOUND!!!\n",csMerchantID));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() MerchantId[%s]Merchant Ref NOT FOUND!!!\n",csMerchantID);
+				}
+
+				DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextOlnTxnSeq");
+				strcpy(csNewTxnSeq,(*DBObjPtr)());
+DEBUGLOG(("ConfirmDepositReq() csNewTxnSeq = [%s]\n",csNewTxnSeq));
+
+/* txn header */
+				PutField_CString(hTxnRec,"filename",csInFileName);
+				if (GetField_Int(hRec,"deposit_seq",&iTmp))
+					PutField_Int(hTxnRec,"deposit_seq",iTmp);
+
+				PutField_Int(hTxnRec,"db_commit",PD_FALSE);
+				PutField_CString(hTxnRec,"txn_seq",csNewTxnSeq);
+				PutField_CString(hTxnRec,"channel_code","OLN");
+				PutField_Char(hTxnRec,"status",PD_TO_PSP);
+				PutField_CString(hTxnRec,"sub_status",PD_SENT_TO_PSP);
+				PutField_CString(hTxnRec,"txn_code",PD_INITIAL_OLN_TXN_CODE);
+				PutField_CString(hTxnRec,"process_type","0200");
+				PutField_CString(hTxnRec,"process_code","200102");
+				PutField_CString(hTxnRec,"merchant_id",csMerchantID);
+				if (GetField_CString(hContext,"client_id",&csTmp))
+					PutField_CString(hTxnRec,"client_id",csTmp);
+				if (GetField_CString(hContext,"PHDATE",&csTmp))
+					PutField_CString(hTxnRec,"host_posting_date",csTmp);
+				PutField_Int(hTxnRec,"internal_code",0);
+				PutField_CString(hTxnRec,"response_code","0");
+				if (GetField_Double(hRec,"deposit_amount",&dTmp)) {
+					PutField_Double(hTxnRec,"txn_amt",dTmp);
+					PutField_Double(hTxnRec,"deposit_amt",dTmp);
+				}
+
+				if (GetField_CString(hContext, "local_tm_date", &csTmp)) {
+					PutField_CString(hTxnRec, "local_tm_date", csTmp);
+					strcpy(csTxnDateTime, csTmp);
+					PutField_CString(hTxnRec, "transmission_datetime", csTxnDateTime);
+					PutField_CString(hTxnRec, "tm_date", csTmp);
+				}
+				if (GetField_CString(hContext, "local_tm_time", &csTmp)) {
+					PutField_CString(hTxnRec, "local_tm_time", csTmp);
+					strcat(csTxnDateTime, csTmp);
+					PutField_CString(hTxnRec, "transmission_datetime", csTxnDateTime);
+					PutField_CString(hTxnRec, "tm_time", csTmp);
+				}
+
+				PutField_CString(hTxnRec,"add_user",PD_UPDATE_USER);
+				PutField_CString(hTxnRec,"update_user",PD_UPDATE_USER);
+				if (GetField_CString(hRequest,"ip_addr",&csTmp))
+					PutField_CString(hTxnRec,"ip_addr",csTmp);
+				PutField_CString(hTxnRec,"service_code",csService);
+				if (GetField_CString(hRequest,"user_agent",&csTmp)) {
+					PutField_CString(hTxnRec,"user_agent",csTmp);
+				}
+/* txn detail */
+				if (GetField_CString(hRec,"deposit_ccy",&csTmp))
+					PutField_CString(hTxnRec,"txn_ccy",csTmp);
+				if (GetField_CString(hRec,"country",&csTmp))
+					PutField_CString(hTxnRec,"txn_country",csTmp);
+				PutField_CString(hTxnRec,"pay_method",csPayMethod);
+				if (GetField_CString(hRec,"deposit_datetime",&csTmp))
+					PutField_CString(hTxnRec,"deposit_datetime",csTmp);
+				PutField_CString(hTxnRec,"bank_acct_num",csBankAcctNum);
+				if (GetField_CString(hRec,"deposit_bank",&csDepositBank))
+					PutField_CString(hTxnRec,"deposit_bank",csDepositBank);
+				if (GetField_CString(hRec,"deposit_ref",&csTmp))
+					PutField_CString(hTxnRec,"deposit_ref",csTmp);
+
+				if (strcmp(csOrgDepositBank, csDepositBank) || !strcmp(csOrgDepositBank,"")) {
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::GetBankCode()\n"));
+					strcpy(csOrgDepositBank, csDepositBank);
+					DBObjPtr = CreateObj(DBPtr,"DBOLDepositRequest","GetBankCode");
+					if ((unsigned long)(*DBObjPtr)(csDepositBank,csDepositBankCode) == PD_FOUND) {
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::GetBankCode() FOUND\n"));
+					} else {
+						strcpy(csDepositBankCode,PD_OTHER_BANK_CODE);
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::GetBankCode() NOT FOUND\n"));
+					}
+				}
+				PutField_CString(hTxnRec,"deposit_bank_code",csDepositBankCode);
+				PutField_CString(hTxnRec,"bank_code",csIntBankCode);
+
+				if (GetField_CString(hContext,"branch_name",&csTmp))
+					PutField_CString(hTxnRec,"branch_name",csTmp);
+				if (GetField_CString(hContext,"owner_name",&csTmp))
+					PutField_CString(hTxnRec,"account_name",csTmp);
+				PutField_CString(hTxnRec,"add_user",PD_UPDATE_USER);
+
+/* Ol Txn Header */
+				if (iRet == PD_OK) {
+DEBUGLOG(("ConfirmDepositReq() call DBOLTransaction::Add()\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","Add");
+					if ((unsigned long)(*DBObjPtr)(hTxnRec) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() call DBOLTransaction::Add() FAILURE!!!\n"));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() call DBOLTransaction::Add() FAILURE!!!\n");
+					}
+				}
+
+/* Ol Txn Detail */
+				if (iRet == PD_OK) {
+DEBUGLOG(("ConfirmDepositReq() call DBOLTransaction::AddDetail()\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","AddDetail");
+					if ((unsigned long)(*DBObjPtr)(hTxnRec) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() call DBOLTransaction::AddDetail() FAILURE!!!\n"));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() call DBOLTransaction::AddDetail() FAILURE!!!\n");
+					}
+				}
+
+/* Ol Txn Detail */
+				if (iRet == PD_OK) {
+					PutField_CString(hTxnRec,"selected_pay_method",csPayMethod);
+DEBUGLOG(("ConfirmDepositReq() call DBOLTransaction::UpdateDetail()\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","UpdateDetail");
+					if ((unsigned long)(*DBObjPtr)(hTxnRec) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() call DBOLTransaction::UpdateDetail() FAILURE!!!\n"));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() call DBOLTransaction::UpdateDetail() FAILURE!!!\n");
+					}
+				}
+
+/* Ol Deposit Request */
+				if (iRet == PD_OK) {
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::UpdateDetail()\n"));
+					PutField_CString(hTxnRec,"update_user",csUser);
+					DBObjPtr = CreateObj(DBPtr,"DBOLDepositRequest","UpdateDetail");
+					if ((unsigned long)(*DBObjPtr)(hTxnRec) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("ConfirmDepositReq() call DBOLDepositRequest::UpdateDetail() FAILURE!!!\n"));
+ERRLOG("BOOLDepositReq::ConfirmDepositReq() call DBOLDepositRequest::UpdateDetail() FAILURE!!!\n");
+					}
+				}
+
+				hash_destroy(hTxnRec);
+				FREE_ME(hTxnRec);
+
+				hRec = RecordSet_GetNext(myRec);
+			}
+		}
+
+		hRec = RecordSet_GetFirst(myRec);
+		while(hRec != NULL) {
+			hash_destroy(hRec);
+			FREE_ME(hRec);
+			hRec = RecordSet_GetNext(myRec);
+		}
+		recordset_destroy(myRec);
+		FREE_ME(myRec);
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int EditDepositReq(hash_t *hContext)
+{
+	int 	iRet = PD_OK;
+	char	*csTxnAmt=NULL;
+	char	csBankCode[PD_BANK_CODE_LEN + 1];
+	char	*csDepositBank=NULL, *csTxnCcy=NULL;
+	char	*csTmp=NULL, *p=NULL;
+	double	dTmp;
+	long	lTmp;
+	int	iCheck;
+
+	PutField_Int(hContext,"match",0);
+
+/* txn_id */
+        if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+DEBUGLOG(("EditDepositReq() txn_id = [%s]\n",csTmp));
+	}
+
+/* deposit_amount */
+	if (GetField_CString(hContext, "deposit_amt", &csTxnAmt)) {
+DEBUGLOG(("EditDepositReq() deposit_amount = [%s]\n", csTxnAmt));
+	}
+
+/* cust_deposit_datetime */
+	if (GetField_CString(hContext, "cust_deposit_datetime", &csTmp)) {
+DEBUGLOG(("EditDepositReq() cust_deposit_datetime = [%s]\n", csTmp));
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csTmp)) {
+DEBUGLOG(("EditDepositReq() int_bank_code = [%s]\n", csTmp));
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hContext, "bank_acct_num", &csTmp)) {
+DEBUGLOG(("EditDepositReq() bank_acct_num = [%s]\n", csTmp));
+	}
+
+/* deposit_bank */
+	if (GetField_CString(hContext, "deposit_bank", &csTmp)) {
+DEBUGLOG(("EditDepositReq() deposit_bank = [%s]\n", csTmp));
+	}
+
+/* deposit_ref */
+	if (GetField_CString(hContext, "deposit_ref", &csTmp)) {
+DEBUGLOG(("EditDepositReq() deposit_ref = [%s]\n", csTmp));
+	}
+
+/* update_user */
+	if (GetField_CString(hContext, "update_user", &csTmp)) {
+DEBUGLOG(("EditDepositReq() update_user = [%s]\n", csTmp));
+	}
+
+/* country */
+	if (GetField_CString(hContext, "country", &csTmp)) {
+DEBUGLOG(("EditDepositReq() country = [%s]\n", csTmp));
+	}
+
+/* acct_ccy */
+	if (GetField_CString(hContext, "acct_ccy", &csTmp)) {
+DEBUGLOG(("EditDepositReq() acct_ccy = [%s]\n", csTmp));
+	}
+
+/* validate amount */
+	if (GetField_CString(hContext, "deposit_amt", &csTxnAmt) &&
+	    GetField_CString(hContext, "acct_ccy", &csTxnCcy)) {
+		iCheck = PD_FALSE;
+		p = (char*)strchr(csTxnAmt, '.');
+		if (p == NULL){
+			iCheck = is_numeric(csTxnAmt);
+			if(iCheck!=PD_FALSE){
+				if(sscanf(csTxnAmt,"%lf",&dTmp)==1){
+					PutField_Double(hContext,"deposit_amount",dTmp);
+DEBUGLOG(("EditDepositReq() deposit_amount = [%f]\n",dTmp));
+				}
+			}
+		} else{
+			if(sscanf(csTxnAmt,"%lf",&dTmp)==1){
+				iCheck = PD_TRUE;
+				PutField_Double(hContext,"deposit_amount",dTmp);
+DEBUGLOG(("EditDepositReq() deposit_amount = [%f]\n",dTmp));
+			}
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+			if ((unsigned long)((DBObjPtr)(csTxnCcy))!=PD_TRUE){
+DEBUGLOG(("EditDepositReq() [%s] doesn't support decimal\n",csTxnCcy));
+				lTmp = (long) dTmp;
+				if (dTmp > lTmp) {
+					iRet = INT_UNSUPPORTED_PAY_AMOUNT;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("EditDepositReq() unsupported deposit amount [%f]\n",dTmp));
+ERRLOG("TxnOmtByUsDRE::EditDepositReq() unsupported deposit amount [%f]\n",dTmp);
+				} else if(lTmp==0l){
+					iRet =  INT_INVALID_PAY_AMOUNT;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("EditDepositReq() deposit_amount Invalid[%s]\n",csTxnAmt));
+ERRLOG("TxnOmtByUsDRE::EditDepositReq() deposit_amount Invalid\n");
+				}
+			}
+		}	
+		if(iCheck==PD_FALSE){
+			iRet =  INT_INVALID_PAY_AMOUNT;
+                       	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("EditDepositReq() deposit_amount Invalid[%s]\n",csTxnAmt));
+ERRLOG("TxnOmtByUsDRE::EditDepositReq() deposit_amount Invalid\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "deposit_bank", &csDepositBank)) {
+			DBObjPtr = CreateObj(DBPtr,"DBOLDepositRequest","GetBankCode");
+			if ((unsigned long)(*DBObjPtr)(csDepositBank,csBankCode) == PD_FOUND) {
+DEBUGLOG(("EditDepositReq() call DBOLDepositRequest::GetBankCode() FOUND\n"));
+			} else {
+				strcpy(csBankCode,PD_OTHER_BANK_CODE);
+DEBUGLOG(("EditDepositReq() call DBOLDepositRequest::GetBankCode() NOT FOUND\n"));
+			}
+		} else {
+			strcpy(csBankCode,PD_OTHER_BANK_CODE);
+		}
+		PutField_CString(hContext,"deposit_bank_code",csBankCode);
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("EditDepositReq() call DBOLTransaction::TxnDepositEdit()\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","TxnDepositEdit");
+		if ((*DBObjPtr)(hContext) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("EditDepositReq() call DBOLTransaction::TxnDepositEdit() FAILURE!!!\n"));
+ERRLOG("BOOLDepositReq::EditDepositReq() call DBOLTransaction::TxnDepositEdit() FAILURE!!!\n");
+		}
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+

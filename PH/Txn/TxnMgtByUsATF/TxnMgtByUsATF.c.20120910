@@ -1,0 +1,612 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/09/10              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsATF.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+void TxnMgtByUsATF(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csTmp;
+
+	char	*csTxnSeq;
+	char	*csTxnSeqTo;
+
+	double	dTotalSrcFee = 0.0;
+	double	dTotalDstFee = 0.0;
+
+	double	dDstTxnAmt = 0.0;
+
+	double	dSrcNetAmt = 0.0;
+
+	unsigned char   csTmpTxnSeq[PD_TXN_SEQ_LEN +1];
+
+	hash_t	*hFrContext, *hToContext;
+	hash_t	*hFrReq, *hToReq;
+
+
+	hFrContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hFrContext, 0);
+
+	hToTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hToContext, 0);
+  
+	hFrReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hFrReq, 0);
+
+	hToReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hToReq, 0);
+
+DEBUGLOG(("Authorize::()\n"));
+
+	if (GetField_CString(hContext, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("Authorize:: txn_seq = [%s]\n", csTxnSeq));
+		PutField_CString(hFrContext, "txn_seq", csTxnSeq);
+	}
+	else {
+		iRet = INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() txn_seq is missing\n"));
+ERRLOG("TxnMgtByUsATF:Authorize() txn seq is missing\n");
+        }
+
+	if (GetField_CString(hContext, "org_txn_seq_to", &csTxnSeqTo)) {
+DEBUGLOG(("Authorize:: txn_seq_to = [%s]\n", csTxnSeqTo));
+		PutField_CString(hToContext, "txn_seq", csTxnSeqTo);
+	}
+	else {
+		iRet = INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() txn_seq_to is missing\n"));
+ERRLOG("TxnMgtByUsATF:Authorize() txn seq to is missing\n");
+	}
+
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hContext,"update_user",csTmp);
+DEBUGLOG(("Authorize::update_user= [%s]\n",csTmp));
+	}
+
+
+	// From GetTxnInfo
+	iRet = GetTxnInfo((const unsigned char*) csTxnSeq, hFrContext, hFrReq);
+
+	if (iRet != PD_OK) {
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::GetTxnInfo (From party) Failed!\n"));
+	}
+
+	// To GetTxnInfo
+	iRet = GetTxnInfo((const unsigned char*) csTxnSeqTo, hToContext, hToReq);
+
+	if (iRet != PD_OK) {
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::GetTxnInfo (To party) Failed!\n"));
+	}
+
+	// Chk the inputted txn_seq is a pair
+	if (iRet == PD_OK) {
+		if (GetField_CString(hToContext, "org_txn_id", &csTmp)) {
+			if (strcmp(csTmp, csTxnSeq)) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize::() the inputted seq is not in a pair\n"));
+ERRLOG("TxnMgtByUsATF:Authorize() the inpuuted seq is not in a pair\n");
+			}
+		}
+		else {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() org_txn_id is missing on TO information\n"));
+ERRLOG("TxnMgtByUsATF:Authorize() org_txn_idis missing on TO information\n");
+		}
+	}
+
+
+	// Check Merchant Account - From
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() (FROM) BOMerchant->GetMerchantTxnInfo\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hFrContext,hFrReq);
+DEBUGLOG(("Authorize() (FROM) BOMerchant->GetMerchantTxnInfo = [%d]\n",iRet));
+
+		if (iRet != PD_OK) {
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() (FROM) Merchant GetMerchantTxnInfo FAILED\n"));
+ERRLOG("TxnMgtByUsATF:Authorize() (FROM) Merchant GetMerchantTxnInfo FAILED\n");
+
+		}
+		else {
+			if (GetField_CString(hFrContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("Authorize() (FROM) merchant_client_id [%s]\n", csTmp))
+			}
+		}
+
+	}
+
+	// Check Merchant Account - To
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() (TO) BOMerchant->GetMerchantTxnInfo\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hToContext,hToReq);
+DEBUGLOG(("Authorize() (TO) BOMerchant->GetMerchantTxnInfo = [%d]\n",iRet));
+
+		if (iRet != PD_OK) {
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() (TO) Merchant GetMerchantTxnInfo FAILED\n"));
+ERRLOG("TxnMgtByUsATF:Authorize() (TO) Merchant GetMerchantTxnInfo FAILED\n");
+
+		} else {
+			if (GetField_CString(hFrContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("Authorize() (TO) merchant_client_id [%s]\n", csTmp))
+			}
+		}
+	}
+	
+
+	// Get FROM TxnFee
+	if (iRet == PD_OK) {
+		PutField_CString(hFrContext, "txn_code", PD_AVA_PAYOUT_APPROVE_TF_FROM);
+		PutField_CString(hFrContext, "channel_code",PD_CHANNEL_MGT);
+
+		BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+		iRet = (unsigned long)(*BOObjPtr)(hFrContext,hFrReq);
+DEBUGLOG(("Authorize() [%d] (FROM) GetTxnFee\n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+		GetField_Double(hFrContext,"total_src_txn_fee",&dTotalSrcFee);
+DEBUGLOG(("Authorize total fee = [%lf]\n",dTotalSrcFee));
+		
+		if (GetField_Double(hFrContext,"net_amt",&dSrcNetAmt)) {
+DEBUGLOG(("Authorize net amount (from Fee) = [%lf]\n",dSrcNetAmt));
+		}
+	}
+
+	// Get To TxnFee 
+	if (iRet == PD_OK) {
+		/* GetExchangeInfo */
+DEBUGLOG(("Authorize:: Call Exchange\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOExchange","GetExchangeInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hToContext, hReq);
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo = [%d]\n",iRet));
+
+		if (iRet == PD_OK) {	
+			if (GetField_Double(hNewContext, "dst_txn_amt", &dDstTxnAmt)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo dst_txn_mat [%f]\n", dDstTxnAmt));
+			}
+		}
+	}
+
+
+
+
+
+		if (iRet == PD_OK) {
+			/* Get Open balance for update */
+			/*
+                        DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                        iRet = (unsigned long)(*DBObjPtr)(hContext,
+                                                        csFromMid,
+                                                        csFromCcy,
+                                                        csCountry,
+                                                        csFromService);
+			if (iRet == PD_OK) {
+				if (GetField_Double(hContext, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("Authorize merchant_open_bal = [%lf]\n",dTmp));
+				}
+				if (GetField_Double(hContext, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("Authorize merchant_open_bal_settlement = [%lf]\n",dTmp));
+				}
+				
+			} else {
+DEBUGLOG(("Authorize (FROM) GetOpenBalanceForUpdate FAILED!\n"));
+ERRLOG("TxnMgtByUsATF::Authorize (FROM) GetOpenBalanceForUpdate FAILED\n"));
+			}
+			*/
+		}
+
+		if (iRet == PD_OK) {
+			/* Get Available Payout */
+                        DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetRemainPOBalance");
+                        iRet = (unsigned long)(*DBObjPtr)(hContext,
+                                                        csFromMid,
+                                                        csFromCcy,
+                                                        csCountry,
+                                                        csFromService,
+                                                        &dTmp);
+
+			if (iRet == PD_OK) {
+				if (GetField_Double(hContext, "merchant_aval_po", &dFromBalance)) {
+DEBUGLOG(("Authorize merchant_aval_po = [%lf]\n",dFromBalance));
+				}
+			} else {
+DEBUGLOG(("Authorize (FROM) GetRemainPOBalance FAILED!\n"));
+ERRLOG("TxnMgtByUsATF::Authorize (FROM) GetRemainPOBalance FAILED\n");
+			}
+
+			if (iRet == PD_OK) {
+				if (dNetAmt > dFromBalance) {
+					iRet = INT_INSUFFICIENT_FUND;
+					PutField_Int(hContext,"internal_error",iRet);
+
+DEBUGLOG(("Authorize insufficient fund [%s] [%s] [%s] [%s] [%lf]\n",csCountry,csFromCcy,csFromService,csFromMid,dFromBalance));
+ERRLOG("TxnMgtByUsATF::Authorize insufficient fund [%s] [%s] [%s] [%s] [%lf]\n",csCountry,csFromCcy,csFromService,csFromMid,dFromBalance);
+				}
+			}
+		
+		}
+
+		RemoveField_CString(hContext,"org_txn_seq");
+		if (iRet == PD_OK) {
+			if(GetField_CString(hContext,"txn_seq",&csTmp)){
+				PutField_CString(hContext,"from_txn_seq",csTmp);
+				PutField_CString(hResponse,"txn_seq_tf",csTmp);
+			}
+
+
+			PutField_CString(hContext,"org_txn_ccy",csFromCcy);
+			PutField_CString(hContext,"amount_type",PD_DR);
+			PutField_Double(hContext,"org_txn_amt",dTxnAmt);
+DEBUGLOG(("TxnMgtByUsATF:: Call BOTxnElements:AddTxnAmtElement\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+			iRet = (unsigned long)(*BOObjPtr)(hContext);
+DEBUGLOG(("TxnMgtByUsATF:: ret from AddTxnAmtElements = [%d]\n",iRet));
+		}
+		if (iRet == PD_OK) {
+			PutField_CString(hContext,"src_txn_fee_ccy",csFromCcy);
+			PutField_Double(hContext,"src_txn_fee",dTotalSrcFee);
+DEBUGLOG(("TxnMgtByUsATF:: Call BOTxnElements:AddTxnFeeElement\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+			iRet = (unsigned long)(*BOObjPtr)(hContext);
+DEBUGLOG(("TxnMgtByUsATF:: BOTxnElements: AddTxnFeeElements result = [%d]\n",iRet));
+		}
+
+		
+		if (iRet == PD_OK) {
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnDetailLog");
+               		iRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest,hResponse);
+		}
+	}
+
+
+/* check to merchant account */
+        if (iRet == PD_OK) {
+DEBUGLOG(("check To merchant\n"));
+
+DEBUGLOG(("to mid = [%s]\n",csToMid));
+DEBUGLOG(("to service = [%s]\n",csToService));
+DEBUGLOG(("to txn_ccy = [%s]\n",csToCcy));
+DEBUGLOG(("to txn_country = [%s]\n",csCountry));
+        	hash_t *hReq,*hNewContext;
+        	hReq = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hReq,0);
+        	hNewContext = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hNewContext,0);
+
+DEBUGLOG(("Authorize() new txn for TFT\n"));
+		unsigned char   csTmpTxnSeq[PD_TXN_SEQ_LEN +1];
+
+/* don't commit */
+                PutField_Int(hNewContext,"db_commit",PD_FALSE);
+
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+                strcpy((char*)csTmpTxnSeq,(*DBObjPtr)());
+/* new txn seq */
+                PutField_CString(hNewContext,"txn_seq",(const char*)csTmpTxnSeq);
+		PutField_CString(hResponse,"txn_seq_tt",(const char*)csTmpTxnSeq);
+/* org txn seq */
+		PutField_CString(hNewContext,"org_txn_seq",csTxnSeq);
+
+/* local tm date */
+		if (GetField_CString(hContext,"local_tm_date",&csPtr)) {
+			PutField_CString(hNewContext,"local_tm_date",csPtr);
+		}
+/* local tm time */
+		if (GetField_CString(hContext,"local_tm_time",&csPtr)) {
+			PutField_CString(hNewContext,"local_tm_time",csPtr);
+		}
+/* add user */
+		if (GetField_CString(hRequest,"add_user",&csPtr)) {
+			PutField_CString(hNewContext,"add_user",csPtr);
+		}
+/* ip addr */
+		if (GetField_CString(hRequest,"ip_addr",&csPtr)) {
+			PutField_CString(hReq,"ip_addr",csPtr);
+		}
+/* host_posting_date */
+		if (GetField_CString(hContext,"PHDATE",&csPtr)) {
+			PutField_CString(hNewContext,"PHDATE",csPtr);
+		}
+	
+		PutField_CString(hNewContext,"channel_code",PD_CHANNEL_MGT);
+		PutField_CString(hNewContext,"txn_code","RTT");
+		PutField_CString(hNewContext,"process_code",PD_PROCESS_CODE_DEF);
+		PutField_CString(hNewContext,"process_type",PD_PROCESS_TYPE_DEF);
+
+/* txn amt */	
+		PutField_Double(hNewContext,"txn_amt",dTxnAmt);
+/* update context */
+		ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateContext");
+               	iRet = (unsigned long)(*ChannelObjPtr)(hContext);
+
+
+		PutField_CString(hNewContext,"merchant_id",csToMid);
+		PutField_CString(hNewContext,"service_code",csToService);
+		PutField_CString(hNewContext,"txn_ccy",csFromCcy);
+		PutField_CString(hNewContext,"dst_txn_ccy",csToCcy);
+		PutField_CString(hNewContext,"bal_ccy",csToCcy);
+DEBUGLOG(("Authorize() dst_txn_ccy = [%s]\n",csToCcy));
+		PutField_CString(hNewContext,"txn_country",csCountry);
+		PutField_CString(hNewContext,"net_ccy",csToCcy);
+
+		PutField_CString(hReq,"merchant_id",csToMid);
+		PutField_CString(hReq,"service_code",csToService);
+/* txn currency will be same as source */
+		PutField_CString(hReq,"txn_ccy",csFromCcy);
+		PutField_CString(hReq,"txn_country",csCountry);
+
+/* update merchant info */
+DEBUGLOG(("Authorize() BOMerchant->GetMerchantTxnInfo to merchant\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+                iRet = (unsigned long)(*BOObjPtr)(hNewContext,hReq);
+DEBUGLOG(("Authorize() BOMerchant->GetMerchantTxnInfo for To Merchant = [%d]\n",iRet));
+/* Add New Txn */
+		if (iRet == PD_OK) {
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+               		iRet = (unsigned long)(*ChannelObjPtr)(hNewContext,hReq);
+		}
+		else {
+			RemoveField_Int(hNewContext,"internal_error");
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		if ( iRet == PD_OK) {
+/* GetExchangeInfo */
+DEBUGLOG(("Authorize:: Call Exchange\n"));
+                        BOObjPtr = CreateObj(BOPtr,"BOExchange","GetExchangeInfo");
+                        iRet = (unsigned long)(*BOObjPtr)(hNewContext,hReq);
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo = [%d]\n",iRet));
+
+
+			if (GetField_Double(hNewContext, "dst_txn_amt", &dDstTxnAmt)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo dst_txn_mat [%f]\n", dDstTxnAmt));
+			}
+
+                }
+
+/* net amount */
+		if (iRet == PD_OK) {
+
+
+/* check from fee */ 
+                        BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+                        iRet = (unsigned long)(*BOObjPtr)(hNewContext,hReq);
+			
+			GetField_Double(hNewContext,"total_dst_txn_fee",&dTotalFee);
+DEBUGLOG(("Authorize total fee = [%lf]\n",dTotalFee));
+
+			if (GetField_Double(hNewContext,"net_amt",&dNetAmt)) {
+DEBUGLOG(("Authorize:: dst net amt = [%lf]\n",dNetAmt));
+			}
+                }
+
+		if (iRet == PD_OK) {
+			PutField_CString(hContext,"from_txn_seq",(char*)csTmpTxnSeq);
+			PutField_CString(hContext,"org_txn_ccy",csToCcy);
+			PutField_CString(hContext,"amount_type",PD_CR);
+			PutField_Double(hContext,"org_txn_amt",dDstTxnAmt);
+
+DEBUGLOG(("TxnMgtByUsATF:: Call BOTxnElements:AddTxnAmtElement\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+			iRet = (unsigned long)(*BOObjPtr)(hContext);
+DEBUGLOG(("TxnMgtByUsATF:: ret from AddTxnAmtElements = [%d]\n",iRet));
+		}
+		
+		if (iRet == PD_OK) {
+			PutField_CString(hContext,"src_txn_fee_ccy",csToCcy);
+			PutField_Double(hContext,"src_txn_fee",dTotalFee);
+			PutField_CString(hContext,"amount_type",PD_DR);
+DEBUGLOG(("TxnMgtByUsATF:: Call BOTxnElements:AddTxnFeeElement\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+			iRet = (unsigned long)(*BOObjPtr)(hContext);
+DEBUGLOG(("TxnMgtByUsATF:: BOTxnElements: AddTxnFeeElements result = [%d]\n",iRet));
+		}
+		
+
+                if (iRet == PD_OK) {
+DEBUGLOG(("Authorize call UpdateTxnDetailLog\n"));
+                        ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnDetailLog");
+                        iRet = (unsigned long)(*ChannelObjPtr)(hNewContext,hReq,hResponse);
+                }
+
+/* update txn header */
+		if (iRet == PD_OK || GetField_Int(hNewContext,"internal_error",&iInternalErr)) {
+			char* csBuf = (char*) malloc (128);
+                	sprintf(csBuf,"%d",iInternalErr);
+                	PutField_CString(hNewContext,"response_code",csBuf);
+			PutField_Int(hNewContext,"internal_code",iInternalErr);
+DEBUGLOG(("Result_Code = %s\n",csBuf));
+                	FREE_ME(csBuf);
+
+                        //PutField_CString(hNewContext,"sub_status",PD_APPROVED);
+                        //PutField_CString(hContext,"sub_status",PD_APPROVED);
+
+			if (iInternalErr != 0 ) {
+                        	PutField_Char(hNewContext,"status",PD_COMPLETE);
+                       	 	PutField_Char(hNewContext,"ar_ind",PD_REJECT);
+                	}
+
+			//PutField_CString(hNewContext,"approval_date",csPHPostingDate);
+
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnLog");
+               		iRet = (unsigned long)(*ChannelObjPtr)(hNewContext,hReq,hResponse);
+		}
+
+
+		hash_destroy(hReq);
+        	FREE_ME(hReq);
+		hash_destroy(hNewContext);
+        	FREE_ME(hNewContext);
+        }
+
+/*
+	if (iRet == PD_OK) {
+		PutField_CString(hContext,"approval_date",csPHPostingDate);
+	}
+*/
+
+DEBUGLOG(("TxnMgtByUsATF Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+
+int	GetTxnInfo(const unsigned char *csTxnSeq, hash_t *hTxn, hash_t *hReq)
+{
+	int	iRet = PD_OK;
+	
+	char	*csTmp;
+	double	dTmp;
+	char	cTmp;
+
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet,0);
+
+DEBUGLOG(("GetTxnInfo::Call DBTransaction:GetTxnHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+
+DEBUGLOG(("GetTxnHeader::found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+				if (GetField_CString(hRec, "org_txn_id", &csTmp)) {
+					PutField_CString(hTxn, "org_txn_id", csTmp);
+DEBUGLOG(("GetTxnHeader::org_txn_id = [%s]\n",csTmp));
+				}
+
+                        	if (GetField_CString(hRec,"txn_code",&csTmp)) {
+					PutField_CString(hTxn,"org_txn_code",csTmp);
+DEBUGLOG(("GetTxnHeader::txn_code = [%s]\n",csTmp));
+                        	}
+
+				if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+					PutField_CString(hTxn, "merchant_id", csTmp);
+					PutField_CString(hReq, "merchant_id", csTmp);
+DEBUGLOG(("GetTxnHeader::merchant_id = [%s]\n",csTmp));
+				}
+
+				if (GetField_CString(hRec,"service_code",&csTmp)) {
+					PutField_CString(hTxn,"service_code",csTmp);
+					PutField_CString(hReq,"service_code",csTmp);
+DEBUGLOG(("GetTxnHeader::service_code= [%s]\n",csTmp));
+				}
+
+				if (GetField_Double(hRec, "txn_amt", &dTmp)) {
+					PutField_Double(hTxn,"txn_amt",dTmp);
+DEBUGLOG(("GetTxnHeader::txn_amt = [%lf]\n",dTmp));
+				}		
+
+				if (GetField_CString(hRec, "net_ccy", &csTmp)) {
+					PutField_CString(hTxn,"net_ccy",csTmp);
+
+					PutField_CString(hReq,"txn_ccy",csTmp); // net_ccy is actual one
+DEBUGLOG(("GetTxnHeader::net_ccy = [%s]\n",csTmp));
+				}		
+
+				if (GetField_Char(hRec, "status", &cTmp)) {
+DEBUGLOG(("GetTxnHeader::status = [%s]\n",cTmp));
+
+					if (cTmp != PD_PROCESSING) {
+						iRet = INV_VALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid status[%c]\n",cTmp));
+ERRLOG("TxnMgtByUsVOT:GetTxnHeader::Invalid status!!\n");
+					} 
+					else {
+						if (GetField_Char(hRec, "ar_ind", &cTmp)) {
+							iRet = INV_VALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid ar_ind [%c]\n",cTmp));
+ERRLOG("TxnMgtByUsVOT:GetTxnHeader::Invalid ar_ind!!\n");
+						}
+					}
+				}		
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else {
+DEBUGLOG(("GetTxnHeader:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnMgtByUsATF:Authorize::GetTxnHeader::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+                RecordSet_Destroy(rRecordSet);
+	}
+
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet,0);	
+DEBUGLOG(("GetTxnInfo::Call DBTransaction:GetTxnDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnInfo::GetTxnDetail::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"txn_ccy",&csTmp)) {
+					PutField_CString(hTxn,"txn_ccy",csTmp);
+DEBUGLOG(("GetTxnInfo::GetTxnDetail::txn_ccy = [%s]\n",csTmp));
+				}
+
+				if (GetField_CString(hRec,"txn_country",&csTmp)) {
+					PutField_CString(hTxn,"txn_country",csTmp);
+					PutField_CString(hReq,"txn_country",csTmp);
+DEBUGLOG(("GetTxnInfo::GetTxnDetail::txn_country = [%s]\n",csTmp));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetTxnInfo::GetTxnDetail:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnMgtByUsATF::GetTxnInfo::GetTxnDetail::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+                RecordSet_Destroy(rRecordSet);
+	}
+
+}
+

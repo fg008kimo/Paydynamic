@@ -1,0 +1,228 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2019/03/15              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "OLSemiAutoReconTriggerLog.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+static char	cDebug;
+
+void OLSemiAutoReconTriggerLog(char	cdebug)
+{
+	cDebug = cdebug;
+}
+
+int CheckConflict(const hash_t* hRls)
+{
+	char *csTmp;
+	int iTriggerSeq;
+	int iCnt = 0;
+
+	EXEC SQL WHENEVER SQLERROR GOTO checkconflict_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_s_provider_id[PD_CLIENT_ID_LEN];
+		varchar hv_s_pid[PD_PSP_ID_LEN];
+		varchar hv_r_provider_id[PD_CLIENT_ID_LEN];
+		varchar hv_r_pid[PD_PSP_ID_LEN];
+
+		int	v_trigger_seq;
+		varchar v_create_user[PD_CREATE_USER_LEN + 1];
+		varchar v_create_timestamp[PD_DATETIME_LEN + 1];
+		varchar	v_s_provider_id[PD_CLIENT_ID_LEN + 1];
+		varchar	v_s_pid[PD_PSP_ID_LEN + 1];
+		varchar	v_r_provider_id[PD_CLIENT_ID_LEN + 1];
+		varchar	v_r_pid[PD_PSP_ID_LEN + 1];
+
+		short	ind_trigger_seq = -1;
+		short	ind_create_user = -1;
+		short	ind_create_timestamp = -1;
+		short	ind_s_provider_id = -1;
+		short	ind_s_pid = -1;
+		short	ind_r_provider_id = -1;
+		short	ind_r_pid = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hRls, "s_provider_id", &csTmp)) {
+		hv_s_provider_id.len = strlen(csTmp);
+		memcpy(hv_s_provider_id.arr, csTmp, hv_s_provider_id.len);
+DEBUGLOG(("CheckConflict: s_provider_id = [%.*s]\n", hv_s_provider_id.len, hv_s_provider_id.arr));
+	}
+
+	if (GetField_CString(hRls, "s_pid", &csTmp)) {
+		hv_s_pid.len = strlen(csTmp);
+		memcpy(hv_s_pid.arr, csTmp, hv_s_pid.len);
+DEBUGLOG(("CheckConflict: hv_s_pid = [%.*s]\n", hv_s_pid.len, hv_s_pid.arr));
+	}
+
+	if (GetField_CString(hRls, "r_provider_id", &csTmp)) {
+		hv_r_provider_id.len = strlen(csTmp);
+		memcpy(hv_r_provider_id.arr, csTmp, hv_r_provider_id.len);
+DEBUGLOG(("CheckConflict: r_provider_id = [%.*s]\n", hv_r_provider_id.len, hv_r_provider_id.arr));
+	}
+
+	if (GetField_CString(hRls, "r_pid", &csTmp)) {
+		hv_r_pid.len = strlen(csTmp);
+		memcpy(hv_r_pid.arr, csTmp, hv_r_pid.len);
+DEBUGLOG(("CheckConflict: hv_r_pid = [%.*s]\n", hv_r_pid.len, hv_r_pid.arr));
+	}
+
+	if (GetField_CString(hRls, "trigger_seq", &csTmp)) {
+		iTriggerSeq = atoi(csTmp);
+DEBUGLOG(("CheckConflict: trigger_seq = [%d]\n", iTriggerSeq));
+	}
+
+	EXEC SQL DECLARE c_cursor_check_conflict CURSOR FOR
+		SELECT	trigger_seq,
+			create_user,
+			to_char(create_timestamp,'yyyymmddhh24miss'),
+			s_provider_id,
+			s_pid,
+			r_provider_id,
+			r_pid
+		FROM	table(sp_ol_sar_trigger_chk_conflict(:hv_s_provider_id,
+								:hv_s_pid,
+								:hv_r_provider_id,
+								:hv_r_pid))
+		ORDER BY trigger_seq;
+
+	EXEC SQL OPEN c_cursor_check_conflict;
+
+	do {
+		EXEC SQL FETCH c_cursor_check_conflict
+		INTO	:v_trigger_seq:ind_trigger_seq,
+			:v_create_user:ind_create_user,
+			:v_create_timestamp:ind_create_timestamp,
+			:v_s_provider_id:ind_s_provider_id,
+			:v_s_pid:ind_s_pid,
+			:v_r_provider_id:ind_r_provider_id,
+			:v_r_pid:ind_r_pid;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_trigger_seq >= 0) {
+			if (v_trigger_seq != iTriggerSeq) {
+DEBUGLOG(("CheckConflict: v_trigger_seq = [%d]\n", v_trigger_seq));
+				iCnt++;
+			}
+		}
+	}  while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_check_conflict;
+
+DEBUGLOG(("iCnt = [%d]\n", iCnt));
+
+	if (iCnt > 0) {
+DEBUGLOG(("CheckConflict() FOUND\n"));
+		return PD_FOUND;
+	} else {
+DEBUGLOG(("CheckConflict() NOT FOUND\n"));
+		return PD_NOT_FOUND;
+	}
+
+checkconflict_error:
+DEBUGLOG(("checkconflict_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_check_conflict;
+DEBUGLOG(("CheckConflict: SP_INTERNAL_ERR\n"));
+ERRLOG("OLSemiAutoReconTriggerLog_CheckConflict: SP_INTERNAL_ERR\n");
+	return PD_INTERNAL_ERR;
+}
+
+
+int Update(const hash_t *hRls)
+{
+	int	iTmp;
+	char	cTmp;
+	char	*csTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO update_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int		hv_trigger_seq;
+		char		hv_trigger_status;
+		varchar		hv_update_user[PD_USER_LEN];
+
+		short		ind_trigger_seq = -1;
+		short		ind_trigger_status = -1;
+		short		ind_update_user = -1;
+
+		short		hv_return_value;
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_Int(hRls, "trigger_seq", &iTmp)) {
+		hv_trigger_seq = iTmp;
+		ind_trigger_seq = 0;
+DEBUGLOG(("Update: trigger_seq = [%d]\n", hv_trigger_seq));
+	}
+
+	if (GetField_Char(hRls, "trigger_status", &cTmp)) {
+		hv_trigger_status = cTmp;
+		ind_trigger_status = 0;
+DEBUGLOG(("Update: trigger_status = [%c]\n", hv_trigger_status));
+	}
+
+	if (GetField_CString(hRls, "update_user", &csTmp)) {
+		hv_update_user.len = strlen(csTmp);
+		strncpy((char*)hv_update_user.arr, csTmp, sizeof(hv_update_user.arr));
+		ind_update_user = 0;
+DEBUGLOG(("Update: update_user = [%.*s]\n", hv_update_user.len, hv_update_user.arr));
+	}
+
+	EXEC SQL EXECUTE
+	BEGIN
+		:hv_return_value := sp_ol_sar_trigger_log_upd(
+				:hv_trigger_seq:ind_trigger_seq,
+				:hv_trigger_status:ind_trigger_status,
+				:hv_update_user:ind_update_user);
+	END;
+	END-EXEC;
+
+	if (hv_return_value == SP_OK)
+	{
+DEBUGLOG(("Update: Normal Exit\n"));
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+DEBUGLOG(("Update: SP_OTHER_ERR\n"));
+ERRLOG("OLSemiAutoReconTriggerLog_Update: SP_OTHER_ERR\n");
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+DEBUGLOG(("Update: SP_ERR\n"));
+ERRLOG("OLSemiAutoReconTriggerLog_Update: SP_ERR\n");
+		return PD_ERR;
+	}
+
+update_error:
+DEBUGLOG(("update_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+DEBUGLOG(("Update: SP_INTERNAL_ERR\n"));
+ERRLOG("OLSemiAutoReconTriggerLog_Update: SP_INTERNAL_ERR\n");
+	return PD_INTERNAL_ERR;
+}
+

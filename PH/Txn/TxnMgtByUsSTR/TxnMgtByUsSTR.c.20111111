@@ -1,0 +1,174 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/08              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsSTR.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsSTR(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csMerchantId;
+	char	*csTxnCcy;
+	char	csBundledCcy[PD_CCY_ID_LEN+1];
+	char	*csTxnCountry;
+	char	*csServiceCode;
+	char	*csTmp;
+	double	dAmt=0;
+	//double	dSettlementBal=0;
+
+	if(GetField_CString(hContext,"txn_seq",&csTmp)){
+DEBUGLOG(("Authorize::txn_seq= [%s]\n",csTmp));
+		PutField_CString(hResponse,"org_txn_seq",csTmp);
+		PutField_CString(hContext,"txn_seq",csTmp);
+	}
+	else{
+DEBUGLOG(("Authorize::txnid not found!!\n"));
+ERRLOG("TxnMgtByUsSTR::Authorize::txnid not found!!\n");
+		iRet=INT_INVALID_TXN;
+	}
+
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		PutField_CString(hContext,"update_user",csTmp);
+		//PutField_CString(hContext,"add_user",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"merchant_id",&csMerchantId)){
+DEBUGLOG(("Authorize::merchant_id= [%s]\n",csMerchantId));
+		PutField_CString(hContext,"merchant_id",csMerchantId);
+	}
+	else{
+DEBUGLOG(("Authorize::merchant_id not found!!\n"));
+ERRLOG("TxnMgtByUsSTR::Authorize::merchant_id not found!!\n");
+		iRet=INT_MERCHANT_ID_NOT_FOUND;
+	}
+
+	if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTxnCcy));
+		PutField_CString(hResponse,"txn_ccy",csTxnCcy);
+		PutField_CString(hContext,"request_ccy",csTxnCcy);
+		//PutField_CString(hContext,"txn_ccy",csBundledCcy);
+		//PutField_CString(hContext,"deliver_ccy",csBundledCcy);
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMgtByUsSTR::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+	}
+
+	if(GetField_CString(hRequest,"txn_country",&csTxnCountry)){
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTxnCountry));
+		PutField_CString(hContext,"txn_country",csTxnCountry);
+	}
+	else{
+DEBUGLOG(("Authorize::country not found!!\n"));
+ERRLOG("TxnMgtByUsSTR::Authorize::country not found!!\n");
+		iRet=INT_TXN_COUNTRY_NOT_FOUND;
+	}
+
+	if(GetField_CString(hRequest,"service_code",&csServiceCode)){
+DEBUGLOG(("Authorize::sevice_code= [%s]\n",csServiceCode));
+		PutField_CString(hContext,"service_code",csServiceCode);
+	}
+
+	if(GetField_Double(hContext,"txn_amt",&dAmt)){
+		//PutField_Double(hContext,"net_amt",dAmt);
+		PutField_Double(hContext,"request_amt",dAmt);
+		PutField_Double(hResponse,"txn_amt",dAmt);
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMgtByUsSTR::Authorize::txn_amt not found!!\n");
+		iRet=INT_PAY_AMOUNT_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	if(GetField_CString(hRequest,"remark",&csTmp)){
+DEBUGLOG(("Authorize::remark= [%s]\n",csTmp));
+		PutField_CString(hContext,"remark",csTmp);
+	}
+
+	PutField_CString(hContext,"process_code","000000");
+        PutField_CString(hContext,"process_type","0000");
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBCurrency:FindBundledCurrency\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+		if((unsigned long) ((*DBObjPtr)(csTxnCcy,csBundledCcy))!=PD_OK)
+                        iRet = INT_ERR;
+		else{
+			PutField_CString(hContext,"txn_ccy",csBundledCcy);
+			PutField_CString(hContext,"deliver_ccy",csBundledCcy);
+		}
+	}
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBTransaction:AddDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+		if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+			iRet = INT_ERR;
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantSettlementDetail:Add\n"));
+		PutField_Char(hContext,"status",PD_PROCESSING);
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Add");
+		if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+			iRet = INT_ERR;
+	}
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOBalance:UpdateSettlementAmount\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateSettlementAmount");
+		if((unsigned long) ((*BOObjPtr)(hContext))!=PD_OK)
+			iRet = INT_ERR;
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBTransaction:UpdateDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+		if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+			iRet = INT_ERR;
+	}
+
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+DEBUGLOG(("TxnMgtByUsSTR Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

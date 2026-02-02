@@ -1,0 +1,89 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/10/21              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmsByUsRCK.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+#define	PD_RETRY	'R'
+
+OBJPTR(DB);
+void TxnMmsByUsRCK(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csPtr;
+	double	dTmp;
+	hash_t  *hReq;
+
+	hReq = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hReq,0);
+
+DEBUGLOG(("TxnMmsByUsRCK Authorize()\n"));
+/* txn_id */
+	if (GetField_CString(hRequest,"txn_id",&csPtr)) {
+		PutField_CString(hReq,"txn_id",csPtr);
+
+/* txn amt */
+                if (GetField_Double(hRequest,"txn_amt",&dTmp)) {
+DEBUGLOG(("TxnMmsByUsRCK: Txn Amt = [%lf]\n",dTmp));
+                        PutField_Double(hReq,"txn_amt",dTmp);
+                }
+/* node id */   
+                if (GetField_CString(hRequest,"mms_node_id",&csPtr)) {
+DEBUGLOG(("TxnMmsByUsRCK: node id  = [%s]\n",csPtr));
+                        PutField_CString(hReq,"mmc_node_id",csPtr);
+                }
+/* txn ccy */   
+                if (GetField_CString(hRequest,"txn_ccy",&csPtr)) {
+DEBUGLOG(("TxnMmsByUsRCK: txn_ccy  = [%s]\n",csPtr));
+                        PutField_CString(hReq,"txn_ccy",csPtr);
+                }
+/* psp_id */    
+                if (GetField_CString(hRequest,"psp_id",&csPtr)) {
+DEBUGLOG(("TxnMmsByUsRCK: psp_id  = [%s]\n",csPtr));
+                        PutField_CString(hReq,"psp_id",csPtr);
+                }
+/* transmission_datetime */    
+                if (GetField_CString(hRequest,"transmission_datetime",&csPtr)) {
+DEBUGLOG(("TxnMmsByUsRCK: transmission_datetime  = [%s]\n",csPtr));
+                        PutField_CString(hReq,"transmission_datetime",csPtr);
+                }
+
+/* user */	PutField_CString(hReq,"add_user",PD_UPDATE_USER);
+
+/* status */
+		PutField_Char(hReq,"status",PD_RETRY);
+		DBObjPtr = CreateObj(DBPtr,"DBMmsTxnRetry","Add");
+		iRet = (unsigned long) (*DBObjPtr)(hReq);
+	}
+	else 	
+		iRet = INT_ERR;
+	
+	FREE_ME(hReq);
+DEBUGLOG(("TxnMmsByUsRCK Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

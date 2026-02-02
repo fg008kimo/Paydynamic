@@ -1,0 +1,332 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/10/13              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPOP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+#define	PD_SPACE 0x20
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsPOP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char    *csMerchantId;
+        char    *csBatchId;
+        char    *csTmp;
+        char    *csPspId;
+
+        double  dTmp=0.0;
+        double  dTxnAmt=0.0;
+
+        //char    cBatchMode;
+        //int     iStatus;
+        //int     iSeqNum;
+ 
+        //long    lBatchId;
+
+        int     iTmp=0, i=0, iCnt=0, iResult=0;
+        char    csTag[PD_TAG_LEN +1];
+        char    csBankName[PD_BANK_NAME_LEN+1];
+        char    *csPspCcy;
+        char    *csCcy;
+
+	int iAcceptCnt = 0;
+	int iPendingCnt = 0;
+	double dAcceptAmt = 0.0;
+	double dPendingAmt = 0.0;
+
+	int iMerch = PD_FALSE;
+	int iBank;
+	int iTotal=0;
+
+        hash_t  *hRec, *hDet;
+        recordset_t        *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        recordset_t        *rDetail;
+        rDetail = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rDetail,0);
+
+DEBUGLOG(("Authorize\n"));
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	if(GetField_CString(hRequest,"merchant_id",&csMerchantId)){
+DEBUGLOG(("Authorize::merchant_id = [%s]\n",csMerchantId));
+		iMerch=PD_TRUE;
+        }
+        
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"update_user",csTmp);
+        }
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","ResumeAssignedPsp");
+		iRet = (unsigned long)(*DBObjPtr)();
+	}
+
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBBankPayoutPsp:GetBankPayoutPspWithPriority\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBBankPayoutPsp","GetBankPayoutPspWithPriority");
+                if ((*DBObjPtr)(rRecordSet) == PD_OK) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+			iCnt = 0;
+                        while (hRec) {
+				iBank=PD_FALSE;
+                                if (GetField_CString(hRec, "bank_name", &csTmp)) {
+					strcpy((char *)csBankName,TrimAllChar((const unsigned char *)csTmp,strlen(csTmp),PD_SPACE));
+					if(strlen(csBankName)>0){
+						PutField_CString(hContext,"bank_name",csBankName);
+                                        	sprintf(csTag,"bank%d_bank_name",iCnt);
+                                       		PutField_CString(hTxn,csTag,csBankName);
+						iBank=PD_TRUE;
+DEBUGLOG(("GetBankPayoutPsp::bank_name = [%s]\n",csBankName));
+					}
+                                }
+                                if (GetField_CString(hRec, "psp_id", &csPspId)) {
+                                        sprintf(csTag,"bank%d_psp_id",iCnt);
+                                       	PutField_CString(hTxn,csTag,csPspId);
+                                       	PutField_CString(hContext,"psp_id",csPspId);
+DEBUGLOG(("GetBankPayoutPsp::psp_id = [%s]\n",csPspId));
+                                }  
+                                if (GetField_CString(hRec, "operator_type", &csTmp)) {
+					PutField_CString(hContext,"operator_type",csTmp);
+DEBUGLOG(("GetBankPayoutPsp::operator_type = [%s]\n",csTmp));
+                                }  
+                                if (GetField_Double(hRec, "total_amt", &dTmp)) {
+					PutField_Double(hContext,"total_amt",dTmp);
+DEBUGLOG(("GetBankPayoutPsp::total_amt = [%lf]\n",dTmp));
+                                }
+
+        			recordset_init(rDetail,0);
+				if(iBank==PD_TRUE && iMerch==PD_TRUE){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetailByRandomWithBankMerchant\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetailByRandomWithBankMerchant");
+					iResult = (unsigned long)(*DBObjPtr)(csBankName,csMerchantId,rDetail);
+				}
+				else if(iBank==PD_FALSE && iMerch==PD_TRUE){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetailByRandomWithMerchant\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetailByRandomWithMerchant");
+					iResult = (unsigned long)(*DBObjPtr)(csMerchantId,rDetail);
+				}
+				else if(iBank==PD_TRUE && iMerch==PD_FALSE){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetailByRandomWithBank\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetailByRandomWithBank");
+					iResult = (unsigned long)(*DBObjPtr)(csBankName,rDetail);
+				}
+				else{
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetailByRandom\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetailByRandom");
+					iResult = (unsigned long)(*DBObjPtr)(rDetail);
+				}
+				if (iResult == PD_OK) {
+					hDet = RecordSet_GetFirst(rDetail);
+					i = 0;
+					while(hDet && iRet==PD_OK){
+						if(GetField_CString(hDet,"batch_id",&csBatchId)){
+                                        		sprintf(csTag,"bank%d_batch_id_%d",iCnt,i);
+                                        		PutField_CString(hTxn,csTag,csBatchId);
+DEBUGLOG(("GetDetail::batch_id= [%s]\n",csBatchId));
+						}
+						if(GetField_Int(hDet,"seq_num",&iTmp)){
+                                        		sprintf(csTag,"bank%d_seq_num_%d",iCnt,i);
+                                        		PutField_Int(hTxn,csTag,iTmp);
+DEBUGLOG(("GetDetail::seq_num= [%d]\n",iTmp));
+                                		}
+						if(GetField_CString(hDet,"bank_name",&csTmp)){
+                                        		if(iBank!=PD_TRUE)
+								PutField_CString(hContext,"bank_name",csTmp);
+DEBUGLOG(("GetDetail::bank_name= [%s]\n",csTmp));
+						}
+						if(GetField_CString(hDet,"payout_ccy",&csPspCcy)){
+DEBUGLOG(("GetDetail::payout_ccy= [%s]\n",csPspCcy));
+						}
+						if (GetField_Double(hDet, "payout_amount", &dTxnAmt)) {
+							PutField_Double(hContext,"txn_amt",dTxnAmt);
+DEBUGLOG(("GetDetail::txn_amt = [%lf]\n",dTxnAmt));
+                                		}
+
+DEBUGLOG(("Authorize::Call BOPsp:GetPayoutPsp\n"));
+						iAcceptCnt = 0;
+						iPendingCnt = 0;
+						dAcceptAmt = 0.0;
+						dPendingAmt = 0.0;
+						sprintf(csTag,"bank%d_status_%d",iCnt,i);
+						BOObjPtr = CreateObj(BOPtr,"BOPsp","GetPayoutPsp");
+						if ((unsigned long)(*BOObjPtr)(hContext,hRequest) == PD_OK) {
+                                                        PutField_Int(hTxn,csTag,PAYOUT_MASTER_TRANSACTION_PRE_GENERATED);
+                                                        //PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_PRE_GENERATED);
+                                        		sprintf(csTag,"bank%d_psp_id_%d",iCnt,i);
+                                        		PutField_CString(hTxn,csTag,csPspId);
+                                        		PutField_CString(hTxn,"psp_id",csPspId);
+
+                                        		sprintf(csTag,"%s_payout_ccy",csPspId);
+                                        		PutField_CString(hTxn,csTag,csPspCcy);
+
+                                        		sprintf(csTag,"%s_accept_cnt",csPspId);
+							GetField_Int(hTxn,csTag,&iAcceptCnt);
+							iAcceptCnt ++;
+							PutField_Int(hTxn,csTag,iAcceptCnt);
+
+                                        		sprintf(csTag,"%s_accept_amt",csPspId);
+							GetField_Double(hTxn,csTag,&dAcceptAmt);
+							dAcceptAmt += dTxnAmt;
+							PutField_Double(hTxn,csTag,dAcceptAmt);
+
+DEBUGLOG(("Authorize::Call BOPsp:GetPayoutPsp Success\n"));
+						}
+						else{
+                                                        PutField_Int(hTxn,csTag,PAYOUT_MASTER_TRANSACTION_PENDING);
+                                        		PutField_CString(hTxn,"psp_id","");
+
+DEBUGLOG(("Authorize::Call BOPsp:GetPayoutPsp Failed\n"));
+                                        		sprintf(csTag,"%s_pending_cnt",csPspId);
+							GetField_Int(hTxn,csTag,&iPendingCnt);
+							iPendingCnt ++;
+							PutField_Int(hTxn,csTag,iPendingCnt);
+
+                                        		sprintf(csTag,"%s_pending_amt",csPspId);
+							GetField_Double(hTxn,csTag,&dPendingAmt);
+							dPendingAmt += dTxnAmt;
+							PutField_Double(hTxn,csTag,dPendingAmt);
+
+						}
+
+						DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","UpdateDetailByBatchId");
+						if ((*DBObjPtr)(csBatchId,iTmp,hTxn) != PD_OK) {
+							iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileDetail:UpdateDetailByBatchId Failed\n"));
+						}
+
+						i++;
+						iTotal++;
+                                		hDet = RecordSet_GetNext(rDetail);
+
+						sprintf(csTag,"bank%d_cnt",iCnt);
+						PutField_Int(hTxn,csTag,i);
+
+					}
+				}
+				RecordSet_Destroy(rDetail);
+ 
+				iCnt++;
+                                hRec = RecordSet_GetNext(rRecordSet);
+
+				PutField_Int(hTxn,"bank_cnt",iCnt);
+                        } 
+                }
+                else{
+DEBUGLOG(("GetBankPayoutPspWithPriority::not found record!!\n"));
+ERRLOG("TxnMgtByUsPOP:Authorize::GetBankPayoutPspWithPriority::not found record!!\n");
+                        iRet=INT_ERR;
+                }
+        }
+        RecordSet_Destroy(rRecordSet);
+
+	if(iTotal==0){
+DEBUGLOG(("Authorize::No Pending record\n"));
+		PutField_Int(hResponse,"total_cnt",iTotal);
+		iRet = INT_NO_PENDING_RECORD;
+	}
+
+
+        if(iRet==PD_OK){
+        	recordset_init(rRecordSet,0);
+		i = 1;
+		DBObjPtr = CreateObj(DBPtr,"DBBankPayoutPsp","GetExistingPid");
+		if((unsigned long) ((*DBObjPtr)(rRecordSet))==PD_OK){
+                        hRec = RecordSet_GetFirst(rRecordSet);
+			while(hRec){
+				iAcceptCnt = 0;
+				iPendingCnt = 0;
+				dAcceptAmt = 0.0;
+				dPendingAmt = 0.0;
+				if(GetField_CString(hRec,"psp_id",&csPspId)){
+					sprintf(csTag,"psp_id_%d",i);
+					PutField_CString(hResponse,csTag,csPspId);
+
+					sprintf(csTag,"%s_accept_cnt",csPspId);
+					GetField_Int(hTxn,csTag,&iAcceptCnt);
+					sprintf(csTag,"accept_cnt_%d",i);
+					PutField_Int(hResponse,csTag,iAcceptCnt);
+
+					sprintf(csTag,"%s_pending_cnt",csPspId);
+					GetField_Int(hTxn,csTag,&iPendingCnt);
+					sprintf(csTag,"pending_cnt_%d",i);
+					PutField_Int(hResponse,csTag,iPendingCnt);
+
+					sprintf(csTag,"%s_payout_ccy",csPspId);
+					if(GetField_CString(hTxn,csTag,&csCcy)){
+						sprintf(csTag,"ccy_%d",i);
+						PutField_CString(hResponse,csTag,csCcy);
+					}
+					else{
+						sprintf(csTag,"ccy_%d",i);
+						PutField_CString(hResponse,csTag,"-");
+					}
+
+					sprintf(csTag,"%s_accept_amt",csPspId);
+					GetField_Double(hTxn,csTag,&dAcceptAmt);
+					sprintf(csTag,"accept_amt_%d",i);
+					PutField_Double(hResponse,csTag,dAcceptAmt);
+
+					sprintf(csTag,"%s_pending_amt",csPspId);
+					GetField_Double(hTxn,csTag,&dPendingAmt);
+					sprintf(csTag,"pending_amt_%d",i);
+					PutField_Double(hResponse,csTag,dPendingAmt);
+
+					PutField_Int(hResponse,"total_cnt",i);
+					i++;
+				}
+                        	hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+        }
+
+        if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        //RecordSet_Destroy(rDetail);
+        FREE_ME(rDetail);
+        FREE_ME(hTxn);
+
+
+DEBUGLOG(("TxnMgtByUsPOP Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

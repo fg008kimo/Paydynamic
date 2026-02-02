@@ -1,0 +1,1309 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/11/11              LokMan Chow
+Call BOElement					   2012/01/31		   LokMan Chow
+Call UpdateLastSettlementDate			   2012/11/05		   LokMan Chow
+Add Preferred Settlement CCY			   2013/05/27		   LokMan Chow
+Remove UpdateLastSettlementDate			   2013/05/30		   Stan Poon
+Add retrieve sett_type in GetSettlementRecords()   2013/08/29              Virginia Yun
+Add receive ccy and amt for Delivery               2014/02/04              Virginia Yun
+Get Settlement Bank Details                        2014/10/02              Dirk Wong
+Merchant Notify Email Option Support               2014/11/11              Elvis Wong
+Add 3 fields for address template		   2015/03/02		   Dirk Wong
+Add GetLatestLogSeq, GetEmailId and Update                         
+from DBEmailSetting				   2015/06/01              Elvis Wong 
+Add int msg INT_EML_EMAIL_ADDR_NOT_REG             2015/06/09              Elvis Wong
+Add ProcessEmailSettingBySettlement		   2015/07/31		   Elvis Wong
+Check if MMS mode = ON, not update SEBBalance	   2015/08/13		   LokMan Chow
+Modify ProcessEmailSettingBySettlement		   2015/08/18		   Elvis Wong
+Check sub_status before
+ProcessEmailSettingBySettlement                    2015/08/20              Elvis Wong
+check mini-mmm mode instead of MMS mode		   2015/12/02		   LokMan Chow
+Modify for void settlement			   2016/05/04		   Dirk Wong
+Modify ProcessSettlementTxn			   2016/06/29		   Elvis Wong	
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOSettlement.h"
+
+char    cDebug;
+
+void BOSettlement(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+int GetSettlementRecords(const char* csTxnSeq,
+                        hash_t *hContext,
+                        hash_t* hRequest);
+
+double  CalDstAmt(double dFromAmt,double dRate,const char* csDstCcy);
+
+int ProcessSettlementTxn(hash_t *hContext,
+		 hash_t* hRequest,
+		 hash_t* hResponse)
+{
+	int     iRet = PD_OK;
+	char	cTmp;
+	char	cSettType;
+	char	cParty = PD_TYPE_SYSTEM;
+	char	*csTmp;
+	char	*csTxnCode;
+	char	*csMerchantId;
+	char	*csServiceCode;
+	char    *csTxnCcy;
+	char    *csInterCcy;
+	char    *csSettleCcy;
+	char    *csToCcy=NULL;
+	char    *csTxnCountry;
+	char    *csTxnSeq;
+	char    *csOrgTxnSeq;
+	char    *csUser;
+	char    *csPHDate;
+	char    *csSubStatus;
+        //char    csBundledCcy[PD_CCY_ID_LEN+1];
+	double	dTmp = 0.0;
+	double	dSrcAmt = 0.0;
+	double	dInterAmt = 0.0;
+	double	dFee = 0.0;
+	double	dSettlementBal = 0.0;
+	double	dRealDstAmt = 0.0;
+	double	dExRate = 0.0;
+	double	dInterRate = 0.0;
+	double	dMinSettAmt = 0.0;
+	double	dSettTotalAvalBal = 0.0;
+	double	dCurrentBal = 0.0;
+	int	iBundle = PD_FALSE;
+	int	iApplyToAdmin = PD_TRUE;
+	int	iTmp = 0;
+	int	iSendNotifyEmail=PD_FALSE;
+	int     iSendMerchantNotifyEmail=PD_FALSE;
+	int     iMiniMMMOn = PD_FALSE;
+	int     iSupportMiniMMM = PD_FALSE;
+	int     iRetErrIfNotMi = PD_FALSE;
+	int     iReturnMerchFee = PD_FALSE;
+
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	hash_t  *hEmailSettingRec;
+        hEmailSettingRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hEmailSettingRec,0);
+
+DEBUGLOG(("BOSettlement:ProcessSettlementTxn()\n"));
+
+ 	if (GetField_CString(hContext,"txn_seq",&csTxnSeq)) {
+DEBUGLOG(("ProcessSettlementTxn() txn_seq = [%s]\n",csTxnSeq));
+        }
+	
+	if(GetField_CString(hRequest,"org_txn_seq",&csOrgTxnSeq)){
+DEBUGLOG(("ProcessSettlementTxn() org_txn_seq = [%s]\n",csOrgTxnSeq));
+	}
+
+	if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+		PutField_CString(hContext,"txn_ccy",csTxnCcy);
+		PutField_CString(hContext,"net_ccy",csTxnCcy);
+DEBUGLOG(("ProcessSettlementTxn() txn_ccy = [%s]\n",csTxnCcy));
+	}
+
+	if(GetField_CString(hRequest,"dst_txn_ccy",&csToCcy)){
+DEBUGLOG(("ProcessSettlementTxn() dst_txn_ccy = [%s]\n",csToCcy));
+	}
+
+	if(GetField_CString(hRequest,"txn_country",&csTxnCountry)){
+DEBUGLOG(("ProcessSettlementTxn() txn_country = [%s]\n",csTxnCountry));
+	}
+
+ 	if (GetField_CString(hRequest,"service_code",&csServiceCode)) {
+DEBUGLOG(("ProcessSettlementTxn() service_code = [%s]\n",csServiceCode));
+        }
+
+ 	if (GetField_CString(hRequest,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("ProcessSettlementTxn() merchant_id = [%s]\n",csMerchantId));
+        }
+
+ 	if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("ProcessSettlementTxn() txn_amt = [%lf]\n",dTmp));
+        }
+
+ 	if (GetField_CString(hRequest,"remark",&csTmp)) {
+		PutField_CString(hContext,"remark",csTmp);
+		PutField_CString(hTxn,"remark",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() remark = [%s]\n",csTmp));
+        }
+
+ 	if (GetField_CString(hRequest,"party",&csTmp)) {
+		cParty = csTmp[0];
+DEBUGLOG(("ProcessSettlementTxn() party = [%c]\n",cParty));
+        }
+ 	if (GetField_CString(hRequest,"add_user",&csUser)) {
+		PutField_CString(hContext,"update_user",csUser);
+DEBUGLOG(("ProcessSettlementTxn() add_user = [%s]\n",csUser));
+	}
+
+	if (GetField_CString(hRequest,"sett_type",&csTmp)) {
+		cSettType = csTmp[0];
+		PutField_Char(hContext,"type",cSettType);
+DEBUGLOG(("ProcessSettlementTxn() type= [%c]\n",cSettType));
+	}
+	else{
+		cSettType  = 'M';
+		PutField_Char(hContext,"type",cSettType);
+DEBUGLOG(("ProcessSettlementTxn() type= [%c] (Default)\n",cSettType));
+	}
+
+	if(GetField_CString(hContext,"txn_code",&csTxnCode)){
+DEBUGLOG(("ProcessSettlementTxn() txn_code = [%s]\n",csTxnCode));
+	}
+	
+	if(GetField_CString(hContext,"PHDATE",&csPHDate)){
+DEBUGLOG(("ProcessSettlementTxn() PHDATE = [%s]\n",csPHDate));
+	}
+
+	//check Mini-MMM Mode
+	if (iRet == PD_OK) {
+		char*   csValue;
+		csValue = (char*) malloc (128);
+		DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+		if ((unsigned long)(DBObjPtr)(PD_MINI_MMM_ENABLE,csValue) == FOUND) {
+DEBUGLOG(("Mini-MMM Mode = [%s]\n",csValue));
+			if (!strcmp(csValue, PD_ENABLE_MMSMODE)){
+				iMiniMMMOn = PD_TRUE;
+			}
+		}
+		FREE_ME(csValue);
+	}
+
+	//check mi_mode_txn_ctl
+	if(iRet == PD_OK && iMiniMMMOn){
+                hash_t  *hCtl;
+                hCtl= (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hCtl,0);
+
+                DBObjPtr = CreateObj(DBPtr,"DBMiModeTxnCtl","GetMiModeTxnCtl");
+                iRet = (unsigned long) (*DBObjPtr)(PD_MI_TXN_TYPE_MERCH_SETTLEMENT,hCtl);
+                if(iRet == PD_OK){
+                        GetField_Int(hCtl,"err_if_not_mi",&iRetErrIfNotMi);
+                        GetField_Int(hCtl,"mi_support",&iSupportMiniMMM);
+                        if(!iSupportMiniMMM){
+                                iMiniMMMOn = PD_FALSE;
+DEBUGLOG(("Authorize() this transaction type does not support Mini-MMM mode\n"));
+                        }
+                        else{
+DEBUGLOG(("Authorize() this transaction type support Mini-MMM mode\n"));
+                        }
+                }
+                else{
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBMiModeTxnCtl:GetMiModeTxnCtl() Failed!!\n"));
+ERRLOG("BOSettlement:: Authorize() Call DBMiModeTxnCtl:GetMiModeTxnCtl() Failed!!\n");
+                }
+
+                FREE_ME(hCtl);
+        }
+
+        if(!iMiniMMMOn && iRetErrIfNotMi){
+                iRet = INT_MINI_MMM_MODE_DISABLED;
+        }
+
+/*---------Settlement Request---------*/
+	if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)){
+/*
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::call DBCurrency->FindBundledCurrency\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+			if((unsigned long) ((*DBObjPtr)(csTxnCcy,csBundledCcy))==PD_FOUND){
+				PutField_CString(hContext,"deliver_ccy",csBundledCcy);
+			}
+		}
+*/
+		if(GetField_CString(hRequest,"sett_ccy",&csSettleCcy)){
+			PutField_CString(hContext,"deliver_ccy",csSettleCcy);
+DEBUGLOG(("ProcessSettlementTxn() sett_ccy = [%s]\n",csSettleCcy));
+		}
+		else{
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","CheckMerchantBalAcct");
+			if ((unsigned long)((*DBObjPtr)(csMerchantId,
+							csTxnCountry,
+							csTxnCcy,
+							csServiceCode,
+							hContext)) != PD_FOUND) {
+				iRet = INT_INVALID_TXN;
+ERRLOG("BOSettlement::ProcessSettlementTxn() Invalid txn acct [%d] [%s] [%s] [%s]\n",iRet,csMerchantId,csTxnCountry,csTxnCcy);
+DEBUGLOG(("ProcessSettlementTxn() Invalid txn acct  [%d] [%s] [%s] [%s]\n",iRet,csMerchantId,csTxnCountry,csTxnCcy));
+			}
+			else{
+				if(GetField_CString(hContext,"preferred_settle_ccy",&csSettleCcy)){
+					PutField_CString(hContext,"deliver_ccy",csSettleCcy);
+DEBUGLOG(("ProcessSettlementTxn() sett_ccy (default) = [%s]\n",csSettleCcy));
+				}
+				else{
+					iRet = INT_INVALID_TXN;
+DEBUGLOG(("ProcessSettlementTxn() settlement delivery currency not found!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() settlement delivery currency not found!\n");
+				}
+			}
+		}
+		if(iRet==PD_OK && cSettType=='M'){
+			if(!GetField_Double(hContext,"min_settle_amt",&dMinSettAmt)){
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","CheckMerchantBalAcct");
+                        	if ((unsigned long)((*DBObjPtr)(csMerchantId,
+                        	                                csTxnCountry,
+                        	                                csTxnCcy,
+                        	                                csServiceCode,
+                        	                                hContext)) != PD_FOUND) {
+					iRet = INT_INVALID_TXN;
+ERRLOG("BOSettlement::ProcessSettlementTxn() Invalid txn acct [%d] [%s] [%s] [%s]\n",iRet,csMerchantId,csTxnCountry,csTxnCcy);
+DEBUGLOG(("ProcessSettlementTxn() Invalid txn acct  [%d] [%s] [%s] [%s]\n",iRet,csMerchantId,csTxnCountry,csTxnCcy));
+                        	}
+			}
+                        if(GetField_Double(hContext,"min_settle_amt",&dMinSettAmt)){
+				GetField_Int(hContext,"min_settle_amt_applytoadmin",&iApplyToAdmin);
+				if(cParty=='M' || iApplyToAdmin){
+					//check min settlement amount
+					dTmp = 0.0;
+					GetField_Double(hContext,"txn_amt",&dTmp);
+					if(dTmp<dMinSettAmt && dMinSettAmt>0.0){
+						iRet = INT_SETTLE_AMT_TOO_SMALL;
+						PutField_Int(hContext,"internal_error",iRet);
+						PutField_Double(hResponse,"min_amt",dMinSettAmt);
+						PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("ProcessSettlementTxn() request amount smaller than the min settlement amount[%lf]!!!\n",dMinSettAmt));
+ERRLOG("BOSettlement::ProcessSettlementTxn() request amount smaller than the min settlement amount[%lf]!!!\n",dMinSettAmt);
+						
+					}
+				}
+			}
+		}
+
+		if(iRet==PD_OK && cParty==PD_TYPE_MERCHANT){
+                        if (GetField_CString(hRequest, "merchant_notify_email", &csTmp)) {
+                                iSendMerchantNotifyEmail = atoi(csTmp);
+DEBUGLOG(("Authorize::Send_merchant_notify_email = [%d]\n", iSendMerchantNotifyEmail));
+                        } else {
+DEBUGLOG(("Authorize:: (Default) Send_merchant_notify_email = [%d]\n", iSendMerchantNotifyEmail));
+                        }
+                        PutField_Int(hContext, "merchant_notify_email", iSendMerchantNotifyEmail);
+	
+			PutField_Char(hEmailSettingRec,"party_type",cSettType);
+                      	PutField_CString(hEmailSettingRec,"party_id",csMerchantId);
+                     	PutField_CString(hEmailSettingRec,"funct",PD_EML_FUNCT_SETT_MERCH);
+                       	PutField_Int(hEmailSettingRec,"default",iSendMerchantNotifyEmail);
+                      	PutField_CString(hEmailSettingRec,"update_user",csUser);
+
+			// Process Email Setting
+DEBUGLOG(("Authorize:: Call BOEmailSetting ProcessEmailSettingBySettlement\n"));
+                	BOObjPtr = CreateObj(BOPtr, "BOEmailSetting","ProcessEmailSettingBySettlement");
+                	iRet = (unsigned long)(*BOObjPtr)(hContext,hEmailSettingRec,iSendMerchantNotifyEmail);
+                	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOEmailSetting:: Success!!!\n"));
+                	} else {
+                	     	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Call BOEmailSetting:: Failure!!!\n"));
+ERRLOG("BOSettlement::Authorize::Call BOEmailSetting:: Failure!!!\n");
+                	}
+                }
+
+		if(iRet==PD_OK){
+			if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+				PutField_Double(hContext,"net_amt",dTmp);
+			}
+		}
+
+		if(iRet==PD_OK){
+			if (GetField_CString(hRequest,"client_sett_bank_id",&csTmp)) {
+				iTmp = atoi(csTmp);
+DEBUGLOG(("ProcessSettlementTxn() client_sett_bank_id = [%d]\n",iTmp));
+				PutField_Int(hContext,"client_sett_bank_id",iTmp);
+			}
+		}
+
+		if(iRet==PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBTransaction:AddDetail\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+			if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+				iRet = INT_ERR;
+		}
+
+		if(iRet==PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBMerchantSettlementDetail:Add\n"));
+			PutField_Char(hContext,"status",PD_PROCESSING);
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Add");
+			if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+				iRet = INT_ERR;
+		}
+
+		if(iRet==PD_OK){
+			if(cParty == PD_TYPE_MERCHANT)
+				PutField_CString(hContext,"sub_status",PD_MERCHANT_REQUESTED);
+			else if(cParty == PD_TYPE_ADMIN)
+				PutField_CString(hContext,"sub_status",PD_ADMIN_REQUESTED);
+			else
+				PutField_CString(hContext,"sub_status",PD_SYSTEM_REQUESTED);
+		}
+
+	}
+
+/*---------Settlement Approve---------*/
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_APPROVAL)){
+		PutField_CString(hTxn,"txn_seq",csOrgTxnSeq);
+		PutField_CString(hContext,"from_txn_seq",csOrgTxnSeq);
+		PutField_CString(hTxn,"update_user",csUser);
+
+DEBUGLOG(("Authorize::call DBTransaction->MatchRespTxn\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchRespTxn");
+                int iChk = (unsigned long)(*DBObjPtr)(csOrgTxnSeq,PD_PROCESSING);
+                if(iChk==PD_NOT_FOUND){
+                        iRet = INT_INVALID_TXN;
+                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: The Transaction is not for approval\n"));
+                }
+
+                if(iRet==PD_OK){
+                        iRet = GetSettlementRecords(csOrgTxnSeq, hContext, hRequest);
+
+                        GetField_CString(hRequest,"txn_ccy",&csTxnCcy);
+                        GetField_CString(hRequest,"txn_country",&csTxnCountry);
+                        GetField_CString(hRequest,"service_code",&csServiceCode);
+                        GetField_CString(hRequest,"merchant_id",&csMerchantId);
+			GetField_CString(hRequest,"admin_sub_status",&csSubStatus);
+                }
+
+		if((iRet == PD_OK) && (!strcmp(csSubStatus, PD_ADMIN_REQUESTED))){
+			if (GetField_CString(hRequest, "notify_email", &csTmp)) {
+				iSendNotifyEmail = atoi(csTmp);
+DEBUGLOG(("Authorize::Send_notify_email = [%d]\n", iSendNotifyEmail));
+
+				PutField_Char(hEmailSettingRec,"party_type",cSettType);
+                        	PutField_CString(hEmailSettingRec,"party_id",csMerchantId);
+                        	PutField_CString(hEmailSettingRec,"funct",PD_EML_FUNCT_SETT_ADMIN);
+                        	PutField_Int(hEmailSettingRec,"default",iSendNotifyEmail);
+                        	PutField_CString(hEmailSettingRec,"update_user",csUser);
+
+				// Process Email Setting
+DEBUGLOG(("Authorize:: Call BOEmailSetting ProcessEmailSettingBySettlement\n"));
+                        	BOObjPtr = CreateObj(BOPtr, "BOEmailSetting","ProcessEmailSettingBySettlement");
+                        	iRet = (unsigned long)(*BOObjPtr)(hContext,hEmailSettingRec,iSendNotifyEmail);
+                        	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOEmailSetting:: Success!!!\n"));
+                        	} else {
+                                	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Call BOEmailSetting:: Failure!!!\n"));
+ERRLOG("BOSettlement::Authorize::Call BOEmailSetting:: Failure!!!\n");
+                        	}	
+			} else {
+DEBUGLOG(("Authorize:: (Default) Send_notify_email = [%d]\n", iSendNotifyEmail));
+                        }
+		}
+
+/*	
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::call DBCurrency->FindBundledCurrency\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+			if((unsigned long) ((*DBObjPtr)(csTxnCcy,csBundledCcy))==PD_FOUND){
+				if(strcmp(csTxnCcy,csBundledCcy)){
+					PutField_CString(hTxn,"deliver_ccy",csBundledCcy);
+					PutField_Int(hContext,"deliver_ccy_present",PD_TRUE);
+					PutField_CString(hContext,"dst_txn_ccy",csBundledCcy);
+					PutField_CString(hContext,"to_txn_ccy",csBundledCcy);
+					PutField_CString(hContext,"bank_ccy",csBundledCcy);
+					PutField_CString(hRequest,"to_txn_ccy",csBundledCcy);
+				}
+			}
+		}
+*/
+		int iTmp = PD_FALSE;
+		if(GetField_Int(hContext,"deliver_ccy_present",&iTmp)){
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:deliver_ccy_present [%d]\n",iTmp));
+		}
+
+
+		if(iTmp==PD_FALSE){
+/*			PutField_CString(hContext,"dst_txn_ccy",csToCcy);
+			PutField_CString(hContext,"to_txn_ccy",csToCcy);
+			PutField_CString(hContext,"bank_ccy",csToCcy);
+			PutField_CString(hRequest,"to_txn_ccy",csToCcy);
+			PutField_CString(hTxn,"deliver_ccy",csToCcy);
+*/
+		}
+
+		if(GetField_Char(hRequest,"admin_status",&cTmp)){
+			if(cTmp!=PD_PROCESSING){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+				PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n");
+			}
+		}
+		if(GetField_Char(hRequest,"merchant_status",&cTmp)){
+			if(cTmp!=PD_PROCESSING){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+				PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n");
+			}
+		}
+
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::call BOMerchant->GetMerchantTxnInfo\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+			if(iRet!=PD_OK){
+				PutField_Int(hContext,"internal_error",iRet);
+				PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+			}
+		}
+/*
+		if(iRet == PD_OK){
+			PutField_CString(hContext,"amount_type",PD_DR);
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+			iRet = (unsigned long)(*BOObjPtr)(hContext);
+		}
+*/
+
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call BOExchange:GetExchangeInfo\n"));
+			PutField_CString(hContext,"txn_code",PD_SETTLEMENT_REQUEST);
+
+			BOObjPtr = CreateObj(DBPtr,"BOExchange","GetExchangeInfo");
+			if ((*BOObjPtr)(hContext,hRequest) == PD_OK) {
+DEBUGLOG(("GetExternalExchangeInfo Success\n"));
+				if(GetField_Double(hContext,"dst_txn_amt",&dTmp)){
+DEBUGLOG(("Destination Amount=[%lf]\n",dTmp));
+				}
+				if(GetField_Double(hContext,"markup_amt",&dTmp)){
+DEBUGLOG(("Markup Amount=[%lf]\n",dTmp));
+				}
+				if(GetField_Double(hContext,"markup_rate",&dTmp)){
+DEBUGLOG(("Markup rate=[%lf]\n",dTmp));
+				}
+				if(GetField_Double(hContext,"ex_rate",&dExRate)){
+DEBUGLOG(("Exchange rate=[%lf]\n",dExRate));
+				}
+				if(GetField_Char(hContext,"ex_party",&cTmp)){
+					PutField_Char(hContext,"ex_supplier",cTmp);
+DEBUGLOG(("Exchange Party=[%c]\n",cTmp));
+				}
+				if(GetField_CString(hContext,"inter_ccy",&csInterCcy)&&
+				   GetField_Double(hContext,"inter_rate",&dInterRate)&&
+				   GetField_Double(hContext,"inter_amt",&dInterAmt)){
+					iBundle = PD_TRUE;
+					PutField_Double(hContext,"bank_bal",dInterAmt);
+					PutField_CString(hContext,"bank_ccy",csInterCcy);
+					PutField_Double(hTxn,"inter_amt",dInterAmt);
+					PutField_CString(hTxn,"inter_ccy",csInterCcy);
+DEBUGLOG(("Inter Ccy=[%s]\n",csInterCcy));
+DEBUGLOG(("Inter Amount=[%lf]\n",dInterAmt));
+DEBUGLOG(("Inter Rate=[%lf]\n",dInterRate));
+				}
+
+			}
+			else{
+				iRet = INT_ERR;
+				//PutField_Int(hContext,"internal_error",iRet);
+				//PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("ProcessSettlementTxn::GetExchangeInfo Error\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn:GetExchangeInfo Error\n");
+			}
+		}
+	
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call BOFee:GetTxnFee\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+			if((unsigned long)(*BOObjPtr)(hContext,hRequest)==PD_OK){
+				if(GetField_Double(hContext,"src_txn_fee",&dFee)){
+DEBUGLOG(("ProcessSettlementTxn::settlement txn fee=[%f]\n",dFee));
+					if(iBundle==PD_TRUE){
+						dInterAmt = dInterAmt - CalDstAmt(dFee,dInterRate,csInterCcy);
+						PutField_Double(hTxn,"inter_amt",newround(dInterAmt, PD_DECIMAL_LEN));
+						PutField_Double(hContext,"bank_bal",newround(dInterAmt, PD_DECIMAL_LEN));
+					}
+DEBUGLOG(("ProcessSettlementTxn::final inter amount=[%f]\n",dInterAmt));
+				}
+				if(GetField_Double(hContext,"net_amt",&dSrcAmt)){
+DEBUGLOG(("ProcessSettlementTxn::settlement net amt=[%f]\n",dSrcAmt));
+				}
+				if(GetField_Double(hContext,"dst_txn_amt",&dTmp)){
+					dRealDstAmt =  dTmp - CalDstAmt(dFee,dExRate,csToCcy);
+					PutField_Double(hContext,"dst_txn_amt",newround(dRealDstAmt, PD_DECIMAL_LEN));
+					PutField_Double(hTxn,"deliver_amt",newround(dRealDstAmt, PD_DECIMAL_LEN));
+					PutField_Double(hContext,"settlement_txn_amt",newround(dRealDstAmt, PD_DECIMAL_LEN));
+					if(iBundle==PD_FALSE){
+						PutField_Double(hTxn,"inter_amt",newround(dRealDstAmt, PD_DECIMAL_LEN));
+						PutField_CString(hTxn,"inter_ccy",csToCcy);
+					}
+
+DEBUGLOG(("ProcessSettlementTxn::settlement dest net amt=[%f]\n",dRealDstAmt));
+				}
+
+				/*add txn amt element*/
+				//if(GetField_Double(hContext,"org_txn_amt",&dTxnAmt)){
+				PutField_Double(hContext,"org_txn_amt",dSrcAmt);
+				//}
+				PutField_CString(hContext,"amount_type",PD_DR);
+				BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+				iRet = (unsigned long)(*BOObjPtr)(hContext);
+				
+
+				if(iRet==PD_OK){
+					/*add txn fee element*/
+					BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+					iRet = (unsigned long)(*BOObjPtr)(hContext);
+				}
+			}
+			else{
+				iRet = INT_ERR;
+				//PutField_Int(hContext,"internal_error",iRet);
+				//PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("ProcessSettlementTxn::BOSettlementFee Error\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn:BOSettlementFee Error\n");
+			}
+
+			PutField_CString(hContext,"txn_code",PD_SETTLEMENT_APPROVAL);
+		}
+
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBMerchantBalance:GetSettInTransit\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetSettInTransit");
+			if ((*DBObjPtr)(hContext,
+                                csMerchantId,
+                                csTxnCcy,
+                                csTxnCountry,
+                                csServiceCode,
+				&dSettlementBal) != PD_OK) {
+DEBUGLOG(("ProcessSettlementTxn::DBMerchantBalance:GetSettInTransit Failed!!\n"));
+                        	iRet = INT_ERR;
+			} 
+			else {
+DEBUGLOG(("ProcessSettlementTxn::GetSettInTransit for settlement=[%f]\n",dSettlementBal));
+				if(newround(dSettlementBal, PD_DECIMAL_LEN)<newround(dSrcAmt+dFee,PD_DECIMAL_LEN)){
+					iRet=INT_ERR;
+					//PutField_Int(hContext,"internal_error",iRet);
+					//PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("Settlement Bal[%f] < Request Net Amt=[%f]\n",dSettlementBal,dSrcAmt+dFee));
+ERRLOG("BOSettlement::ProcessSettlementTxn::insufficient intransit settlement balance!!\n");
+                                }
+			}
+		}
+		if(iRet==PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBMerchantBalance:GetSettTotalAvalBalance\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetSettTotalAvalBalance");
+			if ((*DBObjPtr)(hContext,
+                                csMerchantId,
+                                csTxnCcy,
+                                csTxnCountry,
+                                csServiceCode,
+				&dSettTotalAvalBal) != PD_OK) {
+DEBUGLOG(("ProcessSettlementTxn::DBMerchantBalance:GetSettTotalAvalBalance Failed!!\n"));
+                        	iRet = INT_ERR;
+			}
+			else{
+DEBUGLOG(("ProcessSettlementTxn::GetSettTotalAvalBalance = [%f]\n",dSettTotalAvalBal));
+				if(newround(dSettTotalAvalBal, PD_DECIMAL_LEN)<newround(dSrcAmt+dFee,PD_DECIMAL_LEN)){
+                                        iRet=INT_INSUFFICIENT_FUND;
+                                        PutField_Int(hContext,"internal_error",iRet);
+					PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("Total Aval Settlement Bal[%f] < Request Net Amt=[%f]\n",dSettTotalAvalBal,dSrcAmt+dFee));
+ERRLOG("BOSettlement::ProcessSettlementTxn::insufficient total aval settlement balance!!\n");
+				}
+			}
+		}
+		if(iRet == PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBMerchantBalance:GetCurrBalanceInq\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrBalanceInq");
+			if ((*DBObjPtr)(hContext,
+                                csMerchantId,
+                                csTxnCcy,
+                                csTxnCountry,
+                                csServiceCode,
+				&dCurrentBal) != PD_OK) {
+DEBUGLOG(("ProcessSettlementTxn::DBMerchantBalance:GetCurrBalanceInq Failed!!\n"));
+                        	iRet = INT_ERR;
+			} 
+			else {
+DEBUGLOG(("ProcessSettlementTxn::GetCurrBalanceInq for settlement=[%f]\n",dCurrentBal));
+				if(newround(dCurrentBal, PD_DECIMAL_LEN)<newround(dSrcAmt+dFee,PD_DECIMAL_LEN)){
+					iRet=INT_INSUFFICIENT_FUND;
+					PutField_Int(hContext,"internal_error",iRet);
+					PutField_CString(hContext,"sub_status",PD_SYSTEM_CANCELLED);
+DEBUGLOG(("Current Bal[%f] < Request Net Amt=[%f]\n",dCurrentBal,dSrcAmt+dFee));
+ERRLOG("BOSettlement::ProcessSettlementTxn::insufficient current balance!!\n");
+                                }
+			}
+		}
+
+		if(iRet==PD_OK && iBundle==PD_TRUE && !iMiniMMMOn){
+DEBUGLOG(("BOSettlement::Call BOBalance:DebitSebBalance\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOBalance","DebitSebBalance");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+			if(iRet==PD_ERR){
+				iRet = INT_ERR;
+DEBUGLOG(("BOSettlement::BOBalance:DebitSebBalance Error\n"));
+			}
+		}
+//////Add to FundsOut table (for SEB balance)
+		if(iRet==PD_OK && iBundle==PD_TRUE && !iMiniMMMOn){
+			hash_t  *hFunds;
+			hFunds= (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hFunds,0);
+
+			int     iId = 0;
+			int     iCnt = 0;
+			int     i = 0;
+			char    csId[PD_TXN_SEQ_LEN+1];
+			char    csTag[PD_TAG_LEN+1];
+
+DEBUGLOG(("BOSettlement::call DBFundsOut->Add\n"));
+			if(GetField_Double(hContext,"bal_after_fo",&dTmp)){
+				PutField_Double(hFunds,"bank_bal",dTmp);
+			}
+			PutField_CString(hFunds,"txn_seq",csOrgTxnSeq);
+			PutField_Double(hFunds,"fundout_amt",dInterAmt);
+			PutField_CString(hFunds,"fundout_ccy",csInterCcy);
+			PutField_CString(hFunds,"fundout_date",csPHDate);
+			PutField_CString(hFunds,"add_user",csUser);
+			DBObjPtr = CreateObj(DBPtr,"DBFundsOut","Add");
+			if((unsigned long)(*DBObjPtr)(hFunds)==PD_OK){
+				if(GetField_Int(hFunds,"fundsout_id",&iId)){
+					sprintf(csId,"%d",iId);
+					PutField_CString(hFunds,"td_batch_id",csId);
+
+DEBUGLOG(("BOSettlement::call DBTransaction->UpdateDetail\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+					if((unsigned long)(*DBObjPtr)(hFunds)!=PD_OK){
+DEBUGLOG(("BOSettlement::DBTransaction->UpdateDetail Failed\n"));
+					}
+
+					iCnt = 0;
+					if(GetField_Int(hContext,"seb_ccy_cnt",&iCnt)){
+DEBUGLOG(("BOSettlement::call DBFundsOutHistory insert [%d] record\n",iCnt));
+					}
+
+					for(i=0;i<iCnt;i++){
+						dTmp = 0.0;
+						sprintf(csTag,"from_ccy_%d",i);
+						if(GetField_CString(hContext,csTag,&csTmp)){
+							PutField_CString(hFunds,"from_ccy",csTmp);
+						}
+						sprintf(csTag,"fundout_amt_%d",i);
+						if(GetField_Double(hContext,csTag,&dTmp)){
+							PutField_Double(hFunds,"fundout_amt",dTmp);
+						}
+						sprintf(csTag,"old_bal_%d",i);
+						if(GetField_Double(hContext,csTag,&dTmp)){
+							PutField_Double(hFunds,"old_bal",dTmp);
+						}
+						sprintf(csTag,"new_bal_%d",i);
+						if(GetField_Double(hContext,csTag,&dTmp)){
+							PutField_Double(hFunds,"new_bal",dTmp);
+						}
+						DBObjPtr = CreateObj(DBPtr,"DBFundsOutHistory","Add");
+						if((unsigned long)(*DBObjPtr)(hFunds)!=PD_OK){
+DEBUGLOG(("BOSettlement::DBFundsOutHistory->Add Failed\n"));
+						}
+					}
+				}
+			}
+
+			FREE_ME(hFunds);
+		}
+
+
+		if(iRet==PD_OK){
+/*
+			if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("ProcessSettlementTxn:: approval_date= [%s]\n",csTmp));
+				PutField_CString(hContext,"approval_date",csTmp);
+			}
+*/
+			PutField_CString(hContext,"sub_status",PD_IN_PROCESS);
+		}
+		else if(iRet == INT_INSUFFICIENT_FUND){
+DEBUGLOG(("ProcessSettlementTxn: Call DBMerchantBalance:UpdateSettInTransit[%c]\n",PD_IND_DEBIT));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateSettInTransit");
+			if((unsigned long)(*DBObjPtr)(csMerchantId,
+						csTxnCountry,
+						csTxnCcy,
+						csServiceCode,
+						(dSrcAmt+dFee),
+						PD_IND_DEBIT,
+						PD_UPDATE_USER)!=PD_OK){
+				RemoveField_Int(hContext,"internal_error");
+				RemoveField_CString(hContext,"sub_status");
+				iRet = INT_ERR;
+ERRLOG("BOSettlement::ProcessSettlementTxn::UpdateSettInTransit Failed!!\n");
+			}
+			else{
+				hash_t  *hTmp;
+				hTmp= (hash_t*) malloc (sizeof(hash_t));
+				hash_init(hTmp,0);
+
+				PutField_CString(hTmp,"txn_seq",csOrgTxnSeq);
+				PutField_CString(hTmp,"update_user",csUser);
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Update");
+				if((unsigned long) ((*DBObjPtr)(hTmp))!=PD_OK){
+					iRet = INT_ERR;
+ERRLOG("BOSettlement::ProcessSettlementTxn::Update MerchantSettlementDetail Failed!!\n");
+				}
+
+				FREE_ME(hTmp);
+			}
+		}
+
+	}
+
+/*---------Settlement Deliver---------*/
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_DELIVERY)){
+		PutField_CString(hTxn,"txn_seq",csOrgTxnSeq);
+		PutField_CString(hTxn,"update_user",csUser);
+
+		iRet = GetSettlementRecords(csOrgTxnSeq, hContext, hRequest);
+
+		if(GetField_CString(hRequest,"to_txn_ccy",&csTmp)){
+			PutField_CString(hResponse,"txn_ccy",csTmp);
+		}
+		if(GetField_Double(hRequest,"deliver_amt",&dTmp)){
+			PutField_Double(hResponse,"txn_amt",dTmp);
+		}
+
+
+		if(GetField_Char(hRequest,"admin_status",&cTmp)){
+			if(cTmp!=PD_COMPLETE){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else{
+				if(GetField_Char(hRequest,"admin_ar_ind",&cTmp)){
+					if(cTmp==PD_REJECT){
+						iRet = INT_INVALID_TXN;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+				}
+			}
+			if(iRet == INT_INVALID_TXN){
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n");
+			}
+		}
+		if(GetField_Char(hRequest,"merchant_status",&cTmp)){
+			if(cTmp!=PD_TO_PSP){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n");
+			}
+		}
+
+		if(iRet==PD_OK){
+			PutField_CString(hContext,"sub_status",PD_DELIVERED);
+		}
+
+	}
+
+/*---------Settlement Cancel---------*/
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_CANCEL)){
+		PutField_CString(hTxn,"txn_seq",csOrgTxnSeq);
+
+		iRet = GetSettlementRecords(csOrgTxnSeq, hContext, hRequest);
+
+		if(GetField_Char(hRequest,"admin_status",&cTmp)){
+			if(cTmp!=PD_PROCESSING){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n");
+			}
+		}
+		if(GetField_Char(hRequest,"merchant_status",&cTmp)){
+			if(cTmp!=PD_PROCESSING){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n");
+			}
+		}
+		if(iRet==PD_OK){
+			if(GetField_Char(hRequest,"action_party",&cTmp)){
+				if(GetField_CString(hRequest,"admin_sub_status",&csTmp)){
+					if((cTmp==PD_TYPE_MERCHANT) && (strcmp(csTmp,PD_MERCHANT_REQUESTED))){
+						iRet = INT_NO_RIGHTS_TO_CANCEL;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:merchant cannot cancel!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:merchant cannot cancel!!!\n");
+					}
+				}
+
+				if(iRet==PD_OK){
+					if(cTmp==PD_TYPE_MERCHANT)
+						PutField_CString(hContext,"sub_status",PD_MERCHANT_CANCELLED);
+					else
+						PutField_CString(hContext,"sub_status",PD_ADMIN_CANCELLED);
+				}
+			}
+			else{
+				PutField_CString(hContext,"sub_status",PD_ADMIN_CANCELLED);
+			}
+		}
+		if(iRet==PD_OK){
+			if(GetField_Double(hContext,"org_txn_amt",&dTmp)){
+				PutField_Double(hContext,"het_amt",dTmp);
+			}
+		}
+
+	}
+
+/*---------Settlement Void---------*/
+	else if(!strcmp(csTxnCode,PD_VOID_TXN_CODE)){
+		double dTxnAmt,dNetAmt=0.0;
+		PutField_CString(hTxn,"txn_seq",csOrgTxnSeq);
+		PutField_CString(hTxn,"update_user",csUser);
+		PutField_CString(hTxn,"sub_status",PD_UNDO);
+		PutField_Char(hTxn,"status",PD_REVERSED);
+
+		iRet = GetSettlementRecords(csOrgTxnSeq, hContext, hRequest);
+		
+		if(GetField_Char(hRequest,"admin_status",&cTmp)){
+			if(cTmp!=PD_COMPLETE){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else{
+				if(GetField_Char(hRequest,"admin_ar_ind",&cTmp)){
+					if(cTmp!=PD_ACCEPT){
+						iRet = INT_INVALID_TXN;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+				}
+			}
+			if(iRet == INT_INVALID_TXN){
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid admin status!!!\n");
+			}
+		}
+		if(GetField_Char(hRequest,"merchant_status",&cTmp)){
+			if(cTmp!=PD_SETT_IN_PROGRESS){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() GetSettlementRecords:invalid merchant status!!!\n");
+			}
+		}
+
+		PutField_CString(hContext,"sub_txn_code",PD_SETTLEMENT_VOID);
+
+		if (GetField_Int(hRequest,"return_mfee",&iReturnMerchFee)) {
+DEBUGLOG(("ProcessSettlementTxn() return_mfee= [%d]\n",iReturnMerchFee));
+		}
+
+		if (iReturnMerchFee == PD_FALSE) {
+			if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+                             	if (GetField_Double(hContext,"net_amt",&dNetAmt)) {
+                                      	PutField_Double(hContext,"txn_amt",dNetAmt);
+                            	}
+                       	}
+		} else {
+			if (GetField_Double(hContext,"net_amt",&dNetAmt)) {
+				if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+					PutField_Double(hContext,"net_amt",dTxnAmt);
+				}
+			}
+		}
+
+		if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSettlementTxn::Call BOBalance:UpdateSettlementAmount()\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateSettlementAmount");
+			if((unsigned long)(*BOObjPtr)(hContext)!=PD_OK)
+				iRet = INT_ERR;
+DEBUGLOG(("BOSettlement: ProcessSettlementTxn:: BOBalance:UpdateSettlementAmount() result = [%d]\n",iRet));
+		}
+
+		PutField_Double(hContext,"net_amt",dNetAmt);
+
+		if(iRet==PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call Update Org Transaction\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK)
+				iRet = INT_ERR;
+		}
+
+		if(iRet==PD_OK){
+                        PutField_CString(hTxn,"txn_code",PD_SETTLEMENT_REQUEST);
+			PutField_CString(hTxn,"add_user",csUser);
+
+DEBUGLOG(("ProcessSettlementTxn::Call DBTxnRemarks:Add\n"));
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnRemarks","Add");
+                        if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK)
+                                iRet = INT_ERR;
+                }
+
+		if(iRet==PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBTransaction:AddDetail\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+			if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+				iRet = INT_ERR;
+		}
+
+		if(iRet==PD_OK){
+			if(GetField_Double(hContext,"merchant_open_bal",&dTmp)){
+				PutField_Double(hContext,"open_bal",dTmp);
+			}
+			if(GetField_Double(hContext,"merchant_open_bal_settlement",&dTmp)){
+				PutField_Double(hContext,"open_bal_settlement",dTmp);
+			}
+			
+DEBUGLOG(("ProcessSettlementTxn::Call DBTransaction:UpdateDetail\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+			if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+				iRet = INT_ERR;
+		}
+	}
+
+	else{
+DEBUGLOG(("BOSettlement::ProcessSettlementTxn() unknown txn_code!!!\n"));
+ERRLOG("BOSettlement::ProcessSettlementTxn() unknown txn_code!!!\n");
+		iRet = INT_ERR;
+	}
+
+	if(iRet == PD_OK &&
+	   strcmp(csTxnCode,PD_VOID_TXN_CODE)){
+DEBUGLOG(("ProcessSettlementTxn::Call BOBalance:UpdateSettlementAmount\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateSettlementAmount");
+		if((unsigned long) ((*BOObjPtr)(hContext))!=PD_OK)
+			iRet = INT_ERR;
+	}
+	if(iRet == PD_OK 
+	   && strcmp(csTxnCode,PD_SETTLEMENT_REQUEST) 
+	   /* && strcmp(csTxnCode,PD_VOID_TXN_CODE) */
+	)
+	{
+DEBUGLOG(("ProcessSettlementTxn::Call DBMerchantSettlementDetail:Update\n"));
+		if(!strcmp(csTxnCode,PD_SETTLEMENT_APPROVAL)){
+			PutField_Char(hTxn,"status",PD_TO_PSP);
+			PutField_CString(hTxn,"approve_user",csUser);
+
+			PutField_Int(hTxn, "notify_email", iSendNotifyEmail);
+
+			if (GetField_Int(hRequest,"client_sett_bank_id",&iTmp)) {
+DEBUGLOG(("ProcessSettlementTxn() client_sett_bank_id = [%d]\n",iTmp));
+				PutField_Int(hContext,"client_sett_bank_id",iTmp);
+				DBObjPtr = CreateObj(DBPtr,"DBClientSettBank","GetClientSettBank");
+				if ((unsigned long)((*DBObjPtr)(iTmp,hContext)) != PD_FOUND){
+					iRet = INT_INVALID_BANK_ID;
+ERRLOG("BOOLSettlement::ProcessSettlementTxn() Invalid client sett bank id [%d] [%d]\n",iRet,iTmp);
+DEBUGLOG(("ProcessSettlementTxn() Invalid client sett bank id [%d] [%d]\n",iRet,iTmp));
+				} else{
+					if(GetField_CString(hContext,"bank_ac_name",&csTmp)){
+						PutField_CString(hTxn,"beneficiary_bank_ac_name",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() bank_ac_name = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"bank_ac_num",&csTmp)){
+						PutField_CString(hTxn,"beneficiary_bank_ac_num",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() bank_ac_num = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"bank_name",&csTmp)){
+						PutField_CString(hTxn,"beneficiary_bank_name",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() bank_name = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"address",&csTmp)){
+						PutField_CString(hTxn,"address",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() address = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"swift_code",&csTmp)){
+						PutField_CString(hTxn,"swift_code",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() swift_code = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"iban",&csTmp)){
+						PutField_CString(hTxn,"iban",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() iban = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"bank_ac_ccy",&csTmp)){
+						PutField_CString(hTxn,"bank_ac_ccy",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() bank_ac_ccy = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"country_subdivision",&csTmp)){
+						PutField_CString(hTxn,"country_subdivision",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() country_subdivision = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"city",&csTmp)){
+						PutField_CString(hTxn,"city",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() city = [%s]\n",csTmp));
+					}
+
+					if(GetField_CString(hContext,"country",&csTmp)){
+						PutField_CString(hTxn,"country",csTmp);
+DEBUGLOG(("ProcessSettlementTxn() country = [%s]\n",csTmp));
+					}
+				}
+			}
+		}
+		else if(!strcmp(csTxnCode,PD_SETTLEMENT_DELIVERY)){
+			PutField_Char(hTxn,"status",PD_COMPLETE);
+			PutField_CString(hTxn,"deliver_user",csUser);
+			PutField_CString(hTxn,"deliver_date",csPHDate);
+			PutField_CString(hTxn,"bank_statement_date",csPHDate);
+
+			if (GetField_CString(hContext, "receive_ccy", &csTmp)) {
+				PutField_CString(hTxn, "receive_ccy", csTmp);
+			}
+			if (GetField_Double(hContext, "receive_amt", &dTmp)) {
+				PutField_Double(hTxn, "receive_amt", dTmp);
+			}
+
+		}
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Update");
+		if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK)
+			iRet = INT_ERR;
+
+		if(iRet==PD_OK){
+DEBUGLOG(("ProcessSettlementTxn::Call DBTransaction:UpdateDetail\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+			if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+				iRet = INT_ERR;
+		}
+	}
+DEBUGLOG(("BOSettlement::ProcessSettlementTxn() iRet[%d]\n",iRet));
+	FREE_ME(hTxn);
+
+	hash_destroy(hEmailSettingRec);
+        FREE_ME(hEmailSettingRec);
+
+	return	iRet;
+}
+
+
+
+int GetSettlementRecords(const char* csTxnSeq,
+			hash_t *hContext,
+			hash_t* hRequest)
+{
+	int	iRet  = PD_OK;
+	char	*csTmp;
+	char	cTmp;
+	double	dTmp=0.0;
+	double	dNetAmt=0.0;
+	double	dFee=0.0;
+	hash_t  *hRec;
+	int 	iTmp;
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("BOSettlement:GetSettlementRecords()\n"));
+
+DEBUGLOG(("GetSettlementRecords::Call DBTransaction:GetTxnHeader\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+	if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetHeader::found record = [%s]\n",csTxnSeq));
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+			if (GetField_CString(hRec,"merchant_id",&csTmp)) {
+				PutField_CString(hRequest,"merchant_id",csTmp);
+				PutField_CString(hContext,"merchant_id",csTmp);
+DEBUGLOG(("GetHeader::merchant_id= [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_MERCHANT_ID_NOT_FOUND;
+DEBUGLOG(("GetHeader::merchant_id not found\n"));
+			}
+			if (GetField_CString(hRec,"service_code",&csTmp)) {
+				PutField_CString(hRequest,"service_code",csTmp);
+				PutField_CString(hContext,"service_code",csTmp);
+DEBUGLOG(("GetHeader::service_code= [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_SERVICE_CODE_MISSING;
+DEBUGLOG(("GetHeader::service_code not found\n"));
+			}
+			if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+				PutField_Double(hContext,"txn_amt",dTmp);
+DEBUGLOG(("GetTxnHeader::txn_amt = [%lf]\n",dTmp));
+			}
+			if (GetField_Double(hRec,"net_amt",&dNetAmt)) {
+				PutField_Double(hContext,"net_amt",dNetAmt);
+DEBUGLOG(("GetHeader::net_amt = [%lf]\n",dNetAmt));
+			}
+			/*if (GetField_Double(hRec,"markup_amt",&dTmp)) {
+				//dNetAmt+=dTmp;
+				PutField_Double(hContext,"markup_amt",dTmp);
+DEBUGLOG(("GetHeader::markup_amt = [%lf]\n",dTmp));
+			}*/
+			if (GetField_Char(hRec,"status",&cTmp)){
+DEBUGLOG(("GetHeader::status= [%c]\n",cTmp));
+				PutField_Char(hRequest,"admin_status",cTmp);
+			}
+			if (GetField_Char(hRec,"ar_ind",&cTmp)){
+DEBUGLOG(("GetHeader::ar_ind= [%c]\n",cTmp));
+				PutField_Char(hRequest,"admin_ar_ind",cTmp);
+			}
+			if (GetField_CString(hRec,"sub_status",&csTmp)){
+DEBUGLOG(("GetHeader::sub_status= [%s]\n",csTmp));
+				PutField_CString(hRequest,"admin_sub_status",csTmp);
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	else{
+DEBUGLOG(("GetHeader:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("BOSettlement::GetSettlementRecords() GetHeader::not found record!!\n");
+		iRet=INT_NOT_RECORD;
+	}
+	RecordSet_Destroy(rRecordSet);
+
+/* fee charge detail */
+	if(iRet==PD_OK){
+		/* get all merchant charge */
+		recordset_init(rRecordSet,0);
+DEBUGLOG(("GetSettlementRecords::Call DBTxnElements:GetFeeChgDetailByType\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnElements","GetFeeChgDetailByType");
+		if ((unsigned long)(*DBObjPtr)(csTxnSeq,PD_ELEMENT_TXN_FEE,PD_TYPE_MERCHANT,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_Double(hRec,"amount",&dTmp)) {
+					dFee += dTmp;
+					PutField_Double(hContext,"org_fee",dFee);
+DEBUGLOG(("GetFeeChgDetailByType:fee= [%f]\n",dTmp));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+
+	if(iRet==PD_OK){
+		recordset_init(rRecordSet,0);
+DEBUGLOG(("GetSettlementRecords::Call DBTransaction:GetTxnDetail\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+                if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnDetail::found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+				if (GetField_CString(hRec,"txn_ccy",&csTmp)) {
+					//PutField_CString(hContext,"to_txn_ccy",csTmp);
+					//PutField_CString(hContext,"bank_ccy",csTmp);
+					//PutField_CString(hRequest,"to_txn_ccy",csTmp);
+DEBUGLOG(("GetTxnDetail::txn_ccy = [%s]\n",csTmp));
+				}
+				if (GetField_CString(hRec,"txn_country",&csTmp)) {
+					PutField_CString(hRequest,"txn_country",csTmp);
+					PutField_CString(hContext,"txn_country",csTmp);
+DEBUGLOG(("GetTxnDetail::txn_country = [%s]\n",csTmp));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+                        }
+
+                }
+                else{
+DEBUGLOG(("GetTxnDetail:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("BOSettlement::GetSettlementRecords::GetTxnDetail::not found record!!\n");
+                        iRet=INT_NOT_RECORD;
+                }
+
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("GetSettlementRecords::Call DBMerchantSettlementDetail:GetSettlementDetail\n"));
+		recordset_init(rRecordSet,0);
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","GetSettlementDetail");
+		if((unsigned long)(*DBObjPtr)(csTxnSeq,rRecordSet)==PD_OK){
+DEBUGLOG(("GetSettlementDetail::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"request_ccy",&csTmp)){
+					PutField_CString(hRequest,"txn_ccy",csTmp);
+					PutField_CString(hContext,"txn_ccy",csTmp);
+					PutField_CString(hContext,"net_ccy",csTmp);
+					PutField_CString(hContext,"org_txn_ccy",csTmp);
+DEBUGLOG(("GetSettlementDetail::request_ccy = [%s]\n",csTmp));
+				}
+				if(GetField_CString(hRec,"deliver_ccy",&csTmp)){
+					PutField_CString(hContext,"dst_txn_ccy",csTmp);
+					PutField_CString(hContext,"to_txn_ccy",csTmp);
+					PutField_CString(hContext,"bank_ccy",csTmp);
+					PutField_CString(hRequest,"to_txn_ccy",csTmp);
+					PutField_Int(hContext,"deliver_ccy_present",PD_TRUE);
+DEBUGLOG(("GetSettlementDetail::deliver_ccy = [%s]\n",csTmp));
+				}
+				if(GetField_Double(hRec,"request_amt",&dTmp)){
+					PutField_Double(hContext,"org_txn_amt",dTmp);
+DEBUGLOG(("GetSettlementDetail::request_amt = [%lf]\n",dTmp));
+				}
+				if(GetField_Double(hRec,"deliver_amt",&dTmp)){
+					PutField_Double(hRequest,"deliver_amt",dTmp);
+DEBUGLOG(("GetSettlementDetail::deliver_amt = [%lf]\n",dTmp));
+				}
+				if(GetField_Char(hRec,"status",&cTmp)) {
+					PutField_Char(hRequest,"merchant_status",cTmp);
+DEBUGLOG(("GetSettlementDetail::status = [%c]\n",cTmp));
+				}
+
+				if (GetField_Char(hRec, "sett_type", &cTmp)) {
+					PutField_Char(hContext,"sett_type",cTmp);
+DEBUGLOG(("GetSettlementDetail::sett_type = [%c]\n",cTmp));
+				}
+
+				if (GetField_Int(hRec, "client_sett_bank_id", &iTmp)) {
+					PutField_Int(hRequest,"client_sett_bank_id",iTmp);
+DEBUGLOG(("GetSettlementDetail::client_sett_bank_id = [%d]\n",iTmp));
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetSettlementDetail:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("BOSettlement::GetSettlementRecords::GetSettlementDetail::not found record!!\n");
+			iRet = INT_NOT_RECORD;
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+DEBUGLOG(("BOSettlement:GetSettlementRecords() iRet=[%d]\n",iRet));
+	return	iRet;
+}
+
+double  CalDstAmt(double dFromAmt,double dRate,const char* csDstCcy)
+{
+        double  dTmp = 0.0;
+        dTmp = dFromAmt * dRate;
+DEBUGLOG(("CalDstAtm: from[%lf] * rate = [%lf] = [%lf] DST CCY = [%s] \n",dFromAmt,dRate,dTmp,csDstCcy));
+        DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+        if ((unsigned long)((*DBObjPtr)(csDstCcy)) == PD_TRUE) {
+DEBUGLOG(("CalDstAmt: Support Decimal\n"));
+                dTmp =  newround(dTmp, PD_DECIMAL_LEN);
+        }
+        else {
+DEBUGLOG(("CalDstAmt: Doesn't Support Decimal\n"));
+                dTmp =  newround(dTmp, 0);
+        }
+        return dTmp;
+}

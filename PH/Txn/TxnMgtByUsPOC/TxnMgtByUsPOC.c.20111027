@@ -1,0 +1,269 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/09/01              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPOC.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsPOC(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csBatchId;
+	char	*csTxnCcy;
+	char	csTxnCountry[PD_COUNTRY_LEN+1];
+	char	*csServiceCode;
+	char	*csMerchantId;
+	char	*csTmp;
+	char	cAllowPayout;
+	long	lBatchId;
+	int	iTmp,i, iSeqNum, iIntErr;
+	char	csTag[PD_TAG_LEN +1];
+	char	csResp[PD_RESPONSE_CODE_LEN+1];
+
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	if(GetField_CString(hRequest,"batch_id",&csBatchId)){
+		PutField_CString(hContext,"batch_id",csBatchId);
+		PutField_CString(hTxn,"batch_id",csBatchId);
+DEBUGLOG(("Authorize::batch_id= [%s]\n",csBatchId));
+		lBatchId = ctol((const unsigned char *)csBatchId,strlen(csBatchId));
+	}
+	else{
+DEBUGLOG(("Authorize::batch_id not found!!\n"));
+ERRLOG("TxnMgtByUsPOC:Authorize::batch_id not found!!\n");
+		iRet=INT_ERR;
+	}
+
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		PutField_CString(hTxn,"update_user",csTmp);
+	}
+
+
+//get Header
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileHeader:GetHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","GetHeader");
+		if ((*DBObjPtr)((unsigned long)lBatchId,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetDetail::found record = [%ld]\n",lBatchId));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"merchant_id",&csMerchantId)) {
+					PutField_CString(hRequest,"merchant_id",csMerchantId);
+DEBUGLOG(("GetDetail::merchant_id= [%s]\n",csMerchantId));
+				}
+				else{
+					iRet = INT_MERCHANT_ID_NOT_FOUND;
+DEBUGLOG(("GetDetail::merchant_id not found\n"));
+				}
+				if (GetField_CString(hRec,"service_code",&csServiceCode)) {
+					PutField_CString(hRequest,"service_code",csServiceCode);
+DEBUGLOG(("GetDetail::service_code= [%s]\n",csServiceCode));
+
+					DBObjPtr = CreateObj(DBPtr,"DBService","FindCountryByService");
+                			if ((unsigned long)(DBObjPtr)(csServiceCode,csTxnCountry) == FOUND) {
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTxnCountry));
+                        			PutField_CString(hRequest,"txn_country",csTxnCountry);
+                			}
+				}
+				else{
+					iRet = INT_ERR;
+DEBUGLOG(("GetDetail::service_code not found\n"));
+				}
+				if (GetField_Int(hRec,"status",&iTmp)){
+DEBUGLOG(("GetDetail::status= [%d]\n",iTmp));
+					//Check Header ststus
+					if(iTmp!=PD_PAYOUTFILE_UPLOADED){
+						iRet=INT_ERR;
+DEBUGLOG(("GetDetail::invalid status!!!\n"));
+ERRLOG("TxnMgtByUsPOC:Authorize::GetDetail::invalid status!!!\n");
+					}
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetDetail:: not found record for [%s]\n",csBatchId));
+ERRLOG("TxnMgtByUsPOC:Authorize::GetDetail::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetail");
+		if ((*DBObjPtr)((unsigned long)lBatchId,rRecordSet) == PD_OK) {
+			i = 0;
+DEBUGLOG(("GetDetail::found record = [%ld]\n",lBatchId));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				iIntErr = PD_OK;
+				if(GetField_Int(hRec,"seq_num",&iSeqNum)){
+					sprintf(csTag,"seq_num_%d",i);
+					PutField_Int(hTxn,csTag,iSeqNum);
+//DEBUGLOG(("GetDetail::seq_num= [%d]\n",iSeqNum));
+				}
+                        	if (!GetField_CString(hRec,"txn_country",&csTmp)) {
+					sprintf(csTag,"txn_country_%d",i);
+					PutField_CString(hTxn,csTag,csTxnCountry);
+					//PutField_CString(hRequest,"txn_country",csTxnCountry);
+				}
+				if (GetField_CString(hRec,"payout_ccy",&csTmp)){
+					if(strcmp(csTmp,"RMB"))
+						csTxnCcy = strdup(csTmp);
+					else
+						csTxnCcy = strdup(PD_CCY_ISO_CNY);
+					PutField_CString(hRequest,"txn_ccy",csTxnCcy);
+					FREE_ME(csTxnCcy);
+				}
+
+				if(GetField_CString(hRec,"request_ccy",&csTmp)){
+					if(strcmp(csTmp,"RMB"))
+						csTxnCcy = strdup(csTmp);
+					else
+						csTxnCcy = strdup(PD_CCY_ISO_CNY);
+					PutField_CString(hRequest,"txn_ccy",csTxnCcy);
+					//FREE_ME(csTxnCcy);
+				}
+				else{
+					iIntErr = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("GetDetail::ccy not found\n"));
+				}
+
+				sprintf(csTag,"int_error_%d",i);
+				PutField_Int(hTxn,csTag,iIntErr);
+
+				i++;
+                		PutField_Int(hTxn,"total_count",i);
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+		}
+		else{
+DEBUGLOG(("GetDetail:: not found record for [%s]\n",csBatchId));
+ERRLOG("TxnMgtByUsPOC:Authorize::GetDetail::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+
+	}
+	RecordSet_Destroy(rRecordSet);
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::call BOMerchant->GetMerchantTxnInfo\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+
+		if(GetField_Char(hContext,"allow_payout",&cAllowPayout)){
+			if(cAllowPayout!=PD_SUPPORTED){
+ERRLOG("TxnMgtByUsPOC::GetMerchantTxnInfo acct not allow payout[%s] [%s] [%s] [%c]\n",csMerchantId,csTxnCountry,csTxnCcy,cAllowPayout);
+DEBUGLOG(("TxnMgtByUsPOC::GetMerchantTxnInfo acct not allow payout[%s] [%s] [%s] [%c]\n",csMerchantId,csTxnCountry,csTxnCcy,cAllowPayout));
+				iRet = INT_INVALID_TXN;
+			}
+		}
+	}
+
+
+	//if((iRet == PD_OK) || (iRet == INT_INVALID_TXN)){
+	if(iRet == PD_OK){
+//Update MerchantUploadFileDetail
+		//if(iRet == PD_OK)
+		PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_PENDING);
+		//else
+		//	PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_DECLINED);
+
+		sprintf(csResp,"%d",iRet);
+        	PutField_CString(hTxn,"resp_code",csResp);
+
+		GetField_Int(hTxn,"total_count", &iTmp);
+		for(i=0; i<iTmp; i++){
+			sprintf(csTag,"seq_num_%d",i);
+			GetField_Int(hTxn,csTag,&iSeqNum);
+			
+			sprintf(csTag,"txn_country_%d",i);
+			if(GetField_CString(hTxn,csTag,&csTmp)){
+				PutField_CString(hTxn,"txn_country",csTmp);
+			}
+
+			sprintf(csTag,"int_error_%d",i);
+			if(GetField_Int(hTxn,csTag,&iIntErr)){
+				if(iIntErr!=PD_OK){
+					sprintf(csResp,"%d",iIntErr);
+					PutField_CString(hTxn,"resp_code",csResp);
+					PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_DECLINED);
+				}
+			}
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","UpdateDetailByBatchId");
+       			if ((*DBObjPtr)(csBatchId,iSeqNum,hTxn) != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileDetail:UpdateDetailByBatchId Failed\n"));
+			}
+		}
+	}
+
+
+	if(iRet == PD_OK){
+		PutField_Int(hTxn,"status",PD_PAYOUTFILE_PROCESSING);
+
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileHeader:UpdateHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","UpdateHeader");
+		if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileHeader:UpdateHeader Failed\n"));
+		}
+	}
+
+
+	if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(hTxn);
+	FREE_ME(csTxnCcy);
+DEBUGLOG(("TxnMgtByUsPOC Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

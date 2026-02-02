@@ -1,0 +1,487 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/02/04              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsSAR.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+void TxnOmtByUsSAR(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+OBJPTR(Msg);
+OBJPTR(DB);
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int iRet = PD_OK;
+
+	int iTmpRet;
+	double dTmp = 0.0;
+	char csCmd[PD_MAX_BUFFER + 1];
+
+	int iExecute = 0;
+	int iFound = PD_FALSE;
+
+	char *csSenderTsFr, *csSenderTsTo, *csRecipientTsFr, *csRecipientTsTo;
+	char *csSenderProviderId, *csRecipientProviderId;
+	char *csSenderPid, *csRecipientPid;
+	char *csSenderTxnAmt, *csRecipientTxnAmt;
+	char *csSenderBaidTxnId, *csRecipientBaidTxnId;
+	char *csSenderBankAcctType, *csRecipientBankAcctType;
+	char *csBaid;
+	char *csUser;
+
+	hash_t *hSender, *hRecipient, *hPspDetail, *hList;
+	hSender = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hSender, 0);
+	hRecipient = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRecipient, 0);
+	hList = (hash_t*) malloc (sizeof(hash_t));
+	//hash_init(hList, 0);
+	hPspDetail = (hash_t*) malloc (sizeof(hash_t));
+	//hash_init(hPspDetail, 0);
+
+	recordset_t *rSender, *rRecipient;
+	rSender = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rSender, 0);
+	rRecipient = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecipient, 0);
+
+	hash_t *hTmp;
+
+DEBUGLOG(("Authorize\n"));
+strcpy(csCmd, "semi_auto_recon.exec");
+
+/* sender */
+
+	// s_create_ts / s_stmt_ts
+	if (iRet == PD_OK) {
+		// get s_create_ts_from / s_create_ts_to
+		if (GetField_CString(hRequest, "s_create_ts_from", &csSenderTsFr)) {
+DEBUGLOG(("Authorize:: s_create_ts_from = [%s]\n", csSenderTsFr));
+			PutField_CString(hSender, "create_ts_from", csSenderTsFr);
+
+			if (!GetField_CString(hRequest, "s_create_ts_to", &csSenderTsTo)) {
+DEBUGLOG(("Authorize:: s_create_ts_to not found\n"));
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+DEBUGLOG(("Authorize:: s_create_ts_to = [%s]\n", csSenderTsTo));
+				PutField_CString(hSender, "create_ts_to", csSenderTsTo);
+			}
+
+			strcat(csCmd, " -a create");
+			sprintf(csCmd, "%s -b %s -c %s", csCmd, csSenderTsFr, csSenderTsTo);
+		}
+		// get s_stmt_ts_from / s_stmt_ts_to
+		else if (GetField_CString(hRequest, "s_stmt_ts_from", &csSenderTsFr)) {
+DEBUGLOG(("Authorize:: s_stmt_ts_from = [%s]\n", csSenderTsFr));
+			PutField_CString(hSender, "stmt_ts_from", csSenderTsFr);
+
+			if (!GetField_CString(hRequest, "s_stmt_ts_to", &csSenderTsTo)) {
+DEBUGLOG(("Authorize:: s_stmt_ts_to not found\n"));
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+DEBUGLOG(("Authorize:: s_stmt_ts_to = [%s]\n", csSenderTsTo));
+				PutField_CString(hSender, "stmt_ts_to", csSenderTsTo);
+			}
+
+			strcat(csCmd, " -a stmt");
+			sprintf(csCmd, "%s -b %s -c %s", csCmd, csSenderTsFr, csSenderTsTo);
+		} else {
+DEBUGLOG(("Authorize:: s_create_ts and s_stmt_ts not found\n"));
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+	}
+
+	// get s_provider_id
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "s_provider_id", &csSenderProviderId)) {
+DEBUGLOG(("Authorize:: s_provider_id not found\n"));
+		} else {
+DEBUGLOG(("Authorize:: s_provider_id = [%s]\n", csSenderProviderId));
+			PutField_CString(hSender, "provider_id", csSenderProviderId);
+			sprintf(csCmd, "%s -d %s", csCmd, csSenderProviderId);
+		}
+	}
+
+	// get s_pid
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "s_pid", &csSenderPid)) {
+DEBUGLOG(("Authorize:: s_pid not found\n"));
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		} else {
+DEBUGLOG(("Authorize:: s_pid = [%s]\n", csSenderPid));
+			PutField_CString(hSender, "pid", csSenderPid);
+			sprintf(csCmd, "%s -e %s", csCmd, csSenderPid);
+
+			// get psp detail
+			hash_init(hPspDetail, 0);
+DEBUGLOG(("Authorize:: call DBOLPspDetail::GetPspDetail()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csSenderPid, hPspDetail);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLPspDetail::GetPspDetail() failed\n"));
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+				// get bank_acct_type
+				if (!GetField_CString(hPspDetail, "bank_acct_type", &csSenderBankAcctType)) {
+DEBUGLOG(("Authorize:: bank_acct_type not found\n"));
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				} else {
+DEBUGLOG(("Authorize:: bank_acct_type = [%s]\n", csSenderBankAcctType));
+					PutField_CString(hSender, "bank_acct_type", csSenderBankAcctType);
+				}
+			}
+			hash_destroy(hPspDetail);
+		}
+	}
+
+	// get s_txn_amt
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "s_txn_amt", &csSenderTxnAmt)) {
+DEBUGLOG(("Authorize:: s_txn_amt not found\n"));
+		} else {
+DEBUGLOG(("Authorize:: s_txn_amt = [%s]\n", csSenderTxnAmt));
+			PutField_CString(hSender, "txn_amt", csSenderTxnAmt);
+			sprintf(csCmd, "%s -f %s", csCmd, csSenderTxnAmt);
+		}
+	}
+
+	// put s_r_ind = sender
+	if (iRet == PD_OK) {
+		PutField_Char(hSender, "s_r_ind", 'S');
+	}
+
+/* recipient */
+
+	// r_create_ts / r_stmt_ts
+	if (iRet == PD_OK) {
+		// get r_create_ts_from / r_create_ts_to
+		if (GetField_CString(hRequest, "r_create_ts_from", &csRecipientTsFr)) {
+DEBUGLOG(("Authorize:: r_create_ts_from = [%s]\n", csRecipientTsFr));
+			PutField_CString(hRecipient, "create_ts_from", csRecipientTsFr);
+
+			if (!GetField_CString(hRequest, "r_create_ts_to", &csRecipientTsTo)) {
+DEBUGLOG(("Authorize:: r_create_ts_to not found\n"));
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+DEBUGLOG(("Authorize:: r_create_ts_to = [%s]\n", csRecipientTsTo));
+				PutField_CString(hRecipient, "create_ts_to", csRecipientTsTo);
+			}
+
+			sprintf(csCmd, "%s -g %s -h %s", csCmd, csRecipientTsFr, csRecipientTsTo);
+		}
+		// get r_stmt_ts_from / r_stmt_ts_to
+		else if (GetField_CString(hRequest, "r_stmt_ts_from", &csRecipientTsFr)) {
+DEBUGLOG(("Authorize:: r_stmt_ts_from = [%s]\n", csRecipientTsFr));
+			PutField_CString(hRecipient, "stmt_ts_from", csRecipientTsFr);
+
+			if (!GetField_CString(hRequest, "r_stmt_ts_to", &csRecipientTsTo)) {
+DEBUGLOG(("Authorize:: r_stmt_ts_to not found\n"));
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+DEBUGLOG(("Authorize:: r_stmt_ts_to = [%s]\n", csRecipientTsTo));
+				PutField_CString(hRecipient, "stmt_ts_to", csRecipientTsTo);
+			}
+
+			sprintf(csCmd, "%s -g %s -h %s", csCmd, csRecipientTsFr, csRecipientTsTo);
+		} else {
+DEBUGLOG(("Authorize:: r_create_ts and r_stmt_ts not found\n"));
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+	}
+
+	// get r_provider_id
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "r_provider_id", &csRecipientProviderId)) {
+DEBUGLOG(("Authorize:: r_provider_id not found\n"));
+		} else {
+DEBUGLOG(("Authorize:: r_provider_id = [%s]\n", csRecipientProviderId));
+			PutField_CString(hRecipient, "provider_id", csRecipientProviderId);
+			sprintf(csCmd, "%s -i %s", csCmd, csRecipientProviderId);
+		}
+	}
+
+	// get r_pid
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "r_pid", &csRecipientPid)) {
+DEBUGLOG(("Authorize:: r_pid not found\n"));
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		} else {
+DEBUGLOG(("Authorize:: r_pid = [%s]\n", csRecipientPid));
+			PutField_CString(hRecipient, "pid", csRecipientPid);
+			sprintf(csCmd, "%s -j %s", csCmd, csRecipientPid);
+
+			// get psp detail
+			hash_init(hPspDetail, 0);
+DEBUGLOG(("Authorize:: call DBOLPspDetail::GetPspDetail()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csRecipientPid, hPspDetail);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLPspDetail::GetPspDetail() failed\n"));
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+				// get bank_acct_type
+				if (!GetField_CString(hPspDetail, "bank_acct_type", &csRecipientBankAcctType)) {
+DEBUGLOG(("Authorize:: bank_acct_type not found\n"));
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				} else {
+DEBUGLOG(("Authorize:: bank_acct_type = [%s]\n", csRecipientBankAcctType));
+					PutField_CString(hRecipient, "bank_acct_type", csRecipientBankAcctType);
+				}
+			}
+			hash_destroy(hPspDetail);
+		}
+	}
+
+	// get r_txn_amt
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "r_txn_amt", &csRecipientTxnAmt)) {
+DEBUGLOG(("Authorize:: r_txn_amt not found\n"));
+		} else {
+DEBUGLOG(("Authorize:: r_txn_amt = [%s]\n", csRecipientTxnAmt));
+			PutField_CString(hRecipient, "txn_amt", csRecipientTxnAmt);
+			sprintf(csCmd, "%s -k %s", csCmd, csRecipientTxnAmt);
+		}
+	}
+
+	// put s_r_ind = recipient
+	if (iRet == PD_OK) {
+		PutField_Char(hRecipient, "s_r_ind", 'R');
+	}
+
+/* other input */
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRequest, "add_user", &csUser)) {
+DEBUGLOG(("Authorize:: user not found\n"));
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		} else {
+DEBUGLOG(("Authorize:: user = [%s]\n", csUser));
+			sprintf(csCmd, "%s -l %s", csCmd, csUser);
+		}
+	}
+
+	if (GetField_Int(hRequest, "execute", &iExecute)) {
+		/* start semi-auto recon */
+
+		if (iRet == PD_OK) {
+			// get sender
+//DEBUGLOG(("Authorize:: call DBOLBAIDTxn::GetSemiAutoReconBaidTxn() -- sender\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetSemiAutoReconBaidTxn");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hSender, rSender);
+			if (iTmpRet == PD_OK) {
+				hTmp = RecordSet_GetFirst(rSender);
+				while (hTmp) {
+					iFound = PD_FALSE;
+
+					if (GetField_CString(hTmp, "txn_id", &csSenderBaidTxnId)) {
+DEBUGLOG(("Authorize:: sender_baid_txn_id = [%s]\n", csSenderBaidTxnId));
+
+						GetField_CString(hTmp, "baid", &csBaid);
+DEBUGLOG(("Authorize:: baid = [%s]\n", csBaid));
+
+						GetField_Double(hTmp, "net_amt", &dTmp);
+DEBUGLOG(("Authorize:: net_amt = [%lf]\n", dTmp));
+						PutField_Double(hRecipient, "net_amt", dTmp);
+
+						// find recipient (normal)
+						PutField_CString(hRecipient, "diff_baid", csBaid);
+
+						RecordSet_Destroy(rRecipient);
+						recordset_init(rRecipient, 0);
+//DEBUGLOG(("Authorize:: call DBOLBAIDTxn::GetSemiAutoReconBaidTxn() -- recipient\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetSemiAutoReconBaidTxn");
+						iTmpRet = (unsigned long)(*DBObjPtr)(hRecipient, rRecipient);
+						if (iTmpRet == PD_OK) {
+							hTmp = RecordSet_GetFirst(rRecipient);
+							if (hTmp) {
+								if (GetField_CString(hTmp, "txn_id", &csRecipientBaidTxnId)) {
+DEBUGLOG(("Authorize:: recipien_baid_txn_id = [%s]\n", csRecipientBaidTxnId));
+
+									// set hold_recon to true (sender)
+									hash_init(hList, 0);
+									PutField_CString(hList, "txn_seq", csSenderBaidTxnId);
+									PutField_CString(hList, "update_user", csUser);
+									PutField_Int(hList, "hold_recon", PD_TRUE);
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::Update()\n"));
+									DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+									iTmpRet = (unsigned long)(*DBObjPtr)(hList);
+									if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon success\n", csSenderBaidTxnId));
+									} else {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon failed\n", csSenderBaidTxnId));
+									}
+									hash_destroy(hList);
+
+									// set hold_recon to true(recipient)
+									hash_init(hList, 0);
+									PutField_CString(hList, "txn_seq", csRecipientBaidTxnId);
+									PutField_CString(hList, "update_user", csUser);
+									PutField_Int(hList, "hold_recon", PD_TRUE);
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::Update()\n"));
+									DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+									iTmpRet = (unsigned long)(*DBObjPtr)(hList);
+									if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon success\n", csRecipientBaidTxnId));
+									} else {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon failed\n", csRecipientBaidTxnId));
+									}
+									hash_destroy(hList);
+
+									// add into list
+									hash_init(hList, 0);
+									PutField_CString(hList, "baid_txn_id_1", csSenderBaidTxnId);
+									PutField_CString(hList, "bank_acct_type_1", csSenderBankAcctType);
+									PutField_CString(hList, "baid_txn_id_2", csRecipientBaidTxnId);
+									PutField_CString(hList, "bank_acct_type_2", csRecipientBankAcctType);
+									PutField_Char(hList, "recon_type", 'N');
+									PutField_CString(hList, "create_user", csUser);
+DEBUGLOG(("Authorize:: call DBOLWaitReconCfmList::Add()\n"));
+									DBObjPtr = CreateObj(DBPtr, "DBOLWaitReconCfmList", "Add");
+									iTmpRet = (unsigned long)(*DBObjPtr)(hList);
+									if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize:: Add [%s], [%s] to list success\n", csSenderBaidTxnId, csRecipientBaidTxnId));
+									} else {
+DEBUGLOG(("Authorize:: Add [%s], [%s] to list failed\n", csSenderBaidTxnId, csRecipientBaidTxnId));
+									}
+									hash_destroy(hList);
+
+									iFound = PD_TRUE;
+								}
+							}
+						}
+
+						if (!strcmp(csSenderPid, csRecipientPid) && !iFound) {
+							// find recipient (return)
+							RemoveField_CString(hRecipient, "diff_baid");
+							PutField_CString(hRecipient, "same_baid", csBaid);
+
+							RecordSet_Destroy(rRecipient);
+							recordset_init(rRecipient, 0);
+//DEBUGLOG(("Authorize:: call DBOLBAIDTxn::GetSemiAutoReconBaidTxn() -- recipient\n"));
+							DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetSemiAutoReconBaidTxn");
+							iTmpRet = (unsigned long)(*DBObjPtr)(hRecipient, rRecipient);
+							if (iTmpRet == PD_OK) {
+								hTmp = RecordSet_GetFirst(rRecipient);
+								if (hTmp) {
+									if (GetField_CString(hTmp, "txn_id", &csRecipientBaidTxnId)) {
+DEBUGLOG(("Authorize:: recipien_baid_txn_id = [%s]\n", csRecipientBaidTxnId));
+
+										// set hold_recon to true (sender)
+										hash_init(hList, 0);
+										PutField_CString(hList, "txn_seq", csSenderBaidTxnId);
+										PutField_CString(hList, "update_user", csUser);
+										PutField_Int(hList, "hold_recon", PD_TRUE);
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::Update()\n"));
+										DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+										iTmpRet = (unsigned long)(*DBObjPtr)(hList);
+										if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon success\n", csSenderBaidTxnId));
+										} else {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon failed\n", csSenderBaidTxnId));
+										}
+										hash_destroy(hList);
+
+										// set hold_recon to true (recipient)
+										hash_init(hList, 0);
+										PutField_CString(hList, "txn_seq", csRecipientBaidTxnId);
+										PutField_CString(hList, "update_user", csUser);
+										PutField_Int(hList, "hold_recon", PD_TRUE);
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::Update()\n"));
+										DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+										iTmpRet = (unsigned long)(*DBObjPtr)(hList);
+										if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon success\n", csRecipientBaidTxnId));
+										} else {
+DEBUGLOG(("Authorize:: Update [%s] hold_recon failed\n", csRecipientBaidTxnId));
+										}
+										hash_destroy(hList);
+
+										// add into list
+										hash_init(hList, 0);
+										PutField_CString(hList, "baid_txn_id_1", csSenderBaidTxnId);
+										PutField_CString(hList, "bank_acct_type_1", csSenderBankAcctType);
+										PutField_CString(hList, "baid_txn_id_2", csRecipientBaidTxnId);
+										PutField_CString(hList, "bank_acct_type_2", csRecipientBankAcctType);
+										PutField_Char(hList, "recon_type", 'R');
+										PutField_CString(hList, "create_user", csUser);
+DEBUGLOG(("Authorize:: call DBOLWaitReconCfmList::Add()\n"));
+										DBObjPtr = CreateObj(DBPtr, "DBOLWaitReconCfmList", "Add");
+										iTmpRet = (unsigned long)(*DBObjPtr)(hList);
+										if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize:: Add [%s], [%s] to list success\n", csSenderBaidTxnId, csRecipientBaidTxnId));
+										} else {
+DEBUGLOG(("Authorize:: Add [%s], [%s] to list failed\n", csSenderBaidTxnId, csRecipientBaidTxnId));
+										}
+										hash_destroy(hList);
+									}
+								}
+							}
+						}
+					}
+DEBUGLOG(("Authorize:: --------------------------------------------------\n"));
+
+					hTmp = RecordSet_GetNext(rSender);
+				}
+			}
+		}
+	} else {
+		// call background job
+DEBUGLOG(("Authorize:: call semi_auto_recon\n"));
+		sprintf(csCmd, "%s &", csCmd);
+DEBUGLOG(("Authorize:: csCmd = [%s]\n", csCmd));
+		system(csCmd);
+	}
+
+	hash_destroy(hSender);
+	FREE_ME(hSender);
+	hash_destroy(hRecipient);
+	FREE_ME(hRecipient);
+	//hash_destroy(hList);
+	FREE_ME(hList);
+	//hash_destroy(hPspDetail);
+	FREE_ME(hPspDetail);
+
+	RecordSet_Destroy(rSender);
+	FREE_ME(rSender);
+	RecordSet_Destroy(rRecipient);
+	FREE_ME(rRecipient);
+
+DEBUGLOG(("Authorize:: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+}

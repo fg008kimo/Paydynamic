@@ -1,0 +1,381 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   2015/12/30              Dirk Wong
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	','
+
+OBJPTR(BO);
+
+char    cs_date[PD_DATE_LEN + 1];
+char    cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+int process_data(const char* csTxnDate, FILE *fp);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 2) {
+        printf("usage:  -d Date\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+        char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+        FILE    *fp;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+        	printf("usage:  -o ouputfile -d Date\n");
+                return (iRet);
+        }
+
+        char    cs_yyyy[PD_YYYY_LEN+1];
+        char    cs_yyyymm[PD_YYYY_LEN+PD_MM_LEN+1];
+        strncpy(cs_yyyy,cs_date,4);
+        strncpy(cs_yyyymm,cs_date,6);
+
+        sprintf(cs_outfile_name, "%s/%s/%s/%s/crr_ofl_mi_txn_data_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+        
+        fp = fopen(cs_outfile_name,"w");
+        if (fp == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outfile_name));
+                return FAILURE;
+        }
+        
+        iRet = process_data(cs_date,fp);
+        fclose(fp);
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int process_data(const char* csTxnDate, FILE *fp)
+{               
+        int     iRet = SUCCESS;
+	char	csTmp[PD_TMP_BUF_LEN+1];
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_approval_date[PD_DATE_LEN+1];
+
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		varchar	v_txn_code[PD_TXN_CODE_LEN+1];
+		varchar	v_approval_date[PD_DATE_LEN+1];
+		varchar	v_entity_id[PD_MMS_ENTITY_ID_LEN+1];
+		varchar	v_party_type[PD_MMS_ENTITY_TYPE_LEN+1];
+		varchar	v_party_id[PD_MMS_ENTITY_ID_LEN+1];
+		varchar v_txn_product[PD_PRODUCT_CODE_LEN+1];
+		varchar	v_country[PD_COUNTRY_LEN+1];
+		varchar	v_ccy[PD_CCY_ID_LEN+1];
+		double	v_txn_amt;
+		varchar	v_net_ccy[PD_CCY_ID_LEN+1];
+		double	v_net_amt;
+		double	v_intr_amt;
+		double	v_ovpa_amt;
+		double	v_udpa_amt;
+		varchar	v_fee_ccy[PD_CCY_ID_LEN+1];
+		double	v_fee_amt;
+
+		short	ind_txn_id = -1;
+		short	ind_txn_code = -1;
+		short	ind_approval_date = -1;
+		short	ind_entity_id = 1;
+		short	ind_party_type = -1;
+		short	ind_party_id = -1;
+		short	ind_txn_product = -1;
+		short	ind_country = -1;
+		short	ind_ccy = -1;
+		short	ind_txn_amt = -1;
+		short	ind_net_ccy = -1;
+		short	ind_net_amt = -1;
+		short	ind_intr_amt = -1;
+		short	ind_ovpa_amt = -1;
+		short	ind_udpa_amt = -1;
+		short	ind_fee_ccy = -1;
+		short	ind_fee_amt = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_approval_date.len = strlen(cs_date);
+	memcpy(hv_approval_date.arr,cs_date,hv_approval_date.len);
+
+	EXEC SQL DECLARE c_cursor_gettxndata CURSOR FOR
+		select	oth_txn_id,
+			oth_txn_code,
+			oth_approval_date,
+			otm_entity_Id,
+			otm_party_type,
+			otm_party_id,
+			otm_txn_product,
+			nvl(otd_txn_country,otm_txn_country) country,
+			otd_txn_ccy,
+			CASE WHEN nvl(nvl(oth_deposit_amount,oth_display_amount),oth_transaction_amount) <= 0
+			     THEN oth_transaction_amount
+			     ELSE nvl(nvl(oth_deposit_amount,oth_display_amount),oth_transaction_amount)
+			     END  txn_amt,
+			oth_net_ccy,
+			oth_net_amount,
+			nvl(t1_intr.ote_amount,0) intr_amt,
+			nvl(t2_ovpa.ote_amount,0) ovpa_amt,
+			nvl(t3_udpa.ote_amount,0) udpa_amt,
+			nvl(t4_fee.ote_ccy,oth_net_ccy) fee_ccy,
+			nvl(t4_fee.ote_amount,0) fee_amt
+		from	ol_txn_header th,
+			ol_txn_detail,
+			ol_txn_mi_detail,
+			(select	ote_txn_id,
+				ote_ccy,
+				ote_amount
+			 from	ol_txn_elements 
+			 where	ote_txn_element_type = 'INTR'
+			 ) t1_intr,
+			(select	ote_txn_id,
+				ote_ccy,
+				ote_amount
+			 from	ol_txn_elements 
+			 where	ote_txn_element_type = 'OVPA'
+			 ) t2_ovpa,
+			(select	ote_txn_id,
+				ote_ccy,
+				ote_amount
+			 from	ol_txn_elements 
+			 where	ote_txn_element_type = 'UDPA'
+			 ) t3_udpa,
+			(select	ote_txn_id,
+				ote_ccy,
+				ote_amount
+			 from	ol_txn_elements 
+			 where	ote_txn_element_type in ('TFEE','INCT')
+			 ) t4_fee
+		where	oth_txn_id = otd_txn_id(+)
+		  and	oth_txn_id = otm_txn_id
+		  and	oth_txn_id = t1_intr.ote_txn_id(+)
+		  and	oth_txn_id = t2_ovpa.ote_txn_id(+)
+		  and	oth_txn_id = t3_udpa.ote_txn_id(+)
+		  and	oth_txn_id = t4_fee.ote_txn_id(+)
+		  and	oth_approval_date = :hv_approval_date
+		order by
+			oth_txn_id desc;
+	EXEC SQL OPEN c_cursor_gettxndata;
+	do {
+		EXEC SQL FETCH c_cursor_gettxndata
+		INTO	:v_txn_id:ind_txn_id,
+			:v_txn_code:ind_txn_code,
+			:v_approval_date:ind_approval_date,
+			:v_entity_id:ind_entity_id,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_txn_product:ind_txn_product,
+			:v_country:ind_country,
+			:v_ccy:ind_ccy,
+			:v_txn_amt:ind_txn_amt,
+			:v_net_ccy:ind_net_ccy,
+			:v_net_amt:ind_net_amt,
+			:v_intr_amt:ind_intr_amt,
+			:v_ovpa_amt:ind_ovpa_amt,
+			:v_udpa_amt:ind_udpa_amt,
+			:v_fee_ccy:ind_fee_ccy,
+			:v_fee_amt:ind_fee_amt;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 txn_id */
+		if (ind_txn_id >= 0) {
+			sprintf(csTmp,"%.*s",v_txn_id.len,v_txn_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #1 txn_code */
+		if (ind_txn_code >= 0) {
+			sprintf(csTmp,"%.*s",v_txn_code.len,v_txn_code.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #2 approval_date */
+		if (ind_approval_date >= 0) {
+			sprintf(csTmp,"%.*s",v_approval_date.len,v_approval_date.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #3 entity_id */
+		if (ind_entity_id >= 0) {
+			sprintf(csTmp,"%.*s",v_entity_id.len,v_entity_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #4 party_type */
+		if (ind_party_type >= 0) {
+			sprintf(csTmp,"%.*s",v_party_type.len,v_party_type.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #5 party_id */
+		if (ind_party_id >= 0) {
+			sprintf(csTmp,"%.*s",v_party_id.len,v_party_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #6 txn_product */
+		if (ind_txn_product >= 0) {
+			sprintf(csTmp,"%.*s",v_txn_product.len,v_txn_product.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #7 country */
+		if (ind_country >= 0) {
+			sprintf(csTmp,"%.*s",v_country.len,v_country.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #8 ccy */
+		if (ind_ccy >= 0) {
+			sprintf(csTmp,"%.*s",v_ccy.len,v_ccy.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #9 txn_amt */
+		if (ind_txn_amt >= 0) {
+			fprintf(fp,"%.2f%c",v_txn_amt,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #10 net_ccy */
+		if (ind_net_ccy >= 0) {
+			sprintf(csTmp,"%.*s",v_net_ccy.len,v_net_ccy.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #11 net_amt */
+		if (ind_net_amt >= 0) {
+			fprintf(fp,"%.2f%c",v_net_amt,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #12 intr_amt */
+		if (ind_intr_amt >= 0) {
+			fprintf(fp,"%.2f%c",v_intr_amt,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #13 ovpa_amt */
+		if (ind_ovpa_amt >= 0) {
+			fprintf(fp,"%.2f%c",v_ovpa_amt,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #14 udpa_amt */
+		if (ind_udpa_amt >= 0) {
+			fprintf(fp,"%.2f%c",v_udpa_amt,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #15 fee_ccy */
+		if (ind_fee_ccy >= 0) {
+			sprintf(csTmp,"%.*s",v_fee_ccy.len,v_fee_ccy.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #16 fee_amt */
+		if (ind_fee_amt >= 0) {
+			fprintf(fp,"%.2f%c",v_fee_amt,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* new line */
+		fprintf(fp,"\n");
+
+ 	} while (PD_TRUE);
+	EXEC SQL CLOSE c_cursor_gettxndata;
+
+        return iRet;
+
+sql_error:
+DEBUGLOG(("extract_crr_ofl_txn_data error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxndata;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+

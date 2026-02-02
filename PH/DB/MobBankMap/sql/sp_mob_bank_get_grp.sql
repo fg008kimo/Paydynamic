@@ -1,0 +1,29 @@
+DROP FUNCTION sp_mob_bank_get_grp;
+
+CREATE OR REPLACE FUNCTION sp_mob_bank_get_grp (
+   in_merchant_id        MERCH_DETAIL.MERCHANT_ID%TYPE,
+   in_bank_code          bank_mapping.bm_int_bank_code%TYPE,
+   out_cursor        OUT SYS_REFCURSOR)
+   RETURN NUMBER
+IS
+BEGIN
+   OPEN out_cursor FOR
+
+	select	mbm_group
+	from	mob_bank_map,
+		customer_group_rules
+	where cgr_group_code = mbm_group
+	and cgr_merchant_id = in_merchant_id
+	and mbm_bank_code = in_bank_code
+	and cgr_from_group_code is null
+	and mbm_disabled = 0
+	and cgr_disabled = 0;
+
+
+   RETURN 0;
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+END sp_mob_bank_get_grp;
+/

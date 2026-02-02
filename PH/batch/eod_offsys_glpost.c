@@ -1,0 +1,1522 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[21];
+};
+static struct sqlcxp sqlfpn =
+{
+    20,
+    "eod_offsys_glpost.pc"
+};
+
+
+static unsigned int sqlctx = 77026891;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/06/21	             Simon Fung
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "eod_offsys_glpost.h"
+#include "mymd5.h"
+#include "eod_glutility.h"
+#include "ObjPtr.h"
+
+OBJPTR(BO);
+OBJPTR(DB);
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	","
+#define	PD_FILE_DELIMITOR "	"
+#define	PD_HASHKEY_DELIMITOR ":"
+
+#define	PD_CHAR		0x0D
+#define	PD_SPACE	0x20
+
+char    cDebug = 'Y';
+char    cs_inputfile[PD_MAX_FILE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+
+short is_float(char* str);
+int parse_arg(int argc,char **argv);
+int verify_file(FILE *fin);
+int process_file(FILE *fin);
+int myGroupRecs(char csJnlKeys[IMPORT_MAX_KEY][IMPORT_MAX_KEY_LEN], hash_t *hTxn, hash_t *hCnt, char* csKey, double dAmt, int* iJnlKeyCnt);
+int myPostTxn(char csJnlKeys[IMPORT_MAX_KEY][IMPORT_MAX_KEY_LEN], const hash_t *hTxn, const hash_t *hCnt, const int iJnlKeyCnt);
+
+short is_float(char* str)
+{
+	int i_len = strlen(str);
+	int i;
+	
+	for (i = 0; i < i_len; i++)
+		if ((!isdigit(str[i])) && (str[i]!='.'))
+			return PD_FALSE;
+	
+	return PD_TRUE;
+}
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 1) {
+		printf("usage: -d Date\n");
+	    return FAILURE;
+	}
+	else
+	    return SUCCESS;
+}
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+	FILE	*fin;
+	int	iRet;
+  //char cs_infile_name[PD_MAX_FILE_LEN + 1];
+
+	
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+    		printf("*usage: -d Date\n");
+		return (iRet);
+	}
+	
+DEBUGLOG(("File Path = [%s]\n", getenv("REPORT_DATA")));
+DEBUGLOG(("File directory = [%s]\n", OFFLINE_DATA_FOLDER));
+DEBUGLOG(("File Prefix = [%s]\n", OFFLINE_DATA_FILE_PREFIX));
+DEBUGLOG(("File Date = [%s]\n",cs_date));
+	
+	sprintf(cs_inputfile, "%s/%s/%s_%s.csv", getenv("REPORT_DATA"), OFFLINE_DATA_FOLDER, OFFLINE_DATA_FILE_PREFIX, cs_date);
+
+	fin = fopen(cs_inputfile,"r");
+	if (fin == NULL) {
+DEBUGLOG(("Error Opening file = [%s]\n",cs_inputfile));
+		return FAILURE;
+	}
+
+DEBUGLOG(("Opened file = [%s] for read\n",cs_inputfile));
+
+	iRet = verify_file(fin);
+DEBUGLOG(("verify_file result = [%d]\n",iRet));	
+	
+	
+	//iRet = SUCCESS;
+	
+	if (iRet == SUCCESS) {
+		rewind(fin);
+		iRet = process_file(fin);
+	}
+
+	fclose(fin);
+
+	return iRet;
+
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+                     
+int parse_arg(int argc,char **argv)
+{               
+	char    c;
+	strcpy(cs_inputfile,"");
+	          
+	while ((c = getopt(argc,argv,"d:")) != EOF) {
+	  switch (c) {
+      case 'd':
+              strcpy(cs_date, optarg);
+              break;
+      default:
+              return FAILURE;
+	  }
+	}       
+	
+DEBUGLOG(("[%s]\n",cs_date));
+	if (!strcmp(cs_date,""))
+	  return FAILURE;
+	  
+	return SUCCESS; 
+}               
+
+int verify_file(FILE *fin)
+{
+	int iRet = FAILURE;
+	int iLineCnt = 0;
+	int	iCount = 0;
+	int iMerchKeyCnt;
+	int iPSPKeyCnt;
+	char    csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN];
+	char    cs_input_buf[PD_MAX_BUFFER +1];;
+	char	*p=NULL;
+	char csKey[PD_TMP_MSG_BUF_LEN];
+	
+	char *csSign;
+	csSign = (char*) malloc (1024 * 2 +1);
+	char *csOUT;
+	csOUT = (char*) malloc (1024 * 2 +1);
+
+	char csCalSign[OFFLINE_CHECKSUM_LEN+1];
+	
+  iMerchKeyCnt = 0;
+  iPSPKeyCnt = 0;
+  
+  fgets(cs_input_buf,PD_MAX_BUFFER,fin);
+  if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A || cs_input_buf[strlen(cs_input_buf) - 1] == 0x10)
+         cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+	strcpy(cs_input_buf,TrimAllChar((const unsigned char *)cs_input_buf,strlen(cs_input_buf),PD_CHAR));
+
+DEBUGLOG(("%s\n",cs_input_buf));
+	
+	iCount = 0;
+	
+	// Breakdown header line
+  p = mystrtok(cs_input_buf,PD_MY_DELIMITOR);
+  if (p == NULL) {
+DEBUGLOG(("Invalid File Header"));
+		return FAILURE;
+	}
+  strcpy(csList[iCount],p);
+  iCount++;
+
+  while ( (p = mystrtok(NULL,PD_MY_DELIMITOR)) != NULL) {
+    strcpy(csList[iCount],p);
+    iCount++;
+  }               
+
+	if (iCount == HEADER_ITEM_SIZE) {
+
+		// Build Key
+		strcpy(csKey, csList[IDX_HD_TXN_CNT]);
+		strcat(csKey, csList[IDX_HD_TXN_AMT]);
+		strcat(csKey, csList[IDX_HD_FEE_AMT]);
+		strcat(csKey, csList[IDX_HD_NET_AMT]);
+		strcat(csKey, csList[IDX_HD_MU_AMT]);
+DEBUGLOG(("Bulid Header MD5 Key = [%s]\n",csKey));
+		
+		strcpy(csSign, csList[IDX_HD_CHECKSUM]);		
+
+DEBUGLOG(("Header Checksum = [%s]\n",csSign));
+		md5sum(csKey,strlen(csKey),csOUT);
+		
+DEBUGLOG(("Calculated Header Checksum key = [%s], result = [%s]\n",csKey, csOUT));
+		
+		// Extract Most  left 8 bytes
+  	strncpy(csCalSign, csOUT, OFFLINE_CHECKSUM_LEN);
+		csCalSign[OFFLINE_CHECKSUM_LEN] = '\0';
+		
+		if (strcmp(csSign,csCalSign)!=0) {
+DEBUGLOG(("Invalid Header Checksum [%s] <> Calculated:[%s]\n",csSign, csCalSign));
+			//return FAILURE;
+		}		
+
+		iLineCnt = 0;
+
+	  while (fgets(cs_input_buf,PD_MAX_BUFFER, fin) != NULL) {
+	
+	  	if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A)
+				cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			strcpy(cs_input_buf,TrimAllChar((const unsigned char *)cs_input_buf,strlen(cs_input_buf),PD_CHAR));
+			//DEBUGLOG(("%s\n",cs_input_buf));
+	    iCount = 0;
+	
+	    p = mystrtok(cs_input_buf,PD_MY_DELIMITOR);
+	    if (p == NULL) {
+DEBUGLOG(("Invalid File Detail"));
+				return FAILURE;
+			}
+	    strcpy(csList[iCount],p);
+	    iCount++;
+	
+	    while ( (p = mystrtok(NULL,PD_MY_DELIMITOR)) != NULL) {
+		    strcpy(csList[iCount],p);
+		    iCount++;
+	    }               
+	
+			if (iCount == DETAIL_ITEM_SIZE) {
+				iLineCnt++;
+				
+				// Detail
+				/*
+DEBUGLOG(("IDX_TXN_TYPE=[%s]\n",csList[IDX_TXN_TYPE]));
+DEBUGLOG(("IDX_COUNTRY_CODE=[%s]\n",csList[IDX_COUNTRY_CODE]));
+DEBUGLOG(("IDX_TXN_DATE=[%s]\n",csList[IDX_TXN_DATE]));
+DEBUGLOG(("IDX_TXN_ID=[%s]\n",csList[IDX_TXN_ID]));
+DEBUGLOG(("IDX_MERCHANT=[%s]\n",csList[IDX_MERCHANT]));
+DEBUGLOG(("IDX_PSP=[%s]\n",csList[IDX_PSP]));
+DEBUGLOG(("IDX_TXN_AMT_CCY=[%s]\n",csList[IDX_TXN_AMT_CCY]));
+DEBUGLOG(("IDX_TXN_AMT=[%s]\n",csList[IDX_TXN_AMT]));
+DEBUGLOG(("IDX_TXN_FEE_CCY=[%s]\n",csList[IDX_TXN_FEE_CCY]));
+DEBUGLOG(("IDX_TXN_FEE=[%s]\n",csList[IDX_TXN_FEE]));
+DEBUGLOG(("IDX_NET_AMT_CCY=[%s]\n",csList[IDX_NET_AMT_CCY]));
+DEBUGLOG(("IDX_NET_AMT=[%s]\n",csList[IDX_NET_AMT]));
+DEBUGLOG(("IDX_MU_AMT_CCY=[%s]\n",csList[IDX_MU_AMT_CCY]));
+DEBUGLOG(("IDX_MU_AMT=[%s]\n",csList[IDX_MU_AMT]));
+DEBUGLOG(("IDX_PSP_AMT_CCY=[%s]\n",csList[IDX_PSP_AMT_CCY]));
+DEBUGLOG(("IDX_PSP_AMT=[%s]\n",csList[IDX_PSP_AMT]));
+DEBUGLOG(("IDX_TXN_STATUS=[%s]\n",csList[IDX_TXN_STATUS]));
+DEBUGLOG(("IDX_DTL_CHECKSUM=[%s]\n",csList[IDX_DTL_CHECKSUM]));
+DEBUGLOG(("IDX_MERCHANT_REF=[%s]\n",csList[IDX_MERCHANT_REF]));
+				*/
+				
+				// Build Key
+				//md5(concat(country code,merchant, txn amt, txn free amt,  net amt, markup amt, psp/deliveried amt))
+				strcpy(csKey, csList[IDX_COUNTRY_CODE]);
+				strcat(csKey, csList[IDX_MERCHANT]);
+				strcat(csKey, csList[IDX_TXN_AMT]);
+				strcat(csKey, csList[IDX_TXN_FEE]);
+				strcat(csKey, csList[IDX_NET_AMT]);
+				strcat(csKey, csList[IDX_MU_AMT]);
+				strcat(csKey, csList[IDX_PSP_AMT]);
+				//DEBUGLOG(("Bulid MD5 Key = [%s]\n",csKey));
+				
+				strcpy(csSign, csList[IDX_DTL_CHECKSUM]);		
+
+				//DEBUGLOG(("Detail Checksum = [%s]\n",csSign));
+				md5sum(csKey,strlen(csKey),csOUT);
+				
+				//DEBUGLOG(("Calculated Checksum = [%s]\n",csOUT));
+
+				// Extract Most  left 8 bytes
+				//csCalSign=strndup(csOUT, OFFLINE_CHECKSUM_LEN);
+				strncpy(csCalSign, csOUT, OFFLINE_CHECKSUM_LEN);
+				csCalSign[OFFLINE_CHECKSUM_LEN] = '\0';
+										
+				if (strcmp(csSign,csCalSign)!=0) {
+DEBUGLOG(("Bulid MD5 Key = [%s]\n",csKey));
+DEBUGLOG(("Invalid Detail Checksum at line %d, [%s] <> Calculated:[%s]\n",iCount, csSign, csCalSign));
+					return FAILURE;
+				}	else {
+					//DEBUGLOG(("Detail Checksum Passed\n"));
+				}
+				
+				// Verify date format
+				if (strlen(csList[IDX_TXN_DATE])!=PD_DATE_LEN) {
+DEBUGLOG(("Invalid Date format at line %d, [%s]\n",iCount, csList[IDX_TXN_DATE]));
+					return FAILURE;				
+				}
+				
+				
+			}	else {
+DEBUGLOG(("Invalid Detail size =[%d]\n",iCount));
+				return FAILURE;
+			}			
+		}
+	} else {
+DEBUGLOG(("Invalid Header size =[%d]\n",iCount));
+		return FAILURE;
+	}
+
+	if (iLineCnt == 0) {
+DEBUGLOG(("No File Detail Found\n"));
+	}
+
+	
+
+	// Clean up
+	FREE_ME(csSign);
+	FREE_ME(csOUT);
+	FREE_ME(p);
+
+	iRet = SUCCESS;
+DEBUGLOG(("verify_file completed return =[%d]\n",iRet));
+	
+	return iRet;
+}
+
+int process_file(FILE *fin)
+{
+	int iRet = FAILURE;
+	int iLineCnt = 0;
+	int	iCount;
+	int iJnlKeyCnt=0;	
+	char    csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN];
+	char    csJnlKeys[IMPORT_MAX_KEY][IMPORT_MAX_KEY_LEN];
+	char    cs_input_buf[PD_MAX_BUFFER +1];;
+	char	*p;
+	char csPartyType[1];
+	double 	dTmpAmt;
+	
+	// For calculating FX gain/loss for MST
+	double dMstFxGainLoss = 0;
+	
+	char csKey[PD_TMP_MSG_BUF_LEN];
+	
+	hash_t *hTxnAmt;
+	hTxnAmt = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnAmt,0);
+	
+	hash_t *hCnt;
+	hCnt = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hCnt,0);	
+	
+  iCount = 0;
+  
+  fgets(cs_input_buf,PD_MAX_BUFFER,fin);
+  if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A || cs_input_buf[strlen(cs_input_buf) - 1] == 0x10)
+         cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+	strcpy(cs_input_buf,TrimAllChar((const unsigned char *)cs_input_buf,strlen(cs_input_buf),PD_CHAR));
+
+	//DEBUGLOG(("%s\n",cs_input_buf));
+
+	iLineCnt = 0;
+
+  while (fgets(cs_input_buf,PD_MAX_BUFFER, fin) != NULL) {
+		iLineCnt++;
+		
+  	if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A)
+			cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+		strcpy(cs_input_buf,TrimAllChar((const unsigned char *)cs_input_buf,strlen(cs_input_buf),PD_CHAR));
+		//DEBUGLOG(("%s\n",cs_input_buf));
+    iCount = 0;
+
+    p = mystrtok(cs_input_buf,PD_MY_DELIMITOR);
+    if (p == NULL)
+			return FAILURE;
+    strcpy(csList[iCount],TrimAllChar((const unsigned char *)p, strlen(p), PD_SPACE));
+    iCount++;
+
+    while ( (p = mystrtok(NULL,PD_MY_DELIMITOR)) != NULL) {
+	    strcpy(csList[iCount],TrimAllChar((const unsigned char *)p, strlen(p), PD_SPACE));
+	    iCount++;
+    }               
+		
+		//DEBUGLOG(("At line [%d] : [%s]\n",iLineCnt,p));
+		
+		// Detail
+		/*
+DEBUGLOG(("IDX_TXN_TYPE=[%s]\n",csList[IDX_TXN_TYPE]));
+DEBUGLOG(("IDX_COUNTRY_CODE=[%s]\n",csList[IDX_COUNTRY_CODE]));
+DEBUGLOG(("IDX_TXN_DATE=[%s]\n",csList[IDX_TXN_DATE]));
+DEBUGLOG(("IDX_TXN_ID=[%s]\n",csList[IDX_TXN_ID]));
+DEBUGLOG(("IDX_MERCHANT=[%s]\n",csList[IDX_MERCHANT]));
+DEBUGLOG(("IDX_PSP=[%s]\n",csList[IDX_PSP]));
+DEBUGLOG(("IDX_TXN_AMT_CCY=[%s]\n",csList[IDX_TXN_AMT_CCY]));
+DEBUGLOG(("IDX_TXN_AMT=[%s]\n",csList[IDX_TXN_AMT]));
+DEBUGLOG(("IDX_TXN_FEE_CCY=[%s]\n",csList[IDX_TXN_FEE_CCY]));
+DEBUGLOG(("IDX_TXN_FEE=[%s]\n",csList[IDX_TXN_FEE]));
+DEBUGLOG(("IDX_NET_AMT_CCY=[%s]\n",csList[IDX_NET_AMT_CCY]));
+DEBUGLOG(("IDX_NET_AMT=[%s]\n",csList[IDX_NET_AMT]));
+DEBUGLOG(("IDX_MU_AMT_CCY=[%s]\n",csList[IDX_MU_AMT_CCY]));
+DEBUGLOG(("IDX_MU_AMT=[%s]\n",csList[IDX_MU_AMT]));
+DEBUGLOG(("IDX_PSP_AMT_CCY=[%s]\n",csList[IDX_PSP_AMT_CCY]));
+DEBUGLOG(("IDX_PSP_AMT=[%s]\n",csList[IDX_PSP_AMT]));
+DEBUGLOG(("IDX_TXN_STATUS=[%s]\n",csList[IDX_TXN_STATUS]));
+DEBUGLOG(("IDX_DTL_CHECKSUM=[%s]\n",csList[IDX_DTL_CHECKSUM]));
+DEBUGLOG(("IDX_MERCHANT_REF=[%s]\n",csList[IDX_MERCHANT_REF]));
+		*/
+		
+		// Convert Transaction Type to PD TXN CODE
+		if (!strcmp(csList[IDX_TXN_TYPE],DSP_TYPE)) {
+			// Deposit
+			strcpy(csList[IDX_TXN_TYPE],PD_OFFSYS_DEPOSIT_TXN_CODE);
+
+			// Reset FX Gain/Loss
+			dMstFxGainLoss = 0.0;
+
+			// PSP Txn Amount
+			// -----------------------------------------------------------
+			strcpy(csKey, "");
+			strcat(csKey, csList[IDX_TXN_TYPE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, PD_TYPE_TXN_AMT);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);
+			strcat(csKey, csList[IDX_TXN_DATE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_STATUS]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			strcat(csKey, csList[IDX_COUNTRY_CODE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			sprintf(csPartyType, "%c", PD_TYPE_PSP);
+			strcat(csKey, csPartyType);			
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_PSP]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_AMT_CCY]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "DR");			
+
+			if (!is_float(csList[IDX_TXN_AMT])) {
+DEBUGLOG(("Invalid Txn Amount at line [%d]\n",iLineCnt));
+				return FAILURE;
+			}				
+			dTmpAmt = atof(csList[IDX_TXN_AMT]);
+			iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+			
+			// -----------------------------------------------------------
+							
+			// Merchant Net Amount
+			// -----------------------------------------------------------
+			strcpy(csKey, "");
+			strcat(csKey, csList[IDX_TXN_TYPE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, PD_TYPE_NET_AMT);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);
+			strcat(csKey, csList[IDX_TXN_DATE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_STATUS]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			strcat(csKey, csList[IDX_COUNTRY_CODE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			sprintf(csPartyType, "%c", PD_TYPE_MERCHANT);
+			strcat(csKey, csPartyType);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_MERCHANT]);	
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_NET_AMT_CCY]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "CR");			
+
+			if (!is_float(csList[IDX_NET_AMT])) {
+DEBUGLOG(("Invalid Net Amount at line [%d]\n, value = [%s]",iLineCnt,csList[IDX_NET_AMT]));
+				return FAILURE;
+			}
+			
+			dTmpAmt = atof(csList[IDX_NET_AMT]);
+			iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+			
+			// -----------------------------------------------------------
+
+			// Txn Fee
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_TXN_FEE])>0) {
+				if (!is_float(csList[IDX_TXN_FEE])) {
+DEBUGLOG(("Invalid Txn Fee at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+				
+				// Txn Fee
+				dTmpAmt = atof(csList[IDX_TXN_FEE]);
+				
+				if (dTmpAmt != 0) {
+
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_FEE);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);						
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_FEE_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+					
+				}
+			}
+			// -----------------------------------------------------------
+
+			// Markup Amount
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_MU_AMT])>0) {					
+				if (!is_float(csList[IDX_MU_AMT])) {			
+DEBUGLOG(("Invalid Deposit Markup Fee at line [%d] : [%s]\n",iLineCnt,csList[IDX_MU_AMT]));
+					return FAILURE;
+				}
+
+				// MU Fee
+				dTmpAmt = atof(csList[IDX_MU_AMT]);
+				
+				if (dTmpAmt != 0) {
+
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_XU);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);	
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MU_AMT_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");										
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+				}
+			}
+			// -----------------------------------------------------------
+			
+		} else if (!strcmp(csList[IDX_TXN_TYPE],WTD_TYPE)) {
+			// Payout Request 
+			
+			if (!strcmp(csList[IDX_TXN_STATUS],DSP_APPROVE_STATUS)) {
+				// Approved (A)
+				strcpy(csList[IDX_TXN_TYPE],PD_OFFSYS_PAYOUT_TXN_CODE);
+			} else if (!strcmp(csList[IDX_TXN_STATUS],DSP_REJFECT_STATUS)) {
+				// Rejected (R)
+				strcpy(csList[IDX_TXN_TYPE],PD_OFFSYS_PAYOUT_REJ_TXN_CODE);
+			} else {
+DEBUGLOG(("Invalid Txn Status at line [%d]\n",iLineCnt));
+				return FAILURE;
+			}
+			
+			// Merchant Request Amount
+			// -----------------------------------------------------------
+			strcpy(csKey, "");
+			strcat(csKey, csList[IDX_TXN_TYPE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, PD_TYPE_TXN_AMT);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);
+			strcat(csKey, csList[IDX_TXN_DATE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_STATUS]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			strcat(csKey, csList[IDX_COUNTRY_CODE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			sprintf(csPartyType, "%c", PD_TYPE_MERCHANT);
+			strcat(csKey, csPartyType);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_MERCHANT]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_AMT_CCY]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "DR");
+			
+			if (!is_float(csList[IDX_TXN_AMT])) {
+DEBUGLOG(("Invalid Txn Amount at line [%d]\n",iLineCnt));
+				return FAILURE;
+			}				
+			dTmpAmt = atof(csList[IDX_TXN_AMT]);
+			iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+			// -----------------------------------------------------------
+							
+			// PSP Net Amount (to In-transit)
+			// -----------------------------------------------------------
+			strcpy(csKey, "");
+			strcat(csKey, csList[IDX_TXN_TYPE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, PD_TYPE_NET_AMT);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);
+			strcat(csKey, csList[IDX_TXN_DATE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_STATUS]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			strcat(csKey, csList[IDX_COUNTRY_CODE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+			strcat(csKey, csPartyType);						
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "-");	
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_NET_AMT_CCY]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "CR");
+			
+			if (!is_float(csList[IDX_NET_AMT])) {
+DEBUGLOG(("Invalid Net Amount at line [%d]\n, value = [%s]",iLineCnt,csList[IDX_NET_AMT]));
+				return FAILURE;
+			}
+			
+			dTmpAmt = atof(csList[IDX_NET_AMT]);
+			iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+			// -----------------------------------------------------------
+
+			// Txn Fee
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_TXN_FEE])>0) {
+				if (!is_float(csList[IDX_TXN_FEE])) {
+DEBUGLOG(("Invalid Txn Fee at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+				
+				// Txn Fee
+				dTmpAmt = atof(csList[IDX_TXN_FEE]);
+				
+				if (dTmpAmt != 0) {
+					// Debit Payout Fee
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_FEE);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);						
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_FEE_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");
+			
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+					
+					// Credit back to merchant					
+					// Sum txn fee to Merchant Request Amount
+					// -----------------------------------------------------------
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_TXN_AMT);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_MERCHANT);
+					strcat(csKey, csPartyType);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MERCHANT]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_FEE_CCY]);					
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "DR");										
+
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);					
+				}
+			}
+			// -----------------------------------------------------------
+
+			// Markup Amount
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_MU_AMT])>0) {					
+				if (!is_float(csList[IDX_MU_AMT])) {
+DEBUGLOG(("Invalid Payout Markup Fee at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+
+				// MU Fee
+				dTmpAmt = atof(csList[IDX_MU_AMT]);
+				
+				if (dTmpAmt != 0) {
+
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_XU);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);	
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MU_AMT_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");										
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+				}
+			}
+			// -----------------------------------------------------------
+		} else if (!strcmp(csList[IDX_TXN_TYPE],WTDG_TYPE)) {
+			// Payout Generated
+			strcpy(csList[IDX_TXN_TYPE],PD_OFFSYS_PAYOUT_GEN_TXN_CODE);
+							
+			// PSP Net Amount (from In-transit)
+			// -----------------------------------------------------------
+			strcpy(csKey, "");
+			strcat(csKey, csList[IDX_TXN_TYPE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, PD_TYPE_NET_AMT);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);
+			strcat(csKey, csList[IDX_TXN_DATE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_STATUS]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			strcat(csKey, csList[IDX_COUNTRY_CODE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+			strcat(csKey, csPartyType);						
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "-");	
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_NET_AMT_CCY]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "DR");
+			
+			if (!is_float(csList[IDX_NET_AMT])) {
+DEBUGLOG(("Invalid Net Amount at line [%d]\n, value = [%s]",iLineCnt,csList[IDX_NET_AMT]));
+				return FAILURE;
+			}
+			
+			dTmpAmt = atof(csList[IDX_NET_AMT]);
+			iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+			// -----------------------------------------------------------
+
+			// PSP/Deliver Amount (to PSP Available)
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_PSP_AMT])>0) {
+				if (!is_float(csList[IDX_PSP_AMT])) {
+DEBUGLOG(("Invalid PSP/Deliver Amount at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+
+				// PSP/Deliver Amount
+				dTmpAmt = atof(csList[IDX_PSP_AMT]);
+				
+				if (dTmpAmt != 0) {
+
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_PSP_AMT);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					sprintf(csPartyType, "%c", PD_TYPE_PSP);
+					strcat(csKey, csPartyType);			
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_PSP]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);						
+					strcat(csKey, csList[IDX_PSP_AMT_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+
+				}
+			}
+			// -----------------------------------------------------------
+							
+		} else if (!strcmp(csList[IDX_TXN_TYPE],MST_TYPE)) { 
+			// Merchant Settlement
+			strcpy(csList[IDX_TXN_TYPE],PD_OFFSYS_SETTLEMENT_TXN_CODE);
+
+			// Reset FX Gain/Loss
+			dMstFxGainLoss = 0.0;
+
+			// Merchant Txn Amount
+			// -----------------------------------------------------------
+			strcpy(csKey, "");
+			strcat(csKey, csList[IDX_TXN_TYPE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, PD_TYPE_TXN_AMT);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);
+			strcat(csKey, csList[IDX_TXN_DATE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_STATUS]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);				
+			strcat(csKey, csList[IDX_COUNTRY_CODE]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			sprintf(csPartyType, "%c", PD_TYPE_MERCHANT);
+			strcat(csKey, csPartyType);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_MERCHANT]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, csList[IDX_TXN_AMT_CCY]);
+			strcat(csKey, PD_HASHKEY_DELIMITOR);	
+			strcat(csKey, "DR");
+					
+			if (!is_float(csList[IDX_TXN_AMT])) {
+DEBUGLOG(("Invalid Txn Amount at line [%d]\n",iLineCnt));
+				return FAILURE;
+			}				
+			dTmpAmt = atof(csList[IDX_TXN_AMT]);
+			iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+			
+			// -----------------------------------------------------------
+							
+			// Deliver Amount (to In-Transit)
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_PSP_AMT])>0) {
+				if (!is_float(csList[IDX_PSP_AMT])) {
+DEBUGLOG(("Invalid PSP/Deliver Amount at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+
+				dTmpAmt = atof(csList[IDX_PSP_AMT]);
+				
+				if (dTmpAmt != 0) {
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_DELI_AMT);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);						
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);						
+					strcat(csKey, csList[IDX_PSP_AMT_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+
+				}
+			}
+			// -----------------------------------------------------------
+
+			// Txn Fee
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_TXN_FEE])>0) {
+				if (!is_float(csList[IDX_TXN_FEE])) {
+DEBUGLOG(("Invalid Txn Fee at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+				
+				// Txn Fee
+				dTmpAmt = atof(csList[IDX_TXN_FEE]);
+				
+				if (dTmpAmt != 0) {
+
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_FEE);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);						
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_FEE_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+
+					
+					// Merchant Debit
+					// -----------------------------------------------------------
+					/*
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_FEE);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_MERCHANT);
+					strcat(csKey, csPartyType);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MERCHANT]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_FEE_CCY]);	
+					
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+					*/
+				}
+			}
+			// -----------------------------------------------------------
+
+			// Markup Amount
+			// -----------------------------------------------------------
+			if (strlen(csList[IDX_MU_AMT])>0) {					
+				if (!is_float(csList[IDX_MU_AMT])) {
+DEBUGLOG(("Invalid Markup Fee at line [%d]\n",iLineCnt));
+					return FAILURE;
+				}
+
+				// MU Fee
+				dTmpAmt = atof(csList[IDX_MU_AMT]);
+				
+				if (dTmpAmt != 0) {
+
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_XU);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_GLOBAL);
+					strcat(csKey, csPartyType);	
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "-");
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MU_AMT_CCY]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, "CR");
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+					
+					// Merchant Debit
+					// -----------------------------------------------------------
+					/* 
+					strcpy(csKey, "");
+					strcat(csKey, csList[IDX_TXN_TYPE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, PD_TYPE_M_XU);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);
+					strcat(csKey, csList[IDX_TXN_DATE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_TXN_STATUS]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);				
+					strcat(csKey, csList[IDX_COUNTRY_CODE]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					sprintf(csPartyType, "%c", PD_TYPE_MERCHANT);
+					strcat(csKey, csPartyType);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MERCHANT]);
+					strcat(csKey, PD_HASHKEY_DELIMITOR);	
+					strcat(csKey, csList[IDX_MU_AMT_CCY]);	
+					
+					iRet = myGroupRecs(csJnlKeys, hTxnAmt, hCnt, csKey, dTmpAmt, &iJnlKeyCnt);
+					*/
+				}
+			}
+			
+			// -----------------------------------------------------------
+		} else {
+			// Unknown
+DEBUGLOG(("Unknown Transaction Type =[%s]\n",csList[IDX_TXN_TYPE]));
+			continue;
+		}
+	}
+	
+	iRet = myPostTxn(csJnlKeys, hTxnAmt, hCnt, iJnlKeyCnt);
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("myPostTxn succeed\n"));
+	} else {
+DEBUGLOG(("myPostTxn failed\n"));
+	}
+	// Clean up
+	hash_destroy(hTxnAmt);
+	FREE_ME(hTxnAmt);
+	hash_destroy(hCnt);
+	FREE_ME(hCnt);
+	
+	//iRet = SUCCESS;
+	
+DEBUGLOG(("process_file return:[%d]\n",iRet));
+	return iRet;
+}
+
+int myGroupRecs(char csJnlKeys[IMPORT_MAX_KEY][IMPORT_MAX_KEY_LEN], hash_t *hTxn, hash_t *hCnt, char *csKey, double dAmt, int *iJnlKeyCnt) 
+{
+	double dTmpAmt = 0.00;
+	int iCnt = 0;
+	int	iRet = PD_OK;
+
+	// Accumulate the txn amount
+	if (GetField_Double(hTxn,csKey,&dTmpAmt)) {
+		//DEBUGLOG(("Found Txn [%s] = [%f]\n",csKey, dTmpAmt));
+		// Sum
+		dTmpAmt = (double) dTmpAmt + dAmt;
+
+	} else {				
+		// Add new
+		// Update Key chains
+		strcpy(csJnlKeys[*iJnlKeyCnt],csKey);
+		(*iJnlKeyCnt)++;
+		dTmpAmt = (double) dAmt;				
+		//DEBUGLOG(("New Txn [%s] = [%f]\n",csKey, dTmpAmt));
+	}
+	
+	PutField_Double(hTxn,csKey,dTmpAmt);
+
+	// Increment the txn count
+	if (GetField_Int(hCnt,csKey,&iCnt)) {
+		//DEBUGLOG(("Found Cnt [%s] = [%d]\n",csKey, iCnt));	
+		iCnt++;
+		
+	} else {	
+		iCnt = 1;
+		//DEBUGLOG(("New Cnt [%s] = [%d]\n",csKey, iCnt));		
+	}
+	
+	PutField_Int(hCnt,csKey,iCnt);
+
+	return iRet;
+}
+
+int myPostTxn(char csJnlKeys[IMPORT_MAX_KEY][IMPORT_MAX_KEY_LEN], const hash_t *hTxn, const hash_t *hCnt, const int iJnlKeyCnt) 
+{	
+	int	iRet = PD_OK;
+	int iTmp, iCount, iGetRet, j, iFoundType=0;
+	hash_t*	hReq;
+	char    csKeys[IMPORT_MAX_KEY][IMPORT_MAX_KEY_LEN];
+	char	*p;
+	char 	csTmpKey[IMPORT_MAX_KEY];
+	double 	dTmpAmt;
+	char* csTxnType[MAX_TXN_TYPE_CNT]={NULL,NULL,NULL,NULL,NULL};
+	char csPartyID[PD_CRR_MERCH_ID_LEN];
+	char csFxGainLossCcy[PD_CCY_ID_LEN] = "";
+	
+	//char* csPtr;
+	//char cTmp;
+	int		iCnt = 0;
+	double dConvertAmt = 0.0;
+	double dFxGainLoss = 0.0;
+	double dZero = 0.0;
+	char   csJnldate[PD_DATE_LEN + 1];
+	
+	strcpy(csFxGainLossCcy, PD_CCY_ISO_HKD);
+	
+	csTxnType[0] = strdup(PD_OFFSYS_DEPOSIT_TXN_CODE); //Deposit Approved	
+	csTxnType[1] = strdup(PD_OFFSYS_PAYOUT_TXN_CODE); // Payout Requested
+	csTxnType[2] = strdup(PD_OFFSYS_PAYOUT_REJ_TXN_CODE); // Payout Rejected
+	csTxnType[3] = strdup(PD_OFFSYS_PAYOUT_GEN_TXN_CODE); // Payout Generated
+	csTxnType[4] = strdup(PD_OFFSYS_SETTLEMENT_TXN_CODE); // Settlement Approved
+	
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));	
+
+	recordset_t  *rRec;
+	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+
+	hReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hReq,0);
+
+	if (iJnlKeyCnt == 0) { 
+DEBUGLOG(("No transaction found\n"));
+	} else {
+		/* Get Clear Journals */
+DEBUGLOG(("Start Cleanup Journal for Date:[%s], Country:[%s], Product:[%s]...\n",cs_date,OFFLINE_COUNTRY_CODE, OFFLINE_PRODUCT_CODE));
+
+		recordset_init(rRec,0);
+
+		/* Handle later!!!!!! */
+		/*
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetAllPostJnl");
+		iRet = (unsigned long)(*DBObjPtr)(rRec, cs_date, OFFLINE_COUNTRY_CODE, OFFLINE_PRODUCT_CODE, PD_JLT_POST_OFFLINE);
+
+		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"BOCrrJnl","clearJournal");
+			iRet = (unsigned long)(*DBObjPtr)("Cleanup Journal", rRec, PD_UPDATE_USER);
+			
+			if (iRet != PD_OK) {
+DEBUGLOG(("Failed to clear journal and return [%d].\n",iRet));
+			}
+			
+		} else {
+			iRet = FAILURE;
+DEBUGLOG(("Failed to get existing journal.\n"));
+		}
+DEBUGLOG(("End Cleanup Journal and return [%d]\n",iRet));	
+
+		*/
+
+
+DEBUGLOG(("Start posting transactions...\n"));
+		
+		recordset_init(rRecordSet,0);		
+		
+		for (j=0; j < MAX_TXN_TYPE_CNT; j++) {
+			if (csTxnType[j]!=NULL) {
+DEBUGLOG(("Txn Type = [%s]\n",csTxnType[j]));
+
+				iFoundType = 0;
+				dFxGainLoss = 0.0;
+
+				for (iTmp=0; iTmp < iJnlKeyCnt; iTmp++) {
+				
+					if (strlen(csJnlKeys[iTmp])>0) {
+												
+						strcpy(csTmpKey, csJnlKeys[iTmp]);
+								
+						if (GetField_Double(hTxn,csTmpKey,&dTmpAmt)) {
+							
+							// Break key into fields
+							iCount = 0;
+							p = mystrtok(csTmpKey,PD_HASHKEY_DELIMITOR);
+							if (p == NULL)
+									return FAILURE;
+							strcpy(csKeys[iCount],p);
+							iCount++;
+						
+							while ((p = mystrtok(NULL,PD_HASHKEY_DELIMITOR)) != NULL) {
+								strcpy(csKeys[iCount],p);
+								iCount++;
+							} 
+
+							if (strcmp(csKeys[HASHKEY_IDX_TXN_TYPE],csTxnType[j])) {
+								// If not equal to current txn type, skip and continue
+								continue;
+							} else {			
+								// Found at least one entry for current txn type
+								iFoundType = 1;
+							}
+
+							strcpy(csJnldate, csKeys[HASHKEY_IDX_TXN_DATE]);							
+
+							//if (GetField_CString(hContext,"PHDATE",&csPtr))  {
+							PutField_CString(hReq,"host_posting_date",csJnldate);
+							//}					
+							
+							/* txn code */
+							PutField_CString(hReq,"txn_code",csKeys[HASHKEY_IDX_TXN_TYPE]);
+														
+							/* txn country */
+							PutField_CString(hReq,"txn_country",csKeys[HASHKEY_IDX_COUNTRY_CODE]);
+							
+							/* product */
+							PutField_CString(hReq,"product",OFFLINE_PRODUCT_CODE);
+							
+							/* ccy, convert RMB to CNY if needed */
+							if (!strcmp(csKeys[HASHKEY_IDX_AMT_CCY],PD_CCY_ISO_RMB)) {
+								PutField_CString(hReq,"ccy",PD_CCY_ISO_CNY);
+								//DEBUGLOG(("RMB found, convert to CNY\n"));
+							} else
+								PutField_CString(hReq,"ccy",csKeys[HASHKEY_IDX_AMT_CCY]);
+							
+							/* txn_type */
+							PutField_CString(hReq,"txn_type",csKeys[HASHKEY_IDX_AMT_TYPE]);
+							
+							/* amount */
+							PutField_Double(hReq,"amount",dTmpAmt);
+							
+							/* party type */
+							PutField_Char(hReq,"type",csKeys[HASHKEY_IDX_PARTY_TYPE][0]);
+							
+							/* party id */
+							if (csKeys[HASHKEY_IDX_PARTY_TYPE][0]==PD_TYPE_MERCHANT) {
+								//DEBUGLOG(("Look Merchnant [%s]\n",csKeys[HASHKEY_IDX_PARTY_ID]));
+								// Lookup Merchant ID
+								DBObjPtr = CreateObj(DBPtr,"DBCrrExtMerchDetail","GetMerchIDbyExtMerch");
+								iGetRet = (unsigned long)(*DBObjPtr)(OFFLINE_PRODUCT_CODE, csKeys[HASHKEY_IDX_PARTY_ID], csPartyID);			
+								
+								if (iGetRet != FOUND) {
+DEBUGLOG(("Merchnat not found [%s]\n",csKeys[HASHKEY_IDX_PARTY_ID]));
+									iRet = FAILURE;
+									continue;									
+								}
+													
+							} else if (csKeys[HASHKEY_IDX_PARTY_TYPE][0]==PD_TYPE_PSP) {
+								//DEBUGLOG(("Look PSP [%s]\n",csKeys[HASHKEY_IDX_PARTY_ID]));
+								// Lookup PSP ID
+								DBObjPtr = CreateObj(DBPtr,"DBCrrExtPspDetail","GetPspIDbyExtPsp");
+								iGetRet = (unsigned long)(*DBObjPtr)(OFFLINE_PRODUCT_CODE, csKeys[HASHKEY_IDX_PARTY_ID], csPartyID);			
+								
+								if (iGetRet != FOUND) {
+DEBUGLOG(("PSP not found [%s]\n",csKeys[HASHKEY_IDX_PARTY_ID]));
+									iRet = FAILURE;
+									continue;									
+								}
+							} else {
+								//Use Default (-) Global Party 
+								strcpy(csPartyID,PD_SYS_PARTY_ID);
+							}
+										
+							PutField_CString(hReq,"id",csPartyID);
+							
+							/* txn_cnt */
+							if (GetField_Int(hCnt,csJnlKeys[iTmp],&iCnt)) {
+								//DEBUGLOG(("txn_cnt [%s] = [%d]\n",csJnlKeys[iTmp], iCnt));
+								PutField_Int(hReq,"txn_cnt",iCnt);
+							} else {
+								//DEBUGLOG(("txn_cnt not found [%s]\n",csJnlKeys[iTmp]));
+								iCnt = 0;
+							}
+								
+
+							/*
+DEBUGLOG(("HASHKEY_IDX_AMT_TYPE=[%s]\n",csKeys[HASHKEY_IDX_AMT_TYPE]));	
+DEBUGLOG(("HASHKEY_IDX_TXN_DATE=[%s]\n",csKeys[HASHKEY_IDX_TXN_DATE]));
+DEBUGLOG(("HASHKEY_IDX_TXN_TYPE=[%s]\n",csKeys[HASHKEY_IDX_TXN_TYPE]));
+DEBUGLOG(("HASHKEY_IDX_TXN_STATUS=[%s]\n",csKeys[HASHKEY_IDX_TXN_STATUS]));
+DEBUGLOG(("HASHKEY_IDX_COUNTRY_CODE=[%s]\n",csKeys[HASHKEY_IDX_COUNTRY_CODE]));
+DEBUGLOG(("HASHKEY_IDX_PARTY_TYPE=[%c]\n",csKeys[HASHKEY_IDX_PARTY_TYPE][0]));
+DEBUGLOG(("HASHKEY_IDX_PARTY_ID=[%s]\n",csKeys[HASHKEY_IDX_PARTY_ID]));
+DEBUGLOG(("HASHKEY_IDX_AMT_CCY=[%s]\n",csKeys[HASHKEY_IDX_AMT_CCY]));	
+DEBUGLOG(("HASHKEY_IDX_CR_IND=[%s]\n",csKeys[HASHKEY_IDX_CR_IND]));	
+DEBUGLOG(("Amount [%s] = [%f]\n",csTmpKey, dTmpAmt));
+							*/
+
+							dConvertAmt = 0.0;
+							
+
+							BOObjPtr = CreateObj(DBPtr,"BOCrrJnl","GetFXConvertAmt");
+							if ((*BOObjPtr)(csKeys[HASHKEY_IDX_TXN_DATE], csKeys[HASHKEY_IDX_AMT_CCY], csFxGainLossCcy, dTmpAmt, &dConvertAmt) != PD_OK) {
+DEBUGLOG(("Fail to get FX rate at converted request amount at Journal Key [%d]\n",iTmp));
+								return FAILURE;			
+							}
+							
+							// Credit (+), Debit (-)
+							if (!strcmp(csKeys[HASHKEY_IDX_CR_IND],"DR"))
+								dFxGainLoss = (double) dFxGainLoss + dConvertAmt;
+							else
+								dFxGainLoss = (double) dFxGainLoss + (dConvertAmt*-1);
+
+DEBUGLOG(("Journal Key [%d] = [%s], Amount = [%f], HKD = [%f], Count = [%d]\n",iTmp, csJnlKeys[iTmp], dTmpAmt, dConvertAmt, iCnt));
+							
+							// Add to RS
+							RecordSet_Add(rRecordSet,hReq);
+
+							// Reset hash
+							hReq = (hash_t*) malloc (sizeof(hash_t));							
+							hash_init(hReq,0);	
+								
+						} else {
+DEBUGLOG(("Not Found for Key [%s]\n",csTmpKey));
+							//iRet = FAILURE;
+							continue;
+						}
+												
+					} else {
+						continue;
+					}
+				} // for csKey
+				
+				
+
+				if (iFoundType) {
+
+					
+DEBUGLOG(("dFxGainLoss [%f]\n",dFxGainLoss));
+					/*
+DEBUGLOG(("round 2 dFxGainLoss [%f]\n",newround(dFxGainLoss, 2)));
+DEBUGLOG(("dFxGainLoss != 0.000000 [%d]\n",(dFxGainLoss != 0.000000)));
+DEBUGLOG(("dFxGainLoss != -0.000000 [%d]\n",(dFxGainLoss != -0.000000)));
+DEBUGLOG(("dFxGainLoss == 0.000000 [%d]\n",(dFxGainLoss == 0.000000)));
+DEBUGLOG(("dFxGainLoss == -0.000000 [%d]\n",(dFxGainLoss == -0.000000)));
+
+DEBUGLOG(("dFxGainLoss == 0.000000f [%d]\n",(dFxGainLoss == 0.000000f)));
+DEBUGLOG(("dFxGainLoss == -0.000000f [%d]\n",(dFxGainLoss == -0.000000f)));
+					*/
+
+					// Determine FX Gain/Loss
+					if ((dFxGainLoss != 0.000000) && (dFxGainLoss != -0.000000)) {	
+						if (dFxGainLoss > dZero) {
+DEBUGLOG(("Credit FxGainLoss for Type [%s] = [%f]\n",csTxnType[j], dFxGainLoss));
+							// Credit
+							hReq = (hash_t*) malloc (sizeof(hash_t));							
+							hash_init(hReq,0);						
+							PutField_CString(hReq,"host_posting_date",csJnldate);
+							PutField_CString(hReq,"txn_code",csTxnType[j]);
+							PutField_CString(hReq,"txn_country",OFFLINE_COUNTRY_CODE);
+							PutField_CString(hReq,"product",OFFLINE_PRODUCT_CODE);
+							PutField_CString(hReq,"ccy",csFxGainLossCcy);
+							PutField_CString(hReq,"txn_type","CR_FXGL");
+							PutField_Double(hReq,"amount",dFxGainLoss);
+							PutField_Char(hReq,"type",PD_TYPE_GLOBAL);
+							PutField_CString(hReq,"id",PD_SYS_PARTY_ID);
+							PutField_Int(hReq,"txn_cnt",0);
+							RecordSet_Add(rRecordSet,hReq);
+							
+						} else if ((dFxGainLoss < dZero) && ((dFxGainLoss*-1) > dZero)) {
+							dFxGainLoss = dFxGainLoss * -1;
+DEBUGLOG(("Debit FxGainLoss for Type [%s] = [%f]\n",csTxnType[j], dFxGainLoss));
+							// Debit
+							hReq = (hash_t*) malloc (sizeof(hash_t));							
+							hash_init(hReq,0);						
+							PutField_CString(hReq,"host_posting_date",csJnldate);
+							PutField_CString(hReq,"txn_code",csTxnType[j]);
+							PutField_CString(hReq,"txn_country",OFFLINE_COUNTRY_CODE);
+							PutField_CString(hReq,"product",OFFLINE_PRODUCT_CODE);
+							PutField_CString(hReq,"ccy",csFxGainLossCcy);
+							PutField_CString(hReq,"txn_type","DR_FXGL");
+							PutField_Double(hReq,"amount",dFxGainLoss);
+							PutField_Char(hReq,"type",PD_TYPE_GLOBAL);
+							PutField_CString(hReq,"id",PD_SYS_PARTY_ID);
+							PutField_Int(hReq,"txn_cnt",0);
+							RecordSet_Add(rRecordSet,hReq);
+							
+						}
+					}
+
+					if (iRet == PD_OK) {
+DEBUGLOG(("Start BOCrrPost...\n"));
+						BOObjPtr = CreateObj(BOPtr,"BOCrrPost","PostOffSysTxn");
+						iRet = (unsigned long)(*BOObjPtr)(rRecordSet);
+DEBUGLOG(("End BOCrrPost and return [%d]...\n",iRet));
+					}
+					
+					// Clean up
+					RecordSet_Destroy(rRecordSet);
+					
+					if (iRet != PD_OK) {
+						break;
+					}
+				} else {
+DEBUGLOG(("No Transaction found for Txn Type = [%s]\n",csTxnType[j]));
+				}
+			}			
+		} // for Txn Type	
+	}
+		
+	// Clean up
+	RecordSet_Destroy(rRecordSet);
+	hash_destroy(hReq);
+	FREE_ME(hReq);	
+DEBUGLOG(("End posting and return:[%d]\n",iRet));
+	
+	return iRet;
+}

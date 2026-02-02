@@ -1,0 +1,337 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/10/08              David Wong
+Refine						   2014/12/29              Virgini Yun
+Block BAID in PendingFund type for adjustment	   2015/04/30              Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsBAD.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnOmtByUsBAD(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int iRet = PD_OK;
+
+	char *csTmp = NULL;
+	char *csOrgTxnCode = NULL;
+	char *csUpdateUser = NULL;
+	char *csBaid = NULL;
+	char *csCode = NULL;
+	char *csTxnCountry = strdup("");
+	char *csTxnCcy = NULL;
+	double dAmt = 0.0;
+	int iTmp;
+	char cDCInd;
+
+DEBUGLOG(("Authorize:: Start\n"));
+
+/* txn_seq */
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+DEBUGLOG(("Authorize:: txn_seq = [%s]\n", csTmp));
+		PutField_CString(hContext, "from_txn_seq", csTmp);
+		PutField_CString(hResponse, "org_txn_seq", csTmp);
+	} else {
+DEBUGLOG(("Authorize:: txnid not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: txnid not found!!\n");
+		iRet = INT_INVALID_TXN;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* txn_code */
+	if (GetField_CString(hRequest, "txn_code", &csOrgTxnCode)) {
+DEBUGLOG(("Authorize:: txn_code = [%s]\n", csOrgTxnCode));
+	} else {
+DEBUGLOG(("Authorize:: txn_code not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: txn_code not found!!\n");
+		iRet = INT_ERR;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* add_user */
+	if (GetField_CString(hRequest, "add_user", &csUpdateUser)) {
+DEBUGLOG(("Authorize:: add_user = [%s]\n", csUpdateUser));
+		PutField_CString(hContext, "add_user", csUpdateUser);
+		PutField_CString(hContext, "update_user", csUpdateUser);
+	}
+
+/* remark */
+	if (GetField_CString(hRequest, "remark", &csTmp)) {
+DEBUGLOG(("Authorize:: remark = [%s]\n", csTmp));
+		PutField_CString(hContext, "remark", csTmp);
+	}
+
+/* baid */
+	if (GetField_CString(hRequest, "baid", &csBaid)) {
+DEBUGLOG(("Authorize:: baid = [%s]\n", csBaid));
+
+		//check BAID category, not allow ITL_PEND type
+DEBUGLOG(("Authorize:: Call DBOLBankAcctId: GetBankAcctIdDtl\n"));
+		hash_t *hRec;
+		hRec = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hRec,0);
+		DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdDtl");
+		iRet = (unsigned long)(*DBObjPtr)(csBaid, hRec);
+		if (iRet == PD_OK) { 
+			if (GetField_CString(hRec,"category",&csTmp)) {
+DEBUGLOG(("Authorize:: BAID Category = [%s]\n",csTmp));
+				if (!strcmp(csTmp,PD_BAID_CAT_INTERNAL_PENDFUND))
+				{
+DEBUGLOG(("Authorize:: BAID in Pending Fund not allow!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: BAID in Pending Fund not allow!\n");
+					iRet = INT_INVALID_BAID;
+					PutField_Int(hContext, "internal_error", iRet);
+				} else {
+					PutField_CString(hContext, "baid", csBaid);
+				}
+			} else {
+DEBUGLOG(("Authorize:: BAID category not found!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: BAID category not found!\n");
+				iRet = INT_INVALID_BAID;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+		}
+		hash_destroy(hRec);
+		FREE_ME(hRec);
+	} else {
+DEBUGLOG(("Authorize:: baid not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: baid not found!!\n");
+		iRet = INT_INVALID_BAID;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* baid_psp_id */
+	if (GetField_CString(hContext, "baid_psp_id", &csTmp)) {
+DEBUGLOG(("Authorize:: psp_id = [%s]\n", csTmp));
+		PutField_CString(hContext, "psp_id", csTmp);
+	} else {
+DEBUGLOG(("Authorize:: baid not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: baid not found!!\n");
+		iRet = INT_PSP_ID_NOT_FOUND;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+
+/* code */
+	if (GetField_CString(hRequest, "code", &csCode)) {
+DEBUGLOG(("Authorize:: code = [%s]\n", csCode));
+		PutField_CString(hContext, "code", csCode);
+DEBUGLOG(("Authorize:: assign new txn code = [%s]\n", csCode));
+		PutField_CString(hContext, "new_txn_code", csCode);
+	} else {
+DEBUGLOG(("Authorize:: code not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: code not found!!\n");
+		iRet = INT_CODE_ERROR;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* txn_country */
+	if (GetField_CString(hRequest, "txn_country", &csTxnCountry)) {
+DEBUGLOG(("Authorize:: txn_country = [%s]\n", csTxnCountry));
+		PutField_CString(hContext, "txn_country", csTxnCountry);
+	} else {
+DEBUGLOG(("Authorize:: Call DBOLBankAcctId: GetBankAcctIdCountry\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+		if ((unsigned long)(*DBObjPtr)(csBaid, csTxnCountry) == PD_OK) {
+DEBUGLOG(("Authorize:: txn_country by baid = [%s]\n", csTxnCountry));
+			PutField_CString(hContext, "txn_country", csTxnCountry);
+			PutField_CString(hRequest, "txn_country", csTxnCountry);
+		} else {
+DEBUGLOG(("Authorize:: txn_country not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: txn_country not found!!\n");
+			iRet = INT_COUNTRY_PSP_NOT_AVABILE;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+	}
+
+/* txn_ccy */
+	if (GetField_CString(hRequest, "txn_ccy", &csTxnCcy)) {
+DEBUGLOG(("Authorize:: txn_ccy = [%s]\n", csTxnCcy));
+		PutField_CString(hContext, "txn_ccy", csTxnCcy);
+		PutField_CString(hContext, "net_ccy", csTxnCcy);
+		PutField_CString(hContext, "org_txn_ccy", csTxnCcy);
+		PutField_CString(hContext, "dst_txn_ccy", csTxnCcy);
+	} else {
+DEBUGLOG(("Authorize:: ccy not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: ccy not found!!\n");
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* txn_amt */
+	if (GetField_Double(hContext, "txn_amt", &dAmt)) {
+DEBUGLOG(("Authorize:: txn_amt= [%f]\n", dAmt));
+		PutField_Double(hContext, "org_txn_amt", dAmt);
+	} else {
+DEBUGLOG(("Authorize:: txn_amt not found!!\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: txn_amt not found!!\n");
+		iRet = INT_PAY_AMOUNT_NOT_FOUND;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* report_date */
+	if (!GetField_CString(hRequest, "report_date", &csTmp)) {
+DEBUGLOG(("Authorize:: report_date not found!!\n"));
+		if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+DEBUGLOG(("Authorize:: report_date (PH date) = [%s]\n", csTmp));
+			PutField_CString(hContext, "report_date", csTmp);
+		}
+	} else {
+DEBUGLOG(("Authorize:: report_date = [%s]\n", csTmp));
+		PutField_CString(hContext, "report_date", csTmp);
+	}
+
+	PutField_CString(hRequest, "service_code", PD_DEFAULT_SERVICE);
+	PutField_Char(hContext, "party_type", PD_TYPE_PSP);
+	PutField_CString(hContext, "process_code", "000000");
+	PutField_CString(hContext, "process_type", "0000");
+	PutField_CString(hContext, "sub_status", PD_APPROVED);
+	PutField_Char(hContext, "recon_status", PD_RECON_NOT_REQ);
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOExchange: GetExchangeInfo\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOExchange", "GetExchangeInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hContext, hRequest);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize:: Call: BOExchange.GetExchangeInfo failed, return = [%d]\n", iRet));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: Call: BOEchange.GetExhcnageInfo failed, return = [%d]\n", iRet);
+
+		}
+	}
+
+
+// Update Balance
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOOLAdjustment: ProcessPartyBalance\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLAdjustment", "ProcessPartyBalance");
+		iRet = (unsigned long)(*BOObjPtr)(hContext);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize:: Call BOOLAdjustment: ProcessPartyBalance failed, return = [%d]\n", iRet));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: Call BOOLADjustment: ProcesspartyBalance failed, return = [%d]\n", iRet);
+		} else {
+			if (GetField_Char(hContext, "dc_ind", &cDCInd)) {
+DEBUGLOG(("Authorize:: dc_ind = [%c]\n", cDCInd));
+				if (cDCInd == PD_ADJ_TYPE_CREDIT) {
+					PutField_CString(hContext, "amount_type", PD_CR);
+				} else if (cDCInd == PD_ADJ_TYPE_DEBIT) {
+					PutField_CString(hContext, "amount_type", PD_DR);
+				}
+			} else {
+DEBUGLOG(("Authorize:: BOOLAdjustment: ProcessPartyBalance failed to get dc_ind\n"));
+ERRLOG("TxnOmtByUsBAD:: Authorize:: BOOLADjustment: ProcesspartyBalance failed to get dc_ind\n");
+				iRet = PD_ERR;
+			}
+		}
+	}
+
+   if (GetField_Int(hContext, "do_logging", &iTmp)) {
+DEBUGLOG(("Authorize:: do_logging [%d]\n", iTmp));
+		if (iTmp != PD_ADD_LOG) {
+			/* nothing */
+		} else {
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call DBOLTransaction: AddDetail\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "AddDetail");
+				if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+					iRet = INT_ERR;
+				}
+			}
+
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call DBOLTransaction: UpdateDetail\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "UpdateDetail");
+				if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+					iRet = INT_ERR;
+				}
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+DEBUGLOG(("Authorize:: PHDATE = [%s]\n", csTmp));
+			PutField_CString(hContext, "txn_date", csTmp);
+		}
+
+		if (GetField_CString(hContext, "baid_bank_code", &csTmp)) {
+DEBUGLOG(("Authorize:: bank_code = [%s]\n", csTmp));
+			PutField_CString(hContext, "bank_code", csTmp);
+		}
+
+		if (GetField_CString(hContext, "baid_bank_acct_num", &csTmp)) {
+DEBUGLOG(("Authorize:: bank_acct_num = [%s]\n", csTmp));
+			PutField_CString(hContext, "bank_acct_num", csTmp);
+		}
+
+		PutField_CString(hContext, "desc", "BAID Adjustment");
+DEBUGLOG(("Authorize:: Call DBOLTxnPspDetail: Add\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+		if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call DBOLTxnPspDetail: Update\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Update");
+		if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Call BOOLTxnElements: AddTxnAmtElement\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "AddTxnAmtElement");
+		if ((unsigned long)(*BOObjPtr)(hContext) != PD_OK) {
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		PutField_CString(hContext, "amount_type", PD_DR);
+DEBUGLOG(("Authorize:: Call BOOLTxnElements: AddTxnFeeElements\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "AddTxnFeeElements");
+		if ((unsigned long)(*BOObjPtr)(hContext) != PD_OK) {
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet != PD_OK) {
+		RemoveField_CString(hContext, "sub_status");
+		RemoveField_CString(hContext, "approval_date");
+		RemoveField_CString(hContext, "approval_timestamp");
+	}
+
+
+	FREE_ME(csTxnCountry);
+DEBUGLOG(("TxnOmtByUsBAD Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+}

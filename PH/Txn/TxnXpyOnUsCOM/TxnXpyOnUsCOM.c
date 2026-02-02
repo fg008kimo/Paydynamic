@@ -1,0 +1,127 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/09/29              Cody Chan
+no hard code txn_ccy				   2011/01/27		   LokMan Chow
+mark MSI txn_code to map pay_method 003		   2013/01/28              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnXpyOnUsCOM.h"
+#include "myrecordset.h"
+
+char cDebug;
+
+void TxnXpyOnUsCOM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+OBJPTR(BO);
+OBJPTR(DB);
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csPtr = NULL;
+	char	csClearTextKey[PD_KEY_LEN +1];
+	//char	csKEY[PD_KEY_LEN /2 +1];
+
+DEBUGLOG(("TxnXpyOnUsCOM: Authroize()\n"));	
+/* field checking */
+
+	if ( iRet == PD_OK) {
+/* Check Merchant */
+ 		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("BOMerchant->GetMerchantDetail = [%d]\n",iRet));
+
+	}
+	if ( iRet == PD_OK) {
+/* Check Merchant Sign*/
+ 		BOObjPtr = CreateObj(BOPtr,"BOSecurity","VerifyXpaySign");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("BOSecurity->VerifyXpaySign = [%d]\n",iRet));
+
+	}
+
+	if ( iRet == PD_OK) {
+/* GenerateMAC for Merchant*/
+		if (GetField_CString(hContext,"merchant_key",&csPtr)) {
+DEBUGLOG(("Merchant Key = [%s]\n",csPtr));
+			memcpy(csClearTextKey,csPtr,PD_KEY_LEN);
+			csClearTextKey[PD_KEY_LEN] = '\0';
+DEBUGLOG(("Clear Text Merchant Key = [%s]\n",csClearTextKey));
+
+		} else {
+DEBUGLOG(("Merchant Key Not Found\n"));
+		}
+ //		BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateMAC");
+//		PutField_CString(hRequest,"mac","abcdef1234567890");
+//DEBUGLOG(("BOSecurity->GenerateMAC = [%d]\n",iRet));
+
+	}
+	if (iRet == PD_OK) {
+/* txn country */
+
+/*
+		if (GetField_CString(hRequest,"txn_ccy",&csPtr)) {
+DEBUGLOG(("txn_ccy = [%s]\n",csPtr));
+			if(strncmp(csPtr,"TWD",PD_CCY_ID_LEN)==0){
+				PutField_CString(hRequest,"txn_country","TW");
+			}
+			else if(strncmp(csPtr,"CNY",PD_CCY_ID_LEN)==0){
+				PutField_CString(hRequest,"txn_country","CN");
+			}
+			else
+				PutField_CString(hRequest,"txn_country","TW");
+		}
+		else {
+DEBUGLOG(("txn_ccy is missing*************\n"));
+		}
+*/
+
+/* currency code */
+//		PutField_CString(hRequest,"txn_ccy","TWD");
+/* pay_method */
+		if (GetField_CString(hRequest,"txn_ccy",&csPtr)) {
+			if(strncmp(csPtr,"TWD",PD_CCY_ID_LEN)==0){
+       	 			PutField_CString(hRequest,"pay_method","002");
+       	 			PutField_CString(hContext,"selected_pay_method","002");
+			}
+			else if(strncmp(csPtr,"CNY",PD_CCY_ID_LEN)==0){
+
+				if (GetField_CString(hContext, "txn_code", &csPtr)) {
+					if (strcmp(csPtr, "MSI") == 0) {
+       	 					PutField_CString(hRequest,"pay_method","003");
+						PutField_CString(hContext,"selected_pay_method","003");
+					} else {
+       	 					PutField_CString(hRequest,"pay_method","001");
+	       	 				PutField_CString(hContext,"selected_pay_method","001");
+					}
+				} else {
+       	 				PutField_CString(hRequest,"pay_method","001");
+       	 				PutField_CString(hContext,"selected_pay_method","001");
+				}
+			}
+		}
+/* show_paypage */
+        	PutField_Char(hRequest,"show_paypage",'N');
+DEBUGLOG(("show_paypage = N\n"));
+
+	}
+
+DEBUGLOG(("exit = [%d]\n",iRet));
+
+	return iRet;
+}

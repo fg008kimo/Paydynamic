@@ -1,0 +1,98 @@
+#ifndef _EOD_OFFSYS_GLPOST_H
+#define _EOD_OFFSYS_GLPOST_H
+#include "common.h"
+
+#define	IMPORT_MAX_FIELD		20
+#define	IMPORT_FIELD_LEN		100
+
+#define	IMPORT_MAX_KEY			100
+#define	IMPORT_MAX_KEY_LEN	200
+
+#define HEADER_ITEM_SIZE		6
+#define DETAIL_ITEM_SIZE		19
+
+#define	IDX_HD_TXN_CNT			0
+#define	IDX_HD_TXN_AMT			1
+#define	IDX_HD_FEE_AMT			2
+#define	IDX_HD_NET_AMT			3
+#define	IDX_HD_MU_AMT				4
+#define	IDX_HD_CHECKSUM			5
+
+#define	IDX_TXN_TYPE				0
+#define	IDX_COUNTRY_CODE		1
+#define	IDX_TXN_DATE				2
+#define	IDX_TXN_ID					3
+#define	IDX_MERCHANT				4
+#define	IDX_PSP							5
+#define	IDX_TXN_AMT_CCY			6
+#define	IDX_TXN_AMT					7
+#define	IDX_TXN_FEE_CCY			8
+#define	IDX_TXN_FEE					9
+#define	IDX_NET_AMT_CCY			10
+#define	IDX_NET_AMT					11
+#define	IDX_MU_AMT_CCY			12
+#define	IDX_MU_AMT					13
+#define	IDX_PSP_AMT_CCY			14
+#define	IDX_PSP_AMT					15
+#define	IDX_TXN_STATUS			16
+#define	IDX_DTL_CHECKSUM		17
+#define	IDX_MERCHANT_REF		18
+/*
+
+#define         PD_TYPE_PSP_AMT "PSP_AMT"
+#define         PD_TYPE_PSP_FEE "PSP_COST"
+#define         PD_TYPE_TXN_AMT "TXN_AMT"
+#define         PD_TYPE_NET_AMT "NET_AMT"
+#define         PD_TYPE_RES_AMT "RES_AMT"
+#define         PD_TYPE_M_MARKUP        "M_MU_FEE"
+#define         PD_TYPE_C_MARKUP        "C_MU_FEE"
+#define         PD_TYPE_M_FEE   "M_FEE"
+#define         PD_TYPE_C_FEE   "C_FEE"
+#define         PD_TYPE_M_XU    "M_FXMU_FEE"
+#define         PD_TYPE_C_XU    "C_FXMU_FEE"
+
+*/
+#define HASHKEY_IDX_SIZE								9
+#define HASHKEY_IDX_TXN_TYPE 						0
+#define HASHKEY_IDX_AMT_TYPE 						1	
+#define HASHKEY_IDX_TXN_DATE 						2
+#define HASHKEY_IDX_TXN_STATUS 					3
+#define HASHKEY_IDX_COUNTRY_CODE 				4
+#define HASHKEY_IDX_PARTY_TYPE					5
+#define HASHKEY_IDX_PARTY_ID 						6
+#define HASHKEY_IDX_AMT_CCY 						7
+#define HASHKEY_IDX_CR_IND 						8
+#define HASHKEY_IDX_TXN_CNT 						9
+
+#define DSP_TYPE	"deposit"
+#define WTD_TYPE	"payout"
+#define WTDG_TYPE	"payout_psp"
+#define MST_TYPE	"settlement"
+
+#define MAX_TXN_TYPE_CNT 5
+#define MAX_TXN_TYPE_LEN 20
+
+#define DSP_APPROVE_STATUS	"A"
+#define DSP_REJFECT_STATUS	"R"
+
+#define OFFLINE_DATA_FOLDER	"offline_system"
+#define OFFLINE_DATA_FILE_PREFIX	"offline"
+
+#define OFFLINE_PRODUCT_CODE	"OFF"
+
+#define OFFLINE_CHECKSUM_LEN	8
+
+#define	OFFLINE_RMB_CCY		"RMB"
+
+#define OFFLINE_COUNTRY_CODE	"CN"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

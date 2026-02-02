@@ -1,0 +1,1527 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/22              Samson Fung
+Restructure BOCrrJnl and DBJnlHeader		   2013/01/29		   Stan Poon
+PSP SETTLEMENT					   2013/03/13		   Stan Poon
+MOBILE FX GAIN/LOSS				   2013/03/26		   Stan Poon
+FX MAPPING					   2013/09/19		   Stan Poon
+Add IsAutoPostJnl in Build			   2014/01/14              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOCrrJnl.h"
+
+char	cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOCrrJnl(char	cdebug)
+{
+	cDebug = cdebug;
+}
+
+int clearJournal(char* csType, recordset_t* rsJnl, const char* csPostUser); 
+int GetFXConvertAmt(char *csTxnDate, char *csFromCcy, char *csToCcy, double dReqAmt, double* dConvertAmt);
+int postSingleJournal(char* csType, recordset_t* rsJnl, const char* csPostUser);
+int postMultipleJournal(char* csType, recordset_t* rsJnl, const char* csPostUser);
+
+int AddChangeLog(const char* csJnlNo, const char* csChangeAction, const char* csChangeUser)
+{
+	hash_t* hChangeLog;
+	hChangeLog = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hChangeLog,0);
+	char cJnlStatus;
+	int iRet; 
+	
+	// Get the latest Journal status
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetJnlStatus");
+	iRet = (unsigned long)((*DBObjPtr)(csJnlNo, &cJnlStatus));
+	
+	// Add Change Log
+DEBUGLOG(("BOCrrJnl::AddChangeLog(): Start adding change log\n"));
+	
+	PutField_CString(hChangeLog,"jnl_id",csJnlNo);
+DEBUGLOG(("BOCrrJnl::AddChangeLog(): jnl_id : [%s]\n", csJnlNo));
+	
+	PutField_Char(hChangeLog,"jnl_status",cJnlStatus);
+DEBUGLOG(("BOCrrJnl::AddChangeLog(): jnl_status : [%c]\n", cJnlStatus));
+	
+	PutField_CString(hChangeLog,"change_action",csChangeAction);
+DEBUGLOG(("BOCrrJnl::AddChangeLog(): change_action : [%s]\n", csChangeAction));
+	
+	PutField_CString(hChangeLog,"change_user",csChangeUser);	
+DEBUGLOG(("BOCrrJnl::AddChangeLog(): change_user : [%s]\n", csChangeUser));		
+	
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlChangeLog","Add");
+	iRet = (unsigned long) ((*DBObjPtr)(hChangeLog));						
+
+	hash_destroy(hChangeLog);
+	FREE_ME(hChangeLog);
+	
+	if(iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::AddChangeLog()->Log Failed\n"));					
+	} else {					
+DEBUGLOG(("BOCrrJnl::AddChangeLog()->Log Success\n"));
+	}
+	
+	return iRet;
+}
+
+int IsClosedMonth(const char* csTbYear, const char* csTbMonth, int* closed)
+{
+	int iRet = PD_OK;
+
+	hash_t	*hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec,0);
+
+DEBUGLOG(("BOCrrJnl::IsClosedMonth(): csTbYear = [%s]\n",csTbYear));
+DEBUGLOG(("BOCrrJnl::IsClosedMonth(): csTbMonth = [%s]\n",csTbMonth));
+
+	DBObjPtr = CreateObj(DBPtr,"DBCrrMonthEnd","Get");
+	iRet = (unsigned long) ((*DBObjPtr)(csTbYear, csTbMonth, hRec));		
+
+	if (iRet == PD_OK) {
+		// closed //
+		if (GetField_Int(hRec,"closed", closed)) {
+DEBUGLOG(("BOCrrJnl::IsClosedMonth(): closed = [%d]\n",*closed));
+		} else {
+DEBUGLOG(("BOCrrJnl::IsClosedMonth(): Undetermined for [%s-%s]", csTbYear, csTbMonth));
+			*closed = 0;
+		}
+	}
+	
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+
+	return iRet;
+}
+
+int Approve(hash_t* hJnlHdr)
+{
+	int	iRet = PD_OK;
+	char*	csJnlId;
+	char* 	csApproveUser;
+	char	csAccYear[PD_ACC_YEAR_LEN+1];	
+	char 	csAccMonth[PD_ACC_MONTH_LEN+1];
+	int		closed=0;
+
+		// jnl_id //
+	if (GetField_CString(hJnlHdr,"jnl_id",&csJnlId)) {
+DEBUGLOG(("BOCrrJnl::Approve(): jnl_id = [%s]\n",csJnlId));
+	}
+		// approve_user //
+	if (GetField_CString(hJnlHdr,"approve_user",&csApproveUser)) {
+DEBUGLOG(("BOCrrJnl::Approve(): approve_user = [%s]\n",csApproveUser));
+	}
+	
+	// Get Accounting Year and Month
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetJnlAccYearMonth");
+	iRet = (unsigned long) ((*DBObjPtr)(csJnlId, csAccYear, csAccMonth));	
+	if (iRet==PD_OK) {
+DEBUGLOG(("BOCrrJnl::Approve(): csAccYear = [%s]\n",csAccYear));
+DEBUGLOG(("BOCrrJnl::Approve(): csAccMonth = [%s]\n",csAccMonth));
+	} else {
+DEBUGLOG(("BOCrrJnl::Approve(): GetJnlAccYearMonth Error\n"));
+		return iRet;
+	}
+	
+	// Check Accounting month closing status
+	iRet = IsClosedMonth(csAccYear, csAccMonth, &closed);
+	if (iRet==PD_OK) {
+		if (closed == 1) {
+DEBUGLOG(("BOCrrJnl::Approve(): Failed to approve, accounting month had been closed on [%s-%s].\n", csAccYear, csAccMonth));
+			return PD_ERR;
+		}
+	} else {
+DEBUGLOG(("BOCrrJnl::Approve(): IsClosedMonth Error\n"));
+		return iRet;
+	}
+	
+	// Approve Journal Header
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Approve");
+	iRet = (unsigned long) ((*DBObjPtr)(hJnlHdr));			
+
+	if(iRet==PD_OK) {		
+DEBUGLOG(("BOCrrJnl::Approve(): Approve Success\n"));
+	} else {
+DEBUGLOG(("BOCrrJnl::Approve(): Approve Failed\n"));	
+	}
+
+	if (iRet == PD_OK) {		
+		iRet = AddChangeLog(csJnlId, "Approve", csApproveUser);
+	}	
+		
+DEBUGLOG(("BOCrrJnl::Approve(): Normal exit iret = [%d]\n",iRet));	
+	return iRet;
+}
+
+int Add(hash_t *hJnlHdr, recordset_t* rsJnlDtl)
+{
+	int iRet = PD_OK;
+	hash_t	*hJnlDtl;
+	hash_t *hBaseCcy;
+	
+	char csAccYear[PD_ACC_YEAR_LEN+1];	
+	char csAccMonth[PD_ACC_MONTH_LEN+1];
+	char*	csJnlNo = NULL;
+	int iLineNo;	
+	int iJnlTypeID;
+	int iMnlApproval = 0;
+	char* csTxnCcy;
+	char* csBaseCcy;
+	double dFxRate;
+	double dTxnAmt;
+	double dConvertAmt;
+	char* csCreateUser;
+	char* csTxnDate;
+	char cStatus;
+	int iDisabled = 0;
+
+	recordset_t *rsBaseCcy;
+	rsBaseCcy = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rsBaseCcy,0);	
+	
+	// Get All Base Currencies for conversion
+	DBObjPtr = CreateObj(DBPtr,"DBCrrBaseCurrency","GetAllCcy");
+	iRet = (unsigned long)((*DBObjPtr)(rsBaseCcy));
+
+		// jnl_id //
+	if (GetField_CString(hJnlHdr,"jnl_id",&csJnlNo)) {
+DEBUGLOG(("BOCrrJnl::Add(): jnl_id = [%s]\n",csJnlNo));
+	}
+
+	/* jnl_type_id */
+	if (GetField_Int(hJnlHdr,"jnl_type_id",&iJnlTypeID)) {
+DEBUGLOG(("BOCrrJnl::Add(): jnl_type_id = [%d]\n",iJnlTypeID));
+	}
+
+		// txn_date //
+	if (GetField_CString(hJnlHdr,"txn_date",&csTxnDate)) {
+DEBUGLOG(("BOCrrJnl::Add(): txn_date = [%s]\n",csTxnDate));
+	}
+
+	// Set default status to PENDING
+	cStatus = PD_JNL_PENDING;
+	PutField_Char(hJnlHdr,"status",cStatus);
+	
+	// Determine the journal status if not supplied
+	//if (!GetField_Char(hJnlHdr,"status",&cStatus)) {
+		
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlType","GetMnlApproval");
+		iRet = (unsigned long) ((*DBObjPtr)(iJnlTypeID, &iMnlApproval));	
+		
+		/*
+		if (iRet == PD_OK) {
+			if (iMnlApproval)
+				cStatus = PD_JNL_PENDING;
+			else
+				cStatus = PD_JNL_APPROVED;
+		} else {
+			cStatus = PD_JNL_PENDING;
+		}
+		*/
+		
+	//}
+	
+		
+DEBUGLOG(("BOCrrJnl::Add(): status = [%c]\n",cStatus));
+
+		// create_user //
+	if (GetField_CString(hJnlHdr,"create_user",&csCreateUser)) {
+DEBUGLOG(("BOCrrJnl::Add(): create_user = [%s]\n",csCreateUser));
+	}	
+
+	iRet = check_valid_date(csTxnDate);
+	if (iRet != PD_OK) {
+DEBUGLOG(("BOCrrJnl::Add(): Invalid transaction date, csTxnDate = [%s]\n",csTxnDate));
+	} else {
+		memcpy(csAccYear, &csTxnDate[0], PD_ACC_YEAR_LEN);
+		csAccYear[PD_ACC_YEAR_LEN] = '\0';
+DEBUGLOG(("BOCrrJnl::Add(): csAccYear = [%s]\n",csAccYear));
+		PutField_CString(hJnlHdr,"acc_year",csAccYear);	
+
+		memcpy(csAccMonth, &csTxnDate[PD_ACC_YEAR_LEN], PD_ACC_MONTH_LEN);
+		csAccMonth[PD_ACC_MONTH_LEN] = '\0';
+DEBUGLOG(("BOCrrJnl::Add(): csAccMonth = [%s]\n",csAccMonth));
+		PutField_CString(hJnlHdr,"acc_month",csAccMonth);			
+	}
+	
+	
+	if (iRet == PD_OK) {
+
+		// Insert Journal Header
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Add");
+		iRet = (unsigned long) ((*DBObjPtr)(hJnlHdr));	
+	
+		if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Add(): Adding header succeed\n"));
+	
+DEBUGLOG(("BOCrrJnl::Add(): Start looping RS...\n"));
+			hJnlDtl = RecordSet_GetFirst(rsJnlDtl);
+			
+			while (hJnlDtl && iRet == PD_OK) {
+			
+				if (GetField_CString(hJnlDtl,"currency_id",&csTxnCcy)) {
+DEBUGLOG(("BOCrrJnl::Add(): currency_id = [%s]\n", csTxnCcy));
+				}
+	
+				if (GetField_Double(hJnlDtl,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOCrrJnl::Add(): txn_amt = [%f]\n", dTxnAmt));
+				}
+	
+				// Generate Line No.
+				DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","GetNextLineNo");
+				iLineNo = (unsigned long)((*DBObjPtr)(csJnlNo));
+				
+DEBUGLOG(("BOCrrJnl::Add(): JnlId = [%s], line_no (generated) = [%d]\n",csJnlNo, iLineNo));
+				
+				PutField_CString(hJnlDtl,"jnl_id",csJnlNo);
+				PutField_Int(hJnlDtl,"line_no",iLineNo);
+				PutField_CString(hJnlDtl,"create_user",csCreateUser);
+				
+				// Insert Journal Details
+				DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","Add");
+				iRet = (unsigned long) ((*DBObjPtr)(hJnlDtl));			
+		
+				if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Add(): Adding detail succeed\n"));
+					
+					GetField_Int(hJnlDtl,"disabled",&iDisabled);
+	
+					// Insert Converted Details
+					hBaseCcy = RecordSet_GetFirst(rsBaseCcy);
+				
+					while (hBaseCcy) {
+						if (GetField_CString(hBaseCcy,"ccy",&csBaseCcy)) {
+							if (strcmp(csBaseCcy,csTxnCcy)) {
+								// Get FX rate
+								BOObjPtr = CreateObj(DBPtr,"BOExchange","GetExternalExchangeRateByDate");
+								dFxRate = 0.0;
+								dConvertAmt = 0.0;
+								if ((*BOObjPtr)(csTxnDate,csTxnCcy,csBaseCcy,dTxnAmt,&dFxRate,&dConvertAmt) == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Add(): ex rate = [%lf] ex amt = [%lf]\n",dFxRate,dConvertAmt));
+									
+									DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetailAmt","Add");
+									iRet = (unsigned long)(*DBObjPtr)(csJnlNo, iLineNo, csBaseCcy, dFxRate, dConvertAmt,	iDisabled, csCreateUser);
+			
+									if (iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::Add(): Failed at converted detail [%d-%s]\n",iLineNo,csBaseCcy));
+										break;
+									} else {
+DEBUGLOG(("BOCrrJnl::Add(): Success at converted detail [%d-%s]\n",iLineNo,csBaseCcy));
+									}
+								} else {
+DEBUGLOG(("BOCrrJnl::Add(): Fail to get FX rate at converted detail [%d-%s]\n",iLineNo,csBaseCcy));
+									break;
+								}
+							}
+						}
+						hBaseCcy = RecordSet_GetNext(rsBaseCcy);
+					} // while hBaseCcy
+						
+					FREE_ME(hBaseCcy);
+				}
+			
+				hJnlDtl = RecordSet_GetNext(rsJnlDtl);	
+			}			
+	
+			if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Add(): Succeed adding detail\n"));
+			} else {
+DEBUGLOG(("BOCrrJnl::Add(): Error adding detail\n"));
+			}
+
+			if (iRet == PD_OK) {		
+				iRet = AddChangeLog(csJnlNo, "Add", csCreateUser);
+			}
+
+			if (iRet == PD_OK) {
+				if (iMnlApproval==0) {
+					// Set approval user
+					PutField_CString(hJnlHdr,"approve_user",csCreateUser);
+DEBUGLOG(("BOCrrJnl::Add(): approve_user = [%s]\n",csCreateUser));
+		
+					// Approve Journal Details		
+					iRet = Approve(hJnlHdr);
+		
+					if(iRet!=PD_OK) {					
+DEBUGLOG(("BOCrrJnl::Add()->Approve Failed\n"));					
+					} else {			
+DEBUGLOG(("BOCrrJnl::Add()->Approve Success\n"));
+					}			
+				}
+			}
+		} else {
+DEBUGLOG(("BOCrrJnl::Add(): Error adding header\n"));
+		}
+	}
+	
+	/*
+	if (iRet == PD_OK) {		
+		iRet = AddChangeLog(csJnlNo, "Add", csCreateUser);
+	}
+	*/
+		
+	RecordSet_Destroy(rsBaseCcy);	
+
+DEBUGLOG(("BOCrrJnl::Add(): Normal exit iret = [%d]\n",iRet));
+	return iRet;
+}
+
+int Update(hash_t *hJnlHdr, recordset_t* rsJnlDtl)
+{
+	int iRet = PD_OK;
+	hash_t	*hJnlDtl;
+	hash_t 	*hBaseCcy;
+
+	char csAccYear[PD_ACC_YEAR_LEN+1];	
+	char csAccMonth[PD_ACC_MONTH_LEN+1];	
+	char*	csJnlNo = NULL;
+	int iLineNo;	
+	char* csTxnCcy;
+	char* csBaseCcy;
+	double dFxRate;
+	double dTxnAmt;
+	double dConvertAmt;
+	char* csUpdateUser;
+	char* csTxnDate;
+	char cStatus;
+	int iDisabled = 0;
+	char cDBAction;
+	
+	recordset_t *rsBaseCcy;
+	rsBaseCcy = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rsBaseCcy,0);	
+	
+	// Get All Base Currencies for conversion
+	DBObjPtr = CreateObj(DBPtr,"DBCrrBaseCurrency","GetAllCcy");
+	iRet = (unsigned long)((*DBObjPtr)(rsBaseCcy));
+
+		// jnl_id //
+	if (GetField_CString(hJnlHdr,"jnl_id",&csJnlNo)) {
+DEBUGLOG(("BOCrrJnl::Update(): jnl_id = [%s]\n",csJnlNo));
+	}
+
+		// txn_date //
+	if (GetField_CString(hJnlHdr,"txn_date",&csTxnDate)) {
+DEBUGLOG(("BOCrrJnl::Update(): txn_date = [%s]\n",csTxnDate));
+	}
+
+		// status
+	if (GetField_Char(hJnlHdr,"status",&cStatus)) {
+DEBUGLOG(("BOCrrJnl::Update(): status = [%c]\n",cStatus));
+	}
+
+		// update_user //
+	if (GetField_CString(hJnlHdr,"update_user",&csUpdateUser)) {
+DEBUGLOG(("BOCrrJnl::Update(): update_user = [%s]\n",csUpdateUser));
+	}	
+
+	iRet = check_valid_date(csTxnDate);
+	if (iRet != PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update(): Invalid transaction date, csTxnDate = [%s]\n",csTxnDate));
+	} else {
+		memcpy(csAccYear, &csTxnDate[0], PD_ACC_YEAR_LEN);
+		csAccYear[PD_ACC_YEAR_LEN] = '\0';
+		PutField_CString(hJnlHdr,"acc_year",csAccYear);	
+
+		memcpy(csAccMonth, &csTxnDate[PD_ACC_YEAR_LEN], PD_ACC_MONTH_LEN);
+		csAccMonth[PD_ACC_MONTH_LEN] = '\0';
+		PutField_CString(hJnlHdr,"acc_month",csAccMonth);			
+	}
+	
+	if (iRet == PD_OK) {
+
+		// Insert Journal Header
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Update");
+		iRet = (unsigned long) ((*DBObjPtr)(hJnlHdr));	
+	
+		if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update()(): Updating header succeed\n"));
+	
+DEBUGLOG(("Start looping RS...\n"));
+			hJnlDtl = RecordSet_GetFirst(rsJnlDtl);
+			
+			while (hJnlDtl && iRet == PD_OK) {
+	
+				if (GetField_Char(hJnlDtl,"dbaction",&cDBAction)) {
+DEBUGLOG(("BOCrrJnl::Update(): dbaction = [%c]\n", cDBAction));
+				}
+			
+				if (cDBAction == PD_JNL_ADD) {
+			
+					if (GetField_CString(hJnlDtl,"currency_id",&csTxnCcy)) {
+DEBUGLOG(("BOCrrJnl::Update(): currency_id = [%s]\n", csTxnCcy));
+					}
+		
+					if (GetField_Double(hJnlDtl,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOCrrJnl::Update(): txn_amt = [%f]\n", dTxnAmt));
+					}
+		
+					// Generate Line No.
+					DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","GetNextLineNo");
+					iLineNo = (unsigned long)((*DBObjPtr)(csJnlNo));
+					
+DEBUGLOG(("BOCrrJnl::Update(): JnlId = [%s], line_no (generated) = [%d]\n",csJnlNo, iLineNo));
+					
+					PutField_CString(hJnlDtl,"jnl_id",csJnlNo);
+					PutField_Int(hJnlDtl,"line_no",iLineNo);
+					PutField_CString(hJnlDtl,"create_user",csUpdateUser);
+					
+					// Insert Journal Details
+					DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","Add");
+					iRet = (unsigned long) ((*DBObjPtr)(hJnlDtl));			
+			
+					if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update(): Adding detail succeed\n"));
+						
+						GetField_Int(hJnlDtl,"disabled",&iDisabled);
+		
+						// Insert Converted Details
+						hBaseCcy = RecordSet_GetFirst(rsBaseCcy);
+					
+						while (hBaseCcy) {
+							if (GetField_CString(hBaseCcy,"ccy",&csBaseCcy)) {
+								if (strcmp(csBaseCcy,csTxnCcy)) {
+									// Get FX rate
+									BOObjPtr = CreateObj(DBPtr,"BOExchange","GetExternalExchangeRateByDate");
+									dFxRate = 0.0;
+									dConvertAmt = 0.0;
+									if ((*BOObjPtr)(csTxnDate,csTxnCcy,csBaseCcy,dTxnAmt,&dFxRate,&dConvertAmt) == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update(): ex rate = [%lf] ex amt = [%lf]\n",dFxRate,dConvertAmt));
+										
+										DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetailAmt","Add");
+										iRet = (unsigned long)(*DBObjPtr)(csJnlNo, iLineNo, csBaseCcy, dFxRate, dConvertAmt, iDisabled, csUpdateUser);
+				
+										if (iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update(): Failed at converted detail [%d-%s]\n",iLineNo,csBaseCcy));
+											break;
+										} else {
+DEBUGLOG(("BOCrrJnl::Update(): Success at converted detail [%d-%s]\n",iLineNo,csBaseCcy));
+										}
+									} else {
+DEBUGLOG(("BOCrrJnl::Update(): Fail to get FX rate at converted detail [%d-%s]\n",iLineNo,csBaseCcy));
+										break;
+									}
+								}
+							}
+							hBaseCcy = RecordSet_GetNext(rsBaseCcy);
+						} // while hBaseCcy
+							
+						FREE_ME(hBaseCcy);
+					}
+				} else if (cDBAction == PD_JNL_UPDATE) {
+	
+						if (GetField_Int(hJnlDtl,"line_no",&iLineNo)) {
+DEBUGLOG(("BOCrrJnl::Update(): line_no = [%d]\n", iLineNo));
+						}
+					
+						PutField_CString(hJnlDtl,"jnl_id",csJnlNo);
+						PutField_Int(hJnlDtl,"line_no",iLineNo);
+						PutField_CString(hJnlDtl,"update_user",csUpdateUser);				
+				
+						// Update Journal Details
+						DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","Update");					
+						iRet = (unsigned long) ((*DBObjPtr)(hJnlDtl));	
+	
+						if(iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update(): Update Failed\n"));
+							iRet = PD_ERR;
+							break;
+						} else {
+DEBUGLOG(("BOCrrJnl::Update():Update Success\n"));
+									
+DEBUGLOG(("BOCrrJnl::Update():Update Start\n"));						
+								// Update Converted Amt
+								DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetailAmt","UpdateByLine");
+								iRet = (unsigned long)((*DBObjPtr)(csJnlNo, iLineNo, iDisabled, csUpdateUser ));
+	
+								if (iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update():Update Failed at detail [%s-%d]\n",csJnlNo,iLineNo));
+									iRet = PD_ERR;
+									break;
+								} else {
+DEBUGLOG(("BOCrrJnl::Update():Update Success at detail [%s-%d]\n",csJnlNo,iLineNo));
+								}					
+						}				
+				}
+				
+				hJnlDtl = RecordSet_GetNext(rsJnlDtl);	
+			}			
+	
+			if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrJnl::Update(): Succeed updating detail\n"));				
+			} else {
+DEBUGLOG(("BOCrrJnl::Update(): Error updating detail\n"));
+			}
+
+			if (iRet == PD_OK) {		
+				iRet = AddChangeLog(csJnlNo, "Update", csUpdateUser);
+			}
+
+			if (iRet == PD_OK) {
+				if (cStatus == PD_JNL_APPROVED) {
+					// Set approval user
+					PutField_CString(hJnlHdr,"approve_user",csUpdateUser);
+		
+					// Approve Journal Details		
+					iRet = Approve(hJnlHdr);
+		
+					if (iRet != PD_OK) {						
+DEBUGLOG(("BOCrrJnl::Update()->Approve Failed\n"));					
+					} else {					
+DEBUGLOG(("BOCrrJnl::Update()->Approve Success\n"));
+					}			
+				}
+			}
+	
+		} else {
+DEBUGLOG(("BOCrrJnl::Update(): Error updating header\n"));
+		}
+	}
+	/*
+	if (iRet == PD_OK) {		
+		iRet = AddChangeLog(csJnlNo, "Update", csUpdateUser);
+	}
+	*/
+	
+	RecordSet_Destroy(rsBaseCcy);	
+
+DEBUGLOG(("BOCrrJnl::Update(): Normal exit iret = [%d]\n",iRet));
+	return iRet;
+}
+
+int Delete(hash_t* hJnlHdr)
+{
+	int	iRet = PD_OK;
+	
+	char*	csJnlId;
+	char* csUpdateUser;
+	
+		// jnl_id //
+	if (GetField_CString(hJnlHdr,"jnl_id",&csJnlId)) {
+DEBUGLOG(("BOCrrJnl::Delete(): jnl_id = [%s]\n",csJnlId));
+	}
+		// update_user //
+	if (GetField_CString(hJnlHdr,"update_user",&csUpdateUser)) {
+DEBUGLOG(("BOCrrJnl::Delete(): update_user = [%s]\n",csUpdateUser));
+	}
+			
+	// Delete Journal Header
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Delete");
+	iRet = (unsigned long) ((*DBObjPtr)(hJnlHdr));			
+
+	if(iRet==PD_OK) {		
+DEBUGLOG(("BOCrrJnl::Delete(): Delete Header Success\n"));
+		
+		// Delete Journal Details
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","Delete");
+		iRet = (unsigned long) ((*DBObjPtr)(hJnlHdr));	
+		
+		if(iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::Delete(): Delete Detail Failed\n"));
+		} else {
+DEBUGLOG(("BOCrrJnl::Delete(): Delete Detail Success\n"));
+
+			// Delete Journal Details Amt
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetailAmt","Delete");
+			iRet = (unsigned long) ((*DBObjPtr)(csJnlId,csUpdateUser));	
+			
+			if(iRet!=PD_OK) {
+DEBUGLOG(("BOCrrJnl::Delete(): Delete Converted Detail Failed\n"));
+			} else {
+DEBUGLOG(("BOCrrJnl::Delete(): Delete Converted Detail Success\n"));		
+			}
+		}	
+	} else {
+DEBUGLOG(("BOCrrJnl::Delete(): Delete Header Failed\n"));	
+	}
+
+	if (iRet == PD_OK) {		
+		iRet = AddChangeLog(csJnlId, "Delete", csUpdateUser);
+	}
+		
+DEBUGLOG(("BOCrrJnl::Delete(): Normal exit iret = [%d]\n",iRet));	
+	return iRet;
+}
+
+int Release(hash_t* hJnlHdr)
+{
+	int	iRet = PD_OK;
+	char*	csJnlId;
+	char* 	csUpdateUser;
+	char	csAccYear[PD_ACC_YEAR_LEN+1];	
+	char 	csAccMonth[PD_ACC_MONTH_LEN+1];
+	int		closed;
+	
+		// jnl_id //
+	if (GetField_CString(hJnlHdr,"jnl_id",&csJnlId)) {
+DEBUGLOG(("BOCrrJnl::Release(): jnl_id = [%s]\n",csJnlId));
+	}
+		// update_user //
+	if (GetField_CString(hJnlHdr,"update_user",&csUpdateUser)) {
+DEBUGLOG(("BOCrrJnl::Release(): update_user = [%s]\n",csUpdateUser));
+	}
+
+	// Get Accounting Year and Month
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetJnlAccYearMonth");
+	iRet = (unsigned long) ((*DBObjPtr)(csJnlId, csAccYear, csAccMonth));	
+	if (iRet==PD_OK) {
+DEBUGLOG(("BOCrrJnl::Release(): csAccYear = [%s]\n",csAccYear));
+DEBUGLOG(("BOCrrJnl::Release(): csAccMonth = [%s]\n",csAccMonth));
+	} else {
+DEBUGLOG(("BOCrrJnl::Release(): GetJnlAccYearMonth Error\n"));
+		return iRet;
+	}
+
+	// Check Accounting month closing status
+	iRet = IsClosedMonth(csAccYear, csAccMonth, &closed);
+	if (iRet==PD_OK) {
+		if (closed == 1) {
+DEBUGLOG(("BOCrrJnl::Release(): Failed to release, accounting month had been closed on [%s-%s].\n", csAccYear, csAccMonth));
+			return PD_ERR;
+		}
+	} else {
+DEBUGLOG(("BOCrrJnl::Release(): IsClosedMonth Error\n"));
+		return iRet;
+	}
+
+	// Release Journal
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Release");
+	iRet = (unsigned long) ((*DBObjPtr)(hJnlHdr));			
+
+	if(iRet==PD_OK) {		
+DEBUGLOG(("BOCrrJnl::Release(): Release Success\n"));			
+	} else {
+DEBUGLOG(("BOCrrJnl::Release(): Release Failed\n"));	
+	}
+
+	if (iRet == PD_OK) {		
+		iRet = AddChangeLog(csJnlId, "Release", csUpdateUser);
+	}	
+		
+DEBUGLOG(("BOCrrJnl::Release(): Normal exit iret = [%d]\n",iRet));	
+	return iRet;
+}
+
+int Build(hash_t* hJnlHdr)
+{
+	int	iRet = PD_OK;
+	char*	csTxnDate;
+	char*	csJnlType;
+	char*	csCountry;
+	char*	csProduct;
+	char* 	csPostUser;
+
+		// txn_date //
+	if (GetField_CString(hJnlHdr,"txn_date",&csTxnDate)) {
+DEBUGLOG(("BOCrrJnl::Build(): txn_date = [%s]\n",csTxnDate));
+	}
+		// country_code //
+	if (GetField_CString(hJnlHdr,"country_code",&csCountry)) {
+DEBUGLOG(("BOCrrJnl::Build(): country_code = [%s]\n",csCountry));
+	}
+		// product_code //
+	if (GetField_CString(hJnlHdr,"product_code",&csProduct)) {
+DEBUGLOG(("BOCrrJnl::Build(): product_code = [%s]\n",csProduct));
+	}	
+		// jnl_type_id //
+	if (GetField_CString(hJnlHdr,"jnl_type_id",&csJnlType)) {
+DEBUGLOG(("BOCrrJnl::Build(): jnl_type_id = [%s]\n",csJnlType));
+	}
+		// post_user //
+	if (GetField_CString(hJnlHdr,"post_user",&csPostUser)) {
+DEBUGLOG(("BOCrrJnl::Build(): post_user = [%s]\n",csPostUser));
+	}
+			
+	recordset_t *rRec;
+	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+	
+	/* Get Clear Journals */
+DEBUGLOG(("Cleanup Journal Begin \n"));
+	recordset_init(rRec,0);
+	if (!strcmp(csJnlType,PD_JLT_PX_ALL)) {
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetAllPostJnl");
+		iRet = (unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct, PD_JLT_POST_ONLINE));
+	} else {
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetPostJnl");
+		iRet = (unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct, csJnlType, PD_JLT_POST_ONLINE));
+	}
+	if (iRet == PD_OK) {
+		iRet = clearJournal("Cleanup Journal", rRec, csPostUser); 
+	} else {
+		iRet = FAILURE;
+	}
+	RecordSet_Destroy(rRec);
+DEBUGLOG(("Cleanup Journal End. Return:[%d]\n",iRet));	
+	
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONDF))) {
+
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlType","IsAutoPostJnl");	
+			if ((unsigned long)((*DBObjPtr)(PD_JLT_PX_ONDF))) {
+				// GetApprovedDeposit
+DEBUGLOG(("GetApprovedDeposit Begin\n"));
+				recordset_init(rRec,0);
+				DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetApprovedDeposit");
+				if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+					iRet = postSingleJournal("Approved Deposit", rRec, csPostUser); 
+				} else {
+					iRet = FAILURE;
+				}
+				RecordSet_Destroy(rRec);
+DEBUGLOG(("GetApprovedDeposit End. Return:[%d]\n",iRet));
+			} else {
+DEBUGLOG(("GetApprovedDeposit NOT IN target [%s]\n", PD_JLT_PX_ONDF));
+			}
+		}
+	}
+
+	/* if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONDV))) {
+			// GetVoidDeposit
+DEBUGLOG(("GetVoidDeposit Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetVoidDeposit");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Void Deposit", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetVoidDeposit End. Return:[%d]\n",iRet));
+		}
+	}*/
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONDA))) {
+			// GetReconDeposit
+DEBUGLOG(("GetReconDeposit Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetReconDeposit");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Reconciled Deposit", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetReconDeposit End. Return:[%d]\n",iRet));
+		}
+	}
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONDAV))) {
+			// GetVoidReconDeposit
+DEBUGLOG(("GetVoidReconDeposit Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetVoidReconDeposit");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Void Reconciled Deposit", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetVoidReconDeposit End. Return:[%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONP))) {
+			// GetApprovedPayout
+DEBUGLOG(("GetApprovedPayout Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetApprovedPayout");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Approved Payout", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetApprovedPayout End. Return:[%d]\n",iRet));
+		}
+	}
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONPA))) {
+			// GetGeneratedPayout
+DEBUGLOG(("GetGeneratedPayout Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetGeneratedPayout");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Generated Payout", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetGeneratedPayout End. Return:[%d]\n",iRet));
+		}
+	}
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONPV))) {
+			// GetVoidApprovedPayout
+DEBUGLOG(("GetVoidApprovedPayout Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetVoidApprovedPayout");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Void Approved Payout", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetVoidApprovedPayout End. Return:[%d]\n",iRet));
+		}
+	}
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONPAV))) {
+			// GetVoidGenPayout
+DEBUGLOG(("GetVoidGenPayout Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetVoidGenPayout");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postSingleJournal("Void Generated Payout", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetVoidGenPayout End. Return:[%d]\n",iRet));
+		}
+	}
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONMS))) {
+			// GetApprovedMst
+DEBUGLOG(("GetApprovedMst Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetApprovedMst");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved Merchant Settlement", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetApprovedMst End. Return:[%d]\n",iRet));
+		}
+	}
+
+	/*
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONMSD))) {
+			// GetDeliveredMst
+DEBUGLOG(("GetDeliveredMst Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetDeliveredMst");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Delivered Merchant Settlement", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetDeliveredMst End. Return:[%d]\n",iRet));
+		}
+	}
+	*/
+
+	/* No Merchant Settlement Void
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONMSV))) {
+			// GetVoidMst
+DEBUGLOG(("GetVoidMst Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetVoidMst");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Void Merchant Settlement", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetVoidMst End. Return:[%d]\n",iRet));
+		}
+	} */
+
+		
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONMTF))) {
+			// GetApprovedMbt
+DEBUGLOG(("GetApprovedMbt Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetApprovedMbt");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved Merchant Balance Transfer", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetApprovedMbt End. Return:[%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_OMBTF))) {
+			// GetMbt2Off
+DEBUGLOG(("GetMbt2Off Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetMbt2Off");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved Merchant Balance Transfer To Offline", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetMbt2Off End. Return:[%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_ONPTR))) {
+			// GetApprovedPbt
+DEBUGLOG(("GetApprovedPbt Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetApprovedPbt");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved PSP Balance Transfer", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetApprovedPbt End. Return:[%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_OPTFP))) {
+			// GetPbt2Off
+DEBUGLOG(("GetPbt2Off Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetPbt2Off");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved PSP Balance Transfer To Offline", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetPbt2Off End. Return:[%d]\n",iRet));
+		}
+	}
+
+	/* if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_OMFI))) {
+			// GetApprovedMFundIn
+DEBUGLOG(("GetApprovedMFundIn Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetApprovedMFundIn");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved Merchant Fund In", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetApprovedMFundIn End. Return:[%d]\n",iRet));
+		}
+	}*/
+
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_FMBTO))) {
+			// GetOff2Mbt
+DEBUGLOG(("GetOff2Mbt Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetOff2Mbt");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved Offline to Merchant Balance Transfer", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetOff2Mbt End. Return:[%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_FPTOP))) {
+			// GetOff2Pbt
+DEBUGLOG(("GetOff2Pbt Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetOff2Pbt");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("Approved Offline to PSP Balance Transfer", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetOff2Pbt End. Return:[%d]\n",iRet));
+		}
+	}
+
+	/*if (iRet == PD_OK) {
+		if ((!strcmp(csJnlType,PD_JLT_PX_ALL)) || (!strcmp(csJnlType,PD_JLT_PX_INTPM))) {
+			// GetPsp2Mb
+DEBUGLOG(("GetPsp2Mb Begin\n"));
+			recordset_init(rRec,0);
+			DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","GetPsp2Mb");
+			if ((unsigned long) ((*DBObjPtr)(rRec, csTxnDate, csCountry, csProduct)) == PD_OK) {
+				iRet = postMultipleJournal("In-Transit PSP to MB", rRec, csPostUser); 
+			} else {
+				iRet = FAILURE;
+			}	
+			RecordSet_Destroy(rRec);
+DEBUGLOG(("GetPsp2Mb End. Return:[%d]\n",iRet));
+		}
+	}*/
+	
+DEBUGLOG(("End getPostTxn and return:[%d]\n",iRet));
+
+	if(iRet==PD_OK) {		
+DEBUGLOG(("BOCrrJnl::Build(): Build Success\n"));			
+	} else {
+DEBUGLOG(("BOCrrJnl::Build(): Build Failed\n"));	
+	}
+
+DEBUGLOG(("BOCrrJnl::Build(): Normal exit iret = [%d]\n",iRet));	
+	return iRet;
+}
+
+int clearJournal(char* csType, recordset_t* rsJnl, const char* csPostUser) 
+{
+	int		iRet = PD_OK;
+	hash_t	*hJnl;
+	char*	csTmp = NULL;
+	
+	hash_t *hJnlHdr;
+	
+	hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+DEBUGLOG(("Start ClearJournal!\n"));
+
+	hJnl = RecordSet_GetFirst(rsJnl);
+	while (hJnl) {
+
+		// jnl_id //
+		if (GetField_CString(hJnl,"v_jnl_id",&csTmp)) {
+DEBUGLOG(("clearJournal: v_jnl_id = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"jnl_id",csTmp);
+		}
+		
+		// update_user //
+DEBUGLOG(("clearJournal: update_user = [%s]\n",csPostUser));
+		PutField_CString(hJnlHdr,"update_user",csPostUser);
+
+		// Delete Journal
+		BOObjPtr = CreateObj(BOPtr,"BOCrrJnl","Delete");
+		iRet = (unsigned long) ((*BOObjPtr)(hJnlHdr));				
+		
+		if(iRet==PD_OK) {
+DEBUGLOG(("clearJournal::CrrJnlHeader->Delete Success\n"));
+
+		} else {
+DEBUGLOG(("clearJournal::CrrJnlHeader->Delete Failed\n"));	
+		}
+
+		hJnl = RecordSet_GetNext(rsJnl);
+	}
+		
+DEBUGLOG(("End clearJournal and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int GetFXConvertAmt(char *csTxnDate, char *csFromCcy, char *csToCcy, double dReqAmt, double* dConvertAmt)
+{
+	char csFxDate[PD_DATE_LEN] = "";
+	char csReqCcy[PD_CCY_ID_LEN];
+	double dFxRate = 0.0;
+	int	iRet = PD_OK;
+	
+	*dConvertAmt = 0.0;
+	strcpy(csFxDate, csTxnDate);
+	
+	// Skip conversion when same currency
+	if (!strcmp(csFromCcy,csToCcy)) {		
+		*dConvertAmt = dReqAmt;
+		return iRet;
+	}
+
+	/* ccy, convert RMB to CNY if needed */
+	if (!strcmp(csFromCcy,PD_CCY_ISO_RMB)) {
+		strcpy(csReqCcy, PD_CCY_ISO_CNY);
+	} else {
+		strcpy(csReqCcy, csFromCcy);
+	}
+	
+	// Convert to HKD and Get FX rate to HKD
+	BOObjPtr = CreateObj(DBPtr,"BOExchange","GetExternalExchangeRateByDate");
+
+	if ((*BOObjPtr)(csFxDate,csReqCcy,csToCcy,dReqAmt,&dFxRate,dConvertAmt) == PD_OK) {
+		//DEBUGLOG(("Converted request amount: ex rate = [%lf], ori amt = [%lf], ex amt = [%lf]\n",dFxRate,dReqAmt, *dConvertAmt));
+		
+	} else {
+DEBUGLOG(("Fail to get FX rate at converted request amount\n"));
+DEBUGLOG(("csFxDate [%s]\n",csFxDate));
+DEBUGLOG(("csReqCcy [%s]\n",csReqCcy));
+DEBUGLOG(("dReqAmt [%lf]\n",dReqAmt));
+DEBUGLOG(("dFxRate [%lf]\n",dFxRate));
+DEBUGLOG(("dConvertAmt [%lf]\n",dConvertAmt));
+DEBUGLOG(("csToCcy [%s]\n",csToCcy));
+		
+		return FAILURE;
+	}
+	
+	return iRet;
+}
+
+int postSingleJournal(char* csType, recordset_t* rsJnl, const char* csPostUser) 
+{
+	int		iRet = PD_OK;
+	//char	*csPtr;
+	hash_t	*hJnl;
+	int 	i = 1;
+	int 	iFound = 0;
+	char*	csTmp = NULL;
+	char* 	csTxnID = NULL;
+	char* 	csTxnDate = NULL;
+	char* 	csProduct = NULL;
+	char* 	csTxnCcy = NULL;
+	char*	csCrInd = NULL;
+	int		iTmp;
+	//char	csFXGL_GL[PD_GL_CODE_LEN] = "";
+	//char	csFXGL_SL[PD_SL_CODE_LEN] = "";
+	char	cTmp;	
+	double	dTmpAmt;
+	int		iJnlTypeID;
+	double	dConvertAmt = 0.0;
+	double	dFxGainLoss = 0.0;
+	char csFxGainLossCcy[PD_CCY_ID_LEN] = "";
+	
+	strcpy(csFxGainLossCcy, PD_CCY_ISO_HKD);
+	
+	hash_t *hJnlHdr;
+	hash_t	*hJnlDtl;
+
+	hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+	// RS for holding jnl details
+	recordset_t *rsJnlDtl;
+	rsJnlDtl = (recordset_t*) malloc (sizeof(recordset_t));	
+	recordset_init(rsJnlDtl,0);
+
+	hJnl = RecordSet_GetFirst(rsJnl);
+	while (hJnl) {
+		if (i == 1) {
+			// Journal Header
+			iFound = 1;
+
+			// Generate jnl_id
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+			csTmp = strdup((*DBObjPtr)());
+DEBUGLOG(("postSingleJournal: jnl_id = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"jnl_id",csTmp);				
+
+			// ref_no //
+			if (GetField_CString(hJnl,"v_th_txn_id",&csTxnID)) {
+DEBUGLOG(("postSingleJournal: ref_no = [%s]\n",csTxnID));
+				PutField_CString(hJnlHdr,"ref_no",csTxnID);
+				
+			}
+
+			// jnl_type_id //
+			if (GetField_Int(hJnl,"v_jnl_type_id",&iJnlTypeID)) {
+DEBUGLOG(("postSingleJournal: jnl_type_id = [%d]\n",iJnlTypeID));
+				PutField_Int(hJnlHdr,"jnl_type_id",iJnlTypeID);
+			}
+
+			// txn_date //
+			if (GetField_CString(hJnl,"v_cr_txn_date",&csTxnDate)) {
+DEBUGLOG(("postSingleJournal: txn_date = [%s]\n",csTxnDate));
+				PutField_CString(hJnlHdr,"txn_date",csTxnDate);			
+			}
+
+			// country_code //
+			if (GetField_CString(hJnl,"v_country",&csTmp)) {
+DEBUGLOG(("postSingleJournal: country_code = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"country_code",csTmp);
+			}
+			
+			// product_code //
+			if (GetField_CString(hJnl,"v_product",&csProduct)) {
+DEBUGLOG(("postSingleJournal: product_code = [%s]\n",csProduct));
+				PutField_CString(hJnlHdr,"product_code",csProduct);
+			}
+			
+			// description //
+DEBUGLOG(("postSingleJournal: description = [%s]\n",csType));
+			PutField_CString(hJnlHdr,"description",csType);
+
+			// status
+			//DEBUGLOG(("postSingleJournal: status = [%c]\n",cStatus));
+			//PutField_Char(hJnlHdr,"status",cStatus);
+			
+			// create_user //
+DEBUGLOG(("postSingleJournal: create_user = [%s]\n",csPostUser));
+			PutField_CString(hJnlHdr,"create_user",csPostUser);			
+			
+
+		}
+		
+		i++;
+		
+		// Journal Detail
+		hJnlDtl = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hJnlDtl,0);
+
+		// GL ID
+		if (GetField_Int(hJnl,"v_gl_id",&iTmp)) {
+DEBUGLOG(("postSingleJournal: v_gl_id = [%d]\n", iTmp));
+			PutField_Int(hJnlDtl,"gl_id",iTmp);
+		}
+		
+		// Currency
+		if (GetField_CString(hJnl,"v_currency",&csTxnCcy)) {
+DEBUGLOG(("postSingleJournal: v_currency = [%s]\n", csTxnCcy));
+			PutField_CString(hJnlDtl,"currency_id",csTxnCcy);
+		}		
+
+		// Txn amt
+		if (GetField_Double(hJnl,"v_txn_amt",&dTmpAmt)) {
+DEBUGLOG(("postSingleJournal: v_txn_amt = [%f]\n", dTmpAmt));
+			PutField_Double(hJnlDtl,"txn_amt",dTmpAmt);
+		}
+
+		// CR ind
+		if (GetField_CString(hJnl,"v_cr_ind",&csCrInd)) {
+			cTmp = csCrInd[0];
+DEBUGLOG(("postSingleJournal: v_cr_ind = [%c]\n", cTmp));
+			PutField_Char(hJnlDtl,"cr_ind",cTmp);
+		}
+
+		// Txn Count
+		if (GetField_Int(hJnl,"v_txn_cnt",&iTmp)) {
+DEBUGLOG(("postSingleJournal: v_txn_cnt = [%d]\n", iTmp));
+			PutField_Int(hJnlDtl,"txn_count",iTmp);
+		} else {
+DEBUGLOG(("postSingleJournal: v_txn_cnt not found\n"));
+		}
+
+		RecordSet_Add(rsJnlDtl,hJnlDtl);
+
+		// Determine the FX gain/loss
+		if (GetFXConvertAmt(csTxnDate, csTxnCcy, csFxGainLossCcy, dTmpAmt, &dConvertAmt)!=PD_OK) {
+DEBUGLOG(("postSingleJournal: Fail to get FX rate at converted request amount\n"));
+			return FAILURE;			
+		}
+		
+		// Credit (+), Debit (-)
+		if (!strcmp(csCrInd,"D"))
+			dFxGainLoss = (double) dFxGainLoss + dConvertAmt;
+		else
+			dFxGainLoss = (double) dFxGainLoss + (dConvertAmt*-1);
+
+		hJnl = RecordSet_GetNext(rsJnl);
+	}
+	
+	if (iFound) {
+		if ((dFxGainLoss != 0.000000) && (dFxGainLoss != -0.000000)) {	
+			if (dFxGainLoss > 0.0f) {
+				// Credit
+				strcpy(csCrInd, "C");
+DEBUGLOG(("postSingleJournal: Credit FxGainLoss for Type [%s] = [%f]\n",csType, dFxGainLoss));
+				
+			} else if ((dFxGainLoss < 0.0f) && ((dFxGainLoss*-1) > 0.0f)) {
+				// Debit
+				strcpy(csCrInd, "D");
+				dFxGainLoss = dFxGainLoss * -1;
+DEBUGLOG(("postSingleJournal: Debit FxGainLoss for Type [%s] = [%f]\n",csType, dFxGainLoss));
+				
+			}
+/*			
+			// Journal Detail for FX Gain/Loss
+DEBUGLOG(("postSingleJournal:FX Gain/Loss GL [%s] and SL [%s]\n",csFXGL_GL,csFXGL_SL));
+			// Get FX Gain/Loss GL ID
+			strcpy(csFXGL_GL, PD_FXGL_GL);
+			
+			if (!strcmp(csProduct,PD_PRODUCT_GATEWAY))
+				strcpy(csFXGL_SL,PD_GATEWAY_FXGL_SL);
+			else if (!strcmp(csProduct,PD_PRODUCT_HYBRID))
+				strcpy(csFXGL_SL,PD_HYBRID_FXGL_SL);
+			else if (!strcmp(csProduct,PD_PRODUCT_OFFLINE))
+				strcpy(csFXGL_SL,PD_OFFLINE_FXGL_SL);
+			else if (!strcmp(csProduct,PD_PRODUCT_MOBILE))
+				strcpy(csFXGL_SL,PD_MOBILE_FXGL_SL);
+
+DEBUGLOG(("postSingleJournal:FX Gain/Loss GL [%s] and SL [%s]\n",csFXGL_GL,csFXGL_SL));
+
+			DBObjPtr = CreateObj(DBPtr,"DBCrrGlCode","GetIDbyGLSL");
+			iRet = (unsigned long) ((*DBObjPtr)(csFXGL_GL, csFXGL_SL, &iTmp));
+
+			if (iRet != FOUND) {
+DEBUGLOG(("postSingleJournal: Fail to get FX Gain/Loss GL ID by GL [%s] and SL [%s]\n",csFXGL_GL,csFXGL_SL));
+				return FAILURE;					
+			}
+*/
+			DBObjPtr = CreateObj(DBPtr,"DBCrrFxMapping","GetGlId");
+			iRet = (unsigned long)((*DBObjPtr)(csProduct,&iTmp));
+			if (iRet != PD_FOUND) {
+DEBUGLOG(("postSingleJournal: Fail to get FX Gain/Loss GL ID by [%s]\n",csProduct));
+				return FAILURE;
+			}
+
+			// Journal Detail
+			hJnlDtl = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hJnlDtl,0);
+
+			// GL ID
+DEBUGLOG(("postSingleJournal: v_gl_id = [%d]\n", iTmp));
+			PutField_Int(hJnlDtl,"gl_id",iTmp);
+
+			// Currency
+DEBUGLOG(("postSingleJournal: csFxGainLossCcy = [%s]\n", csFxGainLossCcy));
+			PutField_CString(hJnlDtl,"currency_id",csFxGainLossCcy);
+
+			// Txn amt
+DEBUGLOG(("postSingleJournal: dFxGainLoss = [%f]\n", dFxGainLoss));
+			PutField_Double(hJnlDtl,"txn_amt",dFxGainLoss);
+
+			// CR ind
+			cTmp = csCrInd[0];
+DEBUGLOG(("postSingleJournal: v_cr_ind = [%c]\n", cTmp));
+			PutField_Char(hJnlDtl,"cr_ind",cTmp);
+
+			RecordSet_Add(rsJnlDtl,hJnlDtl);			
+		}	
+	
+		// Add Journal
+		iRet = Add(hJnlHdr, rsJnlDtl);
+		
+		if(iRet==PD_OK) {
+DEBUGLOG(("postSingleJournal::CrrJnlHeader->Add Success\n"));
+
+		} else {
+DEBUGLOG(("postSingleJournal::CrrJnlHeader->Add Failed\n"));	
+		}
+	}
+	
+	RecordSet_Destroy(rsJnlDtl);
+
+DEBUGLOG(("End postSingleJournal and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int postMultipleJournal(char* csType, recordset_t* rsJnl, const char* csPostUser) 
+{
+	int		iRet = PD_OK;
+	//char	*csPtr;
+	hash_t	*hJnl;
+	//int 	i = 1;
+	int 	iFound = 0;
+	
+	char*	csStrCmp = "";
+	char*	csCurrStrCmp = "";
+	/*
+	char*	csTmp = NULL;* 
+	int		iTmp;
+	char	cTmp;	
+	double	dTmp;
+	int		iJnlTypeID;
+	*/
+	//int		iMnlApproval;
+	//char	cStatus = PD_JNL_APPROVED;
+	
+	hash_t *hJnlHdr;
+	hash_t	*hJnlDtl;
+
+	hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+	hJnlDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+	// RS for holding single journal
+	recordset_t *rsSingleJnl;
+	rsSingleJnl = (recordset_t*) malloc (sizeof(recordset_t));	
+	recordset_init(rsSingleJnl,0);
+
+	// RS for holding jnl details
+	recordset_t *rsJnlDtl;
+	rsJnlDtl = (recordset_t*) malloc (sizeof(recordset_t));	
+	recordset_init(rsJnlDtl,0);
+
+	hJnl = RecordSet_GetFirst(rsJnl);
+	if (hJnl) {
+		// Journal Header
+		iFound = 1;
+
+		// to be compared 
+		if (GetField_CString(hJnl,"v_str_cmp",&csStrCmp)) {	
+		}
+
+		// Set current txn ID
+		csCurrStrCmp = strdup(csStrCmp);
+DEBUGLOG(("postMultipleJournal: csCurrStrCmp = [%s]\n",csCurrStrCmp));			
+
+
+		RecordSet_Add(rsSingleJnl,hJnl);		
+	}
+	
+	hJnl = RecordSet_GetNext(rsJnl);
+	while (hJnl) {
+
+		if (GetField_CString(hJnl,"v_str_cmp",&csStrCmp)) {	
+		}
+
+		if (strcmp(csCurrStrCmp, csStrCmp)) {
+			// Add Journal
+			iRet = postSingleJournal(csType, rsSingleJnl, csPostUser); 
+
+			if(iRet==PD_OK) {
+DEBUGLOG(("postMultipleJournal::postSingleJournal [%s]->Add Success\n",csCurrStrCmp));
+			} else {
+DEBUGLOG(("postMultipleJournal::postSingleJournal [%s]->Add Failed\n",csCurrStrCmp));
+				
+DEBUGLOG(("End postMultipleJournal and return:[%d]\n",iRet));
+				return iRet;
+			}		
+
+			// Reset single RS
+			recordset_init(rsSingleJnl,0);
+			
+			// Set current txn ID
+			csCurrStrCmp = strdup(csStrCmp);
+DEBUGLOG(("postMultipleJournal: csCurrStrCmp = [%s]\n",csCurrStrCmp));
+			
+		}
+
+		RecordSet_Add(rsSingleJnl,hJnl);
+		
+		hJnl = RecordSet_GetNext(rsJnl);
+	}
+	
+	if (iFound) {
+		// Add Journal
+		iRet = postSingleJournal(csType, rsSingleJnl, csPostUser); 
+
+		if(iRet==PD_OK) {
+DEBUGLOG(("postMultipleJournal::postSingleJournal [%s]->Add Success\n",csCurrStrCmp));
+		} else {
+DEBUGLOG(("postMultipleJournal::postSingleJournal [%s]->Add Failed\n",csCurrStrCmp));	
+		}	
+	}
+	
+DEBUGLOG(("End postMultipleJournal and return:[%d]\n",iRet));
+	return iRet;
+}
+

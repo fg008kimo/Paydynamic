@@ -1,0 +1,610 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/12/06              Virginia Yun
+Include TxnCode Table for diff actions             2012/01/27		   Virginia Yun
+Handle dual_contrl flag                            2012/03/30		   Virginia Yun
+Handle fee_type adj	                           2012/04/18		   Virginia Yun
+Handle def_txn_status_map                          2012/04/24		   Virginia Yun
+Handle channel_txn_map                             2012/08/20              Virginia Yun
+add flag for merchant_fe_display		   2012/11/26		   LokMan Chow
+No void adjustment				   2012/12/18		   Stan Poon
+*/	
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsATD.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsATD(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;	
+	char	*csUser = NULL;
+	int	iTmp;
+	char	*csTxnCode;
+
+	int	iCurrentCode = -1;
+
+	char	csRtnTxnCode[PD_TXN_CODE_LEN + 1];
+	char	csTagAction[PD_TAG_LEN + 1];
+
+	/*char	csVoidDesc[PD_DESC_LEN + 1];
+	char	csVoidTxnCode[PD_TXN_CODE_LEN + 1];*/
+
+	char	cPartyType;
+	char	cDCInd;
+	char	cAction;
+
+	int	iTmpCnt;
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	hash_t  *hStatusMap;
+	hStatusMap = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hStatusMap, 0);
+
+
+DEBUGLOG(("TxnMgtByUsATD::Authorize\n"));
+
+/* party_type */
+	if(GetField_CString(hRequest,"party_type",&csTmp)){
+		cPartyType = csTmp[0];
+DEBUGLOG(("Authorize::party_type = [%c]\n",cPartyType));
+
+		PutField_Char(hTxn, "party_type", cPartyType);
+	}
+	else {
+DEBUGLOG(("Authorize::party_type not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::party_type not found!!\n");
+		iRet=INT_PARTY_TYPE_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* dc_ind */
+	if(GetField_CString(hRequest,"dc_ind",&csTmp)){
+		cDCInd = csTmp[0];
+DEBUGLOG(("Authorize::dc_ind = [%c]\n",cDCInd));
+		PutField_Char(hTxn, "dc_ind", cDCInd);
+	}
+	else {
+DEBUGLOG(("Authorize::dc_ind not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::dc_ind not found!!\n");
+		iRet=INT_DC_IND_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* desc */
+	if (GetField_CString(hRequest, "desc", &csTmp)) {
+DEBUGLOG(("Authorize::desc = [%s]\n",csTmp));
+		PutField_CString(hTxn, "desc", csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::desc not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::desc not found!!\n");
+		iRet=INT_DESC_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* dual control */
+	if (GetField_CString(hRequest, "dual_control", &csTmp)) {
+		iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize::dual_control = [%d]\n",iTmp));
+		PutField_Int(hTxn, "dual_control", iTmp);
+	}
+
+/* fee_type */
+	if (GetField_CString(hRequest, "fee_type", &csTmp)) {
+		iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize::fee_type = [%d]\n",iTmp));
+		PutField_Int(hTxn, "fee_type", iTmp);
+
+	}
+
+/* disabled */
+	if (GetField_CString(hRequest, "disabled", &csTmp)) {
+		iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize::disabled = [%d]\n",iTmp));
+		PutField_Int(hTxn, "disabled", iTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::disabled not found!!\n"));
+	}
+
+
+
+/* add_user */
+        if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csUser));
+                PutField_CString(hTxn,"create_user",csUser);
+                PutField_CString(hTxn,"update_user",csUser);
+        }
+
+
+/* action - A or U or D */
+	if(GetField_CString(hRequest,"action",&csTmp)){
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize::action = [%c]\n",cAction));
+		PutField_Char(hTxn, "action", cAction);
+	}
+	else {
+DEBUGLOG(("Authorize::action not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::action not found!!\n");
+		iRet=INT_ACTION_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* apply_fee , voidable , dual_control, fee_type */
+	if (cAction == PD_ACTION_ADD) {
+
+		if (cPartyType == PD_TYPE_MERCHANT) {
+			if (GetField_CString(hRequest, "apply_fee", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "apply_fee", iTmp);
+DEBUGLOG(("Authorize:: [%c] apply_fee [%d]\n", cPartyType, iTmp));
+			}
+			else {
+				PutField_Int(hTxn, "apply_fee", PD_TRUE);
+DEBUGLOG(("Authorize:: [%c] (default) apply_fee [%d]\n", cPartyType, iTmp));
+			}
+		} else {
+			PutField_Int(hTxn, "apply_fee", PD_FALSE);
+DEBUGLOG(("Authorize:: [%c] (default) apply_fee [%d]\n", cPartyType, iTmp));
+		}
+		
+		PutField_Int(hTxn, "voidable", PD_FALSE);
+DEBUGLOG(("Authorize:: (default) voidable [%d]\n", PD_FALSE));
+
+		if (!GetField_Int(hTxn, "dual_control", &iTmp)) {
+			PutField_Int(hTxn, "dual_control", PD_TRUE);
+DEBUGLOG(("Authorize:: (default) dual_control [%d]\n", PD_TRUE));
+		}
+
+		if (!GetField_Int(hTxn, "fee_type", &iTmp)) {
+			PutField_Int(hTxn, "fee_type", PD_TRUE);
+DEBUGLOG(("Authorize:: (default) fee_type [%d]\n", PD_TRUE));
+		}
+
+		if (cPartyType == PD_TYPE_MERCHANT) 
+			PutField_Int(hTxn,"merchant_fe_display",PD_TRUE);
+		else
+			PutField_Int(hTxn,"merchant_fe_display",PD_FALSE);
+	}
+
+	if (cAction == PD_ACTION_UPDATE) {
+		if (cPartyType == PD_TYPE_MERCHANT) {
+			if (GetField_CString(hRequest, "apply_fee", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "apply_fee", iTmp);
+DEBUGLOG(("Authorize:: (update) apply_fee to [%d]\n", iTmp));
+				
+			} 
+		}
+
+		/*
+		if (GetField_CString(hRequest, "voidable", &csTmp)) {
+			iTmp = atoi(csTmp);
+			PutField_Int(hTxn, "voidable", iTmp);
+DEBUGLOG(("Authorize:: (update) voidable to [%d]\n", iTmp));
+
+		}
+		*/
+		
+
+	}
+
+
+/* code */
+	if (GetField_CString(hRequest, "code", &csTmp)) {
+DEBUGLOG(("Authorize::code = [%s]\n",csTmp));
+		PutField_CString(hTxn, "code", csTmp);
+
+		iCurrentCode = atoi(csTmp + 1);
+		PutField_Int(hTxn, "code_in_num", iCurrentCode);
+
+DEBUGLOG(("Authorize::CodeInNum = [%d]\n",iCurrentCode));
+	}
+	else {
+DEBUGLOG(("Authorize::Call BOAdjustment:GetCurrentCode\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOAdjustment","GetCurrentCode");
+		if((unsigned long)((*BOObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::GetCurrentCode Failed\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::GetCurrentCode Failed\n");
+                        iRet=INT_CODE_ERROR;
+
+			PutField_Int(hContext,"internal_error",iRet);
+                }
+
+		if (iRet == PD_OK) {
+			if (GetField_Int(hTxn, "code_in_num", &iCurrentCode)) {
+DEBUGLOG(("Authorize::CurrentCodeInNum [%d]\n", iCurrentCode));
+
+				sprintf(csRtnTxnCode, "%c%02d", tolower(cPartyType), iCurrentCode);
+DEBUGLOG(("Authorize::CurrentCode [%s]\n", csRtnTxnCode));
+				PutField_CString(hTxn, "code", csRtnTxnCode);
+			}
+		}
+	}
+
+
+
+
+
+/* Validate to process while update or delete */
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call BOAdjustment:ValidateProcess\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOAdjustment","ValidateProcess");	
+                if((unsigned long)((*BOObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::validateProcess Failed\n"));
+/*ERRLOG("TxnMgtByUsATD::Authorize::ValidateProcess Failed\n");*/
+			iRet = INT_PROCESS_VALIDATE_ERROR;
+
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* call Add or Update or Delete*/
+	if (iRet == PD_OK) {
+		memset(csTagAction, 0, sizeof(csTagAction));
+		switch (cAction) {
+			case PD_ACTION_ADD:
+				sprintf(csTagAction, "%s", "Add");
+				break;
+			case PD_ACTION_UPDATE:
+				sprintf(csTagAction, "%s", "Update");
+				break;
+			case PD_ACTION_DELETE:
+				sprintf(csTagAction, "%s", "Delete");
+				break;
+			default:
+				iRet = INT_ERR;
+				break;
+		}
+
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::TagAction = [%s]\n", csTagAction));
+	                DBObjPtr = CreateObj(DBPtr,"DBAdjustmentType", csTagAction);
+			if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize:: FAIL to [%s]\n", csTagAction));
+				iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+                	} else {
+DEBUGLOG(("Authorize:: SUCC to [%s]\n", csTagAction));
+			}
+		}
+	}
+
+	/********************************************/
+	/* Include TxnCode, ChannelTxnMap - Normal*/
+	if (iRet == PD_OK) {
+
+		/* txn_code */
+		if (GetField_CString(hTxn, "code", &csTmp)) {
+DEBUGLOG(("Authorize::TxnCode: Txn code = [%s]\n",csTmp));
+			PutField_CString(hTxn, "txn_code", csTmp);
+		}
+
+		/* desc */
+		if (GetField_CString(hTxn, "desc", &csTmp)) {
+DEBUGLOG(("Authorize::TxnCode: Desc = [%s]\n",csTmp));
+		}
+
+		if (cAction == PD_ACTION_ADD) {
+			PutField_CString(hTxn, "process_type", "0000");
+			PutField_CString(hTxn, "process_code", "000000");
+
+			//PutField_Int(hTxn, "apply_fee", PD_FALSE);
+			//PutField_Int(hTxn, "voidable", PD_TRUE);
+			PutField_Int(hTxn, "apply_limit", PD_FALSE);
+                        PutField_Int(hTxn, "apply_ex_markup", PD_FALSE);
+		}
+
+		// because of foreign key, add and delete is on diff. seq.
+                if (iRet == PD_OK) {
+			if (cAction == PD_ACTION_ADD || cAction == PD_ACTION_UPDATE)  {
+DEBUGLOG(("Authorize::TxnCode: TagAction = [%s]\n", csTagAction));
+				DBObjPtr = CreateObj(DBPtr,"DBTxnCode", csTagAction);
+				if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnCode FAIL to [%s]\n", csTagAction));
+					iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+				} else {
+DEBUGLOG(("Authorize::TxnCode SUCC to [%s]\n", csTagAction));
+                		}
+			}
+		}
+
+                if (iRet == PD_OK) {
+                        /* channel_code */
+                        PutField_CString(hTxn, "channel_code", PD_CHANNEL_MGT);
+
+                        /* apply_reserved */
+                        PutField_Int(hTxn, "apply_reserve", PD_FALSE);
+
+DEBUGLOG(("Authorize::ChannelTxnMap [%s]\n", csTagAction));
+
+                        DBObjPtr = CreateObj(DBPtr,"DBChannelTxnMap", csTagAction);
+                        if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize::ChannelTxnMap FAILED to [%s]\n", csTagAction));
+                                iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+                        } else {
+DEBUGLOG(("Authorize::ChannelTxnMap SUCC to [%s]\n", csTagAction));
+                        }
+
+                }
+		
+		if (iRet == PD_OK) {
+			if (cAction == PD_ACTION_DELETE) {
+DEBUGLOG(("Authorize::TxnCode: TagAction = [%s]\n", csTagAction));
+				DBObjPtr = CreateObj(DBPtr,"DBTxnCode", csTagAction);
+				if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnCode FAIL to [%s]\n", csTagAction));
+					iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+				} else {
+DEBUGLOG(("Authorize::TxnCode SUCC to [%s]\n", csTagAction));
+                		}
+			}
+		}
+
+	}
+
+	/* Include TxnCode, ChannelTxnMap - Void */
+	/*if (iRet == PD_OK) {
+		
+		//txn_code
+		GetField_CString(hTxn, "txn_code", &csTmp);
+
+		memset(csVoidTxnCode, 0, sizeof(csVoidTxnCode));
+		if (cPartyType == PD_TYPE_PSP) {
+			sprintf(csVoidTxnCode, "%c%s", PD_ADJ_VOID_PSP_PREFIX, csTmp+1);  // x replace p
+		} else if (cPartyType == PD_TYPE_MERCHANT) {
+			sprintf(csVoidTxnCode, "%c%s", PD_ADJ_VOID_MERCH_PREFIX, csTmp+1); // y replace m
+		}
+DEBUGLOG(("Authorize::TxnCode(void): Txn code = [%s]\n",csVoidTxnCode));
+		PutField_CString(hTxn, "txn_code", csVoidTxnCode);
+
+		//desc
+		GetField_CString(hTxn, "desc", &csTmp);
+		memset(csVoidDesc, 0, sizeof(csVoidDesc));
+
+		strcpy(csVoidDesc, PD_ADJ_VOID_DESC_PREFIX);  // "Void "
+		strncpy(&csVoidDesc[strlen(PD_ADJ_VOID_DESC_PREFIX)], csTmp, PD_DESC_LEN - strlen(PD_ADJ_VOID_DESC_PREFIX));
+
+DEBUGLOG(("Authorize::TxnCode(void): Desc = [%s]\n",csVoidDesc));
+		PutField_CString(hTxn, "desc", csVoidDesc);
+
+		if (cAction == PD_ACTION_ADD) {
+			// void by default
+			PutField_Int(hTxn, "voidable", PD_FALSE);
+			PutField_Int(hTxn, "apply_fee", PD_FALSE);
+		}
+
+		if (cAction == PD_ACTION_UPDATE) {
+			// not update apply_fee or voidable for void
+			if (GetField_Int(hTxn, "apply_fee", &iTmp)) {
+				RemoveField_Int(hTxn, "apply_fee");
+			}
+
+			if (GetField_Int(hTxn, "voidable", &iTmp)) {
+				RemoveField_Int(hTxn, "voidable");
+			}
+		}
+
+		// because of foreign key, add and delete is on diff. seq.
+                if (iRet == PD_OK) {
+			if (cAction == PD_ACTION_ADD || cAction == PD_ACTION_UPDATE)  {
+DEBUGLOG(("Authorize::TxnCode(void): TagAction = [%s]\n", csTagAction));
+	                        DBObjPtr = CreateObj(DBPtr,"DBTxnCode", csTagAction);
+				if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnCode(void) FAIL to [%s]\n", csTagAction));
+                                	iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+                        	} else {
+DEBUGLOG(("Authorize::TxnCode(void) SUCC to [%s]\n", csTagAction));
+                        	}
+			}
+                }
+
+                if (iRet == PD_OK) {
+                        //channel_code
+                        PutField_CString(hTxn, "channel_code", PD_CHANNEL_MGT);
+
+                        //apply_reserved
+                        PutField_Int(hTxn, "apply_reserve", PD_FALSE);
+
+DEBUGLOG(("Authorize::ChannelTxnMap (void) [%s]\n", csTagAction));
+
+                        DBObjPtr = CreateObj(DBPtr,"DBChannelTxnMap", csTagAction);
+                        if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize::ChannelTxnMap (void) FAILED to [%s]\n", csTagAction));
+                                iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+                        } else {
+DEBUGLOG(("Authorize::ChannelTxnMap (void) SUCC to [%s]\n", csTagAction));
+                        }
+
+                }
+
+		if (iRet == PD_OK) {
+			if (cAction == PD_ACTION_DELETE) {
+DEBUGLOG(("Authorize::TxnCode(void): TagAction = [%s]\n", csTagAction));
+		                DBObjPtr = CreateObj(DBPtr,"DBTxnCode", csTagAction);
+				if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnCode(void) FAIL to [%s]\n", csTagAction));
+       	                 		iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+                		} else {
+DEBUGLOG(("Authorize::TxnCode(void) SUCC to [%s]\n", csTagAction));
+                		}
+			}
+		}
+
+	} */
+
+	/********************************************/
+
+	if (iRet == PD_OK) {
+		// def_txn_status_map
+
+		// Admin / Merchant : txn_code, status, ar_ind, status_desc
+		// 1,2) (m/p/y/x)99, C, A, Approved
+		// 3,4) (m/p/y/x)99, C, R, Declined
+		// 5) (m/p)99, R, A, Approved
+		  
+		if (cAction == PD_ACTION_ADD) {
+			if (GetField_CString(hTxn, "code", &csTxnCode)) {
+DEBUGLOG(("Authorize::Prepare TxnStatusMap txn_code [%s]\n", csTxnCode));
+			}
+
+			for (iTmpCnt = 0; iTmpCnt < 2; iTmpCnt++) { 
+				if (iTmpCnt == 0) {
+					PutField_Char(hStatusMap, "type", PD_STATUS_MAP_TYPE_ADMIN);
+				} else {
+					PutField_Char(hStatusMap, "type", PD_STATUS_MAP_TYPE_MERCH);
+				}
+
+				PutField_CString(hStatusMap, "txn_code", csTxnCode);
+				PutField_Char(hStatusMap, "status", PD_COMPLETE);
+				PutField_Char(hStatusMap, "ar_ind", PD_ACCEPT);
+
+
+				PutField_CString(hStatusMap, "status_desc", PD_STATUS_MAP_DESC_ACCEPT);
+       		         	PutField_CString(hStatusMap,"create_user",csUser);
+
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (1) call Add\n", iTmpCnt));
+	                	DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Add");
+		                if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (1) FAIL to Add\n", iTmpCnt)); 
+		                        iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+					break;
+		                } 
+
+				/*PutField_CString(hStatusMap, "txn_code", csVoidTxnCode);
+
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (2) call Add\n", iTmpCnt));
+                		DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Add");
+		                if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (2) FAIL to Add\n", iTmpCnt)); 
+		                        iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+					break;
+		                }*/
+
+				//PutField_CString(hStatusMap, "txn_code", csTxnCode);
+				PutField_Char(hStatusMap, "ar_ind", PD_REJECT);
+				PutField_CString(hStatusMap, "status_desc", PD_STATUS_MAP_DESC_DECLINED);
+
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (3) call Add\n", iTmpCnt));
+                		DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Add");
+		                if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (3) FAIL to Add\n", iTmpCnt));
+		                        iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+					break;
+		                } 
+
+				/*PutField_CString(hStatusMap, "txn_code", csVoidTxnCode);
+
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (4) call Add\n", iTmpCnt));
+                		DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Add");
+		                if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (4) FAIL to Add\n", iTmpCnt));
+		                        iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+					break;
+		                }*/
+
+				//PutField_CString(hStatusMap, "txn_code", csTxnCode);
+				PutField_Char(hStatusMap, "status", PD_REVERSED);
+				PutField_Char(hStatusMap, "ar_ind", PD_ACCEPT);
+				PutField_CString(hStatusMap, "status_desc", PD_STATUS_MAP_DESC_ACCEPT);
+
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (5) call Add\n", iTmpCnt));
+                		DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Add");
+		                if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap [%d] (5) FAIL to Add\n", iTmpCnt)); 
+		                        iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+					break;
+		                } 
+				
+			}
+		}
+		else if (cAction == PD_ACTION_DELETE) {
+
+			if (GetField_CString(hTxn, "code", &csTxnCode)) {
+DEBUGLOG(("Authorize::Prepare TxnStatusMap (delete) txn_code [%s]\n", csTxnCode));
+				PutField_CString(hStatusMap, "txn_code", csTxnCode);
+			}
+
+DEBUGLOG(("Authorize::TxnStatusMap call Delete txn_code [%s]\n", csTxnCode));
+			DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Delete");
+			if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap FAIL to Delete txn_code[%s]\n", csTxnCode)); 
+				iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+			} 
+			
+
+			/*if (iRet == PD_OK) {
+				PutField_CString(hStatusMap, "txn_code", csVoidTxnCode);
+
+DEBUGLOG(("Authorize::TxnStatusMap call Delete txn_code [%s]\n", csVoidTxnCode));
+				DBObjPtr = CreateObj(DBPtr,"DBDefTxnStatusMap", "Delete");
+				if((unsigned long)((*DBObjPtr)(hStatusMap)) != PD_OK) {
+DEBUGLOG(("Authorize::TxnStatusMap FAIL to Delete txn_code[%s]\n", csTxnCode)); 
+					iRet = INT_ADJUSTMENT_PROCESS_ERROR;
+				}	 
+			}*/
+		}	
+	}
+
+	/********************************************/
+
+/* rtn code */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hTxn, "code", &csTmp)) {
+DEBUGLOG(("Authorize::Rtn Txn code = [%s]\n",csTmp));
+			PutField_CString(hResponse, "rtn_code", csTmp);
+		}
+	}
+
+
+
+/*
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+*/
+
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+	hash_destroy(hStatusMap);
+	FREE_ME(hStatusMap);
+
+DEBUGLOG(("TxnMgtByUsATD Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

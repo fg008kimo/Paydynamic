@@ -1,0 +1,244 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/09/02              Dirk Wong
+Mantis 959: check sim card stats before action	   2015/02/04		   Dirk Wong
+*/
+
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsSCA.h"
+#include "myrecordset.h"
+
+#define       PD_DETAIL_TAG   "dt"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnOmtByUsSCA(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	int	iDtlRet = PD_OK;
+	int	iCnt = 0;
+	int	i = 0;
+	int	k = 0;
+	char	*csTmp;
+	int	iTmp;
+	char    csTag[PD_TAG_LEN+1];
+
+	char	cAction;
+	char    *csBankCode = NULL;
+	char    *csBankAcct = NULL;
+	char	*csMobile = NULL;
+	char	*csUser = NULL;
+
+	char	cMobileStatus;
+
+/* action */
+	if (GetField_CString(hRequest, "action", &csTmp)) {
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize:: action = [%c]\n", cAction))
+		if (cAction != PD_ACTION_ADD && cAction != PD_ACTION_DELETE) {
+DEBUGLOG(("Authorize:: action [%d] not accepted!!\n", cAction));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: action not accepted!!\n");
+			iRet = INT_ACTION_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	} else {
+DEBUGLOG(("Authorize:: action not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: action not found!!\n");
+		iRet = INT_ACTION_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* mobile_no */
+	if (GetField_CString(hRequest, "mobile", &csMobile)) {
+DEBUGLOG(("Authorize::mobile = [%s]\n", csMobile));
+		//PutField_CString(hContext, "mobile", csMobile);
+	} else {
+DEBUGLOG(("Authorize:: mobile not found!!\n"));
+ERRLOG("TxnOmtByUsSCU:: Authorize:: mobile not found!!\n");
+		iRet = INT_MOBILE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	DBObjPtr = CreateObj(DBPtr,"DBOLSimCards","GetSimCardStatus");
+	iRet = (unsigned long)((*DBObjPtr)(csMobile,&cMobileStatus));
+DEBUGLOG(("Authorize:: mobile status = [%c]\n", cMobileStatus));
+	if (iRet == PD_OK) {
+		if (cMobileStatus == PD_MOBILE_STATUS_NEW) {
+DEBUGLOG(("Authorize:: mobile status is NEW, not allow associate!\n"));
+ERRLOG("TxnOmtByUsSCU:: Authorize:: mobile status is NEW, not allow associate!\n");
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	} else {
+DEBUGLOG(("Authorize:: Call DBOLSimCards::GetSimCardStatus Error!\n"));
+ERRLOG("TxnOmtByUsSCU:: Authorize:: Call DBOLSimCards::GetSimCardStatus Error!\n");
+		iRet = INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* total cnt */
+	if (GetField_CString(hRequest, "total_cnt", &csTmp)) {
+DEBUGLOG(("Authorize::total_cnt = [%s]\n", csTmp));
+		iCnt = atoi(csTmp);
+	} else {
+DEBUGLOG(("Authorize::total_cnt not found\n"));
+ERRLOG("TxnOmtByUsSCA::Authorize::total_cnt not found\n");
+		iRet = INT_ERR;
+	}
+
+/* user */
+        if (GetField_CString(hRequest, "add_user", &csUser)) {
+DEBUGLOG(("Authorize() user = [%s]\n", csUser));
+                PutField_CString(hContext,"update_user",csUser);
+        } else {
+                iRet = INT_USER_NOT_FOUND;
+DEBUGLOG(("Authorize() user NOT FOUND!!!\n"));
+ERRLOG("TxnOmtByUsSCU::Authorize() user NOT FOUND!!!\n");
+        }
+
+	if (iRet == PD_OK) {
+		for (i = 0; i < iCnt; i++) {
+/* Bank Code */
+			sprintf(csTag, "%s_bank_code_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csBankCode)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csBankCode));
+			} else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnOmtByUsSCA::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_ERR;
+			}
+
+/* Bank Acct */
+			sprintf(csTag, "%s_acct_num_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csBankAcct)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csBankAcct));
+			} else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnOmtByUsSCA::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_ERR;
+			}
+
+			/* check bank code exist before */
+			for (k=0; k<i; k++) {
+				sprintf(csTag,"%s_bank_code_%d", PD_DETAIL_TAG, k);
+				GetField_CString(hRequest,csTag,&csTmp);
+				if (strcmp(csBankCode,csTmp) == 0) {
+DEBUGLOG(("Authorize::Same bank code [%s] found, action terminate!\n",csBankCode));
+ERRLOG("TxnOmtByUsSCA::Authorize::Same bank code [%s] found, action terminate!\n",csBankCode);
+					iDtlRet = INT_ERR;
+					break;
+				}
+			}
+
+			/* Check Bank Acct Exists or not */
+			hash_t *hBankAcctRec;
+			hBankAcctRec = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hBankAcctRec,0);
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "GetBankAccts");
+			iRet = (unsigned long)(*DBObjPtr)(csBankCode,csBankAcct,hBankAcctRec);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::bank acct [%s][%s] not found\n",csBankCode,csBankAcct));
+ERRLOG("TxnOmtByUsSCA::Authorize::bank acct not found\n");
+				iRet = INT_BANK_ACCT_NOT_FOUND;
+				break;
+			}
+
+			if (cAction == PD_ACTION_ADD) {
+				if (iRet == PD_OK) {
+					DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "ChkMobileNumByBank");
+					iTmp = (unsigned long)(*DBObjPtr)(csBankCode,csBankAcct,csMobile);
+					if (iTmp == PD_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkMobileNumByBank FOUND\n"));
+ERRLOG("TxnOmtByUsSCA::Authorize::DBOLBankAccts:ChkMobileNumByBank FOUND\n");
+						iRet = INT_MOBILE_USED_IN_SAME_BANK;
+						break;
+					} else {
+DEBUGLOG(("Authorize::Mobile ready to add\n"));
+					}
+				}
+			} //End if action = add
+			else if (cAction == PD_ACTION_DELETE) {
+				GetField_CString(hBankAcctRec,"reg_mob_num",&csTmp);
+				if (strcmp(csMobile,csTmp)) {
+DEBUGLOG(("Authorize::Mobile [%s] not exist with bank acct [%s][%s], action terminate\n",csMobile,csBankCode,csBankAcct));
+ERRLOG("TxnOmtByUsSCA::Authorize::Mobile not exist with bank acct, action terminate\n");
+					iRet = INT_MOBILE_NOT_SYNC_WITH_ACCT;
+					break;
+				} else {
+DEBUGLOG(("Authorize::Mobile Sync with bank acct, ready to delete\n"));
+				}
+			} //End if action = delete
+
+			FREE_ME(hBankAcctRec);
+		} //End for loop
+
+		if(iDtlRet!=PD_OK){
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet != PD_OK) {
+		PutField_Int(hContext, "internal_error", iRet);
+	} else {
+		for (i=0; i<iCnt; i++) {
+			sprintf(csTag, "%s_bank_code_%d", PD_DETAIL_TAG, i+1);
+                        if (GetField_CString(hRequest, csTag, &csBankCode)) {
+				PutField_CString(hContext, "bank_code", csBankCode);
+			} else {
+DEBUGLOG(("Authorize::Update fail, bank_code not found\n"));
+				iRet = INT_ERR;
+				break;
+			}
+			sprintf(csTag, "%s_acct_num_%d", PD_DETAIL_TAG, i+1);
+                        if (GetField_CString(hRequest, csTag, &csBankAcct)) {
+				PutField_CString(hContext, "bank_acct", csBankAcct);
+			} else {
+DEBUGLOG(("Authorize::Update fail, bank_acct not found\n"));
+				iRet = INT_ERR;
+				break;
+			}
+
+			if (cAction == PD_ACTION_ADD)
+				PutField_CString(hContext, "mobile", csMobile);
+			else if (cAction == PD_ACTION_DELETE)
+				RemoveField_CString(hContext, "mobile");
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "UpdateMobileNum");
+			iRet = (unsigned long)(*DBObjPtr)(hContext);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::Update mobile number to bank acct return error\n"));
+ERRLOG("TxnOmtByUsSCA::Authorize::Associate mobile return error\n");
+			} else {
+DEBUGLOG(("Authorize::Update action = [%c] with mobile number [%s] to bank acct [%s][%s] success\n", cAction, csMobile, csBankCode, csBankAcct));
+			}
+
+			//FREE_ME(hBankAcctRec);
+		}
+	}
+
+
+DEBUGLOG(("Authorize() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+}

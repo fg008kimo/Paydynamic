@@ -1,0 +1,437 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[16];
+};
+static struct sqlcxp sqlfpn =
+{
+    15,
+    "returnpayout.pc"
+};
+
+
+static unsigned int sqlctx = 2590251;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+//#include "common.h"
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+#include "inputfile.h"
+#include "returnpayout.h"
+#include "TxnSeq.h"
+
+OBJPTR(BO);
+OBJPTR(DB);
+char    cDebug;
+
+#define MY_FIELD_TOKEN  "|"
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+int formatString(const hash_t *hRec, char* csFormattedString)
+{
+	char *csSeqNum= strdup("");
+	char *csIdentityId = strdup("");
+	char *csBranch = strdup("");
+	char *csMerchId = strdup("");
+	char *csMerchRef = strdup("");
+	char *csAccountName= strdup("");
+	char *csAccountNum= strdup("");
+	char *csBank = strdup("");
+	char *csChecksum = strdup("");
+	char *csPhone = strdup("");
+	char *csCountry = strdup("");
+	char *csProvince = strdup("");
+	char *csCity = strdup("");
+	char *csAmount= strdup("");
+	char *csPayoutCurr = strdup("");
+	char *csDestCurr = strdup("");
+	char cArInd=' ';
+	double dAmount;
+
+	if(GetField_CString(hRec,"seq_num",&csSeqNum)){
+DEBUGLOG(("formatString:: seq_num= [%s]\n",csSeqNum));
+	}
+
+	if (GetField_CString(hRec,"identity_id", &csIdentityId)){
+DEBUGLOG(("formatString:: identity_id= [%s]\n",csIdentityId));
+	}
+
+	if(GetField_CString(hRec,"branch",&csBranch)){
+DEBUGLOG(("formatString:: branch= [%s]\n",csBranch));
+	}
+
+	if(GetField_CString(hRec,"bank_name",&csBank)){
+DEBUGLOG(("formatString:: bank_name= [%s]\n",csBank));
+	}
+
+	if(GetField_CString(hRec,"account_name",&csAccountName)){
+DEBUGLOG(("formatString:: account_name= [%s]\n",csAccountName));
+	}
+
+	if(GetField_CString(hRec,"account_num",&csAccountNum)){
+DEBUGLOG(("formatString:: account_num= [%s]\n",csAccountNum));
+	}
+
+	if(GetField_CString(hRec,"phone_num",&csPhone)){
+DEBUGLOG(("formatString:: phone_num= [%s]\n",csPhone));
+	}
+
+	if(GetField_CString(hRec,"country",&csCountry)){
+DEBUGLOG(("formatString:: country= [%s]\n",csCountry));
+	}
+
+	if(GetField_CString(hRec,"province",&csProvince)){
+DEBUGLOG(("formatString:: province= [%s]\n",csProvince));
+	}
+
+	if(GetField_CString(hRec,"city",&csCity)){
+DEBUGLOG(("formatString:: city= [%s]\n",csCity));
+	}
+
+	if(GetField_CString(hRec,"payout_currency",&csPayoutCurr)){
+DEBUGLOG(("formatString:: payout_currency= [%s]\n",csPayoutCurr));
+	}
+
+	if(GetField_CString(hRec,"dest_currency",&csDestCurr)){
+DEBUGLOG(("formatString:: dest_currency= [%s]\n",csDestCurr));
+	}
+
+	if(GetField_CString(hRec,"checksum",&csChecksum)){
+DEBUGLOG(("formatString:: checksum= [%s]\n",csChecksum));
+	}
+
+	if(GetField_Char(hRec,"ar_ind",&cArInd)){
+DEBUGLOG(("formatString:: ar_ind= [%c]\n",cArInd));
+	}
+
+	if(GetField_CString(hRec,"ref_merch_id",&csMerchId)){
+DEBUGLOG(("formatString:: ref_merch_id= [%s]\n",csMerchId));
+	}
+
+	if(GetField_CString(hRec,"merchant_ref_num",&csMerchRef)){
+DEBUGLOG(("formatString:: merchant_ref_num= [%s]\n",csMerchRef));
+	}
+
+	if(GetField_Double(hRec,"amount",&dAmount)){
+		dtoc(dAmount,12,0,csAmount);
+		trim_leading_zero(csAmount,csAmount);
+DEBUGLOG(("formatString:: amount= [%s]\n",csAmount));
+	}
+
+	snprintf(csFormattedString,BUFFER_LEN,"%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%c\n",csSeqNum,csMerchRef,csCountry,csIdentityId,csAccountNum,csAccountName,csBank,csBranch,csPhone,csProvince,csCity,csAmount,csPayoutCurr,csDestCurr,csChecksum,cArInd);
+DEBUGLOG(("formatString:: [%s]\n",csFormattedString));
+
+	FREE_ME(csSeqNum);
+	FREE_ME(csIdentityId);
+	FREE_ME(csBranch);
+	FREE_ME(csBank);
+	FREE_ME(csAccountName);
+	FREE_ME(csAccountNum);
+	FREE_ME(csPhone);
+	FREE_ME(csCountry);
+	FREE_ME(csProvince);
+	FREE_ME(csCity);
+	FREE_ME(csPayoutCurr);
+	FREE_ME(csDestCurr);
+	FREE_ME(csChecksum);
+	FREE_ME(csMerchId);
+	FREE_ME(csMerchRef);
+	FREE_ME(csAmount);
+
+	return SUCCESS;
+}
+
+
+
+void createPayoutReturn(const char* csFormattedString)
+{
+	FILE * pFile;
+	pFile = fopen(PAYOUT_RETURN_FILE,"at");
+
+	if(!pFile){
+DEBUGLOG(("Cannot insert Data To File[%s]\n",PAYOUT_RETURN_FILE));
+		return;
+	}
+	else{
+		fputs(csFormattedString,pFile);
+	}
+
+	fclose(pFile);
+
+}
+
+int getPayoutStatus(hash_t *hRec)
+{
+	char *csMerchId = strdup("");
+	char *csMerchRef = strdup("");
+	char cStatus;
+	char cArInd;
+	int iResult = FAILURE;
+	hash_t	*hResult;
+	hResult = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hResult,0);
+
+	if(GetField_CString(hRec,"merchant_ref_num",&csMerchRef)){
+		csMerchRef[strlen(csMerchRef)]='\0';
+		if(GetField_CString(hRec,"ref_merch_id",&csMerchId)){
+			csMerchId[strlen(csMerchId)]='\0';
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetStatusArIndByMerchIdRef");
+			if ((unsigned long int)(*DBObjPtr)(csMerchId,csMerchRef,hResult) == PD_OK) {
+
+				if(GetField_Char(hResult,"status",&cStatus)){
+					if(GetField_Char(hResult,"ar_ind",&cArInd)){
+DEBUGLOG(("getPayoutStatus success: MerchId[%s] MerchRef[%s] status[%c] ar_ind[%c]\n",csMerchId,csMerchRef,cStatus,cArInd));
+						PutField_Char(hRec,"status",cStatus);
+						PutField_Char(hRec,"ar_ind",cArInd);
+						iResult = SUCCESS;
+					}
+				}
+			}
+		}
+	}
+
+	if(iResult==FAILURE){	
+DEBUGLOG(("getPayoutStatus failed: MerchId[%s] MerchRef[%s]\n",csMerchId,csMerchRef));
+	}
+
+	FREE_ME(csMerchId);
+	FREE_ME(csMerchRef);
+	
+	hash_destroy(hResult);
+	FREE_ME(hResult);
+
+	return iResult;
+}
+
+void updatePayoutStatus(hash_t *hRec)
+{
+	hash_t	*hPay;
+	hPay = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hPay,0);
+	
+
+	char    *csTmp = strdup("");
+	char    *csFormattedString = strdup("");
+	char 	cTmp;
+
+	if(GetField_Char(hRec,"ar_ind",&cTmp)){
+DEBUGLOG(("updatePayoutStatus ar_ind = [%c]\n",cTmp));
+		PutField_Char(hPay,"ar_ind",cTmp);
+	}
+
+	if(GetField_CString(hRec,"merchant_ref_num",&csTmp)){
+DEBUGLOG(("updatePayoutStatus merchant_ref = [%s]\n",csTmp));
+		PutField_CString(hPay,"merchant_ref_num",csTmp);
+	}
+	
+	if(GetField_CString(hRec,"ref_merch_id",&csTmp)){
+DEBUGLOG(("updatePayoutStatus merchant_id= [%s]\n",csTmp));
+		PutField_CString(hPay,"ref_merch_id",csTmp);
+	}
+
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutRecord","Update");
+	if ((unsigned long int)(*DBObjPtr)(hPay) == PD_OK) {
+		if(formatString(hRec, csFormattedString)==SUCCESS){
+			createPayoutReturn(csFormattedString);
+		}
+	}
+
+	hash_destroy(hPay);
+	FREE_ME(hPay);
+	FREE_ME(csTmp);
+	FREE_ME(csFormattedString);
+	
+}
+
+void processPayoutReturn()
+{
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+	
+	hash_t  *hRec;
+
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutRecord","GetPayoutRecord");
+	if ((unsigned long int)(*DBObjPtr)(rRecordSet) == PD_OK) {
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec){
+			if(getPayoutStatus(hRec)==SUCCESS){
+				updatePayoutStatus(hRec);
+			}
+
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+/*	rData oResult;
+DEBUGLOG(("Start reading file\n"));
+	if(read_file(&oResult)!=SUCCESS)
+		return FAILURE;
+*/
+
+	processPayoutReturn();
+		
+	
+
+DEBUGLOG(("process end\n"));
+	return SUCCESS;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}

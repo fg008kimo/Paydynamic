@@ -1,0 +1,189 @@
+CREATE OR REPLACE PACKAGE PSP_LIMIT_CHECK_PKG
+IS
+   PROCEDURE P_MERCHANT_PSP_LIMIT (
+      in_party_id           IN     PSP_LIMIT_CHECK.PC_PARTY_ID%TYPE,
+      out_cursor            IN OUT SYS_REFCURSOR);
+
+   PROCEDURE P_PSP_PSP_LIMIT (
+      in_party_id           IN     PSP_LIMIT_CHECK.PC_PARTY_ID%TYPE,
+      out_cursor            IN OUT SYS_REFCURSOR);
+
+   PROCEDURE P_SERVICE_PSP_LIMIT (
+      out_cursor            IN OUT SYS_REFCURSOR);
+
+   FUNCTION F_CHECK_FIND (
+      in_party_type         IN     PSP_LIMIT_CHECK.PC_PARTY_TYPE%TYPE,
+      in_party_id           IN     PSP_LIMIT_CHECK.PC_PARTY_ID%TYPE,
+      in_business_type      IN     PSP_LIMIT_CHECK.PC_BUSINESS_TYPE%TYPE,
+      out_cursor            IN OUT SYS_REFCURSOR)
+      RETURN NUMBER;
+
+END PSP_LIMIT_CHECK_PKG;
+/
+CREATE OR REPLACE PACKAGE BODY PSP_LIMIT_CHECK_PKG
+IS
+   PROCEDURE P_MERCHANT_PSP_LIMIT (
+      in_party_id   IN     PSP_LIMIT_CHECK.PC_PARTY_ID%TYPE,
+      out_cursor    IN OUT SYS_REFCURSOR)
+   IS
+   BEGIN
+      OPEN out_cursor FOR
+           SELECT CLIENT_ID AS CLIENT_ID,
+                  CLIENT_NAME AS CLIENT_NAME,
+                  MERCHANT_ID AS MERCHANT_ID,
+                  SHORT_NAME AS SHORT_NAME,
+                  BUSINESS_TYPE AS BUSINESS_TYPE,
+                  CURRENCY_ID AS CURRENCY_ID,
+                  SUM (LIMIT) AS LIMIT,
+                  SUM (REMAINING_LIMIT) AS REMAINING_LIMIT
+             FROM (  SELECT CLIENT_ID,
+                            CLIENT_NAME,
+                            MERCHANT_ID,
+                            SHORT_NAME,
+                            BUSINESS_TYPE,
+                            CURRENCY_ID,
+                            LIMIT,
+                            REMAINING_LIMIT,
+                            PSP_ID
+                       FROM PSP_LIMIT_MERCHANT_VIEW
+                   GROUP BY CLIENT_ID,
+                            CLIENT_NAME,
+                            MERCHANT_ID,
+                            SHORT_NAME,
+                            BUSINESS_TYPE,
+                            CURRENCY_ID,
+                            LIMIT,
+                            REMAINING_LIMIT,
+                            PSP_ID)
+            WHERE 1 = 1 AND (MERCHANT_ID = in_party_id OR in_party_id IS NULL)
+         GROUP BY CLIENT_ID,
+                  CLIENT_NAME,
+                  MERCHANT_ID,
+                  SHORT_NAME,
+                  BUSINESS_TYPE,
+                  CURRENCY_ID;
+   END P_MERCHANT_PSP_LIMIT;
+
+   PROCEDURE P_PSP_PSP_LIMIT (
+      in_party_id   IN     PSP_LIMIT_CHECK.PC_PARTY_ID%TYPE,
+      out_cursor    IN OUT SYS_REFCURSOR)
+   IS
+   BEGIN
+      OPEN out_cursor FOR
+         SELECT PSP_CLIENT_ID AS PSP_CLIENT_ID,
+                PSP_CLIENT_NAME AS PSP_CLIENT_NAME,
+                PSP_ID AS RPP_PSP_ID,
+                PSP_NAME AS PSP_NAME,
+                PSP_TYPE AS PSP_TYPE,
+                CURRENCY_ID AS CURRENCY_ID,
+                LIMIT AS RPP_LIMIT,
+                REMAINING_LIMIT AS REMAINING_LIMIT
+           FROM PSP_LIMIT_PSP_VIEW
+          WHERE 1 = 1 AND (PSP_ID = in_party_id OR in_party_id IS NULL);
+   END P_PSP_PSP_LIMIT;
+
+
+   PROCEDURE P_SERVICE_PSP_LIMIT (out_cursor IN OUT SYS_REFCURSOR)
+   IS
+   BEGIN
+      OPEN out_cursor FOR
+           SELECT SP_SERVICE_CODE,
+                  PSP_TYPE,
+                  CURRENCY_ID AS CURRENCY_ID,
+                  SUM (LIMIT) AS RPP_LIMIT,
+                  SUM (REMAINING_LIMIT) AS REMAINING_LIMIT
+             FROM PSP_LIMIT_PSP_VIEW,
+                  (SELECT COUNTRY AS CP_COUNTRY, PSP_ID AS CP_PSP_ID
+                     FROM PSP_COUNTRY),
+                  PSP_PAY_METHOD,
+                  SERVICE_PAY_METHOD
+            WHERE     PSP_ID = CP_PSP_ID
+                  AND PSP_ID = PP_PSP_ID
+                  AND PP_COUNTRY = CP_COUNTRY
+                  AND PP_PAY_METHOD = SP_PAY_METHOD
+                  AND PP_DISABLED = 0
+                  AND SP_DISABLED = 0
+         GROUP BY SP_SERVICE_CODE, PSP_TYPE, CURRENCY_ID
+         ORDER BY SP_SERVICE_CODE;
+   END P_SERVICE_PSP_LIMIT;
+
+   FUNCTION F_CHECK_FIND (
+      in_party_type      IN     PSP_LIMIT_CHECK.PC_PARTY_TYPE%TYPE,
+      in_party_id        IN     PSP_LIMIT_CHECK.PC_PARTY_ID%TYPE,
+      in_business_type   IN     PSP_LIMIT_CHECK.PC_BUSINESS_TYPE%TYPE,
+      out_cursor         IN OUT SYS_REFCURSOR)
+      RETURN NUMBER
+   IS
+      iCnt   INTEGER := 0;
+   BEGIN
+      SELECT COUNT (*)
+        INTO iCnt
+        FROM PSP_LIMIT_CHECK
+       WHERE     PC_PARTY_TYPE = in_party_type
+             AND PC_PARTY_ID = in_party_id
+             AND PC_DISABLED = 0;
+
+      IF iCnt > 0
+      THEN
+         OPEN out_cursor FOR
+            SELECT PC_ALERT_LEVEL,
+                   PC_ALERT_REMAIN_AMT,
+                   TO_CHAR (PC_LAST_CHECKING_TIME, 'YYYYMMDDHH24MISS')
+              FROM PSP_LIMIT_CHECK
+             WHERE     PC_PARTY_TYPE = in_party_type
+                   AND PC_PARTY_ID = in_party_id
+                   AND PC_DISABLED = 0;
+
+         RETURN 1;
+      ELSE
+         SELECT COUNT (*)
+           INTO iCnt
+           FROM PSP_LIMIT_CHECK
+          WHERE     PC_PARTY_TYPE = in_party_type
+                AND PC_PARTY_ID = '000'
+                AND PC_BUSINESS_TYPE = in_business_type
+                AND PC_DISABLED = 0;
+
+         IF iCnt > 0
+         THEN
+            OPEN out_cursor FOR
+               SELECT PC_ALERT_LEVEL,
+                      PC_ALERT_REMAIN_AMT,
+                      TO_CHAR (PC_LAST_CHECKING_TIME, 'YYYYMMDDHH24MISS')
+                 FROM PSP_LIMIT_CHECK
+                WHERE     PC_PARTY_TYPE = in_party_type
+                      AND PC_PARTY_ID = '000'
+                      AND PC_BUSINESS_TYPE = in_business_type
+                      AND PC_DISABLED = 0;
+
+            RETURN 1;
+         ELSE
+            SELECT COUNT (*)
+              INTO iCnt
+              FROM PSP_LIMIT_CHECK
+             WHERE     PC_PARTY_TYPE = in_party_type
+                   AND PC_PARTY_ID = '000'
+                   AND PC_BUSINESS_TYPE IS NULL
+                   AND PC_DISABLED = 0;
+
+            IF iCnt > 0
+            THEN
+               OPEN out_cursor FOR
+                  SELECT PC_ALERT_LEVEL,
+                         PC_ALERT_REMAIN_AMT,
+                         TO_CHAR (PC_LAST_CHECKING_TIME, 'YYYYMMDDHH24MISS')
+                    FROM PSP_LIMIT_CHECK
+                   WHERE     PC_PARTY_TYPE = in_party_type
+                         AND PC_PARTY_ID = '000'
+                         AND PC_BUSINESS_TYPE IS NULL
+                         AND PC_DISABLED = 0;
+
+               RETURN 1;
+            END IF;
+         END IF;
+      END IF;
+
+      RETURN 0;
+   END F_CHECK_FIND;
+END PSP_LIMIT_CHECK_PKG;
+/

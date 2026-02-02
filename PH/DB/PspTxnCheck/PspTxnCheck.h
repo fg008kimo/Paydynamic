@@ -1,0 +1,16 @@
+#ifndef _PSP_TXN_CHECK_H_
+#define _PSP_TXN_CHECK_H_
+
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int Replicate(void);
+int GetAll(recordset_t *myRec);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -1,0 +1,222 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+char cDebug = 'Y';
+char csBankAbbrevName[PD_BANK_NAME_LEN + 1];
+char csBankAcctNum[PD_BANK_ACCT_NUM_LEN + 1];
+char csBankStmtFileName[PD_UPLOAD_FILENAME_LEN + 1];
+char csBankStmtDatetime[PD_DATETIME_LEN + 1];
+
+int parse_arg(int argc, char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+	int iTmpRet;
+	char *csTag = (char*) malloc (1024);
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("Usage: mass_upload_bank_stmt_with_patch.exec -d hv_bank_abbrev_name -a bank_acct_num -s bank_stmt_file_name -d bank_stmt_datetime\n");
+		return FAILURE;
+	}
+
+	hash_t *hRequest;
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRequest, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_bank_abbrev_name[PD_EXT_BANK_CODE_LEN];
+		varchar hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+
+		varchar v_int_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar v_bank_acct_type[PD_ACCT_TYPE_LEN + 1];
+
+		short ind_int_bank_code = -1;
+		short ind_bank_acct_type = -1;
+	EXEC SQL END DECLARE SECTION;
+
+        char csTmpDate[PD_DATETIME_LEN + 1];
+        DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "FindCode");
+
+        if ((unsigned long)(*DBObjPtr)("CTPHDATE", csTmpDate) == FOUND) {
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: Current Processor Hub Date = [%s]\n", csTmpDate));
+                PutField_CString(hRequest, "PHDATE", csTmpDate);
+        } else {
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: record not found\n"));
+                return FAILURE;
+        }
+
+		hv_bank_abbrev_name.len = strlen(csBankAbbrevName);
+		memcpy(hv_bank_abbrev_name.arr, csBankAbbrevName, hv_bank_abbrev_name.len);
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: hv_bank_abbrev_name = [%.*s]\n", hv_bank_abbrev_name.len, hv_bank_abbrev_name.arr));
+
+		hv_bank_acct_num.len = strlen(csBankAcctNum);
+		memcpy(hv_bank_acct_num.arr, csBankAcctNum, hv_bank_acct_num.len);
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: hv_bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+
+		// get int_bank_code, bank_acct_type
+		EXEC SQL DECLARE c_cursor_get_info CURSOR FOR
+			select internal_bank_code, opd_bank_acct_type
+			from bank_desc, ol_bank_acct_id, ol_psp_detail
+			where bank_abbrev_name = :hv_bank_abbrev_name
+			and obai_int_bank_code = internal_bank_code
+			and obai_bank_acct_num = :hv_bank_acct_num
+			and opd_psp_id = obai_psp_id
+			and offline_support = 1
+			and obai_status = 'O'
+			and opd_disabled = 0
+			and opd_status = 'O';
+
+		EXEC SQL OPEN c_cursor_get_info;
+
+		EXEC SQL FETCH c_cursor_get_info
+		INTO	:v_int_bank_code:ind_int_bank_code,
+			:v_bank_acct_type:ind_bank_acct_type;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: BAID not found\n"));
+			return FAILURE;
+		}
+
+		// int_bank_code
+		if (ind_int_bank_code >= 0) {
+			v_int_bank_code.arr[v_int_bank_code.len] = '\0';
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: int_bank_code = [%s]\n", (const char*)v_int_bank_code.arr));
+		} else {
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: int_bank_code is empty\n"));
+			return FAILURE;
+		}
+
+		// bank_acct_type
+		if (ind_bank_acct_type >= 0) {
+			v_bank_acct_type.arr[v_bank_acct_type.len] = '\0';
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: bank_acct_type = [%s]\n", (const char*)v_bank_acct_type.arr));
+		} else {
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: bank_acct_type is empty\n"));
+			return FAILURE;
+		}
+
+		// in_file_path
+		sprintf(csTag, "/nfs/dev/bank_stmt_files/mass_upload_with_patch/%s/raw", csBankAcctNum);
+		PutField_CString(hRequest, "in_file_path", csTag);
+
+		// in_file_name
+		PutField_CString(hRequest, "in_file_name", csBankStmtFileName);
+
+		// bank_acct_type
+		PutField_CString(hRequest, "bank_acct_type", (const char*)v_bank_acct_type.arr);
+
+		// int_bank_code
+		PutField_CString(hRequest, "int_bank_code", (const char*)v_int_bank_code.arr);
+
+		// bank_acct_num
+		PutField_CString(hRequest, "bank_acct_num", csBankAcctNum);
+
+		// add_user
+		PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+
+		// channel_code
+		PutField_CString(hRequest, "channel_code", PD_CHANNEL_OMT); // for BOBankCharge::GetTxnBankCharge()
+
+		// patch_datetime
+		PutField_CString(hRequest, "patch_datetime", csBankStmtDatetime); // for mass upload with patch purpose
+
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: call TxnOmtByUsBSU:Authorize\n"));
+		TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsBSU", "Authorize");
+		iTmpRet = (unsigned long)(*TxnObjPtr)(hRequest, hRequest, hRequest);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: TxnOmtByUsBSU:Authorize Failed\n"));
+ERRLOG("mass_upload_bank_stmt_with_patch: TxnOmtByUsBSU:Authorize Failed\n");
+			printf("********** ERROR: upload failed, code = [%d]\n", iTmpRet);
+			iRet = FAILURE;
+		}
+
+		EXEC SQL CLOSE c_cursor_get_info;
+
+	hash_destroy(hRequest);
+	FREE_ME(hRequest);
+
+	FREE_ME(csTag);
+
+DEBUGLOG(("mass_upload_bank_stmt_with_patch: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+
+sql_error:
+DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("mass_upload_bank_stmt_with_patch:: sql error\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+EXEC SQL CLOSE c_cursor_get_info;
+	EXEC SQL ROLLBACK RELEASE;
+	FREE_ME(hRequest);
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+	strcpy(csBankAbbrevName, "");
+	strcpy(csBankAcctNum, "");
+	strcpy(csBankStmtFileName, "");
+	strcpy(csBankStmtDatetime, "");
+
+	while ((c = getopt(argc, argv, "b:a:s:d:")) != EOF) {
+		switch (c) {
+			case 'b':
+				strcpy(csBankAbbrevName, optarg);
+				break;
+			case 'a':
+				strcpy(csBankAcctNum, optarg);
+				break;
+			case 's':
+				strcpy(csBankStmtFileName, optarg);
+				break;
+			case 'd':
+				strcpy(csBankStmtDatetime, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csBankAbbrevName, "") || !strcmp(csBankAcctNum, "") || !strcmp(csBankStmtFileName, "") || !strcmp(csBankStmtDatetime, "")) {
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}

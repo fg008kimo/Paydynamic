@@ -1,0 +1,134 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/08/29              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnParByUsPOT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnParByUsPOT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char    *csTxnSeq;
+
+	char	*csTmp;
+
+
+DEBUGLOG(("Authorize\n"));
+
+/*
+DEBUGLOG(("Authorize: Call GetNextBatchTxnSeq\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextBatchTxnSeq");
+	csTxnSeq  = strdup((*DBObjPtr)());
+DEBUGLOG(("Authorize: GenerateBatchSeq: [%s]\n",csTxnSeq));
+	PutField_CString(hContext,"txn_seq",csTxnSeq);
+	FREE_ME(csTxnSeq);
+*/
+	if (GetField_CString(hContext, "merchant_upload_txn_seq", &csTxnSeq)) {
+		PutField_CString(hContext, "txn_seq", csTxnSeq);
+DEBUGLOG(("Authorize: Batch Seq (txn_seq) : [%s]\n",csTxnSeq));
+	}
+
+
+	PutField_CString(hContext,"process_type","0000");
+	PutField_CString(hContext,"process_code","000000");
+	PutField_Int(hContext,"do_logging",PD_TRUE);
+
+DEBUGLOG(("Authorize::Call MGTChannel:AddTxnLog\n"));
+	ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+	if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest))!=PD_OK){
+		iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnLog Failed\n"));
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::call BOPayout->GetPayoutFee\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOPayout","GetPayoutFee");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+	}
+
+	if(iRet==PD_OK){
+		PutField_Int(hContext,"status",PAYOUT_MASTER_TRANSACTION_APPROVED);
+DEBUGLOG(("Authorize::call BOPayout->UpdateDetailByTxn\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOPayout","UpdateDetailByTxn");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+	}
+
+	if(iRet==PD_OK){
+		PutField_Char(hContext,"party_type",PD_TYPE_MERCHANT);
+		PutField_Char(hContext,"response_mode",PD_ACCEPT);
+DEBUGLOG(("Authorize::call BOPayout->HandleTxnPayoutBalance\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOPayout","HandleTxnPayoutBalance");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+	}
+
+
+//*****
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "approval_date", &csTmp)) {
+DEBUGLOG(("Authorize:: approval_date [%s]\n", csTmp));
+		}
+	}
+//*****
+
+
+	if(iRet==PD_OK){
+		PutField_CString(hContext,"sub_status",PD_APPROVED_FOR_GENERATED);
+		PutField_Char(hContext,"status",PD_COMPLETE);
+		PutField_Char(hContext,"ar_ind",PD_ACCEPT);
+		PutField_Int(hContext,"internal_code",PD_OK);
+		PutField_CString(hContext,"response_code","0");
+DEBUGLOG(("Authorize::Call MGTChannel:UpdateTxnLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnLog");
+		if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnLog Failed\n"));
+		}
+		PutField_Int(hContext,"do_logging",PD_FALSE);
+
+		if(iRet == PD_OK){
+DEBUGLOG(("Authorize::Call MGTChannel:UpdateTxnDetailLog\n"));
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnDetailLog");
+			if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnDetailLog Failed\n"));
+			}
+			else{
+				TxnCommit();
+			}
+		}
+
+	}
+
+DEBUGLOG(("TxnParByUsPOT Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

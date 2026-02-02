@@ -1,0 +1,522 @@
+/*
+Partnerdelight. (c)2010. All rights reserved. No part of this software may be reproduced in any form without written 
+permission of an authorized representative of Partnerdelight
+
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/08/13              Cody Chan
+*/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sqlcpr.h>
+#include <sys/types.h>
+#include <time.h>
+
+#include "common.h"
+#include "utilitys.h"
+#include "private_key.h"
+#include "dbuser.h"
+#include "dbutility.h"
+#include "myrecordset.h"
+#include "queue_utility.h"
+#include "mq_db.h"
+#include <zlib.h>
+#include <b64.h>
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define MY_WEB_TOKEN            "&"
+#define MY_WEB_FIELD_TOKEN      "="
+
+char    cDebug;
+int         	return_code;
+
+int sql_error(char *msg);
+int batch_init(int argc, char** argv);
+int batch_proc(int argc, char** argv);
+int batch_terminate(int argc, char** argv);
+
+int main(int argc, char*argv[])
+{
+
+	ConnectDB();
+
+	return_code=batch_init(argc, argv);
+        if (return_code == FAILURE) {
+DEBUGLOG(("main: section validation error\n"));
+            	EXEC SQL ROLLBACK;
+                return(FAILURE);
+        }
+    	else
+        {
+/* DEBUGLOG(("main: batch_init() success\n")); */
+                return_code=batch_proc(argc, argv);
+/* DEBUGLOG(("main: batch_proc return code [%d]\n",return_code));  */
+                if (return_code != SUCCESS)
+                {
+                EXEC SQL ROLLBACK;
+                        /*return(FAILURE); */
+                        return(return_code);
+                }
+        }
+
+        return_code=batch_terminate(argc, argv);
+    /*    printf("main: batch_terminate return code [%d]\n", return_code); */
+
+/* DEBUGLOG(("RET = [%d][%d]\n",return_code,SUCCESS)); */
+        if (return_code != SUCCESS) {
+            EXEC SQL ROLLBACK;
+DEBUGLOG(("Rollback\n"));
+	}
+        else {
+                EXEC SQL COMMIT WORK;
+/* DEBUGLOG(("Commit\n")); */
+	}
+        return(SUCCESS);
+}
+
+
+int sql_error(char *msg)
+{
+        char err_msg[128];
+        size_t buf_len, msg_len;
+
+        printf("Oracle Error: return code [%d]\n", sqlca.sqlcode);
+
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+
+        printf("%s\n", msg);
+        buf_len = sizeof (err_msg);
+        sqlglm(err_msg, &buf_len, &msg_len);
+        printf("%.*s\n", (int)msg_len, err_msg);
+
+        EXEC SQL ROLLBACK RELEASE;
+DEBUGLOG(("Rollback\n"));
+        return FAILURE;
+}
+int GetLastHostPostingDate(unsigned char* csLastPostingDate)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar v_value[PD_VALUE_LEN + 1];
+
+                short   ind_value = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_getdate CURSOR FOR
+                select sys_val
+                  from system_control
+                 Where sys_code = 'LTPHDATE';
+
+        EXEC SQL OPEN c_cursor_getdate;
+        do {
+                EXEC SQL FETCH c_cursor_getdate
+                INTO
+                        :v_value:ind_value;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if (ind_value >= 0) {
+                        v_value.arr[v_value.len] = '\0';
+                        strcpy((char*)csLastPostingDate,(const char*)v_value.arr);
+/* DEBUGLOG(("GetLastHostPostingDate:: lms_date = [%s]\n",csLastPostingDate)); */
+                }
+        }
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getdate;
+
+        return SUCCESS;
+sql_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getdate;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int GetCurrHostPostingDate(unsigned char* csCurrHostPostingDate)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO getcurrlmsdate_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar v_value[PD_VALUE_LEN + 1];
+
+                short   ind_value = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_getcurrlmsdate CURSOR FOR
+                select sys_val
+                  from system_control
+                 Where sys_code = 'CTPHDATE';
+
+        EXEC SQL OPEN c_cursor_getcurrlmsdate;
+        do {
+                EXEC SQL FETCH c_cursor_getcurrlmsdate
+                INTO
+                        :v_value:ind_value;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if (ind_value >= 0) {
+                        v_value.arr[v_value.len] = '\0';
+                        strcpy((char*)csCurrHostPostingDate,(const char*)v_value.arr);
+                }
+        }
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getcurrlmsdate;
+
+        return SUCCESS;
+getcurrlmsdate_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getcurrlmsdate;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int GetLastEODDate(unsigned char* csLastEODDate)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO geteoddate_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar v_value[PD_VALUE_LEN + 1];
+
+                short   ind_value = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_geteoddate CURSOR FOR
+                select sys_val
+                  from system_control
+                 Where sys_code = 'LTEODDATE';
+
+        EXEC SQL OPEN c_cursor_geteoddate;
+        do {
+                EXEC SQL FETCH c_cursor_geteoddate
+                INTO
+                        :v_value:ind_value;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if (ind_value >= 0) {
+                        v_value.arr[v_value.len] = '\0';
+                        strcpy((char*)csLastEODDate,(const char*)v_value.arr);
+                }
+        }
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_geteoddate;
+
+        return SUCCESS;
+geteoddate_error:
+    DEBUGLOG(("geteoddate_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_geteoddate;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int GetCurrEODDate(unsigned char* csCurrEODDate)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO getcurreoddate_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar v_value[PD_VALUE_LEN + 1];
+
+                short   ind_value = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_getcurreoddate CURSOR FOR
+                select sys_val
+                  from system_control
+                 Where sys_code = 'CTEODDATE';
+
+        EXEC SQL OPEN c_cursor_getcurreoddate;
+        do {
+                EXEC SQL FETCH c_cursor_getcurreoddate
+                INTO
+                        :v_value:ind_value;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if (ind_value >= 0) {
+                        v_value.arr[v_value.len] = '\0';
+                        strcpy((char*)csCurrEODDate,(const char*)v_value.arr);
+                }
+        }
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getcurreoddate;
+
+        return SUCCESS;
+getcurreoddate_error:
+    DEBUGLOG(("getcurreoddate_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getcurreoddate;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int BatchOnelineWithdraw(hash_t* hReq) 
+{
+	int	iRet = PD_OK;
+	char	outMsg[PD_MAX_BUFFER +1];	
+	char	*csPtr;
+	char	*p;
+	struct msg_t *msg;
+
+	int	iSend,iRecv;
+	long	lKey,lRspKey;
+
+DEBUGLOG(("BatchOnelineWithdraw() \n"));
+
+	memset(outMsg,0,sizeof(outMsg));
+	iSend = 0;
+
+
+/* process_type */
+	if (GetField_CString(hReq,"process_type",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: process_type = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"process_type");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* process_code */
+	if (GetField_CString(hReq,"process_code",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: process_code = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"process_code");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+/* merchant_id */
+	if (GetField_CString(hReq,"merchant_id",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: merchant_id = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"merchant_id");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* merchant_ref */
+	if (GetField_CString(hReq,"reference",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: reference = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"reference");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+/* transaction_datetime */
+	if (GetField_CString(hReq,"transaction_datetime",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: transaction_datetime = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"transaction_datetime");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+
+/* pay_amount */
+	if (GetField_CString(hReq,"pay_amount",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: pay_amount = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"pay_amount");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* currency_code */
+	if (GetField_CString(hReq,"currency_code",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: currency_code = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"currency_code");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* country */
+	if (GetField_CString(hReq,"country",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: country = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"country");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* bank_code */
+	if (GetField_CString(hReq,"bank_code",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: bank_code = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"bank_code");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+
+/* branch_name */
+	if (GetField_CString(hReq,"branch_name",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: branch_name = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"branch_name");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* account_id */
+	if (GetField_CString(hReq,"account_id",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: account_id = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"account_id");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* account_name */
+	if (GetField_CString(hReq,"account_name",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: account_name = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"account_name");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+
+/* identity_id */
+	if (GetField_CString(hReq,"identity_id",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: identity_id = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"identity_id");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+/* batch_id */
+	if (GetField_CString(hReq,"batch_id",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: batch_id = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"batch_id");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+/* mac */
+	if (GetField_CString(hReq,"mac",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdraw: mac = [%s]\n",csPtr));
+		 strcat((char*)outMsg,"mac");
+                 strcat((char*)outMsg,MY_WEB_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_WEB_TOKEN);
+	}
+
+	iSend = strlen(outMsg);
+DEBUGLOG(("BatchOnelineWithdraw: [%d][%s]\n",iSend,outMsg));
+
+	lKey = GetMQKey("BATCHREQQ");
+        lRspKey = GetMQKey("BATCHRSPQ");
+
+	msg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+        msg->mtype  = getpid();
+        memset(msg->mtext,0,sizeof(msg->mtext));
+        MQ_build_header((unsigned char*)msg->mtext,
+        		MQ_REQ,
+          		"WEB",
+                        0,
+                        "BATCHRSPQ");
+
+       	memcpy(&msg->mtext[MQ_HEADER_LEN],outMsg,iSend);
+	iSend += MQ_HEADER_LEN;
+        msg->mtext[iSend] = '\0';
+
+	
+        if (MQSend(lKey,msg,iSend) != MQ_OK ) {
+DEBUGLOG(("BatchOnelineWithdraw: Sent Error\n"));
+       		iRet = PD_ERR;
+        }
+        else {
+        	memset(msg->mtext,0,sizeof(msg->mtext));
+                if (MQRecv(lRspKey,msg,&iRecv,2) != MQ_OK ) {
+DEBUGLOG(("BatchOnelineWithdraw: recv Error\n"));
+               		iRet = PD_ERR;
+	        }
+                else {
+                	msg->mtext[iRecv] = '\0';
+			iRecv -= MQ_HEADER_LEN;
+DEBUGLOG(("BatchOnelineWithdraw:  recv len = [%d]\n",iRecv));
+DEBUGLOG(("BatchOnelineWithdraw:  recv = [%s]\n",&msg->mtext[MQ_HEADER_LEN],iRecv));
+                        memcpy(outMsg,&msg->mtext[MQ_HEADER_LEN],iRecv);
+			outMsg[iRecv] = '\0';
+			p = GetField(outMsg,"response_code",MY_WEB_TOKEN,MY_WEB_FIELD_TOKEN);
+DEBUGLOG(("BatchOnelineWithdraw:  response_code  = [%s]\n",p));
+			iRet = ctos(p,strlen(p));
+                }
+	}
+        FREE_ME(msg);
+	return iRet;
+}
+
+int CreateReportPath(unsigned char* csCurrentPath)
+{
+	char    csHostDate[PD_DATE_LEN + 1];
+	char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+
+        if (GetCurrEODDate(csHostDate) != SUCCESS)
+                return FAILURE;
+
+/* create report path */
+        sprintf(csCurrentPath, "%s", getenv("REPORT_HOME"));
+        sprintf(cs_outfile_name, "mkdir %s >/dev/null 2>&1", csCurrentPath);
+        system(cs_outfile_name);
+
+        sprintf(csCurrentPath, "%s/%.*s", getenv("REPORT_HOME"),PD_YYYY_LEN,csHostDate);
+        sprintf(cs_outfile_name, "mkdir %s >/dev/null 2>&1", csCurrentPath);
+        system(cs_outfile_name);
+
+        sprintf(csCurrentPath, "%s/%.*s/%.*s", getenv("REPORT_HOME"),PD_YYYY_LEN,csHostDate,PD_YYYYMM_LEN,csHostDate);
+        sprintf(cs_outfile_name, "mkdir %s >/dev/null 2>&1", csCurrentPath);
+        system(cs_outfile_name);
+
+        sprintf(csCurrentPath, "%s/%.*s/%.*s/%s", getenv("REPORT_HOME"), PD_YYYY_LEN,csHostDate,PD_YYYYMM_LEN,csHostDate,csHostDate);
+        sprintf(cs_outfile_name, "mkdir %s >/dev/null 2>&1", csCurrentPath);
+
+        system(cs_outfile_name);
+
+/* create report data folder if not created */
+        sprintf(cs_outfile_name, "mkdir %s >/dev/null 2>&1", getenv("REPORT_DATA"));
+       system(cs_outfile_name);
+
+	return SUCCESS;
+}
+

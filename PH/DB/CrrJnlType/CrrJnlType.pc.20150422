@@ -1,0 +1,355 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission 
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/29              Simon Fung
+Add IsAutoPostJnl				   2014/01/14              Virginia Yun
+Add CRR Offline					   2015/03/20
+Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <oraca.h>
+#include <sqlca.h>
+#include "CrrJnlType.h"
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cDebug;
+void CrrJnlType(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int GetMnlApproval(const int iJnlTypeId, int* iMnlApproval)
+{
+  EXEC SQL WHENEVER SQLERROR GOTO GetMnlApproval_error;
+  EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+  EXEC SQL BEGIN DECLARE SECTION;
+
+	int		hv_jnl_type_id;	
+	int		hv_mnl_approval;	
+	short		ind_mnl_approval = -1;
+
+  EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetMnlApproval: Begin\n"));
+		
+	/* jnl_type_id */
+	hv_jnl_type_id = iJnlTypeId;
+DEBUGLOG(("GetMnlApproval:hv_jnl_type_id = [%d]\n",hv_jnl_type_id));
+
+  EXEC SQL EXECUTE
+		BEGIN
+      SELECT MNL_APPROVAL INTO :hv_mnl_approval:ind_mnl_approval
+			FROM CRR_JNL_TYPE 
+			WHERE JNL_TYPE_ID = :hv_jnl_type_id
+			AND DISABLED = 0;
+    END;
+  END-EXEC;
+		
+	if (ind_mnl_approval == -1) {
+		hv_mnl_approval = 0;
+	}
+
+	*iMnlApproval = hv_mnl_approval;
+
+DEBUGLOG(("GetMnlApproval:hv_mnl_approval = [%d]\n",hv_mnl_approval));
+	
+	return PD_OK;
+
+GetMnlApproval_error:
+DEBUGLOG(("GetMnlApproval_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	ERRLOG("CrrJnlType_GetMnlApproval: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("Add: SP_INTERNAL_ERR TxnAbort\n"));
+	return PD_INTERNAL_ERR;
+}
+
+int IsAutoPostJnl(const unsigned char* csJnlTypePrefix)
+{
+	int iRet = PD_FALSE;
+
+	EXEC SQL WHENEVER SQLERROR GOTO isautopostjnl_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_jnl_type_prefix[PD_JNL_TYPE_PREFIX_LEN];
+		int     hv_disabled;
+
+		short   ind_jnl_type_prefix = -1;
+		short	ind_disabled = -1;
+
+		int     v_cnt;
+		short	ind_cnt = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_jnl_type_prefix.len = strlen((const char*)csJnlTypePrefix);
+	memcpy(hv_jnl_type_prefix.arr, csJnlTypePrefix, hv_jnl_type_prefix.len);
+DEBUGLOG(("IsAutoPostJnl: csJnlTypePrefix = [%.*s]\n", hv_jnl_type_prefix.len,hv_jnl_type_prefix.arr));
+	ind_jnl_type_prefix = 0;
+
+	hv_disabled=0;
+	ind_disabled = 0;
+
+	EXEC SQL SELECT count(1)
+		INTO    :v_cnt:ind_cnt
+		from    crr_jnl_type
+		where   prefix = :hv_jnl_type_prefix
+		and     disabled = :hv_disabled
+		and     post_type in ('A', 'F');
+	
+	if (ind_cnt < 0)
+		v_cnt = 0;
+
+	if (v_cnt > 0) {
+		iRet = PD_TRUE;
+	}
+
+DEBUGLOG(("IsAutoPostJnl = [%d]\n",iRet));
+	return iRet;
+
+isautopostjnl_error:
+DEBUGLOG(("isautopostjnl_error:code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_FALSE;
+}
+
+int GetNewAutoPostJnl(recordset_t* myRec)
+{
+	int	iCnt = 0;
+	hash_t	*myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getjnl_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		int	v_jnl_type_id;
+		varchar	v_prefix[PD_JNL_TYPE_PREFIX_LEN + 1];
+		varchar	v_desc[PD_DESCRIPTION_LEN + 1];
+		int	v_group_id;
+		int	v_single;
+
+		short	ind_jnl_type_id;
+		short	ind_prefix = -1;
+		short	ind_desc = -1;
+		short	ind_group_id = -1;
+		short	ind_single = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetNewAutoPostJnl: Begin\n"));
+
+	EXEC SQL DECLARE getjnlcursor CURSOR FOR
+		SELECT  JNL.JNL_TYPE_ID,
+			JNL.PREFIX,
+			TC.TC_DESC,
+			JEM.GROUP_ID,
+			JEM.SINGLE
+		FROM    CRR_JNL_TYPE JNL,
+			(SELECT	JNL_TYPE_ID, GROUP_ID, SINGLE, TXN_CODE
+			FROM	CRR_JNL_ENTRY_TYPE_MAPPING
+			WHERE	DISABLED = 0
+			GROUP BY JNL_TYPE_ID, GROUP_ID, SINGLE, TXN_CODE) JEM,
+			TXN_CODE TC
+		WHERE   JNL.POST_TYPE = 'A'
+		AND	JNL.DISABLED = 0
+		AND	JNL.JNL_TYPE_ID = JEM.JNL_TYPE_ID
+		AND	TC.TC_CODE = JEM.TXN_CODE
+		ORDER BY JNL.JNL_TYPE_ID ASC;
+
+	EXEC SQL OPEN getjnlcursor;
+	for (;;) {
+		EXEC SQL FETCH getjnlcursor
+		INTO    :v_jnl_type_id:ind_jnl_type_id,
+			:v_prefix:ind_prefix,
+			:v_desc:ind_desc,
+			:v_group_id:ind_group_id,
+			:v_single:ind_single;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+/* jnl_type_id */
+		if (ind_jnl_type_id >= 0) {
+			PutField_Int(myHash, "jnl_type_id", v_jnl_type_id);
+DEBUGLOG(("GetNewAutoPostJnl jnl_type_id = [%d]\n",v_jnl_type_id));
+		}
+
+/* prefix */
+		if (ind_prefix>=0) {
+			v_prefix.arr[v_prefix.len] = '\0';
+			PutField_CString(myHash,"prefix",(char*)v_prefix.arr);
+DEBUGLOG(("GetNewAutoPostJnl prefix = [%s]\n",(char*)v_prefix.arr));
+		}
+
+/* desc */
+		if (ind_desc>=0) {
+			v_desc.arr[v_desc.len] = '\0';
+			PutField_CString(myHash,"desc",(char*)v_desc.arr);
+DEBUGLOG(("GetNewAutoPostJnl desc = [%s]\n",(char*)v_desc.arr));
+		}
+
+/* group_id */
+		if (ind_group_id >= 0) {
+			PutField_Int(myHash, "group_id", v_group_id);
+DEBUGLOG(("GetNewAutoPostJnl group_id = [%d]\n",v_group_id));
+		}
+
+/* single */
+		if (ind_single >= 0) {
+			PutField_Int(myHash, "single", v_single);
+DEBUGLOG(("GetNewAutoPostJnl single = [%d]\n",v_single));
+		}
+
+		RecordSet_Add(myRec,myHash);
+	}
+	EXEC SQL CLOSE getjnlcursor;
+
+	if (iCnt > 0) {
+		return FOUND;
+DEBUGLOG(("GetNewAutoPostJnl FOUND %d JNL\n",iCnt));
+	} else {
+		return NOT_FOUND;
+DEBUGLOG(("GetNewAutoPostJnl NOT FOUND\n"));
+	}
+
+getjnl_error:
+DEBUGLOG(("getjnl_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL CLOSE getjnlcursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_INTERNAL_ERR;
+}
+
+int GetOfflineAutoPostJnl(recordset_t* myRec)
+{
+	int	iCnt = 0;
+	hash_t	*myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getofljnl_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		int	v_jnl_type_id;
+		varchar	v_prefix[PD_JNL_TYPE_PREFIX_LEN + 1];
+		varchar	v_desc[PD_DESCRIPTION_LEN + 1];
+		int	v_group_id;
+		int	v_single;
+
+		short	ind_jnl_type_id;
+		short	ind_prefix = -1;
+		short	ind_desc = -1;
+		short	ind_group_id = -1;
+		short	ind_single = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetOfflineAutoPostJnl: Begin\n"));
+
+	EXEC SQL DECLARE getofljnlcursor CURSOR FOR
+		SELECT  JNL.JNL_TYPE_ID,
+			JNL.PREFIX,
+			JNL.NAME,
+			JEM.COM_GROUP_ID,
+			JEM.COM_IS_SINGLE
+		FROM    CRR_JNL_TYPE JNL,
+			(SELECT	COM_JNL_TYPE_ID, COM_GROUP_ID, COM_IS_SINGLE, COM_TXN_CODE
+			FROM	CRR_OFL_JNL_ENTRY_TYPE_MAPPING
+			WHERE	COM_DISABLED = 0
+			GROUP BY COM_JNL_TYPE_ID, COM_GROUP_ID, COM_IS_SINGLE, COM_TXN_CODE) JEM
+		WHERE   JNL.POST_TYPE = 'F'
+		AND	JNL.DISABLED = 0
+		AND	JNL.JNL_TYPE_ID = JEM.COM_JNL_TYPE_ID
+		ORDER BY JNL.JNL_TYPE_ID ASC;
+
+	EXEC SQL OPEN getofljnlcursor;
+	for (;;) {
+		EXEC SQL FETCH getofljnlcursor
+		INTO    :v_jnl_type_id:ind_jnl_type_id,
+			:v_prefix:ind_prefix,
+			:v_desc:ind_desc,
+			:v_group_id:ind_group_id,
+			:v_single:ind_single;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+/* jnl_type_id */
+		if (ind_jnl_type_id >= 0) {
+			PutField_Int(myHash, "jnl_type_id", v_jnl_type_id);
+DEBUGLOG(("GetOfflineAutoPostJnl jnl_type_id = [%d]\n",v_jnl_type_id));
+		}
+
+/* prefix */
+		if (ind_prefix>=0) {
+			v_prefix.arr[v_prefix.len] = '\0';
+			PutField_CString(myHash,"prefix",(char*)v_prefix.arr);
+DEBUGLOG(("GetOfflineAutoPostJnl prefix = [%s]\n",(char*)v_prefix.arr));
+		}
+
+/* desc */
+		if (ind_desc>=0) {
+			v_desc.arr[v_desc.len] = '\0';
+			PutField_CString(myHash,"desc",(char*)v_desc.arr);
+DEBUGLOG(("GetOfflineAutoPostJnl desc = [%s]\n",(char*)v_desc.arr));
+		}
+
+/* group_id */
+		if (ind_group_id >= 0) {
+			PutField_Int(myHash, "group_id", v_group_id);
+DEBUGLOG(("GetOfflineAutoPostJnl group_id = [%d]\n",v_group_id));
+		}
+
+/* single */
+		if (ind_single >= 0) {
+			PutField_Int(myHash, "single", v_single);
+DEBUGLOG(("GetOfflineAutoPostJnl single = [%d]\n",v_single));
+		}
+
+		RecordSet_Add(myRec,myHash);
+	}
+	EXEC SQL CLOSE getofljnlcursor;
+
+	if (iCnt > 0) {
+		return FOUND;
+DEBUGLOG(("GetOfflineAutoPostJnl FOUND %d JNL\n",iCnt));
+	} else {
+		return NOT_FOUND;
+DEBUGLOG(("GetOfflineAutoPostJnl NOT FOUND\n"));
+	}
+
+getofljnl_error:
+DEBUGLOG(("getofljnl_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL CLOSE getofljnlcursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_INTERNAL_ERR;
+}
+

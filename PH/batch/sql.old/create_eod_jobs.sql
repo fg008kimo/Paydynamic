@@ -1,0 +1,108 @@
+ALTER TABLE EOD_JOBS
+ DROP PRIMARY KEY CASCADE;
+
+DROP TABLE EOD_JOBS CASCADE CONSTRAINTS;
+
+CREATE TABLE EOD_JOBS
+(
+  EJ_ID                VARCHAR2(10 BYTE)        NOT NULL,
+  EJ_SCRIPT_NAME       VARCHAR2(200 BYTE)       NOT NULL,
+  EJ_SEQ               NUMBER(3)                NOT NULL,
+  EJ_DESC              VARCHAR2(500 BYTE),
+  EJ_SYSTEM_JOB        VARCHAR2(1 BYTE)         DEFAULT 'N'                   NOT NULL,
+  EJ_RERUNABLE         VARCHAR2(1 BYTE)         DEFAULT 'N'                   NOT NULL,
+  EJ_TYPE              VARCHAR2(1 BYTE)         DEFAULT 'D'                   NOT NULL,
+  EJ_HOLDABLE          VARCHAR2(1 BYTE)         DEFAULT 'Y'                   NOT NULL,
+  EJ_CREATE_USER       VARCHAR2(20 BYTE),
+  EJ_CREATE_TIMESTAMP  DATE                     DEFAULT sysdate,
+  EJ_UPDATE_USER       VARCHAR2(20 BYTE),
+  EJ_UPDATE_TIMESTAMP  DATE                     DEFAULT sysdate
+)
+TABLESPACE USER_DATA
+PCTUSED    0
+PCTFREE    10
+INITRANS   1
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           )
+LOGGING 
+NOCOMPRESS 
+NOCACHE
+NOPARALLEL
+MONITORING;
+
+COMMENT ON COLUMN EOD_JOBS.EJ_SYSTEM_JOB IS '''Y'' for Yes ''N'' for No';
+
+COMMENT ON COLUMN EOD_JOBS.EJ_RERUNABLE IS '''Y'' for Yes ''N'' for No';
+
+COMMENT ON COLUMN EOD_JOBS.EJ_TYPE IS '''D'' for Daily ''M'' for Montly';
+
+COMMENT ON COLUMN EOD_JOBS.EJ_HOLDABLE IS '''Y'' for Yes';
+
+
+CREATE UNIQUE INDEX IDX_EJ_ID ON EOD_JOBS
+(EJ_SCRIPT_NAME)
+LOGGING
+TABLESPACE USER_IDX
+PCTFREE    10
+INITRANS   2
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           )
+NOPARALLEL;
+
+
+CREATE UNIQUE INDEX PK_EJ_ID ON EOD_JOBS
+(EJ_ID)
+LOGGING
+TABLESPACE USER_IDX
+PCTFREE    10
+INITRANS   2
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           )
+NOPARALLEL;
+
+
+CREATE UNIQUE INDEX UK_EJ_ID ON EOD_JOBS
+(EJ_SEQ)
+LOGGING
+TABLESPACE USER_IDX
+PCTFREE    10
+INITRANS   2
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           )
+NOPARALLEL;
+
+
+ALTER TABLE EOD_JOBS ADD (
+  CONSTRAINT PK_EJ_ID
+  PRIMARY KEY
+  (EJ_ID)
+  USING INDEX PK_EJ_ID);
+

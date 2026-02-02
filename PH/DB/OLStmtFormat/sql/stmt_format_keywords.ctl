@@ -1,0 +1,23 @@
+load data
+infile *
+append
+into table ol_stmt_format_keywords
+fields terminated by '|'
+(OLFK_INT_BANK_CODE,
+OLFK_FORMAT_TYPE,
+OLFK_FORMAT_VALUE,
+OLFK_FORMAT_TXN_CODE,
+OLFK_FORMAT_TEMPLATE,
+OLFK_FORMAT_COL_NAME,
+OLFK_DISPLAY_ORDER,
+OLFK_DISABLED,
+OLFK_CREATE_TIMESTAMP SYSDATE,
+OLFK_CREATE_USER,
+OLFK_UPDATE_TIMESTAMP SYSDATE,
+OLFK_UPDATE_USER
+)
+begindata
+086000|TXN_CODE_PDF|53|XVD|Void Overpaid Payout Dr Adj (PSP)|Transaction Type*|1|0|SYSTEM|SYSTEM
+086000|TXN_CODE_PDF|54|QEF|S/I to Pending Fund from Intermediate(OFST)|Transaction Type*|1|0|SYSTEM|SYSTEM
+086000|TXN_CODE_PDF|55|QXF|S/I to Pending Fund from Online(OFST)|Transaction Type*|1|0|SYSTEM|SYSTEM
+086000|TXN_CODE_PDF|56|QPF|S/I to Pending Fund from Payout(OFST)|Transaction Type*|1|0|SYSTEM|SYSTEM

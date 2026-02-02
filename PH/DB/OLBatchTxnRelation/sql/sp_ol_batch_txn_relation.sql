@@ -1,0 +1,68 @@
+CREATE OR REPLACE FUNCTION sp_ol_batch_tx_relation_insert(
+	in_batch_type		ol_batch_txn_relation.obtr_batch_type%type,
+	in_batch_id		ol_batch_txn_relation.obtr_batch_id%type,
+	in_txn_level		ol_batch_txn_relation.obtr_txn_level%type,
+	in_txn_id		ol_batch_txn_relation.obtr_txn_id%type,
+	in_batch_sub_type	ol_batch_txn_relation.obtr_batch_sub_type%type,
+	in_is_input_txn		ol_batch_txn_relation.obtr_is_input_txn%type,
+	in_is_regen_txn		ol_batch_txn_relation.obtr_is_regen_txn%type,
+	in_create_user		ol_batch_txn_relation.obtr_create_user%type)
+  RETURN NUMBER IS
+	iCnt    integer := 0;
+BEGIN
+
+  select count(*)
+  into iCnt
+  from ol_batch_txn_relation
+  where obtr_batch_type = in_batch_type
+  and   obtr_batch_sub_type = in_batch_sub_type
+  and	obtr_batch_id = in_batch_id
+  and	obtr_txn_level = in_txn_level
+  and	obtr_txn_id = in_txn_id;
+
+  if iCnt = 0 then
+
+	INSERT INTO OL_BATCH_TXN_RELATION(
+		obtr_batch_type,
+		obtr_batch_id,
+		obtr_txn_level,
+		obtr_txn_id,
+		obtr_batch_sub_type,
+		obtr_is_input_txn,
+		obtr_is_regen_txn,
+                obtr_relation_timestamp,
+		obtr_create_timestamp,
+		obtr_create_user,
+		obtr_update_timestamp,
+		obtr_update_user
+		)
+	VALUES (
+		in_batch_type,
+		in_batch_id,
+		in_txn_level,
+		in_txn_id,
+		in_batch_sub_type,
+		in_is_input_txn,
+		in_is_regen_txn,
+                systimestamp,
+		sysdate,
+		in_create_user,
+		sysdate,
+		in_create_user
+		);
+
+	IF SQL%ROWCOUNT = 0 THEN
+		RETURN 1;
+	ELSE
+		RETURN 0;
+	END IF;
+  else
+	return 0;
+  end if;
+
+EXCEPTION
+	WHEN OTHERS THEN	
+		RETURN 9;
+
+END sp_ol_batch_tx_relation_insert;
+/

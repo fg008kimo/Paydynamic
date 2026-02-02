@@ -1,0 +1,138 @@
+DROP PACKAGE RELEASE_PKG;
+
+CREATE OR REPLACE PACKAGE release_pkg
+IS
+   PROCEDURE open_reserve (
+      in_merchant_id   IN     txn_header.th_merchant_id%TYPE,
+      in_period        IN     merch_detail.release_reserved_period%TYPE,
+      cursor_reserve      OUT SYS_REFCURSOR);
+
+   PROCEDURE merchant_total_payout_amount (
+      in_approval_date   IN     txn_header.th_approval_date%TYPE,
+      in_merchant_id     IN     txn_header.th_merchant_id%TYPE,
+      in_service_code    IN     txn_header.th_service_code%TYPE,
+      in_ccy             IN     TXN_DETAIL.TD_TXN_CCY%TYPE,
+      in_country         IN     TXN_DETAIL.TD_TXN_COUNTRY%TYPE,
+      out_total_payout      OUT txn_header.th_transaction_amount%TYPE);
+
+   FUNCTION find_release_date (
+      in_posting_date    IN  TXN_HEADER.TH_HOST_POSTING_DATE%TYPE,
+      in_country         IN  TXN_DETAIL.TD_TXN_COUNTRY%TYPE,
+      in_release_period  IN  INT)
+      RETURN VARCHAR;
+      
+END release_pkg;
+/
+
+DROP PACKAGE BODY RELEASE_PKG;
+
+CREATE OR REPLACE PACKAGE BODY release_pkg
+IS
+   PROCEDURE open_reserve (
+      in_merchant_id   IN     txn_header.th_merchant_id%TYPE,
+      in_period        IN     merch_detail.release_reserved_period%TYPE,
+      cursor_reserve      OUT SYS_REFCURSOR)
+   IS
+      v_ph_posting_date   system_control.sys_val%TYPE;
+   BEGIN
+      SELECT sys_val
+        INTO v_ph_posting_date
+        FROM system_control
+       WHERE sys_code = 'CTPHDATE';
+
+      OPEN cursor_reserve FOR
+         SELECT th_txn_id
+           FROM txn_header
+          WHERE     th_status = 'C'
+                AND th_ar_ind = 'A'
+                AND th_merchant_id = in_merchant_id
+                AND th_txn_code IN ('DSI', 'DSP')
+                AND th_reserve_amount > 0
+                AND th_approval_date <=
+                       TO_CHAR (
+                          (  TO_DATE (v_ph_posting_date, 'YYYYMMDD')
+                           - in_period),
+                          'YYYYMMDD')
+                AND th_reserved_release_date IS NULL;
+   END open_reserve;
+
+   PROCEDURE merchant_total_payout_amount (
+      in_approval_date   IN     txn_header.th_approval_date%TYPE,
+      in_merchant_id     IN     txn_header.th_merchant_id%TYPE,
+      in_service_code    IN     txn_header.th_service_code%TYPE,
+      in_ccy             IN     TXN_DETAIL.TD_TXN_CCY%TYPE,
+      in_country         IN     TXN_DETAIL.TD_TXN_COUNTRY%TYPE,
+      out_total_payout      OUT txn_header.th_transaction_amount%TYPE)
+   IS
+   BEGIN
+      SELECT NVL (SUM (th_transaction_amount), 0)
+        INTO out_total_payout
+        FROM (SELECT th_txn_id, th_transaction_amount
+                FROM txn_header
+               WHERE     th_txn_code = 'POA'
+                     AND th_approval_date = in_approval_date
+                     AND th_merchant_id = in_merchant_id
+                     AND th_service_code = in_service_code
+                     AND th_ar_ind = 'A'
+                     AND th_status = 'C') txn_header,
+             txn_detail
+       WHERE     th_txn_id = td_txn_id
+             AND td_txn_ccy = in_ccy
+             AND td_txn_country = in_country;
+   END merchant_total_payout_amount;
+
+
+
+   FUNCTION find_release_date (
+      in_posting_date     IN TXN_HEADER.TH_HOST_POSTING_DATE%TYPE,
+      in_country          IN TXN_DETAIL.TD_TXN_COUNTRY%TYPE,
+      in_release_period   IN INT)
+      RETURN VARCHAR
+   IS
+
+      v_release_date   VARCHAR (8);
+      v_current_date   VARCHAR (8);
+      iCnt             INTEGER := in_release_period;
+      --i                INTEGER := 0;
+      iDOW             INTEGER := 0;
+
+      iHolidayCnt      INTEGER := 0;
+   BEGIN
+      v_release_date := in_posting_date;
+      v_current_date := in_posting_date;
+
+        WHILE( 1 > 0)
+        LOOP
+
+                SELECT TO_NUMBER (
+                        TO_CHAR (TO_DATE (v_current_date, 'YYYYMMDD'), 'D'))
+                INTO iDOW
+                FROM DUAL;
+
+                SELECT NVL (COUNT (*), 0)
+                INTO iHolidayCnt
+                FROM holiday
+                WHERE h_country = in_country AND h_date = v_current_date;
+
+		-- if SAT or SUN or Holiday, check previous day
+                IF iDOW = 1 OR iDOW = 7 OR iHolidayCnt > 0
+                THEN
+                        SELECT TO_CHAR (TO_DATE (v_current_date, 'YYYYMMDD') - 1,
+                            'YYYYMMDD')
+                        INTO v_current_date
+                        FROM DUAL;
+                        CONTINUE;
+                ELSE
+                        SELECT TO_CHAR (TO_DATE (v_current_date, 'YYYYMMDD') - iCnt,
+                            'YYYYMMDD')
+                        INTO v_release_date
+                        FROM DUAL;
+                        RETURN v_release_date;
+                END IF;
+        END LOOP;
+
+      RETURN v_release_date;
+   END find_release_date;
+END release_pkg;
+/
+

@@ -1,0 +1,526 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/01/16              Virginia Yun
+Include merchant_pay_method			   2012/05/28		   Virginia Yun
+Move Merchant_pay_method to TxnMgtByUsMPM	   2012/06/13	           Virginia Yun
+service_code and pay_method mapping		   2012/12/17		   Stan Poon
+Add support_delta_amt				   2013/04/16		   Stan Poon
+Add min_settle_amt				   2013/08/06		   Stan Poon
+Add set auto settlement date			   2014/02/28		   LokMan Chow
+resume 28-Feb changes				   2014/03/04		   LokMan Chow
+Add ACR pool					   2014/03/26		   LokMan Chow
+Add client_sett_bank_id				   2014/11/17		   Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsMBA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define PD_DETAIL_TAG   "dt"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsMBA(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	int	iDtlRet = PD_OK;
+
+	char	*csTmp = NULL;	
+	int	iCnt, i ;
+	int	iTmp = 0;
+	double	dTmp = 0;
+	//double  dMinAmt = 0.0;
+
+	char	*csMid = NULL;
+	char	*csService = NULL;
+	char	*csCountry = strdup("");
+	
+	char	*csCcy = NULL;
+	char	*csUser = NULL;
+
+	char    *csSettCcy = NULL;
+
+        char    csTag[PD_TAG_LEN +1];
+
+	char	cAction;
+	char	cTmp;
+
+        hash_t  *hTxn;
+   	hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t  *hTxnGet;
+        hTxnGet = (hash_t*) malloc (sizeof(hash_t));
+
+	recordset_t 	*rRecordSet;
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	hash_t		*hRec;
+
+
+DEBUGLOG(("TxnMgtByUsMBA::Authorize\n"));
+
+/* mid */
+        if (GetField_CString(hRequest, "merchant_id", &csMid)){
+DEBUGLOG(("Authorize::merchant_id = [%s]\n", csMid));
+	}
+	else {
+DEBUGLOG(("Authorize::merchant_Id not found\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::merchant_id not found\n");
+		iRet = INT_MERCHANT_ID_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* action */
+	if (GetField_CString(hRequest, "action", &csTmp)) {
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize::action = [%c]\n",cAction));
+
+		// not support delete
+		if (cAction != PD_ACTION_ADD && cAction != PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize::action [%d] not accepted!!\n", cAction));
+ERRLOG("TxnMgtByUsMBA::Authorize::action not found!!\n");
+	                iRet=INT_ACTION_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+	else {
+DEBUGLOG(("Authorize::action not found!!\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::action not found!!\n");
+                iRet=INT_ACTION_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+/* total_cnt */
+	if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("Authorize::total_cnt = [%d]\n", iCnt));
+		PutField_Int(hResponse, "total_cnt", iCnt);
+	}
+	else {
+DEBUGLOG(("Authorize::total_cnt not found\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::total_cnt not found\n");
+		iRet = INT_FORMAT_ERR;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	if (iRet == PD_OK) {
+		for (i = 0; i < iCnt; i++) {
+       	 		hash_init(hTxn, 0);
+
+/* merchant_id */
+			PutField_CString(hTxn, "merchant_id", csMid);
+
+/* ccy */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_ccy_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csCcy)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csCcy));
+                		PutField_CString(hTxn, "ccy", csCcy);
+                		//PutField_CString(hTxn, "txn_ccy", csCcy);
+			}	
+			else {		
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_CURRENCY_CODE_NOT_FOUND;
+			}
+
+/* txn_type */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_txn_type_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+				cTmp = csTmp[0];
+DEBUGLOG(("Authorize::() [%s] = [%c]\n", csTag, cTmp));
+				PutField_Char(hTxn, "txn_type", cTmp);
+			}
+			else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+                                iDtlRet = INT_ERR; 
+			}
+				
+/* country */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_country_%d", PD_DETAIL_TAG, i+1);
+                        if (GetField_CString(hRequest, csTag, &csCountry)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csCountry));
+                                PutField_CString(hTxn, "country", csCountry); 
+                		//PutField_CString(hTxn, "txn_country", csCountry);
+                        } 
+                        else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+                                iDtlRet = INT_TXN_COUNTRY_NOT_FOUND;
+                        }
+
+/* service */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_service_%d", PD_DETAIL_TAG, i+1);
+                        if (GetField_CString(hRequest, csTag, &csService)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csService));
+                                PutField_CString(hTxn, "service_code", csService); // for add
+                                PutField_CString(hTxn, "service", csService); // for update
+                        } 
+                        else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+                                iDtlRet = INT_SERVICE_CODE_MISSING;
+                        }
+
+/* status */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_status_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)){
+DEBUGLOG(("Authorize::() [%s] = [%s]\n",csTag, csTmp));
+				PutField_CString(hTxn, "status", csTmp);
+			}
+		        else{
+               			 PutField_CString(hTxn, "status",PD_ACC_OPEN);
+DEBUGLOG(("Authorize::status(default) = [%s]\n",PD_ACC_OPEN));
+        		}
+
+/* support_delta_amt */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_support_delta_amt_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)){
+DEBUGLOG(("Authorize::() [%s] = [%s]\n",csTag, csTmp));
+				sscanf(csTmp, "%d", &iTmp);
+				PutField_Int(hTxn, "support_delta_amt", iTmp);
+			}
+			else if(cAction == PD_ACTION_ADD){
+				PutField_Int(hTxn, "support_delta_amt", 0);
+			}
+
+/* settlement ccy */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_sett_ccy_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csSettCcy)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csSettCcy));
+                		PutField_CString(hTxn, "preferred_settle_ccy", csSettCcy);
+			}
+/* min_settle_amt */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_min_settle_amt_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+				sscanf(csTmp, "%lf", &dTmp);
+				PutField_Double(hTxn, "min_settle_amt", dTmp);
+			} else if(cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+                                iDtlRet = INT_MIN_SETTLE_AMT_NOT_FOUND;
+                        }
+
+/* min_settle_amt_applytoadmin */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_apply_to_admin_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)){
+DEBUGLOG(("Authorize::() [%s] = [%s]\n",csTag, csTmp));
+				sscanf(csTmp, "%d", &iTmp);
+				PutField_Int(hTxn, "min_settle_amt_applytoadmin", iTmp);
+			}
+			else if(cAction == PD_ACTION_ADD){
+				PutField_Int(hTxn, "min_settle_amt_applytoadmin", 1);
+			}
+
+/* available payout percentage */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_avai_po_pct_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)){
+DEBUGLOG(("Authorize::() [%s] = [%s]\n",csTag, csTmp));
+				sscanf(csTmp, "%d", &iTmp);
+				PutField_Int(hTxn, "avai_po_percentage", iTmp);
+			}
+/* auto_sett_min_amt */
+/*
+                        memset(csTag, 0, sizeof(csTag));
+                        sprintf(csTag, "%s_auto_sett_min_amt_%d", PD_DETAIL_TAG, i+1);
+                        if (GetField_CString(hRequest, csTag, &csTmp)){
+DEBUGLOG(("Authorize::() [%s] = [%s]\n",csTag, csTmp));
+                                sscanf(csTmp, "%lf", &dMinAmt);
+                                PutField_Double(hTxn, "auto_sett_min_amt", dMinAmt);
+                        }
+                        else{
+                                dMinAmt = 0.0;
+                                PutField_Double(hTxn, "auto_sett_min_amt", dMinAmt);
+DEBUGLOG(("Authorize::auto_sett_min_amt(default) = [%f]\n",dMinAmt));
+                        }
+*/			
+/* find country by service */
+/*
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBService:FindCountryByService\n"));
+
+				DBObjPtr = CreateObj(DBPtr,"DBService","FindCountryByService");
+				if((unsigned long)(*DBObjPtr)(csService, csCountry) != FOUND){
+DEBUGLOG(("Authorize::DBService:FindCountryByService Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBService:FindCountryByService Failed\n");
+					iDtlRet = INT_TXN_COUNTRY_NOT_FOUND;
+				}
+				else {
+DEBUGLOG(("Authorize::DBService:FindCountryByService country [%s]\n", csCountry));
+                                	PutField_CString(hTxn, "country", csCountry);
+				}
+			}
+*/
+
+/* settlement ACR pool */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_acr_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+                		PutField_CString(hTxn, "preferred_acr_pool", csTmp);
+			}
+			else{
+                		PutField_CString(hTxn, "preferred_acr_pool", PD_CCY_UNKNOWN);
+			}
+
+/* client_sett_bank_id */
+        		if (iDtlRet == PD_OK) {
+				hash_init(hTxnGet, 0);
+
+				sprintf(csTag, "%s_client_sett_bank_id_%d", PD_DETAIL_TAG, i+1);	
+                		if (GetField_CString(hRequest, csTag, &csTmp)) {
+                        		iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize::() [%s] = [%d]\n", csTag, iTmp));
+                        		PutField_Int(hTxn, "client_sett_bank_id", iTmp);
+
+DEBUGLOG(("Authorize:: Call DBClientSettBank: Get\n"));
+                        		DBObjPtr = CreateObj(DBPtr,"DBClientSettBank","GetClientSettBank");
+                        		if ((unsigned long)((*DBObjPtr)(iTmp,hTxnGet)) == PD_FOUND){
+DEBUGLOG(("Authorize:: client_sett_bank_id found!!!\n"));
+
+                                		if(GetField_CString(hTxnGet,"bank_ac_ccy",&csTmp)){
+DEBUGLOG(("Authorize:: bank_ac_ccy = [%s]\n",csTmp));
+
+                                        		if (!strcmp(csSettCcy, csTmp)) {
+DEBUGLOG(("Authorize:: currency id match!!!\n"));
+
+                                        		} else {
+                                                		iDtlRet = INT_CURRENCY_ID_NOT_MATCH;
+DEBUGLOG(("Authorize:: currency id not match!!!\n"));
+ERRLOG("TxnOmtByUsMCF:: Authorize:: currency id not match!!!\n");
+
+                                        		}
+
+                                		}
+
+                        		} else {
+                                		iDtlRet = INT_INVALID_BANK_ID;
+DEBUGLOG(("Authorize:: Invalid client_sett_bank_id [%d] [%d]\n",iDtlRet,iTmp));
+ERRLOG("TxnOmtByUsMCF:: Authorize:: Invalid client_sett_bank_id [%d] [%d]\n",iDtlRet,iTmp);
+                        		}
+
+                		} else {
+					if (cAction == PD_ACTION_UPDATE) {
+						iTmp = -1;
+DEBUGLOG(("Authorize::() [%s] = [%d]\n", csTag, iTmp));
+                                        	PutField_Int(hTxn, "client_sett_bank_id", iTmp);
+					}
+                		}
+				hash_destroy(hTxnGet);
+        		}
+
+/* add_user */
+			if(GetField_CString(hRequest,"add_user",&csUser)) {
+DEBUGLOG(("Authorize::add_user= [%s]\n",csUser));
+				PutField_CString(hTxn,"create_user",csUser);
+				PutField_CString(hTxn, "update_user", csUser);
+        		}
+
+
+
+
+			if (iDtlRet == PD_OK &&  cAction == PD_ACTION_ADD) {
+/* disabled */	
+				PutField_Int(hTxn, "disabled", PD_FALSE);
+/* status */
+				//PutField_CString(hTxn, "status", PD_ACC_OPEN);
+
+				/* Merchant Bal Acct*/
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBMerchantBalAcct:Add\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","Add");
+					if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantBalAcct:Add Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBMerchantBalAcct:Add Failed\n");
+
+						iDtlRet = INT_ERR;
+						iRet = INT_ERR;
+                			}
+			                else {
+DEBUGLOG(("Authorize::DBMerchantBalAcct:Add Succ\n"));
+                			}
+        			}
+
+				/* Merchant Balance */
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBMerchantBalance:Add\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","Add");
+					if((unsigned long)((*DBObjPtr)(csMid,csCountry,csCcy,csService,csUser) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantBalance:Add Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBMerchantBalance:Add Failed\n");
+
+						iDtlRet = INT_ERR;
+						iRet = INT_ERR;
+                			}
+			                else {
+DEBUGLOG(("Authorize::DBMerchantBalance:Add Succ\n"));
+                			}
+        			}
+
+				/*set auto settlement last date*/
+				/*if(iRet==PD_OK){
+					PutField_Char(hTxn,"status",PD_REJECT);
+					PutField_Char(hTxn,"rule_type",PD_EVERY_X_DAY_RULE);
+					if(GetField_CString(hContext,"PHDATE",&csTmp)){
+						PutField_CString(hTxn,"settlement_date",csTmp);
+					}
+DEBUGLOG(("Authorize::Call DBAutoSettlementExecLog:Add\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBAutoSettlementExecLog","Add");
+					iRet = (unsigned long)((*DBObjPtr)(hTxn));
+
+				}
+				*/
+
+				/* TODO here */
+				/* check the system parameter "SP121MAP"
+				 * If 'Y' - 1. get pay_method by service_code from service_pay_method table,
+				 * 	  - 2. insert merchant_id with pay_method to merchant_pay_method_table.
+				 * Else - do nothing.
+				 */
+
+				if (iRet == PD_OK) {
+					char*	csValueTmp;
+					csValueTmp = (char*) malloc (128);
+DEBUGLOG(("Authorize::Call DBSystemParameter FindCode\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+					if ((unsigned long)(DBObjPtr)(PD_SERVICE_PAY_METHOD,csValueTmp) == FOUND) {
+DEBUGLOG(("Authorize::%s [%s]\n",PD_SERVICE_PAY_METHOD,csValueTmp));
+
+						if(strcmp(csValueTmp,"Y")==0){
+							iCnt = 0;
+DEBUGLOG(("Authorize::Call DBServicePayMethod FindPayMethod\n"));
+							DBObjPtr = CreateObj(DBPtr,"DBServicePayMethod","FindPayMethod");
+							if ((unsigned long)(DBObjPtr)(csService,rRecordSet) == PD_OK) {
+								hRec = RecordSet_GetFirst(rRecordSet);
+								if (GetField_CString(hRec,"pay_method",&csTmp)) {
+									iCnt++;
+								}
+								if(iCnt==1){
+DEBUGLOG(("Authorize::pay_method [%s]\n",csTmp));
+DEBUGLOG(("Authorize::Call DBMerchantPayMethod:Add\n"));
+									PutField_CString(hTxn,"pay_method",csTmp);
+									DBObjPtr = CreateObj(DBPtr,"DBMerchantPayMethod","Add");
+									if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantPayMethod:Add Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBMerchantPayMethod:Add Failed\n");
+										iDtlRet = INT_ERR;
+										iRet = INT_ERR;
+                							}
+			                				else {
+DEBUGLOG(("Authorize::DBMerchantPayMethod:Add Succ\n"));
+                							}
+								}
+							}
+							if(iCnt==0){
+								iDtlRet = INT_ERR;
+								iRet = INT_ERR;
+DEBUGLOG(("Authorize() cannot find pay_method from service[%s]\n",csService));
+ERRLOG(("TxnWebOnUsMBA::Authorize() cannot find pay_method from service\n"));
+							}
+						}else {
+							//csValueTmp not "Y" ->  do nothing
+						}
+					}
+					else {
+						iDtlRet = INT_ERR;
+						iRet = INT_ERR;
+ERRLOG("Authorize::DBSystemParameter FindCode fail!!!\n");
+					}
+					FREE_ME(csValueTmp);
+				}
+			}
+			else if (iDtlRet == PD_OK && cAction == PD_ACTION_UPDATE) {
+
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBMerchantBalAcct:UpdateMerchantBalAcctStatus\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","UpdateMerchantBalAcctStatus");
+                                        if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantBalAcct:UpdateMerchantBalAcctStatus Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBMerchantBalAcct:UpdateMerchantBalAcctStatus Failed\n");
+
+                                                iDtlRet = INT_ERR;
+                                                iRet = INT_ERR;
+                                        }
+                                        else {
+DEBUGLOG(("Authorize::DBMerchantBalAcct:UpdateMerchantBalAcctStatus Succ\n"));
+                                        }
+
+
+				}
+			}
+
+			
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "ret_%d", i+1);
+DEBUGLOG(("Authorize::() [%s] = [%d]\n",csTag, iDtlRet));
+			PutField_Int(hResponse, csTag ,iDtlRet);
+
+			if (iDtlRet != PD_OK) {
+				if (iDtlRet == INT_CURRENCY_ID_NOT_MATCH) {
+					iRet = INT_CURRENCY_ID_NOT_MATCH;
+				} else if (iDtlRet == INT_INVALID_BANK_ID) {
+					iRet = INT_INVALID_BANK_ID;
+				} else {
+					iRet = INT_ERR;
+				}
+                		PutField_Int(hContext,"internal_error",iRet);
+			}
+
+		}
+	}
+
+
+        hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+	FREE_ME(hTxnGet);
+
+	FREE_ME(csCountry);
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+
+DEBUGLOG(("TxnMgtByUsMBA Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

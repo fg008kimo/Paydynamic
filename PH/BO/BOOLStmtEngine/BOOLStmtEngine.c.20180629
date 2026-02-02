@@ -1,0 +1,1700 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/11/05              David Wong
+Add record locking                                 2015/08/06              David Wong
+Add special_handling "send_alert"                  2015/10/30              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "dbutility.h"
+#include "BOOLStmtEngine.h"
+#include "myrecordset.h"
+#include "myhash.h"
+#include "math.h"
+#include <time.h>
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+
+void BOOLStmtEngine(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int ProcessMatching(hash_t *hContext);
+int DoAction(hash_t *hContext, hash_t *hMatchRule);
+int TmpSkip(hash_t *hMatchFilter);
+int CheckKeywords(hash_t *hMatchFilter);
+int SplitAmount(hash_t *hContext, hash_t *hMatchRule, hash_t *hMatchFilter);
+
+
+int ProcessUnknownMatching(hash_t *hContext) {
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csTmp;
+	int i;
+	int iTmp;
+	double dTmp = 0.0, dTmp2 = 0.0;
+	char *csTag = (char*) malloc (64);
+
+	int iMultiMatchCount;
+	char *csBaidTxnId = NULL;
+	char *csSecondBaidTxnId = NULL;
+	char *csPspId = NULL;
+	char *csBankAcctType = NULL;
+	char *csFirstBaidTxnCode = NULL;
+	char *csSecondBaidTxnCode = NULL;
+	char *csNextEngineAction = NULL;
+	char *csNextEngineTxnCode = NULL;
+	char *csNextEngineReconType = NULL;
+
+	hash_t *hTxnDtl;
+	hTxnDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnDtl, 0);
+
+	hash_t *hStmtDtl;
+	hStmtDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hStmtDtl, 0);
+
+	recordset_t *rKeywords;
+	rKeywords = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rKeywords, 0);
+
+	hash_t *hRec = (hash_t*) malloc (sizeof(hash_t));
+
+	// get baid_txn_id
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hContext, "baid_txn_id", &csBaidTxnId)) {
+DEBUGLOG(("ProcessUnknownMatching:: baid_txn_id not found\n"));
+			iRet = PD_ERR;
+		} else {
+DEBUGLOG(("ProcessUnknownMatching:: baid_txn_id = [%s]\n", csBaidTxnId));
+		}
+	}
+
+	// get baid txn detail
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::GetBaidTxn()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, hTxnDtl);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::GetBaidTxn() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get pid
+			if (!GetField_CString(hTxnDtl, "pid", &csPspId)) {
+DEBUGLOG(("ProcessUnknownMatching:: pid not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessUnknownMatching:: pid = [%s]\n", csPspId));
+			}
+		}
+	}
+
+	// get statement details by baid txn id
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLStatement::GetStmtDtlByBAIDTxnId()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtlByBAIDTxnId");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, hStmtDtl);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLStatement::GetStmtDtlByBAIDTxnId() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// format_id
+			if (!GetField_CString(hStmtDtl, "format_id", &csTmp)) {
+DEBUGLOG(("ProcessUnknownMatching:: format_id not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessUnknownMatching:: format_id = [%s]\n", csTmp));
+			}
+
+			// int_bank_code
+			if (iRet == PD_OK) {
+				if (!GetField_CString(hStmtDtl, "int_bank_code", &csTmp)) {
+DEBUGLOG(("ProcessUnknownMatching:: int_bank_code not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("ProcessUnknownMatching:: int_bank_code = [%s]\n", csTmp));
+				}
+			}
+
+			// acct_ccy
+			if (iRet == PD_OK) {
+				if (!GetField_CString(hStmtDtl, "txn_ccy", &csTmp)) {
+DEBUGLOG(("ProcessUnknownMatching:: txn_ccy not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("ProcessUnknownMatching:: txn_ccy = [%s]\n", csTmp));
+					PutField_CString(hStmtDtl, "acct_ccy", csTmp);
+				}
+			}
+		}
+	}
+
+	// get bank_acct_type
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLPspDetail::GetPspDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csPspId, hStmtDtl);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLPspDetail::GetPspDetail() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get bank_acct_type
+			if (!GetField_CString(hStmtDtl, "bank_acct_type", &csBankAcctType)) {
+DEBUGLOG(("ProcessUnknownMatching:: bank_acct_type not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessUnknownMatching:: bank_acct_type = [%s]\n", csBankAcctType));
+			}
+		}
+	}
+
+	// get keywords
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLStmtFormat::GetTxnCodeKeywords()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtFormat", "GetTxnCodeKeywords");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hStmtDtl, rKeywords);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLStmtFormat::GetTxnCodeKeywords() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// check keywords
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call BOOLBankStmt::CheckKeywords()\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLBankStmt", "CheckKeywords");
+		iTmpRet = (unsigned long)(*BOObjPtr)(hStmtDtl, rKeywords);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessUnknownMatching:: call BOOLBankStmt::CheckKeywords() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			GetField_Int(hStmtDtl, "multi_match_cnt", &iMultiMatchCount);
+DEBUGLOG(("ProcessUnknownMatching:: multi_match_cnt = [%d]\n", iMultiMatchCount));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		hash_destroy(hTxnDtl);
+		hash_init(hTxnDtl, 0);
+
+		PutField_CString(hTxnDtl, "trigger_type", PD_TRIGGER_SYSTEM);
+		PutField_CString(hTxnDtl, "input_channel", PD_CHANNEL_OMT);
+		PutField_CString(hTxnDtl, "bank_acct_type", csBankAcctType);
+		PutField_CString(hTxnDtl, "baid_txn_id_1", csBaidTxnId);
+
+		// call ProcessMatching with each keyword
+		for (i = 0; i < iMultiMatchCount; i++) {
+			sprintf(csTag, "format_txn_code_%d", i);
+
+			if (!GetField_CString(hStmtDtl, csTag, &csTmp)) {
+DEBUGLOG(("ProcessUnknownMatching:: format_txn_code not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+DEBUGLOG(("ProcessUnknownMatching:: format_txn_code = [%s]\n", csTmp));
+				if (!strcmp(csTmp, PD_TXN_CODE_UNKNOWN_CREDIT) || !strcmp(csTmp, PD_TXN_CODE_UNKNOWN_DEBIT)) {
+DEBUGLOG(("ProcessUnknownMatching:: unknown credit/debit, skip calling engines\n"));
+					continue;
+				}
+				PutField_CString(hTxnDtl, "baid_txn_code", csTmp);
+//				PutField_CString(hContext, "baid_txn_code", csTmp);
+			}
+
+DEBUGLOG(("ProcessUnknownMatching:: call ProcessMatching()\n"));
+			iRet = ProcessMatching(hTxnDtl);
+			if (iRet == PD_FOUND) {
+DEBUGLOG(("ProcessUnknownMatching:: call ProcessMatching() success, found\n"));
+				// first_baid_txn_code
+				if (GetField_CString(hTxnDtl, "first_baid_txn_code", &csFirstBaidTxnCode)) {
+					PutField_CString(hContext, "first_baid_txn_code", csFirstBaidTxnCode);
+				}
+				// second_baid_txn_code
+				if (GetField_CString(hTxnDtl, "second_baid_txn_code", &csSecondBaidTxnCode)) {
+					PutField_CString(hContext, "second_baid_txn_code", csSecondBaidTxnCode);
+				}
+				// next_engine_action
+				if (GetField_CString(hTxnDtl, "next_engine_action", &csNextEngineAction)) {
+					PutField_CString(hContext, "next_engine_action", csNextEngineAction);
+				}
+				// next_engine_txn_code
+				if (GetField_CString(hTxnDtl, "next_engine_txn_code", &csNextEngineTxnCode)) {
+					PutField_CString(hContext, "next_engine_txn_code", csNextEngineTxnCode);
+				}
+				// next_engine_recon_type
+				if (GetField_CString(hTxnDtl, "next_engine_recon_type", &csNextEngineReconType)) {
+					PutField_CString(hContext, "next_engine_recon_type", csNextEngineReconType);
+				}
+				// baid_txn
+				if (GetField_CString(hTxnDtl, "baid_txn_id_2", &csSecondBaidTxnId)) {
+					PutField_CString(hContext, "baid_txn_id_2", csSecondBaidTxnId);
+				}
+				// psp txn
+				if (GetField_CString(hTxnDtl, "psp_txn_id_1", &csTmp)) {
+					PutField_CString(hContext, "psp_txn_id_1", csTmp);
+				}
+				if (GetField_CString(hTxnDtl, "psp_txn_id_2", &csTmp)) {
+					PutField_CString(hContext, "psp_txn_id_2", csTmp);
+				}
+				break;
+			} else if (iRet != PD_NOT_FOUND) {
+DEBUGLOG(("ProcessUnknownMatching:: call ProcessMatching() failed\n"));
+				break;
+			} else {
+DEBUGLOG(("ProcessUnknownMatching:: call ProcessMatching() success, not found\n"));
+			}
+		}
+
+		// Update BAID Txn if found
+		if (iRet == PD_FOUND) {
+			hash_init(hRec, 0);
+
+			PutField_CString(hRec, "txn_seq", csBaidTxnId);
+			PutField_CString(hRec, "new_txn_code", csFirstBaidTxnCode);
+			PutField_Char(hRec, "classified_status", PD_CLASSIFIED);
+			PutField_CString(hRec, "update_user", PD_UPDATE_USER);
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+			if ((unsigned long)(*DBObjPtr)(hRec) != PD_OK) {
+				iRet = PD_ERR;
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::Update() FAILURE!!!\n"));
+ERRLOG("BOOLStmtEngine:: ProcessUnknownMatching:: call DBOLBAIDTxn::Update() FAILURE!!!\n");
+			}
+
+			hash_destroy(hRec);
+
+			if (iRet == PD_FOUND) {
+				if (csSecondBaidTxnCode != NULL && csSecondBaidTxnId != NULL) {
+					hash_init(hRec, 0);
+
+					PutField_CString(hRec, "txn_seq", csSecondBaidTxnId);
+					PutField_CString(hRec, "new_txn_code", csSecondBaidTxnCode);
+					PutField_Char(hRec, "classified_status", PD_CLASSIFIED);
+					PutField_CString(hRec, "update_user", PD_UPDATE_USER);
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+					if ((unsigned long)(*DBObjPtr)(hRec) != PD_OK) {
+						iRet = PD_ERR;
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::Update() FAILURE!!!\n"));
+ERRLOG("BOOLStmtEngine:: ProcessUnknownMatching:: call DBOLBAIDTxn::Update() FAILURE!!!\n");
+					}
+
+					hash_destroy(hRec);
+				} else if ((!strcmp(csFirstBaidTxnCode, PD_TXN_CODE_RETURNED_DEPOSIT)) && csSecondBaidTxnId != NULL) {
+					hash_init(hRec, 0);
+
+					PutField_CString(hRec, "txn_seq", csSecondBaidTxnId);
+					PutField_Int(hRec, "pid_txn_hold_ind", PD_TRUE);
+					PutField_CString(hRec, "update_user", PD_UPDATE_USER);
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+					if ((unsigned long)(*DBObjPtr)(hRec) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::Update() FAILURE!!!\n"));
+ERRLOG("BOOLStmtEngine:: ProcessUnknownMatching:: call DBOLBAIDTxn::Update() FAILURE!!!\n");
+					}
+
+					hash_destroy(hRec);
+				}
+			}
+		}
+
+		// call TxnEngine if found
+		if (iRet == PD_FOUND) {
+
+			if (GetField_Int(hTxnDtl, "get_baid_txn_2_charge", &iTmp)) {
+				hash_init(hRec, 0);
+
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::GetBaidTxn()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+				if ((unsigned long)(*DBObjPtr)(csSecondBaidTxnId, hRec) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLBAIDTxn::GetBaidTxn() FAILURE!!!\n"));
+ERRLOG("BOOLStmtEngine:: ProcessUnknownMatching:: call DBOLBAIDTxn::GetBaidTxn() FAILURE!!!\n");
+				} else {
+					GetField_Double(hRec, "txn_amt", &dTmp);
+					GetField_Double(hRec, "est_net_amount", &dTmp2);
+					PutField_Double(hTxnDtl, "bank_charge", dTmp - dTmp2);
+				}
+
+				hash_destroy(hRec);
+			}
+
+			hash_init(hRec, 0);
+
+/*
+			// get txn_grp
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLTxnEngineTxnCodeGrp::GetTxnGroup()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineTxnCodeGrp", "GetTxnGroup");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csNextEngineTxnCode, hRec);
+			if (iTmpRet != PD_OK) {
+				iRet = PD_ERR;
+DEBUGLOG(("ProcessUnknownMatching:: call DBOLTxnEngineTxnCodeGrp::GetTxnGroup() FAILURE!!!\n"));
+ERRLOG("BOOLStmtEngine:: ProcessUnknownMatching:: call DBOLTxnEngineTxnCodeGrp::GetTxnGroup() FAILURE!!!\n");
+			} else {
+				if (GetField_CString(hRec, "txn_grp", &csTmp)) {
+DEBUGLOG(("ProcessUnknownMatching:: txn_grp = [%s]\n", csTmp));
+					PutField_CString(hRec, "bank_stmt_type", csTmp);
+					RemoveField_CString(hRec, "txn_grp");
+				}
+			}
+*/
+
+			// call txn engine
+			if (iRet == PD_FOUND) {
+				// activity
+				PutField_CString(hRec, "activity", csNextEngineAction);
+DEBUGLOG(("ProcessUnknownMatching:: activity = [%s]\n", csNextEngineAction));
+
+				// bank_stmt_type
+				PutField_CString(hRec, "bank_stmt_type", csNextEngineTxnCode);
+DEBUGLOG(("ProcessUnknownMatching:: bank_stmt_type = [%s]\n", csNextEngineTxnCode));
+
+				// recon_type
+				PutField_CString(hRec, "recon_type", csNextEngineReconType);
+DEBUGLOG(("ProcessUnknownMatching:: recon_type = [%s]\n", csNextEngineReconType));
+
+				// trigger_type
+				PutField_CString(hRec, "trigger_type", PD_TRIGGER_SYSTEM);
+DEBUGLOG(("ProcessUnknownMatching:: trigger_type = [%s]\n", PD_TRIGGER_SYSTEM));
+
+				// input_channel
+				PutField_CString(hRec, "input_channel", PD_CHANNEL_OMT);
+DEBUGLOG(("ProcessUnknownMatching:: input_channel = [%s]\n", PD_CHANNEL_OMT));
+
+				// baid txn
+				PutField_Int(hRec, "baid_txn_cnt", 1);
+				PutField_CString(hRec, "baid_txn_id_0", csBaidTxnId);
+DEBUGLOG(("ProcessUnknownMatching:: baid_txn_id_0 = [%s]\n", csBaidTxnId));
+				if (GetField_CString(hTxnDtl, "baid_txn_id_2", &csTmp)) {
+					PutField_Int(hRec, "baid_txn_cnt", 2);
+					// need to reverse baid_txn_id 0 & 1 for RETURN
+					if (!strcmp(csNextEngineReconType, PD_ENGINE_RECON_RETURN)) {
+						PutField_CString(hRec, "baid_txn_id_1", csBaidTxnId);
+						PutField_CString(hRec, "baid_txn_id_0", csTmp);
+					} else {
+						PutField_CString(hRec, "baid_txn_id_1", csTmp);
+					}
+DEBUGLOG(("ProcessUnknownMatching:: baid_txn_id_1 = [%s]\n", csTmp));
+				}
+
+				// psp txn
+				PutField_Int(hRec, "txn_cnt", 0);
+				if (!strcmp(csNextEngineTxnCode, PD_CHARGEBACK_REVERSAL)) {
+DEBUGLOG(("ProcessUnknownMatching:: DCR relate with VOD case\n"));
+				} else {                         
+					if (GetField_CString(hTxnDtl, "psp_txn_id_1", &csTmp)) {
+						PutField_Int(hRec, "txn_cnt", 1);
+						PutField_CString(hRec, "txn_id_0", csTmp);
+DEBUGLOG(("ProcessUnknownMatching:: txn_id_0 = [%s]\n", csTmp));
+					}
+					if (GetField_CString(hTxnDtl, "psp_txn_id_2", &csTmp)) {
+						PutField_Int(hRec, "txn_cnt", 2);
+						PutField_CString(hRec, "txn_id_1", csTmp);
+DEBUGLOG(("ProcessUnknownMatching:: txn_id_1 = [%s]\n", csTmp));
+					}
+				}
+
+				// bank charge
+				if (GetField_Double(hTxnDtl, "bank_charge", &dTmp)) {
+					PutField_Int(hRec, "include_bank_charge", 1);
+					PutField_Double(hRec, "bank_charge", dTmp);
+				}
+
+DEBUGLOG(("ProcessUnknownMatching:: call BOOLTxnEngine::DoAction()\n"));
+				BOObjPtr = CreateObj(BOPtr, "BOOLTxnEngine", "DoAction");
+				iTmpRet = (unsigned long)(*BOObjPtr)(hRec);
+				if (iTmpRet != PD_OK) {
+					iRet = PD_ERR;
+DEBUGLOG(("ProcessUnknownMatching:: call BOOLTxnEngine::DoAction() FAILURE!!!\n"));
+ERRLOG("BOOLStmtEngine:: ProcessUnknownMatching:: call BOOLTxnEngine::DoAction() FAILURE!!!\n");
+				} else {
+					// special handling for deposit chargeback reversal
+					if (!strcmp(csNextEngineTxnCode, PD_CHARGEBACK_REVERSAL)) {
+						char *csVodTxnId = NULL;
+						char *csDcrBaidTxnId = NULL;
+						char csDcrTxnId[PD_TXN_SEQ_LEN + 1];
+
+						if (GetField_CString(hTxnDtl, "psp_txn_id_1", &csVodTxnId)) {
+DEBUGLOG(("ProcessUnknownMatching:: VOD txn id = [%s]\n", csVodTxnId));
+							// get DCR txn id
+							GetField_CString(hTxnDtl, "baid_txn_id_1", &csDcrBaidTxnId);
+DEBUGLOG(("ProcessUnknownMatching:: DCR baid txn id = [%s]\n", csDcrBaidTxnId));
+							DBObjPtr = CreateObj(DBPtr, "DBOLStmtTxnRelation", "GetTxnIdByStmtTxnId");
+							iTmpRet = (unsigned long)(*DBObjPtr)(csDcrBaidTxnId, csDcrTxnId);
+DEBUGLOG(("ProcessUnknownMatching:: DCR txn id = [%s]\n", csDcrTxnId));
+
+							// add DCR VOD relation
+							hash_t *hTmp;
+							hTmp = (hash_t*) malloc (sizeof(hash_t));
+							hash_init(hTmp, 0);
+
+							PutField_Char(hTmp, "party", PD_TYPE_PSP);
+							PutField_CString(hTmp, "p1_txn_id", csDcrTxnId);
+							PutField_CString(hTmp, "p2_txn_id", csVodTxnId);
+							PutField_Char(hTmp, "txn_level", PD_TXN_LEVEL);
+							PutField_Char(hTmp, "relation_type", PD_REL_LINKAGE);
+							PutField_CString(hTmp, "create_user", PD_UPDATE_USER);
+DEBUGLOG(("MatchStmtWithSms() call DBOLTxnRelationSpc::Add()\n"));
+							DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelationSpc", "Add");
+							iTmpRet = (unsigned long)(*DBObjPtr)(hTmp);
+
+							hash_destroy(hTmp);
+							FREE_ME(hTmp);
+						}
+					}
+				}
+			}
+
+			hash_destroy(hRec);
+		}
+	}
+
+	hash_destroy(hTxnDtl);
+	FREE_ME(hTxnDtl);
+	hash_destroy(hStmtDtl);
+	FREE_ME(hStmtDtl);
+	RecordSet_Destroy(rKeywords);
+	FREE_ME(rKeywords);
+	FREE_ME(hRec);
+
+DEBUGLOG(("ProcessUnknownMatching:: exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int ProcessMatching(hash_t *hContext) {
+	int iRet = PD_OK;
+	int iTmpRet;
+	int iTmp;
+	char *csTmp;
+	double dTmp = 0.0;
+
+//	char *csBaidTxnId;
+//	char csBaidTxnId[PD_TXN_SEQ_LEN + 1];
+	char *csFirstBaidTxnCode;
+	char *csSecondBaidTxnCode;
+	char *csNextEngineAction;
+	char *csNextEngineTxnCode;
+	char *csNextEngineReconType;
+	char *csFailedBaidTxnCode;
+	int iRuleId;
+	int iSubRuleId;
+//	int iActionSeq;
+	char *csActionType;
+	int iFilterId;
+	int iExitOnError;
+	int iMatched;
+
+//	int iCnt, iExitSubRule, iSkipOnce;
+//	int iLastSubRuleId;
+//	int iLastActionSeq;
+//	char csLastActionType[PD_ENGINE_ACTION_LEN + 1];
+
+	hash_t *hMatchEngine;
+	hMatchEngine = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMatchEngine, 0);
+
+	recordset_t *rMatchRule;
+	rMatchRule = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchRule, 0);
+	hash_t *hMatchRule;
+
+	recordset_t *rMatchSubRule;
+	rMatchSubRule = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchSubRule, 0);
+	hash_t *hMatchSubRule;
+
+/*
+	// get baid_txn_id_1
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hContext, "baid_txn_id_1", &csBaidTxnId)) {
+DEBUGLOG(("ProcessMatching:: baid_txn_id_1 not found\n"));
+			iRet = PD_ERR;
+		} else {
+DEBUGLOG(("ProcessMatching:: baid_txn_id_1 = [%s]\n", csBaidTxnId));
+		}
+	}
+*/
+
+/*
+	// lock baid txn
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLBAIDTxn::MatchRespTxnNoWait()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxnNoWait");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, PD_COMPLETE);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("ProcessMatching:: call DBOLBAIDTxn::MatchRespTxnNoWait() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+*/
+
+	// get stmt match engine
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStmtMatchEngine::GetStmtMatchEngine()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtMatchEngine", "GetStmtMatchEngine");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hContext, hMatchEngine);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStmtMatchEngine::GetStmtMatchEngine() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get rule_id
+			if (!GetField_Int(hMatchEngine, "rule_id", &iRuleId)) {
+DEBUGLOG(("ProcessMatching:: rule_id not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessMatching:: rule_id = [%d]\n", iRuleId));
+				PutField_Int(hContext, "rule_id", iRuleId);
+			}
+
+			// get failed_baid_txn_code (optional)
+			if (!GetField_CString(hMatchEngine, "failed_baid_txn_code", &csFailedBaidTxnCode)) {
+DEBUGLOG(("ProcessMatching:: failed_baid_txn_code not found\n"));	
+				if (GetField_CString(hContext, "failed_baid_txn_code", &csTmp)) {
+					RemoveField_CString(hContext, "failed_baid_txn_code");
+				}
+			} else {
+DEBUGLOG(("ProcessMatching:: failed_baid_txn_code = [%s]\n", csFailedBaidTxnCode));
+				PutField_CString(hContext, "failed_baid_txn_code", csFailedBaidTxnCode);
+			}
+		}
+	}
+
+	// get stmt match rule
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStmtMatchRuleGroup::GetStmtMatchRule()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtMatchRuleGroup", "GetStmtMatchRule");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hContext, rMatchRule);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStmtMatchRuleGroup::GetStmtMatchRule() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// loop match rule
+	if (iRet == PD_OK) {
+		iMatched = 0;
+		hMatchRule = RecordSet_GetFirst(rMatchRule);
+		while (iRet == PD_OK && hMatchRule) {
+			// reset hash value
+			if (GetField_CString(hContext, "second_baid_txn_code", &csTmp)) {
+				RemoveField_CString(hContext, "second_baid_txn_code");
+			}
+			if (GetField_Double(hContext, "est_net_amount", &dTmp)) {
+				RemoveField_Double(hContext, "est_net_amount");
+			}
+			if (GetField_Double(hContext, "bank_charge", &dTmp)) {
+				RemoveField_Double(hContext, "bank_charge");
+			}
+			if (GetField_Int(hContext, "get_baid_txn_2_charge", &iTmp)) {
+				RemoveField_Int(hContext, "get_baid_txn_2_charge");
+			}
+			if (GetField_CString(hContext, "baid_txn_id_2", &csTmp)) {
+				RemoveField_CString(hContext, "baid_txn_id_2");
+			}
+			if (GetField_CString(hContext, "psp_txn_id_1", &csTmp)) {
+				RemoveField_CString(hContext, "psp_txn_id_1");
+			}
+			if (GetField_CString(hContext, "psp_txn_id_2", &csTmp)) {
+				RemoveField_CString(hContext, "psp_txn_id_2");
+			}
+
+			// get sub_rule_id
+			if (!GetField_Int(hMatchRule, "sub_rule_id", &iSubRuleId)) {
+DEBUGLOG(("ProcessMatching:: sub_rule_id not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessMatching:: sub_rule_id = [%d]\n", iSubRuleId));
+				PutField_Int(hContext, "sub_rule_id", iSubRuleId);
+			}
+
+			// get first_baid_txn_code
+			if (!GetField_CString(hMatchRule, "first_baid_txn_code", &csFirstBaidTxnCode)) {
+DEBUGLOG(("ProcessMatching:: first_baid_txn_code not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessMatching:: first_baid_txn_code = [%s]\n", csFirstBaidTxnCode));
+				PutField_CString(hContext, "first_baid_txn_code", csFirstBaidTxnCode);
+			}
+
+			// get second_baid_txn_code (optional)
+			if (!GetField_CString(hMatchRule, "second_baid_txn_code", &csSecondBaidTxnCode)) {
+DEBUGLOG(("ProcessMatching:: second_baid_txn_code not found\n"));
+			} else {
+DEBUGLOG(("ProcessMatching:: second_baid_txn_code = [%s]\n", csSecondBaidTxnCode));
+				PutField_CString(hContext, "second_baid_txn_code", csSecondBaidTxnCode);
+			}
+
+			// get next_engine_action
+			if (!GetField_CString(hMatchRule, "next_engine_action", &csNextEngineAction)) {
+DEBUGLOG(("ProcessMatching:: next_engine_action not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessMatching:: next_engine_action = [%s]\n", csNextEngineAction));
+				PutField_CString(hContext, "next_engine_action", csNextEngineAction);
+			}
+
+			// get next_engine_txn_code
+			if (!GetField_CString(hMatchRule, "next_engine_txn_code", &csNextEngineTxnCode)) {
+DEBUGLOG(("ProcessMatching:: next_engine_txn_code not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessMatching:: next_engine_txn_code = [%s]\n", csNextEngineTxnCode));
+				PutField_CString(hContext, "next_engine_txn_code", csNextEngineTxnCode);
+			}
+
+			// get next_engine_recon_type
+			if (!GetField_CString(hMatchRule, "next_engine_recon_type", &csNextEngineReconType)) {
+DEBUGLOG(("ProcessMatching:: next_engine_recon_type not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("ProcessMatching:: next_engine_recon_type = [%s]\n", csNextEngineReconType));
+				PutField_CString(hContext, "next_engine_recon_type", csNextEngineReconType);
+			}
+
+			RecordSet_Destroy(rMatchSubRule);
+			recordset_init(rMatchSubRule, 0);
+
+			PutField_Int(hMatchRule, "rule_id", iRuleId);
+DEBUGLOG(("ProcessMatching:: call DBOLStmtMatchRule::GetStmtMatchSubRule()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLStmtMatchRule", "GetStmtMatchSubRule");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hMatchRule, rMatchSubRule);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStmtMatchRule::GetStmtMatchSubRule() failed\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// loop match sub rule
+			hMatchSubRule = RecordSet_GetFirst(rMatchSubRule);
+			while (iRet == PD_OK && hMatchSubRule) {
+				// get action_type
+				if (!GetField_CString(hMatchSubRule, "action_type", &csActionType)) {
+DEBUGLOG(("ProcessMatching:: action_type not found\n"));
+					iRet = PD_ERR;
+					break;
+				} else {
+DEBUGLOG(("ProcessMatching:: action_type = [%s]\n", csActionType));
+				}
+
+				// get action_filter_id
+				if (!GetField_Int(hMatchSubRule, "action_filter_id", &iFilterId)) {
+DEBUGLOG(("ProcessMatching:: action_filter_id not found\n"));
+					iRet = PD_ERR;
+					break;
+				} else {
+DEBUGLOG(("ProcessMatching:: action_filter_id = [%d]\n", iFilterId));
+				}
+
+				// get exit_on_error
+				if (!GetField_Int(hMatchSubRule, "exit_on_error", &iExitOnError)) {
+DEBUGLOG(("ProcessMatching:: exit_on_error not found\n"));
+					iRet = PD_ERR;
+					break;
+				} else {
+DEBUGLOG(("ProcessMatching:: exit_on_error = [%d]\n", iExitOnError));
+				}
+
+				// process action_type
+				if (!strcmp(csActionType, PD_NO_ACTION_TYPE)) {
+					iTmpRet = PD_FOUND;
+				} else {
+					iTmpRet = DoAction(hContext, hMatchSubRule);
+				}
+
+				if (iTmpRet == PD_FOUND) {
+					iMatched = 1;
+				} else if (iTmpRet == PD_NOT_FOUND) {
+					if (iExitOnError) {
+						iMatched = 0;
+						break;
+					}
+				} else {
+					iRet = PD_ERR;
+					break;
+				}
+
+				hMatchSubRule = RecordSet_GetNext(rMatchSubRule);
+			}
+
+			if (iRet == PD_OK) {
+				if (iMatched) {
+					break;
+				}
+				hMatchRule = RecordSet_GetNext(rMatchRule);
+			}
+		}
+
+		if (iRet == PD_OK) {
+			if (iMatched) {
+DEBUGLOG(("ProcessMatching:: statement matched!\n"));
+				iRet = PD_FOUND;
+
+
+				// lock txn log 1
+				if (GetField_CString(hContext, "psp_txn_id_1", &csTmp)) {
+/*
+					// special handling for DCR finding VOD
+					GetField_CString(hContext, "first_baid_txn_code", &csFirstBaidTxnCode);
+					if (!strcmp(csFirstBaidTxnCode, PD_DEPOSIT_CHARGEBACK_REVERSAL_BY_BANK) && !GetField_CString(hContext, "second_baid_txn_code", &csSecondBaidTxnCode)) {
+DEBUGLOG(("Authorize:: DCR finding VOD special case\n"));
+
+						// get VOD BAID Txn ID
+						DBObjPtr = CreateObj(DBPtr, "DBOLStmtTxnRelation", "GetStmtTxnIdByTxnId");
+						iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, csBaidTxnId);
+DEBUGLOG(("Authorize:: VOD BAID Txn ID = [%s]\n", csBaidTxnId));
+
+						// add DCR VOD relation
+						hash_t *hTmp;
+						hTmp = (hash_t*) malloc (sizeof(hash_t));
+						hash_init(hTmp, 0);
+
+						PutField_Char(hTmp, "party", PD_TYPE_PSP);
+						GetField_CString(hContext, "baid_txn_id_1", &csTmp);
+						PutField_CString(hTmp, "p1_txn_id", csTmp);
+						PutField_CString(hTmp, "p2_txn_id", csBaidTxnId);
+						PutField_Char(hTmp, "txn_level", PD_STMT_LEVEL);
+						PutField_Char(hTmp, "relation_type", PD_REL_LINKAGE);
+						PutField_CString(hTmp, "create_user", PD_UPDATE_USER);
+
+DEBUGLOG(("Authorize:: call DBOLTxnRelationSpc::Add()\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelationSpc", "Add");
+						iTmpRet = (unsigned long)(*DBObjPtr)(hTmp);
+						if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLTxnRelationSpc::Add() failed\n"));
+							iRet = PD_NOT_FOUND;
+						}
+
+						hash_destroy(hTmp);
+						FREE_ME(hTmp);
+
+						RemoveField_CString(hContext, "psp_txn_id_1");
+					} else {
+*/
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait()\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnIdForUpdateNoWait");
+						iTmpRet = (unsigned long)(*DBObjPtr)(csTmp);
+						if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait() failed\n"));
+							iRet = PD_NOT_FOUND;
+						}
+/*
+					}
+*/
+                                }
+
+				// lock txn log 2
+				if (GetField_CString(hContext, "psp_txn_id_2", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnIdForUpdateNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp);
+					if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+                                }
+
+				// lock baid txn 1
+				if (GetField_CString(hContext, "baid_txn_id_1", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxnNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, PD_COMPLETE);
+					if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+				}
+
+				// lock baid txn 2
+				if (GetField_CString(hContext, "baid_txn_id_2", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxnNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, PD_COMPLETE);
+					if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+				}
+			} else {
+DEBUGLOG(("ProcessMatching:: statement not matched!\n"));
+				iRet = PD_NOT_FOUND;
+			}
+		}
+	}
+
+/*
+	// loop match rule
+	if (iRet == PD_OK) {
+		iCnt = 0;
+		iMatched = 0;
+		iExitSubRule = 0;
+
+		hMatchRule = RecordSet_GetFirst(rMatchRule);
+		while (hMatchRule) {
+			iSkipOnce = 0;
+			iCnt++;
+
+			if (iCnt != 1) {
+				iLastSubRuleId = iSubRuleId;
+				iLastActionSeq = iActionSeq;
+				strcpy(csLastActionType, csActionType);
+			}
+
+			// get sub_rule_id
+			if (!GetField_Int(hMatchRule, "sub_rule_id", &iSubRuleId)) {
+DEBUGLOG(("ProcessMatching:: sub_rule_id not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+DEBUGLOG(("ProcessMatching:: sub_rule_id = [%d]\n", iSubRuleId));
+			}
+
+			// get action_seq
+			if (!GetField_Int(hMatchRule, "action_seq", &iActionSeq)) {
+DEBUGLOG(("ProcessMatching:: action_seq not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+DEBUGLOG(("ProcessMatching:: action_seq = [%d]\n", iActionSeq));
+			}
+
+			// get action_type
+			if (!GetField_CString(hMatchRule, "action_type", &csActionType)) {
+DEBUGLOG(("ProcessMatching:: action_type not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+DEBUGLOG(("ProcessMatching:: action_type = [%s]\n", csActionType));
+			}
+
+			// get action_filter_id
+			if (!GetField_Int(hMatchRule, "action_filter_id", &iFilterId)) {
+DEBUGLOG(("ProcessMatching:: action_filter_id not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+DEBUGLOG(("ProcessMatching:: action_filter_id = [%d]\n", iFilterId));
+			}
+
+			// get exit_on_error
+			if (!GetField_Int(hMatchRule, "exit_on_error", &iExitOnError)) {
+DEBUGLOG(("ProcessMatching:: exit_on_error not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+DEBUGLOG(("ProcessMatching:: exit_on_error = [%d]\n", iExitOnError));
+			}
+
+			if (iCnt != 1) {
+				if (iSubRuleId != iLastSubRuleId) {
+					iExitSubRule = 0;
+					// check last sub_rule result
+					if (iMatched) {
+DEBUGLOG(("ProcessMatching:: last sub_rule matched! skip remaining sub_rule(s)\n"));
+						break;
+					}
+				} else if (iExitSubRule) {
+					// skip this sub-rule
+DEBUGLOG(("ProcessMatching:: this sub-rule failed! skip\n"));
+					hMatchRule = RecordSet_GetNext(rMatchRule);
+					continue;
+				}
+			}
+
+			// process action_type
+			if (!strcmp(csActionType, PD_NO_ACTION_TYPE)) {
+				iTmpRet = PD_FOUND;
+			} else {
+				iTmpRet = DoAction(hContext, hMatchRule);
+			}
+
+			if (iTmpRet == PD_FOUND) {
+				iMatched = 1;
+			} else if (iTmpRet == PD_NOT_FOUND) {
+				iMatched = 0;
+				if (iExitOnError) {
+					iExitSubRule = 1;
+				}
+			} else {
+				iRet = PD_ERR;
+				break;
+			}
+
+			hMatchRule = RecordSet_GetNext(rMatchRule);
+		}
+
+		if (iRet == PD_OK) {
+			if ((iCnt > 0) && (iMatched)) {
+DEBUGLOG(("ProcessMatching:: statement matched!\n"));
+				iRet = PD_FOUND;
+
+				// lock txn log 1
+				if (GetField_CString(hContext, "psp_txn_id_1", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnIdForUpdateNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp);
+					if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+                                }
+
+				// lock txn log 2
+				if (GetField_CString(hContext, "psp_txn_id_2", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnIdForUpdateNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp);
+					if (iTmpRet != PD_OK) {
+DEBUGLOG(("Authorize:: call DBOLTransaction::GetTxnIdForUpdateNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+                                }
+
+				// lock baid txn 1
+				if (GetField_CString(hContext, "baid_txn_id_1", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxnNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, PD_COMPLETE);
+					if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+				}
+
+				// lock baid txn 2
+				if (GetField_CString(hContext, "baid_txn_id_2", &csTmp)) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxnNoWait");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, PD_COMPLETE);
+					if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn::MatchRespTxnNoWait() failed\n"));
+						iRet = PD_NOT_FOUND;
+					}
+				}
+			} else {
+DEBUGLOG(("ProcessMatching:: statement not matched!\n"));
+				iRet = PD_NOT_FOUND;
+			}
+		}
+	}
+*/
+
+	// hash destroy
+	hash_destroy(hMatchEngine);
+	FREE_ME(hMatchEngine);
+	// recordset destroy
+	RecordSet_Destroy(rMatchRule);
+	FREE_ME(rMatchRule);
+	RecordSet_Destroy(rMatchSubRule);
+	FREE_ME(rMatchSubRule);
+
+DEBUGLOG(("ProcessMatching() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int DoAction(hash_t *hContext, hash_t *hMatchRule) {
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csTmp;
+
+	char *csParty, *csFilter, *csSpecialHandling, *csOperator, *csLeftOperand, *csRightOperand;
+	int iFromInput, iToOutput;
+	int iInputCount = 0;
+	int iOutputCount = 0;
+	int iIsSpecialHandling = 0;
+	char *csOutputTag, *csTxnId;
+	int iCheckKeywords = 0;
+	int iSendAlert = 0;
+
+	hash_t *hMatchAction;
+	hMatchAction = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMatchAction, 0);
+
+	recordset_t *rMatchFilter;
+	rMatchFilter = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchFilter, 0);
+	hash_t *hMatchFilter;
+
+	hash_t *hEngineSql;
+	hEngineSql = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hEngineSql, 0);
+
+	recordset_t *rMatchResult;
+	rMatchResult = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchResult, 0);
+	hash_t *hMatchResult;
+
+	// get stmt match action
+	if (iRet == PD_OK) {
+DEBUGLOG(("DoAction:: call DBOLStmtMatchAction::GetStmtMatchAction()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtMatchAction", "GetStmtMatchAction");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hMatchRule, hMatchAction);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("DoAction:: call DBOLStmtMatchAction::GetStmtMatchAction() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get first_party
+			if (!GetField_CString(hMatchAction, "first_party", &csTmp)) {
+DEBUGLOG(("DoAction:: first_party not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("DoAction:: first_party = [%s]\n", csTmp));
+			}
+
+			// get second_party
+			if (!GetField_CString(hMatchAction, "second_party", &csTmp)) {
+DEBUGLOG(("DoAction:: second_party not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("DoAction:: second_party = [%s]\n", csTmp));
+			}
+		}
+	}
+
+	// get stmt match filter
+	if (iRet == PD_OK) {
+DEBUGLOG(("DoAction:: call DBOLStmtMatchFilter::GetStmtMatchFilter()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtMatchFilter", "GetStmtMatchFilter");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hMatchRule, hMatchAction, rMatchFilter);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("DoAction:: call DBOLStmtMatchFilter::GetStmtMatchFilter() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// loop match filter
+	if (iRet == PD_OK) {
+		hMatchFilter = RecordSet_GetFirst(rMatchFilter);
+		while (hMatchFilter) {
+			iIsSpecialHandling = 0;
+
+			// get party (mandatory)
+			if (!GetField_CString(hMatchFilter, "party", &csParty)) {
+DEBUGLOG(("DoAction:: party not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+// DEBUGLOG(("DoAction:: party = [%s]\n", csParty));
+			}
+
+			// get filter (mandatory)
+			if (!GetField_CString(hMatchFilter, "filter", &csFilter)) {
+DEBUGLOG(("DoAction:: filter not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+// DEBUGLOG(("DoAction:: filter = [%s]\n", csFilter));
+			}
+
+			// get special_handling (optional)
+			if (!GetField_CString(hMatchFilter, "special_handling", &csSpecialHandling)) {
+// DEBUGLOG(("DoAction:: no special_handling\n"));
+			} else {
+// DEBUGLOG(("DoAction:: special_handling = [%s]\n", csSpecialHandling));
+				iIsSpecialHandling = 1;
+				if (!strcmp(csSpecialHandling, "tmp_skip")) {
+					iTmpRet = TmpSkip(hMatchFilter);
+				} else if (!strcmp(csSpecialHandling, "check_keywords")) {
+					iTmpRet = TmpSkip(hMatchFilter);
+					iCheckKeywords = 1;
+				} else if (!strcmp(csSpecialHandling, "split_amount")) {
+					iTmpRet = SplitAmount(hContext, hMatchRule, hMatchFilter);
+				} else if (!strcmp(csSpecialHandling, "send_alert")) {
+					iTmpRet = TmpSkip(hMatchFilter);
+					iSendAlert = 1;
+					PutField_Int(hContext, "send_alert", iSendAlert);
+				}
+			}
+
+			// get from_input (mandatory)
+			if (!GetField_Int(hMatchFilter, "from_input", &iFromInput)) {
+DEBUGLOG(("DoAction:: from_input not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+// DEBUGLOG(("DoAction:: from_input = [%d]\n", iFromInput));
+				if (iFromInput) {
+					if (!iInputCount) {
+						iInputCount++;
+					}
+				}
+			}
+
+			// get to_output (mandatory)
+			if (!GetField_Int(hMatchFilter, "to_output", &iToOutput)) {
+DEBUGLOG(("DoAction:: to_output not found\n"));
+				iRet = PD_ERR;
+				break;
+			} else {
+// DEBUGLOG(("DoAction:: to_output = [%d]\n", iToOutput));
+				if (iToOutput) {
+					if (!iOutputCount) {
+						iOutputCount++;
+					}
+				}
+			}
+
+			// get operator (mandatory except output & special handling)
+			if (!GetField_CString(hMatchFilter, "operator", &csOperator)) {
+				if (!iToOutput && !iIsSpecialHandling) {
+DEBUGLOG(("DoAction:: operator not found\n"));
+					iRet = PD_ERR;
+					break;
+				}
+			} else {
+// DEBUGLOG(("DoAction:: operator = [%s]\n", csOperator));
+			}
+
+			// get left_operand (mandatory except special handling)
+			if (!GetField_CString(hMatchFilter, "left_operand", &csLeftOperand)) {
+				if (!iIsSpecialHandling) {
+DEBUGLOG(("DoAction:: left_operand not found\n"));
+					iRet = PD_ERR;
+					break;
+				}
+			} else {
+// DEBUGLOG(("DoAction:: left_operand = [%s]\n", csLeftOperand));
+			}
+
+			// get right_operand (mandatory except input & output & special handling)
+			if (!GetField_CString(hMatchFilter, "right_operand", &csRightOperand)) {
+				if (!iFromInput && !iToOutput && !iIsSpecialHandling) {
+DEBUGLOG(("DoAction:: right_operand not found\n"));
+					iRet = PD_ERR;
+					break;
+				}
+			} else {
+// DEBUGLOG(("DoAction:: right_operand = [%s]\n", csRightOperand));
+			}
+
+			hMatchFilter = RecordSet_GetNext(rMatchFilter);
+		}
+
+		if (!iInputCount || !iOutputCount) {
+DEBUGLOG(("DoAction:: missing input or output filter\n"));
+				iRet = PD_ERR;
+		}
+	}
+
+	// get engine sql
+	if (iRet == PD_OK) {
+		PutField_CString(hMatchRule, "engine_type", PD_STMT_ENGINE_TYPE);
+DEBUGLOG(("DoAction:: call DBOLEngineSql::GetEngineSql()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLEngineSql", "GetEngineSql");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hMatchRule, hMatchAction, hEngineSql);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("DoAction:: call DBOLEngineSql::GetEngineSql() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get from_clause
+			if (!GetField_CString(hEngineSql, "from_clause", &csTmp)) {
+DEBUGLOG(("DoAction:: from_clause not found\n"));
+				iRet = PD_ERR;
+			} else {
+// DEBUGLOG(("DoAction:: from_clause = [%s]\n", csTmp));
+			}
+		}
+	}
+
+	// execute engine sql
+	if (iRet == PD_OK) {
+DEBUGLOG(("DoAction:: call DBOLStmtMatchEngine::ExecuteSql()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtMatchEngine", "ExecuteSql");
+		iRet = (unsigned long)(*DBObjPtr)(hContext, rMatchFilter, hEngineSql, rMatchResult);
+	}
+
+	// get the first result
+	if (iRet == PD_FOUND) {
+DEBUGLOG(("DoAction:: check ExecuteSql result\n"));
+		GetField_CString(hContext, "output_tag", &csOutputTag);
+
+		iRet = PD_NOT_FOUND;
+		hMatchResult = RecordSet_GetFirst(rMatchResult);
+		while (hMatchResult) {
+			if (GetField_CString(hMatchResult, csOutputTag, &csTxnId)) {
+DEBUGLOG(("DoAction:: check [%s] = [%s]\n", csOutputTag, csTxnId));
+				PutField_CString(hContext, csOutputTag, csTxnId);
+
+				if (iCheckKeywords) {
+					if (CheckKeywords(hContext) != PD_OK) {
+						RemoveField_CString(hContext, csOutputTag);
+						hMatchResult = RecordSet_GetNext(rMatchResult);
+						continue;
+					}
+				}
+
+DEBUGLOG(("DoAction:: output [%s] = [%s]\n", csOutputTag, csTxnId));
+				iRet = PD_FOUND;
+				break;
+			}
+
+			hMatchResult = RecordSet_GetNext(rMatchResult);
+		}
+	}
+
+	// hash destroy
+	hash_destroy(hMatchAction);
+	FREE_ME(hMatchAction);
+	hash_destroy(hEngineSql);
+	FREE_ME(hEngineSql);
+	// recordset destroy
+	RecordSet_Destroy(rMatchFilter);
+	FREE_ME(rMatchFilter);
+	RecordSet_Destroy(rMatchResult);
+	FREE_ME(rMatchResult);
+
+DEBUGLOG(("DoAction() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int TmpSkip(hash_t *hMatchFilter) {
+	PutField_Int(hMatchFilter, "skip", 1);
+	return PD_OK;
+}
+
+
+/*
+note:
+*/
+int CheckKeywords(hash_t *hContext) {
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csPspId, *csBaidTxnId, *csBankAcctType, *csCheckBaidTxnCode;
+	char *csTmp;
+
+	hash_t *hTmp;
+	hTmp = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t *hStmtDtl;
+	hStmtDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hStmtDtl, 0);
+
+	recordset_t *rKeywords;
+	rKeywords = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rKeywords, 0);
+
+	// baid_txn_id_2
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hContext, "baid_txn_id_2", &csBaidTxnId)) {
+DEBUGLOG(("CheckKeywords:: baid_txn_id_2 not found\n"));
+			iRet = PD_ERR;
+		} else {
+DEBUGLOG(("CheckKeywords:: baid_txn_id_2 = [%s]\n", csBaidTxnId));
+		}
+	}
+
+	// check_baid_txn_code
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hContext, "second_baid_txn_code", &csCheckBaidTxnCode)) {
+DEBUGLOG(("CheckKeywords:: check_baid_txn_code not found\n"));
+			iRet = PD_ERR;
+		} else {
+DEBUGLOG(("CheckKeywords:: check_baid_txn_code = [%s]\n", csCheckBaidTxnCode));
+		}
+	}
+
+	// get baid txn detail
+	if (iRet == PD_OK) {
+		hash_init(hTmp, 0);
+DEBUGLOG(("CheckKeywords() call DBOLBAIDTxn::GetBaidTxn()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, hTmp);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("CheckKeywords() call DBOLBAIDTxn::GetBaidTxn() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get pid
+			if (!GetField_CString(hTmp, "pid", &csPspId)) {
+DEBUGLOG(("CheckKeywords() pid not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("CheckKeywords() pid = [%s]\n", csPspId));
+			}
+		}
+		hash_destroy(hTmp);
+	}
+
+	// get bank_acct_type
+	if (iRet == PD_OK) {
+		hash_init(hTmp, 0);
+DEBUGLOG(("CheckKeywords() call DBOLPspDetail::GetPspDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csPspId, hTmp);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("CheckKeywords() call DBOLPspDetail::GetPspDetail() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// get bank_acct_type
+			if (!GetField_CString(hTmp, "bank_acct_type", &csBankAcctType)) {
+DEBUGLOG(("CheckKeywords() bank_acct_type not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("CheckKeywords() bank_acct_type = [%s]\n", csBankAcctType));
+			}
+		}
+		hash_destroy(hTmp);
+	}
+
+
+
+
+	// get statement details by baid txn id
+	if (iRet == PD_OK) {
+DEBUGLOG(("CheckKeywords() call DBOLStatement::GetStmtDtlByBAIDTxnId()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtlByBAIDTxnId");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, hStmtDtl);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("CheckKeywords() call DBOLStatement::GetStmtDtlByBAIDTxnId() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			// format_id
+			if (!GetField_CString(hStmtDtl, "format_id", &csTmp)) {
+DEBUGLOG(("CheckKeywords:: format_id not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("CheckKeywords:: format_id = [%s]\n", csTmp));
+			}
+
+			// int_bank_code
+			if (iRet == PD_OK) {
+				if (!GetField_CString(hStmtDtl, "int_bank_code", &csTmp)) {
+DEBUGLOG(("CheckKeywords:: int_bank_code not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("CheckKeywords:: int_bank_code = [%s]\n", csTmp));
+				}
+			}
+
+			// acct_ccy
+			if (iRet == PD_OK) {
+				if (!GetField_CString(hStmtDtl, "txn_ccy", &csTmp)) {
+DEBUGLOG(("CheckKeywords:: txn_ccy not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("CheckKeywords:: txn_ccy = [%s]\n", csTmp));
+					PutField_CString(hStmtDtl, "acct_ccy", csTmp);
+				}
+			}
+
+			if (iRet == PD_OK) {
+				PutField_CString(hStmtDtl, "bank_acct_type", csBankAcctType);
+				PutField_CString(hStmtDtl, "baid_txn_code", csCheckBaidTxnCode);
+//				PutField_CString(hStmtDtl, "format_txn_code", csCheckBaidTxnCode);
+			}
+		}
+	}
+
+	// get keywords
+	if (iRet == PD_OK) {
+DEBUGLOG(("CheckKeywords() call DBOLStmtFormat::GetTxnCodeKeywordsSingle()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtFormat", "GetTxnCodeKeywordsSingle");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hStmtDtl, rKeywords);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("CheckKeywords() call DBOLStmtFormat::GetTxnCodeKeywordsSingle() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// check keywords
+	if (iRet == PD_OK) {
+DEBUGLOG(("CheckKeywords() call BOOLBankStmt::CheckKeywords()\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLBankStmt", "CheckKeywords");
+		iTmpRet = (unsigned long)(*BOObjPtr)(hStmtDtl, rKeywords);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("CheckKeywords() call BOOLBankStmt::CheckKeywords() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// hash destroy
+	FREE_ME(hTmp);
+	hash_destroy(hStmtDtl);
+	FREE_ME(hStmtDtl);
+	// recordset destroy
+	RecordSet_Destroy(rKeywords);
+	FREE_ME(rKeywords);
+
+DEBUGLOG(("CheckKeywords() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+/*
+note:
+*/
+int SplitAmount(hash_t *hContext, hash_t *hMatchRule, hash_t *hMatchFilter) {
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csActionType, *csTxnId, *csBaid;
+	char *csChannelCode;
+//	char *csTxnCode;
+	char csTxnCountry[PD_COUNTRY_LEN + 1];
+	double dTxnAmt = 0.0, dBankCharge = 0.0;
+	char *csTmp;
+
+	hash_t *hTxnDtl;
+	hTxnDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnDtl, 0);
+
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+//	hash_t *hRec;
+
+	// get action_type
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hMatchRule, "action_type", &csActionType)) {
+DEBUGLOG(("SplitAmount:: action_type not found\n"));
+			iRet = PD_ERR;
+		} else {
+DEBUGLOG(("SplitAmount:: action_type = [%s]\n", csActionType));
+		}
+	}
+
+	// check action_type & get txn_id (psp/baid)
+	if (iRet == PD_OK) {
+		if (!strcmp(csActionType, "fr_baid1_to_psp1") ||
+			!strcmp(csActionType, "fr_baid1_to_psp1_allow_cancel") ||
+			!strcmp(csActionType, "fr_baid1_to_psp1_must_cancel")) {
+			// get baid_txn_id_1
+			if (!GetField_CString(hContext, "baid_txn_id_1", &csTxnId)) {
+DEBUGLOG(("SplitAmount:: baid_txn_id_1 not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("SplitAmount:: baid_txn_id_1 = [%s]\n", csTxnId));
+			}
+		} else if (!strcmp(csActionType, "fr_psp1_to_baid2")) {
+			// get psp_txn_id_1
+			if (!GetField_CString(hContext, "psp_txn_id_1", &csTxnId)) {
+DEBUGLOG(("SplitAmount:: psp_txn_id_1 not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("SplitAmount:: psp_txn_id_1 = [%s]\n", csTxnId));
+			}
+		} else if (!strcmp(csActionType, "fr_psp2_to_baid2")) {
+			// get psp_txn_id_2
+			if (!GetField_CString(hContext, "psp_txn_id_2", &csTxnId)) {
+DEBUGLOG(("SplitAmount:: psp_txn_id_2 not found\n"));
+				iRet = PD_ERR;
+			} else {
+DEBUGLOG(("SplitAmount:: psp_txn_id_2 = [%s]\n", csTxnId));
+			}
+		} else {
+DEBUGLOG(("SplitAmount:: unsupported action_type\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get txn detail
+	if (iRet == PD_OK) {
+		if (!strcmp(csActionType, "fr_baid1_to_psp1") ||
+			!strcmp(csActionType, "fr_baid1_to_psp1_allow_cancel") ||
+			!strcmp(csActionType, "fr_baid1_to_psp1_must_cancel")) {
+			// get baid txn detail
+DEBUGLOG(("SplitAmount:: call DBOLBAIDTxn::GetBaidTxn()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csTxnId, hTxnDtl);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("SplitAmount:: call DBOLBAIDTxn::GetBaidTxn() failed\n"));
+				iRet = PD_ERR;
+			} else {
+				// get channel_code
+				if (!GetField_CString(hTxnDtl, "input_channel", &csChannelCode)) {
+DEBUGLOG(("SplitAmount:: channel_code not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("SplitAmount:: channel_code = [%s]\n", csChannelCode));
+					PutField_CString(hTxnDtl, "channel_code", csChannelCode);
+				}
+
+				// get baid & country
+				if (iRet == PD_OK) {
+					// get baid
+					if (!GetField_CString(hTxnDtl, "baid", &csBaid)) {
+DEBUGLOG(("SplitAmount:: baid not found\n"));
+						iRet = PD_ERR;
+					} else {
+DEBUGLOG(("SplitAmount:: baid = [%s]\n", csBaid));
+						// get country
+DEBUGLOG(("SplitAmount:: call DBOLBankAcctId::GetBankAcctIdCountry()\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+						iTmpRet = (unsigned long)(*DBObjPtr)(csBaid, csTxnCountry);
+						if (iTmpRet != FOUND) {
+DEBUGLOG(("SplitAmount:: call DBOLBankAcctId::GetBankAcctIdCountry() failed\n"));
+							iRet = PD_ERR;
+						} else {
+DEBUGLOG(("SplitAmount:: country = [%s]\n", csTxnCountry));
+							PutField_CString(hTxnDtl, "txn_country", csTxnCountry);
+						}
+					}
+				}
+
+				GetField_CString(hContext, "first_baid_txn_code", &csTmp);
+				PutField_CString(hTxnDtl, "txn_code", csTmp);
+			}
+		}
+/*
+		else if (!strcmp(csActionType, "fr_psp1_to_baid2") || !strcmp(csActionType, "fr_psp2_to_baid2")) {
+			// get psp txn header
+DEBUGLOG(("SplitAmount:: call DBOLTransaction::GetTxnHeader()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csTxnId, rRecordSet);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("SplitAmount:: call DBOLTransaction::GetTxnHeader() failed\n"));
+				iRet = PD_ERR;
+			} else {
+				hRec = RecordSet_GetFirst(rRecordSet);
+
+				// get channel_code
+				if (!GetField_CString(hRec, "channel_code", &csChannelCode)) {
+DEBUGLOG(("SplitAmount:: channel_code not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("SplitAmount:: channel_code = [%s]\n", csChannelCode));
+					PutField_CString(hTxnDtl, "channel_code", csChannelCode);
+				}
+
+				// get txn_code
+				if (iRet == PD_OK) {
+					if (!GetField_CString(hRec, "txn_code", &csTxnCode)) {
+DEBUGLOG(("SplitAmount:: txn_code not found\n"));
+						iRet = PD_ERR;
+					} else {
+DEBUGLOG(("SplitAmount:: txn_code = [%s]\n", csTxnCode));
+						PutField_CString(hTxnDtl, "txn_code", csTxnCode);
+					}
+				}
+
+				if (iRet == PD_OK) {
+					// get psp txn detail
+DEBUGLOG(("SplitAmount:: call DBOLTxnPspDetail::GetTxnPspDetail()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "GetTxnPspDetail");
+					iTmpRet = (unsigned long)(*DBObjPtr)(csTxnId, hTxnDtl);
+					if (iTmpRet != PD_OK) {
+DEBUGLOG(("SplitAmount:: call DBOLTxnPspDetail::GetTxnPspDetail() failed\n"));
+						iRet = PD_ERR;
+					} else {
+						// get txn_amt
+						if (!GetField_Double(hTxnDtl, "txn_amount", &dTxnAmt)) {
+DEBUGLOG(("SplitAmount:: txn_amt not found\n"));
+							iRet = PD_ERR;
+						} else {
+DEBUGLOG(("SplitAmount:: txn_amt = [%lf]\n", dTxnAmt));
+							PutField_Double(hTxnDtl, "txn_amt", dTxnAmt);
+						}
+
+						// get baid & country
+						if (iRet == PD_OK) {
+							// get baid
+							if (!GetField_CString(hTxnDtl, "baid", &csBaid)) {
+DEBUGLOG(("SplitAmount:: baid not found\n"));
+								iRet = PD_ERR;
+							} else {
+DEBUGLOG(("SplitAmount:: baid = [%s]\n", csBaid));
+								// get country
+DEBUGLOG(("SplitAmount:: call DBOLBankAcctId::GetBankAcctIdCountry()\n"));
+								DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+								iTmpRet = (unsigned long)(*DBObjPtr)(csBaid, csTxnCountry);
+								if (iTmpRet != FOUND) {
+DEBUGLOG(("SplitAmount:: call DBOLBankAcctId::GetBankAcctIdCountry() failed\n"));
+									iRet = PD_ERR;
+								} else {
+DEBUGLOG(("SplitAmount:: country = [%s]\n", csTxnCountry));
+									PutField_CString(hTxnDtl, "txn_country", csTxnCountry);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+*/
+	}
+
+	// get bank_charge
+	if (iRet == PD_OK) {
+		if (!strcmp(csActionType, "fr_baid1_to_psp1") ||
+			!strcmp(csActionType, "fr_baid1_to_psp1_allow_cancel") ||
+			!strcmp(csActionType, "fr_baid1_to_psp1_must_cancel")) {
+DEBUGLOG(("SplitAmount:: call BOBankCharge::GetTxnBankCharge()\n"));
+			BOObjPtr = CreateObj(BOPtr, "BOBankCharge", "GetTxnBankCharge");
+			iTmpRet = (unsigned long)(*BOObjPtr)(hTxnDtl);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("SplitAmount:: call BOBankCharge::GetTxnBankCharge() failed\n"));
+				iRet = PD_ERR;
+			} else {
+				// bank_charge
+				if (!GetField_Double(hTxnDtl, "txn_bank_charge", &dBankCharge)) {
+DEBUGLOG(("SplitAmount:: bank_charge not found\n"));
+					iRet = PD_ERR;
+				} else {
+DEBUGLOG(("SplitAmount:: bank_charge = [%lf]\n", dBankCharge));
+					PutField_Double(hContext, "est_net_amount", dTxnAmt - dBankCharge);
+					PutField_Double(hContext, "bank_charge", dBankCharge);
+					// calculate new amount
+					// get left_operand
+					if (GetField_CString(hMatchFilter, "left_operand", &csTmp)) {
+DEBUGLOG(("SplitAmount:: left_operand = [%s]\n", csTmp));
+						if (!strcmp(csTmp, "baid_txn_obt.obt_txn_amt")) {
+							sprintf(csTmp, "%s - %lf", csTmp, dBankCharge);
+							PutField_CString(hMatchFilter, "left_operand", csTmp);
+						}
+					}
+					// get right_operand
+					if (GetField_CString(hMatchFilter, "right_operand", &csTmp)) {
+DEBUGLOG(("SplitAmount:: right_operand = [%s]\n", csTmp));
+						if (!strcmp(csTmp, "baid_txn_obt.obt_txn_amt")) {
+							sprintf(csTmp, "%s - %lf", csTmp, dBankCharge);
+							PutField_CString(hMatchFilter, "right_operand", csTmp);
+						}
+					}
+				}
+			}
+		} else if (!strcmp(csActionType, "fr_psp1_to_baid2") || !strcmp(csActionType, "fr_psp2_to_baid2")) {
+			PutField_Int(hContext, "get_baid_txn_2_charge", 1);
+			// use previously calculated amount
+			// get left_operand
+			if (GetField_CString(hMatchFilter, "left_operand", &csTmp)) {
+				DEBUGLOG(("SplitAmount:: left_operand = [%s]\n", csTmp));
+				if (!strcmp(csTmp, "baid_txn_obt.obt_txn_amt")) {
+					sprintf(csTmp, "%s", "baid_txn_obt.obt_est_net_amount");
+					PutField_CString(hMatchFilter, "left_operand", csTmp);
+				}
+			}
+			// get right_operand
+			if (GetField_CString(hMatchFilter, "right_operand", &csTmp)) {
+				DEBUGLOG(("SplitAmount:: right_operand = [%s]\n", csTmp));
+				if (!strcmp(csTmp, "baid_txn_obt.obt_txn_amt")) {
+					sprintf(csTmp, "%s", "baid_txn_obt.obt_est_net_amount");
+					PutField_CString(hMatchFilter, "right_operand", csTmp);
+				}
+			}
+		}
+	}
+
+	hash_destroy(hTxnDtl);
+	FREE_ME(hTxnDtl);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	return iRet;
+}
+

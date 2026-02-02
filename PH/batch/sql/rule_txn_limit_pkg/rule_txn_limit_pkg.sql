@@ -1,0 +1,332 @@
+DROP PACKAGE RULE_TXN_LIMIT_PKG;
+
+CREATE OR REPLACE PACKAGE rule_txn_limit_pkg
+IS
+   TYPE RULE_TXN_LIMIT_REF_CURSOR IS REF CURSOR
+      RETURN RULE_TXN_LIMIT_VW%ROWTYPE;
+
+   FUNCTION Find (in_txn_code              rule_txn_limit.rl_txn_code%TYPE,
+                  in_country_id            rule_txn_limit.rl_country_id%TYPE,
+                  in_channel_code          rule_txn_limit.rl_channel_code%TYPE,
+                  in_service_code          rule_txn_limit.rl_service_code%TYPE,
+                  in_pay_method            rule_txn_limit.rl_pay_method%TYPE,
+                  in_currency_id           rule_txn_limit.rl_currency_id%TYPE,
+                  in_party_id              rule_txn_limit.rl_party_id%TYPE,
+                  in_party_client_id       rule_txn_limit.rl_party_id%TYPE,
+                  out_cursor           OUT RULE_TXN_LIMIT_REF_CURSOR)
+      RETURN NUMBER;
+
+   FUNCTION FindSchedule (in_id RULE_SCHEDULER_HEADER.RS_SCHEDULER_ID%TYPE)
+      RETURN INTEGER;
+
+   FUNCTION FindTodaySchedule (in_id RULE_SCHEDULER_HEADER.RS_SCHEDULER_ID%TYPE)
+      RETURN INTEGER;
+
+END rule_txn_limit_pkg;
+/
+
+DROP PACKAGE BODY RULE_TXN_LIMIT_PKG;
+
+CREATE OR REPLACE PACKAGE BODY RULE_TXN_LIMIT_PKG
+IS
+   FUNCTION Find (in_txn_code              rule_txn_limit.rl_txn_code%TYPE,
+                  in_country_id            rule_txn_limit.rl_country_id%TYPE,
+                  in_channel_code          rule_txn_limit.rl_channel_code%TYPE,
+                  in_service_code          rule_txn_limit.rl_service_code%TYPE,
+                  in_pay_method            rule_txn_limit.rl_pay_method%TYPE,
+                  in_currency_id           rule_txn_limit.rl_currency_id%TYPE,
+                  in_party_id              rule_txn_limit.rl_party_id%TYPE,
+                  in_party_client_id       rule_txn_limit.rl_party_id%TYPE,
+                  out_cursor           OUT RULE_TXN_LIMIT_REF_CURSOR)
+      RETURN NUMBER
+   IS
+      iCnt   INTEGER := 0;
+   BEGIN
+      SELECT COUNT (*)
+        INTO iCnt
+        FROM rule_txn_limit
+       WHERE     rl_txn_code = in_txn_code
+             AND rl_country_id = in_country_id
+             AND rl_channel_code = in_channel_code
+             AND rl_service_code = in_service_code
+             AND (rl_pay_method = in_pay_method OR rl_pay_method = '000')
+             AND rl_currency_id = in_currency_id
+             AND rl_party_type = 'M'
+             AND rl_party_id = in_party_id
+             AND rl_disabled = 0;
+
+      IF iCnt > 0
+      THEN
+         OPEN out_cursor FOR
+            SELECT rl_min_value, rl_max_value
+              FROM rule_txn_limit
+             WHERE     rl_txn_code = in_txn_code
+                   AND rl_country_id = in_country_id
+                   AND rl_channel_code = in_channel_code
+                   AND rl_service_code = in_service_code
+                   AND (   rl_pay_method = in_pay_method
+                        OR rl_pay_method = '000')
+                   AND rl_currency_id = in_currency_id
+                   AND rl_party_type = 'M'
+                   AND rl_party_id = in_party_id
+                   AND rl_disabled = 0;
+
+         RETURN 1;
+      ELSE
+         SELECT COUNT (*)
+           INTO iCnt
+           FROM rule_txn_limit
+          WHERE     rl_txn_code = in_txn_code
+                AND rl_country_id = in_country_id
+                AND rl_channel_code = in_channel_code
+                AND rl_service_code = in_service_code
+                AND (rl_pay_method = in_pay_method OR rl_pay_method = '000')
+                AND rl_currency_id = in_currency_id
+                AND rl_party_type = 'C'
+                AND rl_party_id = in_party_client_id
+                AND rl_disabled = 0;
+
+         IF iCnt > 0
+         THEN
+            OPEN out_cursor FOR
+               SELECT rl_min_value, rl_max_value
+                 FROM rule_txn_limit
+                WHERE     rl_txn_code = in_txn_code
+                      AND rl_country_id = in_country_id
+                      AND rl_channel_code = in_channel_code
+                      AND rl_service_code = in_service_code
+                      AND (   rl_pay_method = in_pay_method
+                           OR rl_pay_method = '000')
+                      AND rl_currency_id = in_currency_id
+                      AND rl_party_type = 'C'
+                      AND rl_party_id = in_party_client_id
+                      AND rl_disabled = 0;
+
+            RETURN 1;
+         ELSE
+            SELECT COUNT (*)
+              INTO iCnt
+              FROM rule_txn_limit
+             WHERE     rl_txn_code = in_txn_code
+                   AND rl_country_id = in_country_id
+                   AND rl_channel_code = in_channel_code
+                   AND rl_service_code = in_service_code
+                   AND (   rl_pay_method = in_pay_method
+                        OR rl_pay_method = '000')
+                   AND rl_currency_id = in_currency_id
+                   AND rl_party_type = 'G'
+                   AND rl_disabled = 0;
+
+            IF iCnt > 0
+            THEN
+               OPEN out_cursor FOR
+                  SELECT rl_min_value, rl_max_value
+                    FROM rule_txn_limit
+                   WHERE     rl_txn_code = in_txn_code
+                         AND rl_country_id = in_country_id
+                         AND rl_channel_code = in_channel_code
+                         AND rl_service_code = in_service_code
+                         AND (   rl_pay_method = in_pay_method
+                              OR rl_pay_method = '000')
+                         AND rl_currency_id = in_currency_id
+                         AND rl_party_type = 'G'
+                         AND rl_disabled = 0;
+
+               RETURN 1;
+            ELSE
+               RETURN 0;
+            END IF;
+         END IF;
+      END IF;
+   EXCEPTION
+      WHEN OTHERS
+      THEN
+         RETURN 0;
+   END;
+
+   FUNCTION FindSchedule (in_id RULE_SCHEDULER_HEADER.RS_SCHEDULER_ID%TYPE)
+      RETURN INTEGER
+   IS
+      cSchedule_mode   RULE_SCHEDULER_HEADER.RS_SCHEDULE_MODE%TYPE;
+      vStartDateTime   RULE_SCHEDULE_ONCE.RO_START_DATETIME%TYPE;
+      vEndDateTime     RULE_SCHEDULE_ONCE.RO_END_DATETIME%TYPE;
+      vStartTime       RULE_RECUR_TYPE.RT_START_TIME%TYPE;
+      vEndTime         RULE_RECUR_TYPE.RT_END_TIME%TYPE;
+      iDay             RULE_RECUR_TYPE.RT_DAY%TYPE;
+      iCnt             INTEGER;
+      vTxnDate         VARCHAR (14) := TO_CHAR (SYSDATE, 'YYYYMMDDHH24MISS');
+      iDOW             INTEGER := TO_NUMBER (TO_CHAR (SYSDATE, 'd'), 9) - 1;
+      vTxnTime         VARCHAR (6) := TO_CHAR (SYSDATE, 'HH24MISS');
+      iResult          INTEGER := 0;
+
+      CURSOR sch_cur
+      IS
+         SELECT rs_schedule_mode,
+                ro_start_datetime,
+                NVL (ro_end_datetime, 'E'),
+                rt_start_time,
+                NVL (rt_end_time, 'E'),
+                rt_day
+           FROM (SELECT *
+                   FROM rule_scheduler_header
+                  WHERE ROWID =
+                           (SELECT ROWID
+                              FROM rule_scheduler_header
+                             WHERE     rs_disabled = 0
+                                   AND rs_scheduler_id = in_id
+                                   AND rs_effect_datetime <= SYSDATE))
+                LEFT JOIN rule_schedule_once
+                   ON rs_scheduler_id = ro_scheduler_id AND ro_disabled = 0
+                LEFT JOIN rule_schedule_recur
+                   ON rs_scheduler_id = rr_scheduler_id AND rr_disabled = 0
+                LEFT JOIN rule_recur_type
+                   ON rr_recurring_id = rt_id AND rt_disabled = 0;
+
+   BEGIN
+      OPEN sch_cur;
+
+      LOOP
+         FETCH sch_cur
+            INTO cSchedule_mode,
+                 vStartDateTime,
+                 vEndDateTime,
+                 vStartTime,
+                 vEndTime,
+                 iDay;
+
+         EXIT WHEN sch_cur%NOTFOUND;
+
+         IF (cSchedule_mode = 'O' OR cSchedule_mode = 'M')
+         THEN
+            IF (vTxnDate > vStartDateTime)
+            THEN
+               IF (vEndDateTime != 'E')
+               THEN
+                  IF (vEndDateTime > vTxnDate)
+                  THEN
+                     iResult := 1;
+                  END IF;
+               ELSE
+                  iResult := 1;
+               END IF;
+            END IF;
+         END IF;
+
+         IF (   (cSchedule_mode = 'R' AND iResult = 0)
+             OR (cSchedule_mode = 'M' AND iResult = 1))
+         THEN
+            IF (iDay <> 7 AND iDay <> iDOW)
+            THEN
+               iResult := 0;
+            ELSE
+               IF (vTxnTime > vStartTime)
+               THEN
+                  IF (vEndTime <> 'E')
+                  THEN
+                     IF (vEndTime > vTxnTime)
+                     THEN
+                        iResult := 1;
+                     END IF;
+                  ELSE
+                     iResult := 1;
+                  END IF;
+               END IF;
+            END IF;
+         END IF;
+      END LOOP;
+
+      CLOSE sch_cur;
+
+      RETURN iResult;
+   END;
+
+   FUNCTION FindTodaySchedule (in_id RULE_SCHEDULER_HEADER.RS_SCHEDULER_ID%TYPE)
+      RETURN INTEGER
+   IS
+      cSchedule_mode   RULE_SCHEDULER_HEADER.RS_SCHEDULE_MODE%TYPE;
+      vStartDateTime   RULE_SCHEDULE_ONCE.RO_START_DATETIME%TYPE;
+      vEndDateTime     RULE_SCHEDULE_ONCE.RO_END_DATETIME%TYPE;
+      vStartTime       RULE_RECUR_TYPE.RT_START_TIME%TYPE;
+      vEndTime         RULE_RECUR_TYPE.RT_END_TIME%TYPE;
+      iDay             RULE_RECUR_TYPE.RT_DAY%TYPE;
+      iCnt             INTEGER;
+      iResult          INTEGER := 0;
+
+      vTxnDate         VARCHAR(8) := TO_CHAR(SYSDATE, 'YYYYMMDD');
+      iDOW             INTEGER := TO_NUMBER (TO_CHAR (TO_DATE(vTxnDate, 'YYYYMMDD'), 'd'), 9) - 1;
+
+      --vTxnDate         VARCHAR (14) := TO_CHAR (SYSDATE, 'YYYYMMDDHH24MISS');
+      --iDOW             INTEGER := TO_NUMBER (TO_CHAR (SYSDATE, 'd'), 9) - 1;
+      --vTxnTime         VARCHAR (6) := TO_CHAR (SYSDATE, 'HH24MISS');
+
+      CURSOR sch_cur
+      IS
+         SELECT rs_schedule_mode,
+                ro_start_datetime,
+                NVL (ro_end_datetime, 'E'),
+                rt_start_time,
+                NVL (rt_end_time, 'E'),
+                rt_day
+           FROM (SELECT *
+                   FROM rule_scheduler_header
+                  WHERE ROWID =
+                           (SELECT ROWID
+                              FROM rule_scheduler_header
+                             WHERE     rs_disabled = 0
+                                   AND rs_scheduler_id = in_id
+                                   AND rs_effect_datetime < TO_DATE(vTxnDate, 'YYYYMMDD') + 1)) -- will effect within today or before
+                LEFT JOIN rule_schedule_once
+                   ON rs_scheduler_id = ro_scheduler_id AND ro_disabled = 0
+                LEFT JOIN rule_schedule_recur
+                   ON rs_scheduler_id = rr_scheduler_id AND rr_disabled = 0
+                LEFT JOIN rule_recur_type
+                   ON rr_recurring_id = rt_id AND rt_disabled = 0;
+
+   BEGIN
+      OPEN sch_cur;
+
+      LOOP
+         FETCH sch_cur
+            INTO cSchedule_mode,
+                 vStartDateTime,
+                 vEndDateTime,
+                 vStartTime,
+                 vEndTime,
+                 iDay;
+
+         EXIT WHEN sch_cur%NOTFOUND;
+
+         IF (cSchedule_mode = 'O' OR cSchedule_mode = 'M')
+         THEN
+            IF (vTxnDate >= substr(vStartDateTime, 1, 8))
+            THEN
+               IF (vEndDateTime != 'E')
+               THEN
+                  IF (substr(vEndDateTime, 1, 8) >= vTxnDate)
+                  THEN
+                     iResult := 1;
+                  END IF;
+               ELSE
+                  iResult := 1;
+               END IF;
+            END IF;
+         END IF;
+
+         IF (   (cSchedule_mode = 'R' AND iResult = 0)
+             OR (cSchedule_mode = 'M' AND iResult = 1))
+         THEN
+            IF (iDay <> 7 AND iDay <> iDOW)
+            THEN
+               iResult := 0;
+            ELSE
+               iResult := 1;
+            END IF;
+         END IF;
+      END LOOP;
+
+      CLOSE sch_cur;
+
+      RETURN iResult;
+   END;   
+END RULE_TXN_LIMIT_PKG;
+/

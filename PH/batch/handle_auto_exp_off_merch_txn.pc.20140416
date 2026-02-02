@@ -1,0 +1,421 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/02/28              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define LOCK_FAILURE    99999
+
+char    cDebug = 'Y';
+int	avai_po_percentage = 0;
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int process_main();
+int get_expired_list(recordset_t* myRec);
+int get_txn_list(const char* csMerchantId, int iTxnAutoExpDays, int iTxnAutoExpMins, recordset_t *rRecordSet);
+int process_txn(const char *csMerchantID, const char *csTxnSeq);
+
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+       // 	printf("usage:  -d cutoff_date\n");
+                return (iRet);
+        }
+
+	iRet = process_main();
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int process_main()
+{
+	int iRet = SUCCESS;
+
+	hash_t *hRec;
+
+	char	*csMerchantID;
+	char	*csTxnSeq;
+	int	iRecNo;
+	int	iTmpRet;
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+	recordset_init(rRecordSet,0);
+
+DEBUGLOG(("process_main\n"));
+
+	iRet = get_expired_list(rRecordSet);
+
+	if (iRet == SUCCESS) {
+
+DEBUGLOG(("prepare process update\n")); 
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+DEBUGLOG(("===process update ===\n"));
+
+			if (GetField_Int(hRec, "rec_no", &iRecNo)) {
+DEBUGLOG(("process_main rec_no [%d]\n", iRecNo));
+			}
+			
+			if (GetField_CString(hRec, "merchant_id", &csMerchantID)) {
+DEBUGLOG(("process_main merchant_id [%s]\n", csMerchantID));
+			}
+
+			if (GetField_CString(hRec, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("process_main txn_seq [%s]\n", csTxnSeq));
+			}
+
+			// Lock Record and Update
+			iTmpRet = process_txn(csMerchantID, csTxnSeq);
+			if (iTmpRet == LOCK_FAILURE) {
+				iRet = FAILURE;
+				break;
+			}
+
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+	return iRet;
+}
+
+
+int get_expired_list(recordset_t* myRec)
+{
+        int     iRet = SUCCESS;
+
+	int	iCnt = 0;
+
+	hash_t *myHash;
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+DEBUGLOG(("get_expired_list\n"));
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_txn_code[PD_TXN_CODE_LEN];
+                char    hv_status;
+                varchar hv_sub_status[PD_SUB_STATUS_LEN];
+
+
+                varchar v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar v_txn_id[PD_TXN_SEQ_LEN + 1];
+                int     v_txn_auto_exp_days;
+                int     v_txn_auto_exp_mins;
+
+                short   ind_merchant_id = -1;
+		short	ind_txn_id = -1;
+                short   ind_txn_auto_exp_days = -1;
+                short   ind_txn_auto_exp_mins = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("get_expired_list\n"));
+
+        hv_txn_code.len = strlen(PD_INITIAL_OLN_TXN_CODE);
+        memcpy(hv_txn_code.arr, PD_INITIAL_OLN_TXN_CODE, hv_txn_code.len);
+DEBUGLOG(("get_expired_list txn_code [%.*s]\n", hv_txn_code.len, hv_txn_code.arr));
+
+        hv_status = PD_TO_PSP;
+DEBUGLOG(("get_expired_list status [%c]\n", hv_status));
+
+        hv_sub_status.len = strlen(PD_SENT_TO_PSP);
+        memcpy(hv_sub_status.arr, PD_SENT_TO_PSP, hv_sub_status.len);
+DEBUGLOG(("get_expired_list sub_status [%.*s]\n", hv_sub_status.len,hv_sub_status.arr));
+
+
+        EXEC SQL DECLARE c_cursor_get_list CURSOR FOR
+		SELECT md_merchant_id, 
+                       oth_txn_id, 
+                       md_txn_auto_expired_days, 
+                       md_txn_auto_expired_mins
+		FROM ol_txn_header, ol_merch_detail
+		WHERE  (md_txn_auto_expired_days != 0
+			OR
+			md_txn_auto_expired_mins != 0
+		       )
+		AND   oth_merchant_id = md_merchant_id
+		AND   oth_txn_code = :hv_txn_code
+		AND oth_status = :hv_status
+		AND oth_ar_ind is null
+		AND oth_sub_status = :hv_sub_status
+		AND oth_create_timestamp < sysdate - (md_txn_auto_expired_days + md_txn_auto_expired_mins/(60*24))
+		ORDER BY md_merchant_id, oth_txn_id;
+
+        EXEC SQL OPEN c_cursor_get_list;
+        do {
+
+                EXEC SQL FETCH c_cursor_get_list
+                INTO
+                        v_merchant_id:ind_merchant_id,
+			v_txn_id:ind_txn_id,
+                        v_txn_auto_exp_days:ind_txn_auto_exp_days,
+                        v_txn_auto_exp_mins:ind_txn_auto_exp_mins;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash, 0);
+
+		iCnt++;
+		PutField_Int(myHash, "rec_no", iCnt);
+DEBUGLOG(("get_expired_list rec_no = [%d]\n", iCnt));
+
+                if (ind_merchant_id >= 0) {
+                        v_merchant_id.arr[v_merchant_id.len] = '\0';
+			PutField_CString(myHash, "merchant_id", (const char *)v_merchant_id.arr);
+DEBUGLOG(("get_expired_list merchant_id = [%s]\n", v_merchant_id.arr));
+                }
+
+		if (ind_txn_id >= 0) {
+                        v_txn_id.arr[v_txn_id.len] = '\0';
+			PutField_CString(myHash, "txn_seq", (const char *)v_txn_id.arr);
+DEBUGLOG(("get_expired_list txn_id = [%s]\n", v_txn_id.arr));
+		}
+
+                if (ind_txn_auto_exp_days >= 0) {
+			PutField_Int(myHash, "txn_auto_exp_days", v_txn_auto_exp_days);
+DEBUGLOG(("get_expired_list txn_auto_exp_days = [%d]\n", v_txn_auto_exp_days));
+                }
+
+                if (ind_txn_auto_exp_mins >= 0) {
+			PutField_Int(myHash, "txn_auto_exp_days", v_txn_auto_exp_days);
+DEBUGLOG(("get_expired_list txn_auto_exp_mins = [%d]\n", v_txn_auto_exp_mins));
+                }
+
+		RecordSet_Add(myRec, myHash);
+	} while (PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_get_list;
+
+	return	iRet;
+
+sql_error:
+    DEBUGLOG(("process_main error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_auto_exp_off_merch_txn::process_main sql error %d\n", sqlca.sqlcode);
+
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_list;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+
+}
+
+int process_txn(const char *csMerchantID, const char *csTxnSeq)
+{
+	int	iRet = SUCCESS;
+
+	hash_t *hRec;
+	recordset_t* myRec;
+
+        hash_t *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+	char	*csTxnMerchantID;	
+	char	*csTxnCode;
+	char	cStatus;
+	char	cArInd;
+	char	*csSubStatus;
+
+DEBUGLOG(("============ process_txn ===========\n"));
+
+	// Lock Record
+	if (iRet == SUCCESS) {
+DEBUGLOG(("process_txn  call DBOLTransaction:: MatchRespTxn()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "MatchRespTxn");
+		if ((unsigned long)(*DBObjPtr)(csTxnSeq,PD_TO_PSP) != PD_FOUND) {
+                        iRet = LOCK_FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction MatchRespTxn [%s] FAILURE!!!\n", csTxnSeq));
+ERRLOG("handle_auto_exp_off_merch_txn::process_txn DBOLTransaction MatchRespTxn [%s] FAILURE!!!\n", csTxnSeq);
+
+printf("<tr><td>%s</td><td>Lock data error cause expiry job end</td>\n", csTxnSeq);
+                }
+	
+	}
+
+	if (iRet == SUCCESS) {
+		myRec = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(myRec,0);
+
+DEBUGLOG(("process_txn  call DBOLTransaction:: GetTxnHeader()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+                if ((unsigned long)(*DBObjPtr)(csTxnSeq, myRec) != PD_OK) {
+			iRet = FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader [%s] FAILURE!!!\n", csTxnSeq));
+ERRLOG("handle_auto_exp_off_merch_txn:: process_txn call DBOLTransaction:: GetTxnHeader [%s] FAILURE!!!\n", csTxnSeq);
+		} else {
+			hRec = RecordSet_GetFirst(myRec);
+			if (hRec) {
+				if (GetField_CString(hRec, "merchant_id", &csTxnMerchantID)) {
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() merchant_id = [%s]\n",csTxnMerchantID));
+				}
+				if (GetField_CString(hRec,"txn_code",&csTxnCode)) {
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() txn_code = [%s]\n",csTxnCode));
+				}
+				if (GetField_Char(hRec,"status",&cStatus)) {
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() status = [%c]\n",cStatus));
+				}
+				if (GetField_CString(hRec,"sub_status",&csSubStatus)) {
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() sub_status = [%s]\n",csSubStatus));
+				}
+
+				// Check Data Match 
+				if (GetField_Char(hRec,"ar_ind",&cArInd)) {
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() ar_ind = [%c]\n",cArInd));
+					// Not expect to get ar_ind
+					iRet = FAILURE;
+				}
+
+				if (strcmp(csTxnMerchantID, csMerchantID)) {
+					iRet = FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() Merchant ID difference [%s] [%s]\n", csTxnMerchantID, csMerchantID));
+				}
+				if (strcmp(csTxnCode, PD_INITIAL_OLN_TXN_CODE)) {
+					iRet = FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() Txn Code difference [%s] [%s]\n", csTxnCode, PD_INITIAL_OLN_TXN_CODE));
+				}
+				if (cStatus != PD_TO_PSP) {
+					iRet = FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() Status difference [%c] [%c]\n", cStatus, PD_TO_PSP));
+				}
+				if (strcmp(csSubStatus, PD_SENT_TO_PSP)) {
+					iRet = FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction:: GetTxnHeader() SubStatus difference [%s] [%s]\n", csSubStatus, PD_SENT_TO_PSP));
+				}
+
+				hRec = RecordSet_GetNext(myRec);
+			}
+			// if match, Update 
+			if (iRet == SUCCESS) {
+				hash_init(hTxn, 0);
+
+				PutField_CString(hTxn,"txn_seq", csTxnSeq);
+				PutField_Char(hTxn,"status", PD_COMPLETE);
+				PutField_Char(hTxn,"ar_ind", PD_REJECT);
+				PutField_CString(hTxn,"sub_status", PD_AUTO_EXPIRED);
+				PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+
+DEBUGLOG(("process_txn call DBOLTransaction::Update()\n"));
+				DBObjPtr = CreateObj(DBObjPtr, "DBOLTransaction", "Update");
+				if ((unsigned long)(*DBObjPtr)(hTxn) == PD_OK) {
+DEBUGLOG(("process_txn call DBOLTransaction::Update() Success\n"));
+
+printf("<tr><td>%s</td><td>Succ to Expiry</td>\n", csTxnSeq);
+
+				} else {
+printf("<tr><td>%s</td><td>UPdate Transaction Failed</td>\n", csTxnSeq);
+					iRet = FAILURE;
+DEBUGLOG(("process_txn call DBOLTransaction::Update() FAILURE!!!\n"));
+ERRLOG("handle_auto_exp_off_merch_txn::process_txn call DBOLTransaction::Update() FAILURE!!!\n");
+				}
+
+				hash_destroy(hTxn);
+			} else {
+printf("<tr><td>%s</td><td>Data Changed before Expiry</td>\n", csTxnSeq);
+			}
+		}
+		
+		RecordSet_Destroy(myRec);
+		FREE_ME(myRec)
+	} 
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("process_txn Commit!\n"));
+		TxnCommit();
+	} else {
+DEBUGLOG(("process_txn Rollback!\n"));
+		TxnAbort();
+	}
+
+	// for testing 
+	//TxnAbort();
+DEBUGLOG(("process_txn Rollback for testing....!\n"));
+
+
+	FREE_ME(hTxn);
+	return iRet;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+/*
+        char    c;
+	strcpy(cs_cutoff_date,"");
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_cutoff_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_cutoff_date,"")) 
+                return FAILURE;
+
+*/
+        return SUCCESS;
+}
+
+

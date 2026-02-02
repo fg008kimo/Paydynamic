@@ -1,0 +1,1326 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/02/25              David Wong
+Add multi_match_ind for OBD                        2014/04/10              David Wong
+Add Functions
+	GetBAIDBalDetails
+	GetNewBAIDDetails
+	CheckIntraFrBAIDDetails
+	CheckIntraToBAIDDetails
+	GetLastSMSCreationTime			   
+	BankStmtAutoUploadControl		   2019/01/10              Elvis Wong	
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "dbutility.h"
+#include "BOOLBaid.h"
+#include "myrecordset.h"
+#include "myhash.h"
+#include "math.h"
+#define __USE_XOPEN
+#include <time.h>
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOOLBaid(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int PostBaidTxn(const char* csBaidTxnId)
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+
+	hash_t *hBaidTxn;
+	hBaidTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBaidTxn, 0);
+
+	hash_t *hStmtDtl;
+	hStmtDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hStmtDtl, 0);
+
+	hash_t *hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec, 0);
+
+	char csTxnSeq[PD_TXN_SEQ_LEN + 1];
+	char *csTxnCode;
+	double dTxnAmt;
+	char *csTxnCcy;
+	char csTxnDateTime[PD_DATETIME_LEN + 1];
+	char csTxnCountry[PD_COUNTRY_LEN + 1];
+	double dBal;
+	double dPrepaid;
+	double dInTransit;
+	double dTotalHold;
+	char *csAmtType;
+	char *csBaid;
+
+	char* csTmp;
+	int iTmp;
+
+	time_t tNow;
+	struct tm * tStruct;
+	char csBuf[PD_TMP_BUF_LEN];
+
+	tNow = time(0);
+	tStruct = localtime(&tNow);
+
+
+	// MatchRespTxn (lock baid txn)
+	if (iRet == PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDTxn::MatchRespTxn()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxn");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, PD_COMPLETE);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDTxn::MatchRespTxn() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get baid txn details
+	if (iRet == PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDTxn::GetBaidTxn()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaidTxnId, hBaidTxn);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDTxn::GetBaidTxn() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get stmt details
+	if (iRet == PD_OK) {
+		if (GetField_CString(hBaidTxn, "stat_txn_id", &csTmp)) {
+DEBUGLOG(("PostBaidTxn() call DBOLStatement::GetStmtDtl()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtl");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, hStmtDtl);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLStatement::GetStmtDtl() failed\n"));
+				iRet = PD_ERR;
+			}
+		} else {
+DEBUGLOG(("PostBaidTxn() cannot get stat_txn_id from baid txn\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get bank country
+	if (iRet == PD_OK) {
+		GetField_CString(hBaidTxn, "bank_code", &csTmp);
+DEBUGLOG(("PostBaidTxn() call DBBankDesc::GetBankCountry()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBBankDesc", "GetBankCountry");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csTmp, csTxnCountry);
+		if (iTmpRet != FOUND) {
+DEBUGLOG(("PostBaidTxn() call DBBankDesc::GetBankCountry() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// lock baid bal
+	if (iRet == PD_OK) {
+		GetField_CString(hBaidTxn, "baid", &csBaid);
+		GetField_CString(hBaidTxn, "txn_ccy", &csTxnCcy);
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDBal::GetBalanceForUpdate()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDBal", "GetBalanceForUpdate");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csBaid, csTxnCountry, csTxnCcy, hRec);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDBal::GetBalanceForUpdate() failed\n"));
+			iRet = PD_ERR;
+		} else {
+			GetField_Double(hRec, "balance", &dBal);
+DEBUGLOG(("PostBaidTxn() balance = [%f]\n", dBal));
+			GetField_Double(hRec, "prepaid", &dPrepaid);
+DEBUGLOG(("PostBaidTxn() prepaid = [%f]\n", dPrepaid));
+			GetField_Double(hRec, "in_transit", &dInTransit);
+DEBUGLOG(("PostBaidTxn() in_transit = [%f]\n", dInTransit));
+			GetField_Double(hRec, "total_hold", &dTotalHold);
+DEBUGLOG(("PostBaidTxn() total_hold = [%f]\n", dTotalHold));
+		}
+	}
+
+	if (iRet == PD_OK) {
+// for add ol_txn_header
+		if (iRet == PD_OK) {
+			hash_destroy(hRec);
+			hash_init(hRec, 0);
+
+			PutField_Int(hRec, "db_commit", PD_FALSE);
+
+			// txn_id
+			DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+			strcpy(csTxnSeq, (*DBObjPtr)());
+			PutField_CString(hRec, "txn_seq", csTxnSeq);
+
+			// input_channel
+			PutField_CString(hRec, "channel_code", PD_CHANNEL_OMT);
+
+			// status
+			PutField_Char(hRec, "status", PD_TO_PSP);
+
+			// txn_code
+			GetField_CString(hBaidTxn, "txn_code", &csTxnCode);
+			PutField_CString(hRec, "txn_code", csTxnCode);
+			if (!strcmp(csTxnCode, PD_BANK_DEPOSIT_TXN_CODE)) {
+				PutField_Int(hRec, "multi_match_ind", PD_FALSE);
+			}
+
+			// process_type
+			PutField_CString(hRec, "process_type", "0000");
+
+			// process_code
+			PutField_CString(hRec, "process_code", "000000");
+
+			// host_posting_date
+			char csTmpDate[PD_DATETIME_LEN + 1];
+			DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "FindCode");
+			if ((unsigned long)(*DBObjPtr)("CTPHDATE", csTmpDate) == FOUND) {
+DEBUGLOG(("PostBaidTxn: Current Processor Hub Date = [%s]\n", csTmpDate));
+				PutField_CString(hRec, "host_posting_date", csTmpDate);
+			}
+
+			// internal_code
+			PutField_Int(hRec, "internal_code", 0);
+
+			// response_code
+			PutField_CString(hRec, "response_code", "0");
+
+			// transaction_amount
+			GetField_Double(hBaidTxn, "txn_amt", &dTxnAmt);
+			PutField_Double(hRec, "txn_amt", dTxnAmt);
+
+			// deposit_amount
+			if (!strcmp(csTxnCode, PD_BANK_DEPOSIT_TXN_CODE)) {
+				PutField_Double(hRec, "deposit_amt", dTxnAmt);
+			}
+
+			// display_amount
+			if (!strcmp(csTxnCode, PD_BANK_DEPOSIT_TXN_CODE)) {
+				PutField_Double(hRec, "display_amt", dTxnAmt);
+			}
+
+			// local_tm_date
+			strftime(csBuf, sizeof(csBuf), "%Y%m%d", tStruct);
+			PutField_CString(hRec, "local_tm_date", csBuf);
+			strcpy(csTxnDateTime, csBuf);
+			PutField_CString(hRec, "transmission_datetime", csTxnDateTime);
+			PutField_CString(hRec, "tm_date", csBuf);
+
+			// local_tm_time
+			strftime(csBuf, sizeof(csBuf), "%H%M%S", tStruct);
+			PutField_CString(hRec, "local_tm_time", csBuf);
+			strcat(csTxnDateTime, csBuf);
+			PutField_CString(hRec, "transmission_datetime", csTxnDateTime);
+			PutField_CString(hRec, "tm_time", csBuf);
+
+			// create_user
+			PutField_CString(hRec, "add_user", PD_UPDATE_USER);
+
+			// client_ip
+			// PutField_CString(hRec, "ip_addr", ?);
+
+			// service_code
+			// PutField_CString(hRec, "service_code", ?);
+
+			// upload_channel
+			GetField_CString(hBaidTxn, "input_channel", &csTmp);
+			if (!strcmp(csTmp, PD_CHANNEL_SMS)) {
+				PutField_Int(hRec, "upload_channel", PD_SMS_UPLOAD);
+			} else {
+				PutField_Int(hRec, "upload_channel", PD_STMT_UPLOAD);
+			}
+
+DEBUGLOG(("PostBaidTxn() call DBOLTransaction::Add()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Add");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLTransaction::Add() failed\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+// for add ol_txn_psp_detail
+		if (iRet == PD_OK) {
+			// psp_id
+			GetField_CString(hBaidTxn, "pid", &csTmp);
+			PutField_CString(hRec, "psp_id", csTmp);
+
+			// baid
+			PutField_CString(hRec, "baid", csBaid);
+
+			// txn_ccy
+			PutField_CString(hRec, "txn_ccy", csTxnCcy);
+
+			// txn_amount
+			PutField_Double(hRec, "txn_amount", dTxnAmt);
+
+			// txn_date
+			GetField_CString(hStmtDtl, "statement_date", &csTmp);
+			PutField_CString(hRec, "txn_date", csTmp);
+
+			// txn_time
+			GetField_CString(hStmtDtl, "statement_time", &csTmp);
+			PutField_CString(hRec, "txn_time", csTmp);
+
+			// bank_code
+			GetField_CString(hBaidTxn, "bank_code", &csTmp);
+			PutField_CString(hRec, "bank_code", csTmp);
+
+			// bank_acct_num
+			GetField_CString(hBaidTxn, "bank_acct_num", &csTmp);
+			PutField_CString(hRec, "bank_acct_num", csTmp);
+
+			// cost
+			PutField_Double(hRec, "cost", 0.0);
+
+			// open_bal
+			PutField_Double(hRec, "open_bal", dBal);
+
+			// total_hold
+			PutField_Double(hRec, "total_hold", dTotalHold);
+
+			// bal
+			GetField_CString(hStmtDtl, "amt_type", &csAmtType);
+			if (!strcmp(csAmtType, PD_CR)) {
+				PutField_Double(hRec, "bal", dBal + dTxnAmt);
+			} else {
+				PutField_Double(hRec, "bal", dBal - dTxnAmt);
+			}
+
+			// prepaid
+			PutField_Double(hRec, "prepaid", dPrepaid);
+
+			// open_in_transit
+			PutField_Double(hRec, "open_in_transit", dInTransit);
+
+			// in_transit
+			PutField_Double(hRec, "in_transit", dInTransit);
+
+			// pending_fund
+			PutField_Double(hRec, "pending_fund", 0.0);
+
+			// txn_hold_ind
+			GetField_Int(hBaidTxn, "pid_txn_hold_ind", &iTmp);
+			PutField_Int(hRec, "txn_hold_ind", iTmp);
+
+			// sys_match_ind
+			GetField_Int(hBaidTxn, "pid_sys_match_ind", &iTmp);
+			PutField_Int(hRec, "sys_match_ind", iTmp);
+
+			// customer_text
+			if (GetField_CString(hStmtDtl, "tfr_customer_text", &csTmp)) {
+				PutField_CString(hRec, "customer_text", csTmp);
+			}
+
+			// sender_name
+			if (GetField_CString(hStmtDtl, "sender_name", &csTmp)) {
+				PutField_CString(hRec, "sender_name", csTmp);
+			}
+
+			// txn_ref_num
+			if (GetField_CString(hStmtDtl, "txn_ref_num", &csTmp)) {
+				PutField_CString(hRec, "txn_ref_num", csTmp);
+			}
+
+DEBUGLOG(("PostBaidTxn() call DBOLTxnPspDetail::Add()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLTxnPspDetail::Add() failed\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+// for add ol_txn_elements
+		if (iRet == PD_OK) {
+			// txn_element_type
+			PutField_CString(hRec, "txn_element_type", PD_ELEMENT_TXN_AMT);
+
+			// amount
+			PutField_Double(hRec, "amount", dTxnAmt);
+
+			// ccy
+			PutField_CString(hRec, "ccy", csTxnCcy);
+
+			// amt_type
+			PutField_CString(hRec, "amount_type", csAmtType);
+
+			// party_type
+			PutField_Char(hRec, "party_type", PD_TYPE_PSP);
+
+DEBUGLOG(("PostBaidTxn() call DBOLTxnElements::Add()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTxnElements", "Add");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLTxnElements::Add() failed\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+// for update ol_txn_header
+		if (iRet == PD_OK) {
+			// status
+			PutField_Char(hRec, "status", PD_COMPLETE);
+
+			// ar_ind
+			PutField_Char(hRec, "ar_ind", PD_ACCEPT);
+
+			// sub_status
+			PutField_CString(hRec, "sub_status", PD_UNALLOCATED);
+
+			// net_amt
+			PutField_Double(hRec, "net_amt", dTxnAmt);
+
+			// net_ccy
+			PutField_CString(hRec, "net_ccy", csTxnCcy);
+
+			// approval_date & approval_timestamp
+			DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "GetApprovalDT");
+			(*DBObjPtr)(hRec);
+
+DEBUGLOG(("PostBaidTxn() call DBOLTransaction::Update()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLTransaction::Update() failed\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+// for update ol_baid_txn
+		if (iRet == PD_OK) {
+			hash_destroy(hRec);
+			hash_init(hRec, 0);
+
+			PutField_Int(hRec, "db_commit", PD_FALSE);
+
+			// update_user
+			PutField_CString(hRec, "update_user", PD_UPDATE_USER);
+
+			// txn_id
+			PutField_CString(hRec, "txn_seq", csBaidTxnId);
+
+			// dst_txn_id
+			PutField_CString(hRec, "dst_txn_id", csTxnSeq);
+
+			// posted_ind
+			PutField_Int(hRec, "posted_ind", 1);
+
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDTxn::Update()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call DBOLBAIDTxn::Update() failed\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+// update BAID bal
+		if (iRet == PD_OK) {
+			hash_destroy(hRec);
+			hash_init(hRec, 0);
+
+			PutField_Int(hRec, "db_commit", PD_FALSE);
+
+			PutField_CString(hRec, "org_txn_seq", csTxnSeq);
+			PutField_CString(hRec, "org_txn_country", csTxnCountry);
+			PutField_CString(hRec, "org_txn_ccy", csTxnCcy);
+			PutField_Char(hRec, "amt_type", csAmtType[0]);
+			PutField_Char(hRec, "party_type", PD_TYPE_PSP);
+			PutField_CString(hRec, "org_dst_txn_ccy", csTxnCcy);
+			PutField_CString(hRec, "org_baid", csBaid);
+			PutField_Double(hRec, "org_dst_net_amt", dTxnAmt);
+
+DEBUGLOG(("PostBaidTxn() call BOOLBalance::UpdateTxnAmount()\n"));
+			BOObjPtr = CreateObj(BOPtr, "BOOLBalance", "UpdateTxnAmount");
+			iTmpRet = (unsigned long)(*BOObjPtr)(hRec);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("PostBaidTxn() call BOOLBalance::UpdateTxnAmount() failed\n"));
+				iRet = PD_ERR;
+			}
+		}
+	}
+
+	hash_destroy(hBaidTxn);
+	FREE_ME(hBaidTxn);
+	hash_destroy(hStmtDtl);
+	FREE_ME(hStmtDtl);
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+
+DEBUGLOG(("PostBaidTxn() Ret = [%d]\n", iRet));
+
+	return iRet;
+}
+
+int GetBAIDBalDetails(const char* csBAID, hash_t* hBAIDBalDetails)
+{
+        int     iRet = PD_OK;
+        int     iDtlRet = PD_FOUND;
+
+        double  dAmt = 0.0;
+
+	char	*csBankCode = NULL;
+
+        char    csAmt[PD_AMOUNT_LEN + 1];
+
+DEBUGLOG(("GetBAIDBalDetails() Start!\n"));
+
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails::baid = [%s]\n", csBAID));
+        DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetBAIDBalDetails");
+        iDtlRet = (unsigned long)(*DBObjPtr)(csBAID, hBAIDBalDetails);
+        if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails::Record found!!\n"));
+
+/* bank_code */
+          	if (GetField_CString(hBAIDBalDetails,"bank_code",&csBankCode)) {
+                      	if (!strcmp(csBankCode, PD_SYS_BANK_CODE)) {
+DEBUGLOG(("[%s] is a system bank code!!\n", csBankCode));
+                           	iRet = INT_UNSUPPORTED_BANK_CODE;
+                    	}
+              	} else {
+DEBUGLOG(("bank_code not found!!\n"));
+ERRLOG("BOOLBaid::GetBAIDBalDetails() Call DBOLBankAcctId::GetBAIDBalDetails::bank_code not found!!\n");
+                    	iRet = INT_INVALID_BAID;
+              	}
+
+/* baid_balance */
+		if (iRet == PD_OK) {
+                	if (GetField_Double(hBAIDBalDetails,"baid_balance",&dAmt)) {
+                	        sprintf(csAmt,"%.2f",dAmt);
+DEBUGLOG(("baid_balance = [%s]\n", csAmt));
+                	        PutField_CString(hBAIDBalDetails,"baid_bal",csAmt);
+               	 	}
+		}
+
+/* account_balance */
+		if (iRet == PD_OK) {
+                	if (GetField_Double(hBAIDBalDetails,"account_balance",&dAmt)) {
+                	        sprintf(csAmt,"%.2f",dAmt);
+DEBUGLOG(("account_balance = [%s]\n", csAmt));
+                	        PutField_CString(hBAIDBalDetails,"acct_bal",csAmt);
+                	}
+		}
+
+        } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails::Record not found!!\n"));
+		iRet = INT_INVALID_BAID;
+        } else {
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails Failure!!\n"));
+ERRLOG("BOOLBaid::GetBAIDBalDetails() Call DBOLBankAcctId::GetBAIDBalDetails Failure!!\n");
+		iRet = INT_ERR;
+        }
+
+DEBUGLOG(("GetBAIDBalDetails() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int GetNewBAIDDetails(const char* csBAID, const char* csBankNature, int iMaxBAIDCnt, recordset_t* rNewBAIDDetails)
+{
+        int     iRet = PD_OK;
+	int	iDtlRet = PD_FOUND;
+
+        hash_t  *hRec = NULL;
+        recordset_t *rRecordset;
+        rRecordset = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordset, 0);
+
+DEBUGLOG(("GetNewBAIDDetails() Start!\n"));
+
+DEBUGLOG(("Call DBOLBankAcctId::GetNewBAIDDetails::baid = [%s],bank_nature = [%s],baid_total = [%d]\n", csBAID, csBankNature, iMaxBAIDCnt));
+        DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetNewBAIDDetails");
+      	iDtlRet = (unsigned long)(*DBObjPtr)(csBAID, csBankNature, iMaxBAIDCnt, rRecordset);
+      	if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetNewBAIDDetails::Record(s) found!!\n"));
+
+		int     iBAIDCnt = 0;
+
+                hash_t  *hNewBAIDDetails;
+
+                hRec = RecordSet_GetFirst(rRecordset);
+                while ((hRec) && (iRet == PD_OK)) {
+
+			char cTmp = ' ';
+                        char *csTmp = NULL;
+                        char *csRecEndInd = (char*) malloc (64);
+
+                        hNewBAIDDetails = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(hNewBAIDDetails,0);
+
+/* baid */
+                        if (GetField_CString(hRec,"baid",&csTmp)) {
+DEBUGLOG((" [%d]baid = [%s]\n", iBAIDCnt, csTmp));
+                                PutField_CString(hNewBAIDDetails,"baid",csTmp);
+                        } else {
+DEBUGLOG((" [%d]baid not found!!\n"));
+ERRLOG("BOOLBaid::GetNewBAIDDetails() Call DBOLBankAcctId::GetNewBAIDDetails::baid not found!!\n");
+                                iRet = INT_ERR;
+			}
+
+/* provider_id */
+			if (iRet == PD_OK) {
+				if (GetField_CString(hRec,"provider_id",&csTmp)) {
+DEBUGLOG((" [%d]provider_id = [%s]\n", iBAIDCnt, csTmp));
+                                	PutField_CString(hNewBAIDDetails,"provider_id",csTmp);
+                        	}	
+			}
+
+/* provider_name */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"provider_name",&csTmp)) {
+DEBUGLOG((" [%d]provider_name = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"provider_name",csTmp);
+                                }
+                        }
+
+/* baid_status */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"baid_status",&csTmp)) {
+DEBUGLOG((" [%d]baid_status = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"baid_status",csTmp);
+                                }
+                        }
+
+/* bank_name */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"bank_name",&csTmp)) {
+DEBUGLOG((" [%d]bank_name = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"bank_name",csTmp);
+                                }
+                        }
+
+/* owner_name */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"owner_name",&csTmp)) {
+DEBUGLOG((" [%d]owner_name = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"owner_name",csTmp);
+                                }
+                        }
+
+/* branch_name */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"branch_name",&csTmp)) {
+DEBUGLOG((" [%d]branch_name = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"branch_name",csTmp);
+                                }
+                        }
+
+/* bank_acct_num */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"bank_acct_num",&csTmp)) {
+DEBUGLOG((" [%d]bank_acct_num = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"bank_acct_num",csTmp);
+                                }
+                        }
+
+/* bank_acct_short_name */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"bank_acct_short_name",&csTmp)) {
+DEBUGLOG((" [%d]bank_acct_short_name = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"bank_acct_short_name",csTmp);
+                                }
+                        }
+
+/* bank_acct_status */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"bank_acct_status",&csTmp)) {
+DEBUGLOG((" [%d]bank_acct_status = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"bank_acct_status",csTmp);
+                                }
+                        }
+
+/* merchant_id */
+			if (iRet == PD_OK) {
+                                if (GetField_CString(hRec,"merchant_id",&csTmp)) {
+DEBUGLOG((" [%d]merchant_id = [%s]\n", iBAIDCnt, csTmp));
+                                        PutField_CString(hNewBAIDDetails,"merchant_id",csTmp);
+                                }
+                        }
+
+/* rec_end_ind */
+			if (iRet == PD_OK) {
+                        	if (GetField_Char(hRec,"rec_end_ind",&cTmp)) {
+                                	sprintf(csRecEndInd, "%c", cTmp);
+DEBUGLOG((" [%d]rec_end_ind = [%s]\n", iBAIDCnt, csRecEndInd));
+                                	PutField_CString(hNewBAIDDetails,"rec_end_ind",csRecEndInd);
+                        	} else {
+DEBUGLOG((" [%d]rec_end_ind not found!!\n"));
+ERRLOG("BOOLBaid::GetNewBAIDDetails() Call DBOLBankAcctId::GetNewBAIDDetails::rec_end_ind not found!!\n");
+                                	iRet = INT_ERR;
+				}
+			}	
+
+                        RecordSet_Add(rNewBAIDDetails,hNewBAIDDetails);
+                        iBAIDCnt++;
+
+                        FREE_ME(csRecEndInd);
+
+                        hRec = RecordSet_GetNext(rRecordset);
+                }
+
+       	} else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetNewBAIDDetails::Record(s) not found!!\n"));
+		iRet = INT_RECORD_NOT_FOUND;
+	} else {
+DEBUGLOG(("Call DBOLBankAcctId::GetNewBAIDDetails Failure!!\n"));
+ERRLOG("BOOLBaid::GetNewBAIDDetails() Call DBOLBankAcctId::GetNewBAIDDetails Failure!!\n");
+		iRet = INT_ERR;
+       	}
+
+	RecordSet_Destroy(rRecordset);
+        FREE_ME(rRecordset);
+
+DEBUGLOG(("GetNewBAIDDetails() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int CheckIntraFrBAIDDetails(hash_t* hFrBAIDDetails)
+{
+        int     iRet = PD_OK;
+        int     iDtlRet = PD_FOUND;
+
+	int	iBalOverInd = PD_TRUE;
+
+        double  dTxnAmt = 0.0;
+        double  dAmtLimit = 0.0;
+        double  dAvailBal = 0.0;
+
+        char    *csBAID = NULL;
+        char    *csTxnCountry = NULL;
+        char    *csTxnCcy = NULL;
+
+DEBUGLOG(("CheckIntraFrBAIDDetails() Start!\n"));
+
+
+/* BAID */
+        if (GetField_CString(hFrBAIDDetails,"baid",&csBAID)) {
+DEBUGLOG(("baid = [%s]\n",csBAID));
+        } else {
+DEBUGLOG(("baid not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() baid not found!!\n");
+                iRet = INT_BANK_ACCT_ID_NOT_FOUND;
+        }
+
+/* txn_country */
+        if (iRet == PD_OK) {
+                if (GetField_CString(hFrBAIDDetails,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("txn_country = [%s]\n",csTxnCountry));
+                } else {
+DEBUGLOG(("txn_country not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() txn_country not found!!\n");
+                        iRet = INT_ERR;
+                }
+        }
+
+/* txn_ccy */
+        if (iRet == PD_OK) {
+                if (GetField_CString(hFrBAIDDetails,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("txn_ccy = [%s]\n",csTxnCcy));
+                } else {
+DEBUGLOG(("txn_ccy not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() txn_ccy not found!!\n");
+                        iRet = INT_CURRENCY_CODE_NOT_FOUND;
+                }
+        }
+
+/* txn_amt */
+	if (iRet == PD_OK) {
+        	if (GetField_Double(hFrBAIDDetails,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("txn_amt = [%f]\n",dTxnAmt));
+        	} else {
+DEBUGLOG(("txn_amt not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() txn_amt not found!!\n");
+        	        iRet = INT_PAY_AMOUNT_NOT_FOUND;
+        	}
+	}
+
+/* bal_over_ind */
+        if (iRet == PD_OK) {
+                if (GetField_Int(hFrBAIDDetails, "bal_over_ind", &iBalOverInd)) {
+DEBUGLOG(("bal_over_ind = [%d]\n", iBalOverInd));
+                } else {
+DEBUGLOG(("bal_over_ind not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() bal_over_ind not found!!\n");
+                        iRet=INT_BAL_OVER_IND_NOT_FOUND;
+                }
+        }
+
+	// Get Txn Amt Limit
+	if (iRet == PD_OK) {
+                //PutField_Char(hFrBAIDDetails, "party_type", PD_PARTY_TYPE_G);
+                PutField_Char(hFrBAIDDetails, "party_type", 'G');
+                PutField_CString(hFrBAIDDetails, "party_id", "000");
+                PutField_CString(hFrBAIDDetails, "limit_code", "BAID_INTRA");
+		PutField_CString(hFrBAIDDetails,"limit_ccy",csTxnCcy);
+
+                DBObjPtr = CreateObj(DBPtr,"DBOLTxnAmtLimit","Get");
+                iDtlRet = (unsigned long)(*DBObjPtr)(hFrBAIDDetails);
+                if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLTxnAmtLimit::Get::Record found!!\n"));
+
+/* amt_limit */
+                        if (GetField_Double(hFrBAIDDetails,"amt_limit",&dAmtLimit)) {
+DEBUGLOG(("amt_limit = [%.2f]\n",dAmtLimit));
+                        } else {
+DEBUGLOG(("amt_limit not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() Call DBOLTxnAmtLimit::Get::amt_limit not found!!\n");
+				iRet = INT_ERR;
+                        }
+
+                } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLTxnAmtLimit::Get::Record not found!!\n"));
+                } else {
+DEBUGLOG(("Call DBOLTxnAmtLimit::Get Failure!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() Call DBOLTxnAmtLimit::Get Failure!!\n");
+                        iRet = INT_ERR;
+                }
+	}
+
+	// Get BAID Available Balance
+	if (iRet == PD_OK) {
+
+                hash_t  *hBAIDBalDetails = NULL;
+                hBAIDBalDetails = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hBAIDBalDetails,0);
+
+                DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetBAIDBalDetails");
+                iDtlRet = (unsigned long)(*DBObjPtr)(csBAID, hBAIDBalDetails);
+                if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails::Record found!!\n"));
+
+			char    *csTmp = NULL;			
+
+/* txn_country */
+			if (GetField_CString(hBAIDBalDetails,"country_id",&csTmp)) {
+DEBUGLOG(("country_id = [%s]\n",csTmp));
+		
+				if (strcmp(csTmp, csTxnCountry)) {
+DEBUGLOG(("[%s] is not equal to BAID country[%s]\n", csTxnCountry, csTmp));
+                                	iRet = INT_BAID_BALANCE_NOT_FOUND;					
+				}
+
+                        } else {
+DEBUGLOG(("txn_country not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() Call DBOLBankAcctId::GetBAIDBalDetails::txn_country not found!!\n");
+                                iRet = INT_INVALID_BAID;
+                        }
+
+/* txn_ccy */		if (iRet == PD_OK) { 
+				if (GetField_CString(hBAIDBalDetails,"currency_id",&csTmp)) {
+DEBUGLOG(("currency_id = [%s]\n",csTmp));
+
+                                	if (strcmp(csTmp, csTxnCcy)) {
+DEBUGLOG(("[%s] is not equal to BAID currency[%s]\n", csTxnCcy, csTmp));
+                                	        iRet = INT_BAID_BALANCE_NOT_FOUND;
+                                	}
+
+                        	} else {
+DEBUGLOG(("txn_ccy not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() Call DBOLBankAcctId::GetBAIDBalDetails::txn_ccy not found!!\n");
+                                	iRet = INT_INVALID_BAID;
+                        	}
+			}
+
+/* baid_balance */
+			if (iRet == PD_OK) {
+                        	if (GetField_Double(hBAIDBalDetails,"baid_balance",&dAvailBal)) {
+DEBUGLOG(("baid_balance = [%.2f]\n",dAvailBal));
+                        	} else {
+DEBUGLOG(("baid_balance not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() Call DBOLBankAcctId::GetBAIDBalDetails::baid_balance not found!!\n");
+					iRet = INT_INVALID_BAID;
+                        	}
+			}
+
+                } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails::Record not found!!\n"));
+                        iRet = INT_BAID_BALANCE_NOT_FOUND;
+                } else {
+DEBUGLOG(("Call DBOLBankAcctId::GetBAIDBalDetails Failure!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() Call DBOLBankAcctId::GetBAIDBalDetails Failure!!\n");
+                        iRet = INT_ERR;
+                }
+
+                hash_destroy(hBAIDBalDetails);
+                FREE_ME(hBAIDBalDetails);
+        }	
+
+	// Check Txn Amount
+	if (iRet == PD_OK) {
+
+		// Txn Amount > 0
+		if (dTxnAmt <= 0.0) {
+DEBUGLOG(("Check::txn_amt[%.2f] <= [0.0]!!\n", dTxnAmt));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() txn_amt <= 0.0!!\n");
+                        iRet = INT_INVALID_PAY_AMOUNT;
+                }
+
+		// Compare with Txn Amount Limit
+		if (iRet == PD_OK) {
+
+                        if (dAmtLimit > 0.0) {
+                                if (dTxnAmt > dAmtLimit) {
+DEBUGLOG(("Check::txn_amt > txn_amt_limit!!\n"));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() txn_amt[%.2f] > txn_amt_limit[%.2f]!!\n", dTxnAmt, dAmtLimit);
+                                        iRet = INT_EXCEED_TXN_AMT_LIMIT;
+                                }
+                        }
+                }
+
+		// Compare with BAID Available Balance
+		if (iRet == PD_OK) {
+
+			if (iBalOverInd == PD_FALSE) {
+				if (dTxnAmt > dAvailBal) {
+DEBUGLOG(("Check::txn_amt[%.2f] > baid_balance[%.2f]!!\n", dTxnAmt, dAvailBal));
+ERRLOG("BOOLBaid::CheckIntraFrBAIDDetails() txn_amt > baid_balance!!\n");
+        	                	iRet = INT_INSUFFICIENT_BAID_AVAIL_BAL;
+        	        	}
+			}
+		}
+        }
+
+DEBUGLOG(("CheckIntraFrBAIDDetails() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int CheckIntraToBAIDDetails(hash_t* hToBAIDDetails)
+{
+	int     iRet = PD_OK;
+        int     iDtlRet = PD_FOUND;
+
+	char    *csTmp = NULL;
+
+DEBUGLOG(("CheckIntraToBAIDDetails() Start!\n"));
+
+/* BAID */
+        if (GetField_CString(hToBAIDDetails,"baid",&csTmp)) {
+DEBUGLOG(("baid = [%s]\n",csTmp));
+        } else {
+DEBUGLOG(("baid not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraToBAIDDetails() baid not found!!\n");
+                iRet = INT_BANK_ACCT_ID_NOT_FOUND;
+        }
+
+/* TO_BAID */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hToBAIDDetails,"to_baid",&csTmp)) {
+DEBUGLOG(("to_baid = [%s]\n",csTmp));
+        	} else {
+DEBUGLOG(("to_baid not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraToBAIDDetails() to_baid not found!!\n");
+                	iRet = INT_BANK_ACCT_ID_NOT_FOUND;
+        	}
+	}
+
+/* currency_id */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hToBAIDDetails,"currency_id",&csTmp)) {
+DEBUGLOG(("currency_id = [%s]\n",csTmp));
+        	} else {
+DEBUGLOG(("currency_id not found!!\n"));
+ERRLOG("BOOLBaid::CheckIntraToBAIDDetails() currency_id not found!!\n");
+        	        iRet = INT_CURRENCY_CODE_NOT_FOUND;
+        	}
+	}
+
+	if (iRet == PD_OK) {
+       		
+		DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetIntraToBAIDDetails");
+      		iDtlRet = (unsigned long)(*DBObjPtr)(hToBAIDDetails);
+   		if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetIntraToBAIDDetails::Record Found!!\n"));
+     		} else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetIntraToBAIDDetails::Record not found!!\n")); 
+			iRet = INT_INVALID_BAID;
+		} else {
+DEBUGLOG(("Call DBOLBankAcctId::GetIntraToBAIDDetails Failure!!\n"));
+ERRLOG("BOOLBaid::CheckIntraToBAIDDetails() Call DBOLBankAcctId::GetIntraToBAIDDetails Failure!!\n");
+			iRet = INT_ERR;
+		}
+	}
+
+DEBUGLOG(("CheckIntraToBAIDDetails() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int GetLastSMSCreationTime(const char* csBAID, const char* csRecDate, int iMaxBAIDCnt, recordset_t* rLastSMSCreateDT)
+{
+        int     iRet = PD_OK;
+        int     iDtlRet = PD_FOUND;
+
+	hash_t  *hRec = NULL;
+        recordset_t *rRecordset;
+        rRecordset = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordset, 0);
+
+DEBUGLOG(("GetLastSMSCreationTime() Start!\n"));
+
+DEBUGLOG(("Call DBOLBankAcctId::GetLastSMSCreationTime::baid = [%s],rec_date = [%s],baid_total = [%d]\n", csBAID, csRecDate, iMaxBAIDCnt));
+        DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetLastSMSCreationTime");
+        iDtlRet = (unsigned long)(*DBObjPtr)(csBAID, csRecDate, iMaxBAIDCnt, rRecordset);
+        if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetLastSMSCreationTime::Record(s) found!!\n"));
+
+		int     iBAIDCnt = 0;
+
+		hash_t  *hLastSMSCreateDT;
+
+		hRec = RecordSet_GetFirst(rRecordset);
+              	while ((hRec) && (iRet == PD_OK)) {
+
+			char cTmp = ' ';
+			char *csTmp = NULL;
+			char *csRecEndInd = (char*) malloc (64);
+                      	
+			hLastSMSCreateDT = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(hLastSMSCreateDT,0);
+
+/* baid */
+                   	if (GetField_CString(hRec,"baid",&csTmp)) {
+DEBUGLOG((" [%d]baid = [%s]\n", iBAIDCnt, csTmp));
+                               	PutField_CString(hLastSMSCreateDT,"baid",csTmp);
+                 	} else {
+DEBUGLOG((" [%d]baid not found!!\n"));
+ERRLOG("BOOLBaid::GetLastSMSCreationTime() Call DBOLBankAcctId::GetLastSMSCreationTime::baid not found!!\n");
+                                iRet = INT_ERR;
+                        }
+
+/* create_dt */
+			if (iRet == PD_OK) {
+                      		if (GetField_CString(hRec,"create_dt",&csTmp)) {
+			
+					char csDateTime[PD_TIMESTAMP_LEN + 1] = "";
+
+                       	 		time_t  tNow = time(0);
+                        		struct  tm tStruct = *localtime(&tNow);
+
+					sprintf(csDateTime, csTmp);
+	
+					strptime(csDateTime, "%Y%m%d %H%M%S", &tStruct);
+	                        	strftime(csDateTime, sizeof(csDateTime), "%Y-%m-%d %H:%M:%S", &tStruct);
+
+DEBUGLOG((" [%d]create_dt = [%s]\n", iBAIDCnt, csDateTime));
+                            		PutField_CString(hLastSMSCreateDT,"create_dt",csDateTime);
+				} else {
+DEBUGLOG((" [%d]create_dt found!!\n"));
+ERRLOG("BOOLBaid::GetLastSMSCreationTime() Call DBOLBankAcctId::GetLastSMSCreationTime::create_dt not found!!\n");
+                        	        iRet = INT_ERR;
+				}
+			} 
+
+
+/* rec_end_ind */
+			if (iRet == PD_OK) {
+                    		if (GetField_Char(hRec,"rec_end_ind",&cTmp)) {
+					sprintf(csRecEndInd, "%c", cTmp);
+DEBUGLOG((" [%d]rec_end_ind = [%s]\n", iBAIDCnt, csRecEndInd));
+                          		PutField_CString(hLastSMSCreateDT,"rec_end_ind",csRecEndInd);
+				} else {
+DEBUGLOG((" [%d]rec_end_ind found!!\n"));
+ERRLOG("BOOLBaid::GetLastSMSCreationTime() Call DBOLBankAcctId::GetLastSMSCreationTime::rec_end_ind not found!!\n");
+                                	iRet = INT_ERR;
+				}
+			}
+
+			RecordSet_Add(rLastSMSCreateDT,hLastSMSCreateDT);
+			iBAIDCnt++;
+
+			FREE_ME(csRecEndInd);
+			
+			hRec = RecordSet_GetNext(rRecordset);
+		}
+
+        } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetLastSMSCreationTime::Record(s) not found!!\n"));
+		iRet = INT_RECORD_NOT_FOUND;
+        } else {
+DEBUGLOG(("Call DBOLBankAcctId::GetLastSMSCreationTime Failure!!\n"));
+ERRLOG("BOOLBaid::GetLastSMSCreationTime() Call DBOLBankAcctId::GetLastSMSCreationTime Failure!!\n");
+       		iRet = INT_ERR;
+	 }
+
+	RecordSet_Destroy(rRecordset);
+        FREE_ME(rRecordset);
+
+DEBUGLOG(("GetLastSMSCreationTime() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int BankStmtAutoUploadControl(const char* csBAID, int iAutoUploadInd)
+{
+        int     iRet = PD_OK;
+        int     iDtlRet = PD_FOUND;
+
+	int	iSysSwitchEnabled = PD_TRUE;
+	int	iProviderDisabled = PD_FALSE;
+	int	iBankDisabled = PD_FALSE;
+	int	iBankAcctDisabled = PD_FALSE;
+
+        char    *csBankCode = NULL;
+	char	*csBankAcctNum = NULL;
+	char	*csBankNature = NULL;
+	char	*csProviderStatus = NULL;
+	char	*csPIDStatus = NULL;
+	char	*csBAIDStatus = NULL;
+	char	*csAcctStatus = NULL;
+	char	*csMerchantId = NULL;
+
+	hash_t *hAutoUplStmtSett;
+     	hAutoUplStmtSett = (hash_t*) malloc (sizeof(hash_t));
+    	hash_init(hAutoUplStmtSett, 0);
+
+DEBUGLOG(("BankStmtAutoUploadControl() Start!\n"));
+
+DEBUGLOG(("baid = [%s]\n", csBAID));
+DEBUGLOG(("auto_upload_ind = [%d]\n", iAutoUploadInd));
+
+        // Get Auto Upload Stmt Settings
+DEBUGLOG(("Call DBOLBankAcctId::GetAutoUploadStmtSettings\n"));
+        DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetAutoUploadStmtSettings");
+        iDtlRet = (unsigned long)(*DBObjPtr)(csBAID, hAutoUplStmtSett);
+        if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetAutoUploadStmtSettings::Record found!!\n"));
+
+/* bank_code */
+                if (GetField_CString(hAutoUplStmtSett,"bank_code",&csBankCode)) {
+                        if (strcmp(csBankCode, PD_SYS_BANK_CODE)) {
+DEBUGLOG((" bank_code = [%s]\n", csBankCode));
+			} else {
+DEBUGLOG((" [%s] is a system bank code!!\n", csBankCode));
+                                iRet = INT_UNSUPPORTED_BANK_CODE;
+			}
+                } else {
+DEBUGLOG((" bank_code not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings bank_code not found!!\n");
+                        iRet = INT_INVALID_BAID;
+                }
+
+/* bank_acct_num */
+		if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"bank_acct_num",&csBankAcctNum)) {
+DEBUGLOG((" bank_acct_num = [%s]\n", csBankAcctNum));
+                        } else {
+DEBUGLOG((" bank_acct_num not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings bank_acct_num not found!!\n");
+                        	iRet = INT_INVALID_BAID;
+			}
+                }
+
+/* bank_nature */
+                if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"bank_nature",&csBankNature)) {
+DEBUGLOG((" bank_nature = [%s]\n", csBankNature));
+				if (strcmp(csBankNature, PD_NATURE_DEPOSIT)) {
+DEBUGLOG((" bank_nature is NOT a deposit nature!!\n"));
+					iRet = INT_INVALID_NATURE;
+				}
+                        } else {
+DEBUGLOG((" bank_nature not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings bank_nature not found!!\n");
+                                iRet = INT_INVALID_BAID;
+			}
+                }
+
+/* provider_status */
+		if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"provider_status",&csProviderStatus)) {
+DEBUGLOG((" provider_status = [%s]\n", csProviderStatus));
+				if ((iAutoUploadInd == PD_TRUE)
+                                    && (strcmp(csProviderStatus, "O"))   
+                                )
+                                {
+DEBUGLOG((" provider_status is NOT open status!!\n"));
+                                        iRet = INT_INVALID_PROVIDER_STATUS;
+                                }
+                        } else {
+DEBUGLOG((" provider_status not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings provider_status not found!!\n");
+                                iRet = INT_INVALID_BAID;
+			}
+		}
+
+/* pid_status */
+		if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"pid_status",&csPIDStatus)) {
+DEBUGLOG((" pid_status = [%s]\n", csPIDStatus));
+				if ((iAutoUploadInd == PD_TRUE)
+                                    && (strcmp(csPIDStatus, "O"))                
+                                )
+                                {
+DEBUGLOG((" pid_status is NOT open status!!\n"));
+                                        iRet = INT_INVALID_PID_STATUS;
+                                }	
+                        } else {
+DEBUGLOG((" pid_status not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings pid_status not found!!\n");
+                                iRet = INT_INVALID_BAID;
+                        }
+		}
+
+/* baid_status */
+		if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"baid_status",&csBAIDStatus)) {
+DEBUGLOG((" baid_status = [%s]\n", csBAIDStatus));
+				if ((iAutoUploadInd == PD_TRUE) 
+				    && (strcmp(csBAIDStatus, PD_BAID_STATUS_OPEN)) 
+				)
+				{
+DEBUGLOG((" baid_status is NOT open status!!\n"));
+					iRet = INT_INVALID_BAID_STATUS;
+				}
+                        } else {
+DEBUGLOG((" baid_status not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings baid_status not found!!\n");
+                                iRet = INT_INVALID_BAID;
+                        }
+		}
+
+/* acct_status */
+		if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"bank_acct_status",&csAcctStatus)) {
+DEBUGLOG((" acct_status = [%s]\n", csAcctStatus));
+				if ((iAutoUploadInd == PD_TRUE)
+                                    && (strcmp(csAcctStatus, PD_BANK_ACCT_STATUS_ACTIVE))
+                                )
+                                {
+DEBUGLOG((" acct_status is NOT active status!!\n"));
+                                        iRet = INT_INVALID_BANK_ACCT_STATUS;
+                                }
+                        } else {
+DEBUGLOG((" acct_status not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings acct_status not found!!\n");
+                                iRet = INT_INVALID_BAID;
+                        }
+		}
+
+/* sys_switch_enabled */
+		if (iRet == PD_OK) {
+			if (GetField_Int(hAutoUplStmtSett,"sys_switch_enabled",&iSysSwitchEnabled)) {
+DEBUGLOG((" sys_switch_enabled = [%d]\n", iSysSwitchEnabled));
+                                if (iSysSwitchEnabled != PD_TRUE) {
+DEBUGLOG((" sys_switch_enabled is NOT equal to 1!!\n"));
+                                        iRet = INT_INVALID_SYS_SWITCH_ENABLED;
+                                }
+                        } else {
+DEBUGLOG((" sys_switch_enabled not found!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings sys_switch_enabled not found!!\n");
+                                iRet = INT_INVALID_BAID;
+                        }
+		}
+
+/* merchant_id */
+		if (iRet == PD_OK) {
+                        if (GetField_CString(hAutoUplStmtSett,"merchant_id",&csMerchantId)) {
+DEBUGLOG((" merchant_id = [%s]\n", csMerchantId));
+                        } else {
+				if (iAutoUploadInd == PD_TRUE) {
+DEBUGLOG((" merchant_id not found!!\n"));
+					iRet = INT_MERCHANT_ID_NOT_FOUND;
+				}
+			}
+                }
+
+/* provider_disabled */
+		if (iRet == PD_OK) {
+                        if (GetField_Int(hAutoUplStmtSett,"provider_disabled",&iProviderDisabled)) {
+DEBUGLOG((" provider_disabled = [%d]\n", iProviderDisabled));
+				if ((iAutoUploadInd == PD_TRUE)
+                                    && (iProviderDisabled == PD_TRUE)
+                                )
+                                {
+DEBUGLOG((" provider_disabled is NOT equal to 0!!\n"));
+                                        iRet = INT_AUTO_UPLOAD_PROVIDER_DIS;
+                                }
+                        } else {
+DEBUGLOG((" provider_disabled not found!!\n"));
+                                iRet = INT_AUTO_UPLOAD_PROVIDER_NOT_FOUND;
+                        }
+                }	
+		
+/* bank_disabled */
+		if (iRet == PD_OK) {
+                        if (GetField_Int(hAutoUplStmtSett,"bank_disabled",&iBankDisabled)) {
+DEBUGLOG((" bank_disabled = [%d]\n", iBankDisabled));
+				if ((iAutoUploadInd == PD_TRUE)
+                                    && (iBankDisabled == PD_TRUE)
+                                )
+                                {
+DEBUGLOG((" bank_disabled is NOT equal to 0!!\n"));
+                                        iRet = INT_AUTO_UPLOAD_BANK_DIS;
+                                }
+                        } else {
+DEBUGLOG((" bank_disabled not found!!\n"));
+                                iRet = INT_AUTO_UPLOAD_BANK_NOT_FOUND;
+                        }
+                }
+
+/* bank_acct_disabled */
+		if (iRet == PD_OK) {
+                        if (GetField_Int(hAutoUplStmtSett,"bank_acct_disabled",&iBankAcctDisabled)) {
+DEBUGLOG((" bank_acct_disabled = [%d]\n", iBankAcctDisabled));
+                        } else {
+DEBUGLOG((" bank_acct_disabled not found!!\n"));
+                                iRet = INT_AUTO_UPLOAD_BANK_ACCT_NOT_FOUND;
+                        }
+                }
+
+        } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLBankAcctId::GetAutoUploadStmtSettings::Record not found!!\n"));
+                iRet = INT_INVALID_BAID;
+        } else {
+DEBUGLOG(("Call DBOLBankAcctId::GetAutoUploadStmtSettings Failure!!\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLBankAcctId::GetAutoUploadStmtSettings Failure!!\n");
+                iRet = INT_ERR;
+        }
+
+	// Set Bank Statement Auto-Upload Setting (Bank Acct Disabled)
+        if (iRet == PD_OK) {
+
+		hash_t *hAutoUplBankDtl;
+           	hAutoUplBankDtl = (hash_t*) malloc (sizeof(hash_t));
+             	hash_init(hAutoUplBankDtl, 0);
+
+            	PutField_CString(hAutoUplBankDtl,"int_bank_code",csBankCode);
+           	PutField_CString(hAutoUplBankDtl,"bank_acct_num",csBankAcctNum);
+             	PutField_CString(hAutoUplBankDtl,"acct_type",csBankNature);
+		if (iAutoUploadInd == PD_TRUE) {
+                	iBankAcctDisabled = PD_FALSE;
+        	} else {
+                	iBankAcctDisabled = PD_TRUE;
+        	}
+              	PutField_Int(hAutoUplBankDtl,"disabled",iBankAcctDisabled);
+            	PutField_CString(hAutoUplBankDtl,"update_user",PD_UPDATE_USER);
+
+            	DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadBankDetail", "UpdateDisabled");
+               	if ((unsigned long)(*DBObjPtr)(hAutoUplBankDtl) != PD_OK) {
+DEBUGLOG(("Call DBOLAutoUploadBankDetail:UpdateDisabled Failed\n"));
+ERRLOG("BOOLBaid::BankStmtAutoUploadControl() Call DBOLAutoUploadBankDetail:UpdateDisabled Failed\n");
+                   	iRet = INT_ERR;
+            	} else {
+DEBUGLOG(("Call DBOLAutoUploadBankDetail:UpdateDisabled Success\n"));
+             	}
+
+               	hash_destroy(hAutoUplBankDtl);
+             	FREE_ME(hAutoUplBankDtl);
+        }
+
+	hash_destroy(hAutoUplStmtSett);
+        FREE_ME(hAutoUplStmtSett);
+
+DEBUGLOG(("BankStmtAutoUploadControl() iRet = [%d]\n", iRet));
+        return iRet;
+}

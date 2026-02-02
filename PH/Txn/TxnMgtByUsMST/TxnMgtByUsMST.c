@@ -1,0 +1,92 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/08/24              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsMST.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(Txn);
+
+void TxnMgtByUsMST(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	*csPtr;
+	char	*csGroup;
+	int	iEnable = PD_FALSE;
+	  
+	hash_t	*hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+DEBUGLOG(("Authorize::()\n"));
+
+	if (GetField_CString(hRequest,"group",&csGroup)) {
+DEBUGLOG(("Authorize::() group = [%s]\n",csGroup));
+		PutField_CString(hTxn,"group",csGroup);
+	}
+	else{
+		iRet = INT_INVALID_TXN;
+DEBUGLOG(("Authorize::() group is missing!!!\n"));
+	}
+
+	if (GetField_CString(hRequest,"enable_new",&csPtr)) {
+		iEnable = atoi(csPtr);
+		PutField_Int(hTxn,"enable_new_cust",iEnable);
+DEBUGLOG(("Authorize::() enable_new_cust = [%d]\n",iEnable));
+	}
+	else{
+		iRet = INT_INVALID_TXN;
+DEBUGLOG(("Authorize::() enable_new is missing!!!\n"));
+	}
+
+	if (GetField_CString(hRequest,"add_user",&csPtr)) {
+		PutField_CString(hTxn,"update_user",csPtr);
+DEBUGLOG(("Authorize::() user = [%s]\n",csPtr));
+	}
+	else{
+		iRet = INT_INVALID_TXN;
+DEBUGLOG(("Authorize::() user is missing!!!\n"));
+	}
+
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBMobSegmentCtl","Update");
+		iRet = (unsigned long)(*DBObjPtr)(csGroup,hTxn);
+DEBUGLOG(("Authorize::() DBMobSegmentCtl: Update iRet = [%d]\n",iRet));
+
+	}
+
+	if(iRet !=PD_OK)
+		PutField_Int(hContext,"internal_error",iRet);
+
+	FREE_ME(hTxn);
+DEBUGLOG(("TxnMgtByUsMST Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

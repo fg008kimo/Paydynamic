@@ -1,0 +1,664 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission 
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/17              Stan Poon
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "OLStmtFormat.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cDebug;
+
+void OLStmtFormat(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int GetFormat(const char* csIntBankCode, recordset_t* myRec)
+{
+	int iRet = PD_OK;
+	int iCnt = 0, iValue = 0;
+
+	char csFormatId[PD_FORMAT_ID_LEN + 1];
+	char csCurrFormatId[PD_FORMAT_ID_LEN + 1];
+
+	char csFormatType[PD_FORMAT_TYPE_LEN + 1];
+	char csFormatValue[PD_FORMAT_VALUE_LEN + 1];
+
+	char *csTmp;
+	char *csTag = (char*) malloc (64);
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(myHash, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO getformat_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_int_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar	v_format_id[PD_FORMAT_ID_LEN + 1];
+		varchar	v_format_type[PD_FORMAT_TYPE_LEN + 1];
+		int	v_format_value;
+		varchar	v_cont_desc[PD_CONT_DESC_LEN + 1];
+		varchar	v_cont_template[PD_CONT_TEMPLATE_LEN + 1];
+		int	v_cont_next_lvl;
+
+		short ind_int_bank_code = -1;
+		short ind_format_id = -1;
+		short ind_format_type = -1;
+		short ind_format_value = -1;
+		short ind_cont_desc = -1;
+		short ind_cont_template = -1;
+		short ind_cont_next_lvl = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_int_bank_code.len = strlen(csIntBankCode);
+	strncpy((char*)hv_int_bank_code.arr, csIntBankCode, hv_int_bank_code.len);
+	ind_int_bank_code = 0;
+DEBUGLOG(("GetFormat int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+
+	EXEC SQL DECLARE getformatcursor CURSOR FOR
+		SELECT	OLFT_FORMAT_ID,
+			lower(OLFT_FORMAT_TYPE) OLFT_FORMAT_TYPE,
+			OLFT_FORMAT_VALUE,
+			OLFT_CONT_DESC,
+			OLFT_CONT_TEMPLATE,
+			OLFT_CONT_NEXT_LVL
+		FROM	OL_STMT_FORMAT_TEMPLATE, OL_STMT_FORMAT
+		WHERE	OLSF_INT_BANK_CODE = :hv_int_bank_code:ind_int_bank_code
+		AND	(OLFT_FORMAT_ID = OLSF_FORMAT_ID or OLFT_FORMAT_ID like OLSF_FORMAT_ID||'.%')
+		AND	OLSF_DISABLED = 0
+		AND	OLSF_EFFECT_TIMESTAMP <= sysdate
+		ORDER BY OLFT_FORMAT_ID ASC;
+
+	EXEC SQL OPEN getformatcursor;
+	for (;;) {
+		EXEC SQL FETCH getformatcursor
+		INTO	:v_format_id:ind_format_id,
+			:v_format_type:ind_format_type,
+			:v_format_value:ind_format_value,
+			:v_cont_desc:ind_cont_desc,
+			:v_cont_template:ind_cont_template,
+			:v_cont_next_lvl:ind_cont_next_lvl;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+/* format_id */
+		if (ind_format_id >= 0) {
+			v_format_id.arr[v_format_id.len] = '\0';
+			strcpy(csCurrFormatId, (const char*)v_format_id.arr);
+			if (iCnt == 1) {
+				strcpy(csFormatId, (const char*)v_format_id.arr);
+				PutField_CString(myHash, "format_id", csFormatId); //
+DEBUGLOG(("GetFormat read (%s) = [%s]\n", "format_id", csFormatId));
+			} else {
+				csTmp = mystrtok(csCurrFormatId, ".");
+				if (csTmp != NULL && strcmp(csTmp, csFormatId)) {
+					RecordSet_Add(myRec, myHash);
+DEBUGLOG(("GetFormat hash added - (%s) = [%s]\n", "format_id", csFormatId));
+					myHash = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(myHash, 0);
+					strcpy(csFormatId, (const char*)v_format_id.arr);
+					PutField_CString(myHash, "format_id", csFormatId); //
+DEBUGLOG(("GetFormat read (%s) = [%s]\n", "format_id", csFormatId));
+				}
+				strcpy(csCurrFormatId, (const char*)v_format_id.arr);
+			}
+		}
+
+		iValue = 0;
+		strcpy(csFormatValue,"");
+
+/* format_type */
+		if (ind_format_type >= 0) {
+			v_format_type.arr[v_format_type.len] = '\0';
+			sprintf(csFormatType, "%s", (char*)v_format_type.arr);
+		}
+
+/* format_value - DELIMITER */
+		if (ind_format_value >= 0) {
+			sprintf(csFormatValue,"%d",v_format_value);
+
+			if (!strcmp(csFormatType,"delimiter")) {
+				sprintf(csTag, "%s_%s", csFormatType, csCurrFormatId);
+				PutField_CString(myHash, csTag, csFormatValue); //
+DEBUGLOG(("GetFormat (%s) = [%s]\n", csTag, csFormatValue));
+				iValue = 1;
+			}
+		}
+
+/* cont_desc - CONTENT */
+		if (ind_cont_desc >= 0) { 
+			v_cont_desc.arr[v_cont_desc.len] = '\0';
+			sprintf(csTag, "%s_desc_%s_%s", csFormatType, csCurrFormatId, csFormatValue);
+			PutField_CString(myHash, csTag, (const char *)v_cont_desc.arr); //
+DEBUGLOG(("GetFormat (%s) = [%s]\n", csTag, v_cont_desc.arr));
+			iValue = 1;
+		}
+
+/* cont_template - CONTENT */
+		if (ind_cont_template >= 0) {
+			v_cont_template.arr[v_cont_template.len] = '\0';
+			sprintf(csTag, "%s_temp_%s_%s", csFormatType, csCurrFormatId, csFormatValue);
+			PutField_CString(myHash, csTag, (const char *)v_cont_template.arr); //
+DEBUGLOG(("GetFormat (%s) = [%s]\n", csTag, v_cont_template.arr));
+			iValue = 1;
+		}
+
+/* cont_next_lvl - CONTENT */
+		if (ind_cont_next_lvl >= 0) {
+			if (v_cont_next_lvl == 1) {
+				sprintf(csTag, "%s_nxlv_%s_%s", csFormatType, csCurrFormatId, csFormatValue);
+				PutField_Int(myHash, csTag, v_cont_next_lvl); //
+DEBUGLOG(("GetFormat (%s) = [%d]\n", csTag, v_cont_next_lvl));
+			}
+		}
+
+/* format_value - ELSE */
+		if (ind_format_value >= 0) {
+			if (iValue == 0) {
+				PutField_CString(myHash, csFormatType, csFormatValue); //
+DEBUGLOG(("GetFormat (%s) = [%s]\n", csFormatType, csFormatValue));
+			}
+		}
+
+	}
+	EXEC SQL CLOSE getformatcursor;
+
+	if (iCnt > 0) {
+		RecordSet_Add(myRec, myHash);
+DEBUGLOG(("GetFormat hash added - (format_id) = [%s]\n", csFormatId));
+		iRet = PD_OK;
+	} else {
+DEBUGLOG(("GetFormat NOT FOUND!!!\n"));
+ERRLOG("OLStmtFormat::GetFormat NOT FOUND!!!\n");
+		iRet = PD_ERR;
+	}
+
+	free(csTag);
+
+DEBUGLOG(("GetFormat Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+getformat_error:
+DEBUGLOG(("getformat_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStmtFormat getformat_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL CLOSE getformatcursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int GetKeywords(const char* csIntBankCode, const char* csFormatID, recordset_t* myRec, int* iRec)
+{
+	int iRet = PD_FOUND;
+	int iCnt = 0;
+
+	hash_t *myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getkeywords_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_format_id[PD_FORMAT_ID_LEN];
+		varchar hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar v_cont_desc[PD_CONT_DESC_LEN + 1];
+		varchar v_format_type[PD_FORMAT_TYPE_LEN + 1];
+		varchar v_stmt_desc[PD_STMT_DESC_LEN + 1];
+		varchar v_stmt_template[PD_STMT_TEMPLATE_LEN + 1];
+		varchar	v_acct_type[PD_ACCT_TYPE_LEN + 1];
+		varchar	v_amt_type[PD_AMT_TYPE_LEN + 1];
+		int	v_full_match;
+		varchar	v_hold_amt_type[PD_AMT_TYPE_LEN + 1];
+
+		short ind_format_id = -1;
+		short ind_int_bank_code = -1;
+		short ind_cont_desc = -1;
+		short ind_format_type = -1;
+		short ind_stmt_desc = -1;
+		short ind_stmt_template = -1;
+		short ind_acct_type = -1;
+		short ind_amt_type = -1;
+		short ind_full_match = -1;
+		short ind_hold_amt_type = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_format_id.len = strlen(csFormatID);
+	strncpy((char*)hv_format_id.arr, csFormatID, hv_format_id.len);
+	ind_format_id = 0;
+DEBUGLOG(("GetKeywords format_format_id = [%.*s]\n", hv_format_id.len, hv_format_id.arr));
+
+	hv_int_bank_code.len = strlen(csIntBankCode);
+	strncpy((char*)hv_int_bank_code.arr, csIntBankCode, hv_int_bank_code.len);
+	ind_int_bank_code = 0;
+DEBUGLOG(("GetKeywords int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+
+	EXEC SQL DECLARE getkeywordscursor CURSOR FOR
+		SELECT	lower(OLFK_FORMAT_TYPE),
+			TP.OLFT_CONT_DESC,
+			OLFK_STMT_DESC,
+			OLFK_STMT_TEMPLATE,
+			DFS_BANK_ACCT_TYPE,
+			DFS_AMT_TYPE,
+			DFS_FULL_MATCH,
+			DFS_HOLD_AMT_TYPE
+		FROM	OL_STMT_FORMAT_TEMPLATE TP,
+			OL_STMT_FORMAT_KEYWORDS
+			LEFT JOIN OL_DEF_FORMAT_STMT
+			ON OLFK_STMT_DESC = DFS_NAME
+		WHERE	TP.OLFT_FORMAT_ID LIKE :hv_format_id:ind_format_id || '%'
+		AND	TP.OLFT_FORMAT_TYPE = 'CONTENT'
+		AND	TP.OLFT_CONT_COL_NAME = OLFK_STMT_COL_NAME
+		AND	OLFK_FORMAT_ID = :hv_int_bank_code:ind_int_bank_code
+		ORDER BY OLFK_FORMAT_TYPE, OLFK_FORMAT_VALUE;
+
+	EXEC SQL OPEN getkeywordscursor;
+	for (;;) {
+		EXEC SQL FETCH getkeywordscursor
+		INTO	:v_format_type:ind_format_type,
+			:v_cont_desc:ind_cont_desc,
+			:v_stmt_desc:ind_stmt_desc,
+			:v_stmt_template:ind_stmt_template,
+			:v_acct_type:ind_acct_type,
+			:v_amt_type:ind_amt_type,
+			:v_full_match:ind_full_match,
+			:v_hold_amt_type:ind_hold_amt_type;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash, 0);
+
+/* format_type */
+		if (ind_format_type >= 0) {
+			v_format_type.arr[v_format_type.len] = '\0';
+			PutField_CString(myHash, "format_type", (char*)v_format_type.arr);
+DEBUGLOG(("GetKeywords format_type = [%s]\n",v_format_type.arr));
+		}
+/* cont_desc */
+		if (ind_cont_desc >= 0) {
+			v_cont_desc.arr[v_cont_desc.len] = '\0';
+			PutField_CString(myHash, "cont_desc", (char*)v_cont_desc.arr);
+DEBUGLOG(("GetKeywords cont_desc = [%s]\n",v_cont_desc.arr));
+		}
+
+/* stmt_desc */
+		if (ind_stmt_desc >= 0) {
+			v_stmt_desc.arr[v_stmt_desc.len] = '\0';
+			PutField_CString(myHash, "stmt_desc", (char*)v_stmt_desc.arr);
+DEBUGLOG(("GetKeywords stmt_desc = [%s]\n",v_stmt_desc.arr));
+		}
+
+/* stmt_template */
+		if (ind_stmt_template >= 0) {
+			v_stmt_template.arr[v_stmt_template.len] = '\0';
+			PutField_CString(myHash, "stmt_template", (char*)v_stmt_template.arr);
+DEBUGLOG(("GetKeywords stmt_template = [%s]\n",v_stmt_template.arr));
+		}
+/* acct_type */
+		if (ind_acct_type >= 0) {
+			v_acct_type.arr[v_acct_type.len] = '\0';
+			PutField_CString(myHash, "acct_type", (char*)v_acct_type.arr);
+DEBUGLOG(("GetKeywords acct_type = [%s]\n",v_acct_type.arr));
+		}
+/* amt_type */
+		if (ind_amt_type >= 0) {
+			v_amt_type.arr[v_amt_type.len] = '\0';
+			PutField_CString(myHash, "amt_type", (char*)v_amt_type.arr);
+DEBUGLOG(("GetKeywords amt_type = [%s]\n",v_amt_type.arr));
+		}
+/* full_match */
+		if (ind_full_match >= 0) {
+			PutField_Int(myHash, "full_match", v_full_match);
+DEBUGLOG(("GetKeywords full_match = [%d]\n",v_full_match));
+		}
+/* hold_amt_type */
+		if (ind_hold_amt_type >= 0) {
+			v_hold_amt_type.arr[v_hold_amt_type.len] = '\0';
+			PutField_CString(myHash, "hold_amt_type", (char*)v_hold_amt_type.arr);
+DEBUGLOG(("GetKeywords hold_amt_type = [%s]\n",v_hold_amt_type.arr));
+		}
+
+		RecordSet_Add(myRec,myHash);
+
+	}
+	EXEC SQL CLOSE getkeywordscursor;
+
+	if (iCnt > 0) {
+		*iRec = iCnt;
+		iRet = PD_FOUND;
+DEBUGLOG(("GetKeywords FOUND [%d] Records\n",*iRec));
+	} else {
+		iRet = PD_NOT_FOUND;
+DEBUGLOG(("GetKeywords NOT FOUND!!!\n"));
+	}
+
+DEBUGLOG(("GetKeywords Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+getkeywords_error:
+DEBUGLOG(("getkeywords_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStmtFormat getkeywords_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL CLOSE getkeywordscursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int AddKeywords(const hash_t *hRls)
+{
+	char	*csTmp;
+	int	iTmp;
+
+        EXEC SQL WHENEVER SQLERROR GOTO addkeywords_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_format_id[PD_FORMAT_ID_LEN];
+		varchar		hv_format_type[PD_FORMAT_TYPE_LEN];
+		int		hv_format_value;
+		varchar		hv_stmt_desc[PD_STMT_DESC_LEN];
+		varchar		hv_stmt_template[PD_STMT_TEMPLATE_LEN];
+		varchar		hv_stmt_col_name[PD_COL_NAME_LEN];
+		varchar		hv_user[PD_USER_LEN];
+
+		short		ind_format_id = -1;
+		short		ind_format_type = -1;
+		short		ind_format_value = -1;
+		short		ind_stmt_desc = -1;
+		short		ind_stmt_template = -1;
+		short		ind_stmt_col_name = -1;
+		short		ind_user = -1;
+
+		short		hv_return_value;
+
+        EXEC SQL END DECLARE SECTION;
+
+/* int_bank_code */
+	if (GetField_CString(hRls,"int_bank_code",&csTmp)) {
+		hv_format_id.len = strlen(csTmp);
+		strncpy((char*)hv_format_id.arr, csTmp, hv_format_id.len);
+		ind_format_id = 0;
+DEBUGLOG(("AddKeywords:int_bank_code = [%.*s]\n",hv_format_id.len,hv_format_id.arr));
+	} else {
+DEBUGLOG(("AddKeywords:int_bank_code NOT FOUND!!!\n"));
+	}
+
+/* format_type */
+	if (GetField_CString(hRls,"format_type",&csTmp)) {
+		hv_format_type.len = strlen(csTmp);
+		strncpy((char*)hv_format_type.arr, csTmp, hv_format_type.len);
+		ind_format_type = 0;
+DEBUGLOG(("AddKeywords:format_type = [%.*s]\n",hv_format_type.len,hv_format_type.arr));
+	} else {
+DEBUGLOG(("AddKeywords:format_type NOT FOUND!!!\n"));
+	}
+
+/* format_value */
+	if (GetField_Int(hRls,"format_value",&iTmp)) {
+		hv_format_value = iTmp;
+		ind_format_value = 0;
+DEBUGLOG(("AddKeywords:format_value = [%d]\n",hv_format_value));
+	} else {
+DEBUGLOG(("AddKeywords:format_value NOT FOUND!!!\n"));
+	}
+
+/* stmt_desc */
+	if (GetField_CString(hRls,"stmt_desc",&csTmp)) {
+		hv_stmt_desc.len = strlen(csTmp);
+		strncpy((char*)hv_stmt_desc.arr, csTmp, hv_stmt_desc.len);
+		ind_stmt_desc = 0;
+DEBUGLOG(("AddKeywords:stmt_desc = [%.*s]\n",hv_stmt_desc.len,hv_stmt_desc.arr));
+	} else {
+DEBUGLOG(("AddKeywords:stmt_desc NOT FOUND!!!\n"));
+	}
+
+/* stmt_template */
+	if (GetField_CString(hRls,"stmt_template",&csTmp)) {
+		hv_stmt_template.len = strlen(csTmp);
+		strncpy((char*)hv_stmt_template.arr, csTmp, hv_stmt_template.len);
+		ind_stmt_template = 0;
+DEBUGLOG(("AddKeywords:stmt_template = [%.*s]\n",hv_stmt_template.len,hv_stmt_template.arr));
+	} else {
+DEBUGLOG(("AddKeywords:stmt_template NOT FOUND!!!\n"));
+	}
+
+/* stmt_col_name */
+	if (GetField_CString(hRls,"stmt_col_name",&csTmp)) {
+		hv_stmt_col_name.len = strlen(csTmp);
+		strncpy((char*)hv_stmt_col_name.arr, csTmp, hv_stmt_col_name.len);
+		ind_stmt_col_name = 0;
+DEBUGLOG(("AddKeywords:stmt_col_name = [%.*s]\n",hv_stmt_col_name.len,hv_stmt_col_name.arr));
+	} else {
+DEBUGLOG(("AddKeywords:stmt_col_name NOT FOUND!!!\n"));
+	}
+
+/* user */
+	if (GetField_CString(hRls,"create_user",&csTmp)) {
+		hv_user.len = strlen(csTmp);
+		strncpy((char*)hv_user.arr, csTmp, hv_user.len);
+		ind_user = 0;
+DEBUGLOG(("AddKeywords:user = [%.*s]\n",hv_user.len,hv_user.arr));
+	} else if (GetField_CString(hRls,"update_user",&csTmp)) {
+		hv_user.len = strlen(csTmp);
+		strncpy((char*)hv_user.arr, csTmp, hv_user.len);
+		ind_user = 0;
+DEBUGLOG(("AddKeywords:user = [%.*s]\n",hv_user.len,hv_user.arr));
+	} else {
+DEBUGLOG(("AddKeywords:user NOT FOUND!!!\n"));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_stmt_format_insert(
+						:hv_format_id:ind_format_id,
+						:hv_format_type:ind_format_type,
+						:hv_format_value:ind_format_value,
+						:hv_stmt_desc:ind_stmt_desc,
+						:hv_stmt_template:ind_stmt_template,
+						:hv_stmt_col_name:ind_stmt_col_name,
+						:hv_user:ind_user);
+		END;
+	END-EXEC;
+
+DEBUGLOG(("AddKeywords:Ret = [%d]\n",hv_return_value));
+	if (hv_return_value == SP_OK)
+	{
+DEBUGLOG(("AddKeywords:Normal Exit\n"));
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_AddKeywords: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("AddKeywords: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_AddKeywords: SP_ERR TxnAbort\n");
+DEBUGLOG(("AddKeywords: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+addkeywords_error:
+DEBUGLOG(("update_Header_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_AddKeywords: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("AddKeywords: SP_INTERNAL_ERR TxnAbort\n"));
+        TxnAbort();
+        return PD_INTERNAL_ERR;
+}
+
+
+int UpdateKeywords(const hash_t *hRls)
+{
+	char	*csTmp;
+	int	iTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatekeywords_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_format_id[PD_FORMAT_ID_LEN];
+		varchar		hv_format_type[PD_FORMAT_TYPE_LEN];
+		int		hv_format_value;
+		varchar		hv_stmt_desc[PD_STMT_DESC_LEN];
+		varchar		hv_stmt_template[PD_STMT_TEMPLATE_LEN];
+		varchar		hv_stmt_col_name[PD_COL_NAME_LEN];
+		varchar		hv_user[PD_USER_LEN];
+
+		short		ind_format_id = -1;
+		short		ind_format_type = -1;
+		short		ind_format_value = -1;
+		short		ind_stmt_desc = -1;
+		short		ind_stmt_template = -1;
+		short		ind_stmt_col_name = -1;
+		short		ind_user = -1;
+
+		short		hv_return_value;
+
+	EXEC SQL END DECLARE SECTION;
+
+/* int_bank_code */
+	if (GetField_CString(hRls,"int_bank_code",&csTmp)) {
+		hv_format_id.len = strlen(csTmp);
+		strncpy((char*)hv_format_id.arr, csTmp, hv_format_id.len);
+		ind_format_id = 0;
+DEBUGLOG(("UpdateKeywords:int_bank_code = [%.*s]\n",hv_format_id.len,hv_format_id.arr));
+	} else {
+DEBUGLOG(("UpdateKeywords:int_bank_code NOT FOUND!!!\n"));
+	}
+
+/* format_type */
+	if (GetField_CString(hRls,"format_type",&csTmp)) {
+		hv_format_type.len = strlen(csTmp);
+		strncpy((char*)hv_format_type.arr, csTmp, hv_format_type.len);
+		ind_format_type = 0;
+DEBUGLOG(("UpdateKeywords:format_type = [%.*s]\n",hv_format_type.len,hv_format_type.arr));
+	} else {
+DEBUGLOG(("UpdateKeywords:format_type NOT FOUND!!!\n"));
+	}
+
+/* format_value */
+	if (GetField_Int(hRls,"format_value",&iTmp)) {
+		hv_format_value = iTmp;
+		ind_format_value = 0;
+DEBUGLOG(("UpdateKeywords:format_value = [%d]\n",hv_format_value));
+	} else {
+DEBUGLOG(("UpdateKeywords:format_value NOT FOUND!!!\n"));
+	}
+
+/* stmt_desc */
+	if (GetField_CString(hRls,"stmt_desc",&csTmp)) {
+		hv_stmt_desc.len = strlen(csTmp);
+		strncpy((char*)hv_stmt_desc.arr, csTmp, hv_stmt_desc.len);
+		ind_stmt_desc = 0;
+DEBUGLOG(("UpdateKeywords:stmt_desc = [%.*s]\n",hv_stmt_desc.len,hv_stmt_desc.arr));
+	} else {
+DEBUGLOG(("UpdateKeywords:stmt_desc NOT FOUND!!!\n"));
+	}
+
+/* stmt_template */
+	if (GetField_CString(hRls,"stmt_template",&csTmp)) {
+		hv_stmt_template.len = strlen(csTmp);
+		strncpy((char*)hv_stmt_template.arr, csTmp, hv_stmt_template.len);
+		ind_stmt_template = 0;
+DEBUGLOG(("UpdateKeywords:stmt_template = [%.*s]\n",hv_stmt_template.len,hv_stmt_template.arr));
+	} else {
+DEBUGLOG(("UpdateKeywords:stmt_template NOT FOUND!!!\n"));
+	}
+
+/* stmt_col_name */
+	if (GetField_CString(hRls,"stmt_col_name",&csTmp)) {
+		hv_stmt_col_name.len = strlen(csTmp);
+		strncpy((char*)hv_stmt_col_name.arr, csTmp, hv_stmt_col_name.len);
+		ind_stmt_col_name = 0;
+DEBUGLOG(("UpdateKeywords:stmt_col_name = [%.*s]\n",hv_stmt_col_name.len,hv_stmt_col_name.arr));
+	} else {
+DEBUGLOG(("UpdateKeywords:stmt_col_name NOT FOUND!!!\n"));
+	}
+
+/* user */
+	if (GetField_CString(hRls,"create_user",&csTmp)) {
+		hv_user.len = strlen(csTmp);
+		strncpy((char*)hv_user.arr, csTmp, hv_user.len);
+		ind_user = 0;
+DEBUGLOG(("UpdateKeywords:user = [%.*s]\n",hv_user.len,hv_user.arr));
+	} else if (GetField_CString(hRls,"update_user",&csTmp)) {
+		hv_user.len = strlen(csTmp);
+		strncpy((char*)hv_user.arr, csTmp, hv_user.len);
+		ind_user = 0;
+DEBUGLOG(("UpdateKeywords:user = [%.*s]\n",hv_user.len,hv_user.arr));
+	} else {
+DEBUGLOG(("UpdateKeywords:user NOT FOUND!!!\n"));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_stmt_format_update(
+						:hv_format_id:ind_format_id,
+						:hv_format_type:ind_format_type,
+						:hv_format_value:ind_format_value,
+						:hv_stmt_desc:ind_stmt_desc,
+						:hv_stmt_template:ind_stmt_template,
+						:hv_stmt_col_name:ind_stmt_col_name,
+						:hv_user:ind_user);
+		END;
+	END-EXEC;
+
+DEBUGLOG(("UpdateKeywords:Ret = [%d]\n",hv_return_value));
+	if (hv_return_value == SP_OK)
+	{
+DEBUGLOG(("UpdateKeywords:Normal Exit\n"));
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_UpdateKeywords: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("UpdateKeywords: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_UpdateKeywords: SP_ERR TxnAbort\n");
+DEBUGLOG(("UpdateKeywords: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+updatekeywords_error:
+DEBUGLOG(("update_Header_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_UpdateKeywords: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("UpdateKeywords: SP_INTERNAL_ERR TxnAbort\n"));
+	TxnAbort();
+	return PD_INTERNAL_ERR;
+}
+

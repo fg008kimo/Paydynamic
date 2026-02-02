@@ -1,0 +1,1357 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/06/26              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include <math.h>
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "batchcommon.h"
+#include "TxnSeq.h"
+#include "pr_payout_upload.h"
+#include "pr_bo_funct.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cDebug = 'Y';
+char    cs_hdfile[PD_MAX_FILE_LEN + 1];
+char    cs_dtfile[PD_MAX_FILE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+
+int 	parse_arg(int argc,char **argv);
+int     parse_header(FILE *fin,hash_t * hTxn);
+int     process_header(hash_t *hTxn);
+int     parse_detail(FILE *fin,hash_t * hTxn);
+int     process_detail(hash_t *hTxn);
+int	GenBatchId(char *csBatchId);
+int	GetMerchantProfile(const char* csMerchAccNmb,hash_t *hTxn);
+int     AddUploadHeader(const hash_t *hRls);
+int 	UpdateUploadHeader(const hash_t *hRls);
+int 	UpdateUploadDetail(const hash_t *hRls);
+int     AddUploadDetail(const hash_t *hRls);
+//char*	GetNextBatchTxnSeq();
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 3) {
+        printf("usage:  -h header_file -t detail_file -d Date\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        FILE    *fin;
+        int     iRet;
+	
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn, 0);        
+
+        iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS){
+		printf("usage:  -h header_file -t detail_file -d Date\n");
+                return (iRet);
+	}
+
+        fin = fopen(cs_hdfile,"r");
+        
+        if (fin == NULL) {
+DEBUGLOG(("Error Opening header file = [%s]\n",cs_hdfile));
+                return FAILURE;
+        }
+
+        iRet = parse_header(fin,hTxn);
+        fclose(fin);
+
+	if (iRet != FAILURE)  {
+        	fin = fopen(cs_dtfile,"r");
+		
+        	iRet = parse_detail(fin,hTxn);
+        	fclose(fin);
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+	FREE_ME(hTxn);
+        return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int	parse_header(FILE *fin,hash_t * hTxn) 
+{
+	int	iRet = SUCCESS;
+	char	csList[IMPORT_MAX_FILE][IMPORT_FIELD_LEN];
+	char    cs_input_buf[PD_MAX_BUFFER +1];;
+	char    csTag[PD_TAG_LEN+1];
+	char* p;
+	int	iCount = 0;
+	int	i= 0;
+	int	iRecord = 0;
+
+DEBUGLOG(("parse_header: Begin\n"));
+	while( fgets(cs_input_buf, PD_MAX_BUFFER, fin) != NULL ){
+
+		if ((cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) || (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D))
+			cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+		if(cs_input_buf[strlen(cs_input_buf) - 1] == 0x00)
+			continue;
+
+		i= 0;
+
+		p = mystrtok(cs_input_buf,PD_MY_DELIMITOR);
+                if (p != NULL){
+                        strcpy(csList[i],p);
+                        i++;
+
+                        while ( (p = mystrtok(NULL,PD_MY_DELIMITOR)) != NULL) {
+                                strcpy(csList[i],p);
+                                i++;
+                        }
+                }
+                else{
+DEBUGLOG(("parse_header: Read Header Error\n"));
+			iRet = FAILURE;
+                        break;
+                }
+
+		iRecord++;
+		PutField_Int(hTxn,"batch_count",iRecord);
+
+		if(iRet==SUCCESS){
+			for(iCount=0;iCount<i;iCount++){
+				if(iCount==IDX_HEADER_REF_ID)
+					sprintf(csTag,"ref_num_%d",iRecord);
+				else if(iCount==IDX_HEADER_IMPORT_ERR)
+					sprintf(csTag,"import_err_%d",iRecord);
+				else if(iCount==IDX_HEADER_DATETIME)
+					sprintf(csTag,"date_time_%d",iRecord);
+				else if(iCount==IDX_HEADER_FILENAME)
+					sprintf(csTag,"filename_%d",iRecord);
+				else if(iCount==IDX_HEADER_FILEPREFIX)
+					sprintf(csTag,"filename_prefix_%d",iRecord);
+				else if(iCount==IDX_HEADER_TOTAL_COUNT)
+					sprintf(csTag,"txn_count_%d",iRecord);
+				else if(iCount==IDX_HEADER_TOTAL_AMT)
+					sprintf(csTag,"total_txn_amt_%d",iRecord);
+				else if(iCount==IDX_HEADER_STATUS)
+					sprintf(csTag,"status_%d",iRecord);
+				else if(iCount==IDX_HEADER_ACCT_NMB)
+					sprintf(csTag,"acct_id_%d",iRecord);
+				else
+					sprintf(csTag,"not_care");
+
+				PutField_CString(hTxn,csTag,csList[iCount]);
+DEBUGLOG(("parse_header: Tag[%s]: [%s]\n",csTag,csList[iCount]));
+			}
+
+		}
+	}
+
+	iRet = process_header(hTxn);
+
+	
+	return iRet;
+}
+
+int	process_header(hash_t *hTxn)
+{
+	int	iRet = SUCCESS;
+	int	iBatch = 0;
+	int	i = 0;
+	unsigned long   lBatchId = 0l;
+	char    *csBatchId = strdup("");
+	char    csTag[PD_TAG_LEN+1];
+	char	*csTmp;
+	double	dTmp=0.0;
+
+	GetField_Int(hTxn,"batch_count",&iBatch);
+
+	for(i=1;i<=iBatch;i++){
+		if(GenBatchId(csBatchId)!= PD_OK){
+DEBUGLOG(("process_header::GenBatchId Failed\n"));
+ERRLOG("pr_payout_upload::process_header::GenBatchId Failed\n");
+			iRet = FAILURE;
+			break;
+		}
+		else {
+DEBUGLOG(("process_header::GenBatchId batch_id = [%s]\n", csBatchId));
+			PutField_CString(hTxn, "batch_id", csBatchId);
+			lBatchId = ctol((const unsigned char *)csBatchId,strlen(csBatchId));
+			sprintf(csTag,"ref_num_%d",i);
+			GetField_CString(hTxn,csTag,&csTmp);
+			//PutField_CString(hTxn,"vnc_ref_num",csTmp);
+			sprintf(csTag,"%s_batch_id",csTmp);
+			PutField_CString(hTxn,csTag,csBatchId);
+			sprintf(csTag,"batch_id_%d",i);
+			PutField_CString(hTxn,csTag,csBatchId);
+DEBUGLOG(("process_header::GenBatchId batch_id = [%ld]\n", lBatchId));
+		}
+
+		sprintf(csTag,"acct_id_%d",i);
+		if(GetField_CString(hTxn,csTag,&csTmp)){
+			if(GetMerchantProfile(csTmp,hTxn)!=PD_OK){
+DEBUGLOG(("process_header::GetMerchantProfile Failed\n"));
+ERRLOG("pr_payout_upload::process_header::GetMerchantProfile Failed\n");
+				iRet = FAILURE;
+				break;
+			}
+		}
+
+		sprintf(csTag,"filename_%d",i);
+		if(GetField_CString(hTxn,csTag,&csTmp)){
+			PutField_CString(hTxn,"filename",csTmp);
+		}
+		sprintf(csTag,"filename_prefix_%d",i);
+		if(GetField_CString(hTxn,csTag,&csTmp)){
+			PutField_CString(hTxn,"filename_prefix",csTmp);
+		}
+		sprintf(csTag,"txn_count_%d",i);
+		if(GetField_CString(hTxn,csTag,&csTmp)){
+			PutField_Int(hTxn,"txn_count",atoi(csTmp));
+		}
+		sprintf(csTag,"total_txn_amt_%d",i);
+		if(GetField_CString(hTxn,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1)
+				PutField_Double(hTxn,"txn_amt",dTmp);
+		}
+		sprintf(csTag,"status_%d",i);
+		if(GetField_CString(hTxn,csTag,&csTmp)){
+			PutField_Int(hTxn,"status",atoi(csTmp));
+		}
+
+		PutField_CString(hTxn,"posting_date",cs_date);
+
+		if(AddUploadHeader(hTxn)!=PD_OK){
+			iRet = FAILURE;
+			break;
+		}
+
+	}
+
+
+	FREE_ME(csBatchId);
+	return iRet;
+}
+
+
+int GenBatchId(char *csBatchId)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO gen_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar v_batch_id[PD_TXN_SEQ_LEN + 1];
+                short   ind_batch_id = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL SELECT NVL(max(uh_batch_id), 0) + 1
+                   INTO :v_batch_id:ind_batch_id
+                FROM merchant_upload_file_header;
+
+        if (ind_batch_id >= 0) {
+                v_batch_id.arr[v_batch_id.len] = '\0';
+                strcpy((char*)csBatchId,(const char*)v_batch_id.arr);
+
+DEBUGLOG(("GenBatchId batch_id = [%s]\n", csBatchId));
+                return PD_OK;
+        }
+
+DEBUGLOG(("GenBatchId NOT SUCC\n"));
+        return PD_ERR;
+
+gen_error:
+DEBUGLOG(("gen_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;
+}
+
+int GetMerchantProfile(const char* csMerchAccNmb,
+                hash_t *hTxn)
+{
+        int iRet = PD_OK;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getmerchant_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_merch_account_nmb[PD_MERCH_ACCOUNT_NMB_LEN];
+
+                varchar         v_service[PD_SERVICE_CODE_LEN + 1];
+                varchar         v_ph_merch_id[PD_MERCHANT_ID_LEN + 1];
+
+                short           ind_service = -1;
+                short           ind_ph_merch_id = -1;
+
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_merch_account_nmb.len = strlen(csMerchAccNmb);
+        memcpy(hv_merch_account_nmb.arr,csMerchAccNmb,hv_merch_account_nmb.len);
+DEBUGLOG(("GetMerchantProfile merch_account_nmb = [%.*s]\n",hv_merch_account_nmb.len,hv_merch_account_nmb.arr));
+
+        EXEC SQL DECLARE c_cursor_getmerchant CURSOR FOR
+                select 
+                        pmp_service,
+                        pmp_ph_merch_id
+                  from par_merch_profile
+                 where pmp_merch_account_nmb = :hv_merch_account_nmb;
+
+        EXEC SQL OPEN c_cursor_getmerchant;
+        do {
+                EXEC SQL FETCH c_cursor_getmerchant
+                INTO
+                        :v_service:ind_service,
+                        :v_ph_merch_id:ind_ph_merch_id;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        iRet = SQL_NOT_FOUND;
+                        break;
+                }
+
+// service
+                if (ind_service >= 0) {
+                        v_service.arr[v_service.len] = '\0';
+                        PutField_CString(hTxn,"service_code",(const char*)v_service.arr);
+DEBUGLOG(("GetMerchantProfile service = [%s]\n",v_service.arr));
+                }
+
+// merchant_id
+                if (ind_ph_merch_id >= 0) {
+                        v_ph_merch_id.arr[v_ph_merch_id.len] = '\0';
+                        PutField_CString(hTxn,"merchant_id",(const char*)v_ph_merch_id.arr);
+DEBUGLOG(("GetMerchantProfile ph_merch_id = [%s]\n",v_ph_merch_id.arr));
+                }
+
+		break; //**************** only one now
+        }
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getmerchant;
+
+DEBUGLOG(("GetMerchantProfile Normal Exit\n"));
+        if(iRet==0) return  PD_OK;
+        else    return iRet;
+
+getmerchant_error:
+DEBUGLOG(("getmerchant_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getmerchant;
+        return PD_ERR;
+}
+
+
+int     AddUploadHeader(const hash_t *hRls)
+{
+        char            *csTmp;
+        int             iTmp;
+        double          dTmp;
+
+        EXEC SQL WHENEVER SQLERROR GOTO add_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_batch_id[PD_TXN_SEQ_LEN];
+                varchar         hv_merchant_id[PD_MERCHANT_ID_LEN];
+                varchar         hv_service_code[PD_SERVICE_CODE_LEN];
+                varchar         hv_txn_id[PD_TXN_SEQ_LEN];
+                varchar         hv_filename[PD_FILENAME_LEN];
+                varchar         hv_filename_prefix[PD_FILENAME_PREFIX_LEN];
+                varchar         hv_posting_date[PD_DATE_LEN];
+                int             hv_txn_count;
+                double          hv_txn_amt;
+                int             hv_status;
+
+                short           ind_batch_id = -1;
+                short           ind_txn_id = -1;
+                short           ind_merchant_id = -1;
+                short           ind_service_code = -1;
+                short           ind_status = -1;
+                short           ind_filename = -1;
+                short           ind_filename_prefix = -1;
+                short           ind_txn_count = -1;
+                short           ind_txn_amt = -1;
+                short           ind_posting_date = -1;
+
+                short           hv_return_value;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("AddUploadHeader: Begin\n"));
+/*batch_id*/
+        if(GetField_CString(hRls,"batch_id",&csTmp)){
+                hv_batch_id.len = strlen(csTmp);
+                memcpy(hv_batch_id.arr, csTmp, hv_batch_id.len);
+                ind_batch_id= 0;
+DEBUGLOG(("Add:batch_id= [%.*s]\n",hv_batch_id.len,hv_batch_id.arr));
+        }
+
+/*merchant_id*/
+        if(GetField_CString(hRls,"merchant_id",&csTmp)){
+                hv_merchant_id.len = strlen(csTmp);
+                memcpy(hv_merchant_id.arr, csTmp, hv_merchant_id.len);
+                ind_merchant_id = 0;
+DEBUGLOG(("Add:merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+        }
+
+/*service_code*/
+        if(GetField_CString(hRls,"service_code",&csTmp)){
+                hv_service_code.len = strlen(csTmp);
+                memcpy(hv_service_code.arr, csTmp, hv_service_code.len);
+                ind_service_code= 0;
+DEBUGLOG(("Add:service_code = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+        }
+
+/*filename*/
+        if(GetField_CString(hRls,"filename",&csTmp)){
+                hv_filename.len = strlen(csTmp);
+                memcpy(hv_filename.arr, csTmp, hv_filename.len);
+                ind_filename= 0;
+DEBUGLOG(("Add:filename = [%.*s]\n",hv_filename.len,hv_filename.arr));
+        }
+
+/*filename_prefix*/
+        if(GetField_CString(hRls,"filename_prefix",&csTmp)){
+                hv_filename_prefix.len = strlen(csTmp);
+                memcpy(hv_filename_prefix.arr, csTmp, hv_filename_prefix.len);
+                ind_filename_prefix= 0;
+DEBUGLOG(("Add:filename_prefix = [%.*s]\n",hv_filename_prefix.len,hv_filename_prefix.arr));
+        }
+
+/*posting_date*/
+        if(GetField_CString(hRls,"posting_date",&csTmp)){
+                hv_posting_date.len = PD_DATE_LEN;
+                memcpy(hv_posting_date.arr, csTmp, PD_DATE_LEN);
+                ind_posting_date = 0;
+DEBUGLOG(("Add:posting_date = [%.*s]\n",hv_posting_date.len,hv_posting_date.arr));
+        }
+
+/*status*/
+        if(GetField_Int(hRls,"status",&iTmp)){
+                hv_status = iTmp;
+                ind_status = 0;
+DEBUGLOG(("Add:status = [%d]\n",hv_status));
+        }
+
+/*txn_count*/
+        if (GetField_Int(hRls,"txn_count",&iTmp)) {
+                hv_txn_count = iTmp;
+                ind_txn_count = 0;
+DEBUGLOG(("Add:txn_count = [%d]\n",hv_txn_count));
+        }
+
+/*txn_amt*/
+        if (GetField_Double(hRls,"txn_amt",&dTmp)) {
+                hv_txn_amt= dTmp;
+                ind_txn_amt= 0;
+DEBUGLOG(("Add:txn_amt = [%lf]\n",hv_txn_amt));
+        }
+
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_merch_upload_hd_insert(
+                                        :hv_batch_id:ind_batch_id,
+                                        :hv_txn_id:ind_txn_id,
+                                        :hv_posting_date:ind_posting_date,
+                                        :hv_merchant_id:ind_merchant_id,
+                                        :hv_service_code:ind_service_code,
+                                        :hv_filename:ind_filename,
+                                        :hv_filename_prefix:ind_filename_prefix,
+                                        :hv_txn_count:ind_txn_count,
+                                        :hv_txn_amt:ind_txn_amt,
+                                        :hv_status:ind_status);
+                END;
+        END-EXEC;
+
+DEBUGLOG(("Add:Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("Add:Normal Exit\n"));
+                return PD_OK;
+        }
+
+        if (hv_return_value == SP_OTHER_ERR)  {
+ERRLOG("AddUploadFileHeader_Add: SP_OTHER_ERR \n");
+DEBUGLOG(("Add: SP_OTHER_ERR \n"));
+		return PD_OTHER_ERR;
+        }
+
+        if (hv_return_value == SP_ERR)  {
+ERRLOG("AddUploadFileHeader_Add: SP_ERR \n");
+DEBUGLOG(("Add: SP_ERR \n"));
+		return PD_ERR;
+        }
+
+add_error:
+DEBUGLOG(("add_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("AddUploadFileHeader_Add: SP_INTERNAL_ERR \n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+
+}
+
+int     parse_detail(FILE *fin,hash_t * hTxn)
+{
+        int     iRet = SUCCESS;
+        char    csList[IMPORT_MAX_FILE][IMPORT_FIELD_LEN];
+        char    cs_input_buf[PD_MAX_BUFFER +1];;
+        char    csTag[PD_TAG_LEN+1];
+        char* p;
+        int     iCount = 0;
+        int     i= 0;
+        int     iRec= 0;
+	char    csTmpCcy[PD_CCY_ID_LEN+1];
+
+        while( fgets(cs_input_buf, PD_MAX_BUFFER, fin) != NULL ){
+
+                if ((cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) || (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D))
+                        cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+                if(cs_input_buf[strlen(cs_input_buf) - 1] == 0x00)
+                        continue;
+
+DEBUGLOG(("parse_detail: DATA=[%s]\n",cs_input_buf));
+                i= 0;
+
+                p = mystrtok(cs_input_buf,PD_MY_DELIMITOR);
+                if (p != NULL){
+                        strcpy(csList[i],p);
+                        i++;
+
+                        while ( (p = mystrtok(NULL,PD_MY_DELIMITOR)) != NULL) {
+                                strcpy(csList[i],p);
+                                i++;
+                        }
+                }
+                else{
+DEBUGLOG(("parse_detail: Read Detail Error\n"));
+                        iRet = FAILURE;
+			break;
+                }
+
+		iRec++;
+		PutField_Int(hTxn,"total_detail_record",iRec);
+
+		if(iRet==PD_OK){
+			for(iCount=0;iCount<i;iCount++){
+				if(iCount==IDX_DETAIL_REF_ID)
+					sprintf(csTag,"dt_ref_num_%d",iRec);
+				else if(iCount==IDX_DETAIL_TXN_SEQ)
+					sprintf(csTag,"vnc_ref_num_%d",iRec);
+				else if(iCount==IDX_DETAIL_AUX_TXN_SEQ)
+					sprintf(csTag,"aux_txn_seq_%d",iRec);
+				else if(iCount==IDX_DETAIL_MERCHANT_REF)
+					sprintf(csTag,"merchant_ref_%d",iRec);
+				else if(iCount==IDX_DETAIL_SEQ_NUM)
+					sprintf(csTag,"seq_num_%d",iRec);
+				else if(iCount==IDX_DETAIL_COUNTRY)
+					sprintf(csTag,"country_%d",iRec);
+				else if(iCount==IDX_DETAIL_IDENTITY_ID)
+					sprintf(csTag,"identity_id_%d",iRec);
+				else if(iCount==IDX_DETAIL_ACCOUNT_NUM)
+					sprintf(csTag,"account_num_%d",iRec);
+				else if(iCount==IDX_DETAIL_ACCOUNT_NAME)
+					sprintf(csTag,"account_name_%d",iRec);
+				else if(iCount==IDX_DETAIL_BANK_NAME)
+					sprintf(csTag,"bank_name_%d",iRec);
+				else if(iCount==IDX_DETAIL_BANK_CODE)
+					sprintf(csTag,"bank_code_%d",iRec);
+				else if(iCount==IDX_DETAIL_BRANCH)
+					sprintf(csTag,"branch_%d",iRec);
+				else if(iCount==IDX_DETAIL_PHONE)
+					sprintf(csTag,"phone_num_%d",iRec);
+				else if(iCount==IDX_DETAIL_PROVINCE)
+					sprintf(csTag,"province_%d",iRec);
+				else if(iCount==IDX_DETAIL_CITY)
+					sprintf(csTag,"city_%d",iRec);
+				else if(iCount==IDX_DETAIL_REQ_AMT)
+					sprintf(csTag,"request_amount_%d",iRec);
+				else if(iCount==IDX_DETAIL_PAYOUT_AMT)
+					sprintf(csTag,"payout_amount_%d",iRec);
+				else if(iCount==IDX_DETAIL_REQ_CCY_CD)
+					sprintf(csTag,"request_currency_%d",iRec);
+				else if(iCount==IDX_DETAIL_DST_CCY_CD)
+					sprintf(csTag,"payout_currency_%d",iRec);
+				else if(iCount==IDX_DETAIL_MEMBER_FEE)
+					sprintf(csTag,"member_fee_%d",iRec);
+				else if(iCount==IDX_DETAIL_MERCHANT_FEE)
+					sprintf(csTag,"merchant_fee_%d",iRec);
+				else if(iCount==IDX_DETAIL_MARKUP)
+					sprintf(csTag,"markup_%d",iRec);
+				else if(iCount==IDX_DETAIL_MEMBER_FEE_CCY_ID)
+					sprintf(csTag,"member_fee_ccy_%d",iRec);
+				else if(iCount==IDX_DETAIL_MERCHANT_FEE_CCY_ID)
+					sprintf(csTag,"merchant_fee_ccy_%d",iRec);
+				else if(iCount==IDX_DETAIL_MARKUP_CCY_ID)
+					sprintf(csTag,"markup_ccy_%d",iRec);
+				else if(iCount==IDX_DETAIL_EX_RATE)
+					sprintf(csTag,"ex_rate_%d",iRec);
+				else if(iCount==IDX_DETAIL_TIME)
+					sprintf(csTag,"time_%d",iRec);
+				else if(iCount==IDX_DETAIL_REMARK)
+					sprintf(csTag,"remark_%d",iRec);
+				else if(iCount==IDX_DETAIL_STATUS)
+					sprintf(csTag,"status_%d",iRec);
+				else
+					sprintf(csTag,"not_care");
+
+				if(strlen(csList[iCount])){
+					if(iCount==IDX_DETAIL_REQ_CCY_CD ||iCount==IDX_DETAIL_DST_CCY_CD){
+						if(!strcmp(csList[iCount],PD_CCY_ISO_RMB)){
+							sprintf(csTmpCcy,"%s",PD_CCY_ISO_CNY);
+						}
+						else{
+							sprintf(csTmpCcy,"%s",csList[iCount]);
+						}
+						PutField_CString(hTxn,csTag,csTmpCcy);
+DEBUGLOG(("parse_detail: Tag[%s]: [%s]\n",csTag,csTmpCcy));
+					}
+					/*
+					else if(iCount==IDX_DETAIL_BANK_CODE){
+						csList[iCount][3]='\0';
+						PutField_CString(hTxn,csTag,csList[iCount]);
+DEBUGLOG(("parse_detail: Tag[%s]: [%s]\n",csTag,csList[iCount]));
+					}
+					*/
+					else{
+						PutField_CString(hTxn,csTag,csList[iCount]);
+DEBUGLOG(("parse_detail: Tag[%s]: [%s]\n",csTag,csList[iCount]));
+					}
+				}
+			}
+
+		}
+
+	}
+	iRet = process_detail(hTxn);
+
+	return iRet;
+}
+
+
+int	process_detail(hash_t *hContext)
+{
+	int	iRet = SUCCESS;
+	//int	iBatch = 0;
+	int	i = 0;
+	int	iTmp = 0;
+	char    *csBatchId = NULL; 
+	char    csTag[PD_TAG_LEN+1];
+	char	*csTmp;
+	double	dTmp=0.0;
+	int	iCnt = 0;
+	char    *csTxnSeq;
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+	GetField_Int(hContext,"total_detail_record",&iCnt);
+
+DEBUGLOG(("process_detail Begin [%d]\n",iCnt));
+
+	for(i=1;i<=iCnt;i++){	
+		hash_init(hTxn, 0);
+
+		sprintf(csTag,"dt_ref_num_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+DEBUGLOG(("process_detail::dt_ref_num = [%s]\n", csTmp));
+			sprintf(csTag,"%s_batch_id",csTmp);
+			if(GetField_CString(hContext,csTag,&csBatchId)){
+				PutField_CString(hTxn,"batch_id",csBatchId);
+DEBUGLOG(("process_detail::GenBatchId batch_id = [%s]\n", csBatchId));
+			}
+		}
+
+		sprintf(csTag,"vnc_ref_num_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			//sprintf(csTag,"%s_vnc_ref_num",csBatchId);
+			//PutField_CString(hTxn,csTag,csTmp);
+			PutField_CString(hTxn,"vnc_ref_num",csTmp);
+		}
+
+		csTxnSeq  = strdup(GetNextBatchTxnSeq());
+DEBUGLOG(("GenerateBatchSeq: [%d]=[%s]\n",i,csTxnSeq));
+		sprintf(csTag,"txn_id_%d",i);
+		PutField_CString(hTxn,"txn_id",csTxnSeq);
+
+		sprintf(csTag,"aux_txn_seq_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"aux_txn_id",csTmp);
+		}
+
+		sprintf(csTag,"seq_num_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			iTmp = atoi(csTmp);
+			PutField_Int(hTxn,"seq_num",iTmp);
+		}
+		sprintf(csTag,"merchant_ref_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"merchant_ref",csTmp);
+		}
+		sprintf(csTag,"country_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"country",csTmp);
+		}
+		sprintf(csTag,"identity_id_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"identity_id",csTmp);
+		}
+		sprintf(csTag,"account_num_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"account_num",csTmp);
+		}
+		sprintf(csTag,"account_name_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"account_name",csTmp);
+		}
+		sprintf(csTag,"bank_name_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"bank_name",csTmp);
+		}
+		sprintf(csTag,"bank_code_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"bank_code",csTmp);
+		}
+		sprintf(csTag,"branch_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"branch",csTmp);
+		}
+		else{
+			PutField_CString(hTxn,"branch","XXX");
+		}
+		sprintf(csTag,"phone_num_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"phone_num",csTmp);
+		}
+		sprintf(csTag,"province_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"province",csTmp);
+		}
+		sprintf(csTag,"city_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"city",csTmp);
+		}
+		sprintf(csTag,"payout_currency_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"payout_currency",csTmp);
+			PutField_CString(hTxn,"member_fee_ccy",csTmp);
+			PutField_CString(hTxn,"markup_ccy",csTmp);
+		}
+		sprintf(csTag,"payout_amount_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1)
+				PutField_Double(hTxn,"payout_amount",dTmp);
+		}
+		sprintf(csTag,"request_currency_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"request_currency",csTmp);
+			PutField_CString(hTxn,"merchant_fee_ccy",csTmp);
+		}
+		sprintf(csTag,"request_amount_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1){
+				PutField_Double(hTxn,"request_amount",dTmp);
+			}
+		}
+		sprintf(csTag,"merchant_fee_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1){
+				PutField_Double(hTxn,"merchant_fee",dTmp);
+			}
+		}
+		sprintf(csTag,"member_fee_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1){
+				PutField_Double(hTxn,"member_fee",dTmp);
+			}
+		}
+		sprintf(csTag,"markup_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1){
+				PutField_Double(hTxn,"markup_amt",dTmp);
+			}
+		}
+		sprintf(csTag,"ex_rate_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			if(sscanf(csTmp,"%lf",&dTmp)==1)
+				PutField_Double(hTxn,"ex_rate",dTmp);
+		}
+		sprintf(csTag,"remark_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_CString(hTxn,"remark",csTmp);
+		}
+		sprintf(csTag,"status_%d",i);
+		if(GetField_CString(hContext,csTag,&csTmp)){
+			PutField_Int(hTxn,"status",atoi(csTmp));
+		}
+
+		PutField_Char(hTxn,"batch_mode",PD_OFFLINE);
+
+		if(AddUploadDetail(hTxn)!=PD_OK){
+			iRet = FAILURE;
+			break;
+		}
+		if(UpdateUploadDetail(hTxn)!=PD_OK){
+			iRet = FAILURE;
+			break;
+		}
+
+		FREE_ME(csTxnSeq);
+	}
+
+	FREE_ME(hTxn);
+	return iRet;
+}
+
+/*
+int UpdateUploadHeader(const hash_t *hRls)
+{
+        char*   csBuf;
+        char*   csBatchId;
+
+        EXEC SQL WHENEVER SQLERROR GOTO updatehd_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar         hv_dynstmt[1024];
+
+        EXEC SQL END DECLARE SECTION;
+
+
+DEBUGLOG(("UpdateUploadHeader: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update merchant_upload_file_header set uh_update_timestamp = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        if(GetField_CString(hRls,"batch_id",&csBatchId)){
+DEBUGLOG(("UpdateUploadHeader:batch_id = [%s]\n",csBatchId));
+        }
+        else{
+                FREE_ME(csBuf);
+DEBUGLOG(("UpdateUploadHeader batch_id not found\n"));
+                return INT_ERR;
+        }
+
+	if(GetField_CString(hRls,"vnc_ref_num",&csBuf)){
+DEBUGLOG(("UpdateUploadHeader:vnc_ref_num = [%s]\n",csBuf));
+                strcat((char*)hv_dynstmt.arr, ",uh_vnc_ref_num = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+	strcat((char*)hv_dynstmt.arr, " WHERE uh_batch_id = ");
+        strcat((char*)hv_dynstmt.arr, csBatchId);
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+        FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateUploadHeader Normal Exit\n"));
+        return PD_OK;
+
+updatehd_error:
+DEBUGLOG(("updatehd_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("UpdateUploadHeader: SP_INTERNAL_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_INTERNAL_ERR;
+}
+*/
+
+int UpdateUploadDetail(const hash_t *hRls)
+{
+        char*   csBuf;
+        char*   csBatchId;
+        char*   csSeqNum;
+	char    cTmp;
+	int	iSeqNum = 0;
+
+        EXEC SQL WHENEVER SQLERROR GOTO updatedt_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar         hv_dynstmt[1024];
+
+        EXEC SQL END DECLARE SECTION;
+
+
+DEBUGLOG(("UpdateUploadDetail: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update merchant_upload_file_detail set ud_update_timestamp = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        if(GetField_CString(hRls,"batch_id",&csBatchId)){
+DEBUGLOG(("UpdateUploadDetail:batch_id = [%s]\n",csBatchId));
+        }
+        else{
+                FREE_ME(csBuf);
+DEBUGLOG(("UpdateUploadDetail batch_id not found\n"));
+                return INT_ERR;
+        }
+        if(GetField_Int(hRls,"seq_num",&iSeqNum)){
+        	csSeqNum = (char*) malloc (128);
+		sprintf(csSeqNum,"%d",iSeqNum);
+DEBUGLOG(("UpdateUploadDetail:seq_num = [%d]\n",iSeqNum));
+        }
+
+	if(GetField_Char(hRls,"batch_mode",&cTmp)){
+DEBUGLOG(("UpdateUploadDetail: batch_mode = [%c]\n",cTmp));
+                sprintf(csBuf,"%c",cTmp);
+                strcat((char*)hv_dynstmt.arr, ",ud_batch_mode = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+	
+	if(GetField_CString(hRls,"vnc_ref_num",&csBuf)){
+DEBUGLOG(("UpdateUploadDetail:vnc_ref_num = [%s]\n",csBuf));
+                strcat((char*)hv_dynstmt.arr, ",ud_vnc_ref_num = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+	strcat((char*)hv_dynstmt.arr, " WHERE ud_batch_id = ");
+        strcat((char*)hv_dynstmt.arr, csBatchId);
+	strcat((char*)hv_dynstmt.arr, " and ud_seq_num = ");
+        strcat((char*)hv_dynstmt.arr, csSeqNum);
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+        FREE_ME(csBuf);
+        FREE_ME(csSeqNum);
+
+DEBUGLOG(("UpdateUploadDetail Normal Exit\n"));
+        return PD_OK;
+
+updatedt_error:
+DEBUGLOG(("updatedt_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("UpdateUploadDetail: SP_INTERNAL_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_INTERNAL_ERR;
+}
+
+int     AddUploadDetail(const hash_t *hRls)
+{
+        char            *csTmp;
+        int             iTmp;
+        double          dTmp;
+
+        EXEC SQL WHENEVER SQLERROR GOTO add_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_batch_id[PD_TXN_SEQ_LEN];
+                varchar         hv_txn_id[PD_TXN_SEQ_LEN];
+                varchar         hv_aux_txn_id[PD_TXN_SEQ_LEN];
+                int             hv_seq_num;
+                varchar         hv_merchant_ref[PD_MERCHANT_REF_LEN];
+                varchar         hv_country[PD_COUNTRY_LEN];
+                varchar         hv_identity_id[PD_IDENTITY_ID_LEN];
+                varchar         hv_account_num[PD_AC_NO_LEN];
+                varchar         hv_account_name[PD_ACC_NAME_LEN];
+                varchar         hv_bank_name[PD_BANK_NAME_LEN];
+                varchar         hv_bank_code[PD_BANK_CODE_LEN];
+                varchar         hv_branch[PD_BANK_BRANCH_LEN];
+                varchar         hv_phone_num[PD_MOBILE_NO_LEN];
+                varchar         hv_province[PD_PROVINCE_LEN];
+                varchar         hv_city[PD_CITY_LEN];
+                varchar         hv_payout_currency[PD_CCY_ID_LEN];
+                varchar         hv_request_currency[PD_CCY_ID_LEN];
+                double          hv_payout_amount;
+                double          hv_request_amount;
+                varchar         hv_merchant_fee_ccy[PD_CCY_ID_LEN];
+                varchar         hv_member_fee_ccy[PD_CCY_ID_LEN];
+                double          hv_merchant_fee;
+                double          hv_member_fee;
+                varchar         hv_markup_ccy[PD_CCY_ID_LEN];
+                double          hv_markup_amt;
+                double          hv_ex_rate;
+                int             hv_status;
+                varchar         hv_remark[PD_REMARK_LEN];
+
+                short           ind_batch_id= -1;
+                short           ind_txn_id= -1;
+                short           ind_aux_txn_id= -1;
+                short           ind_seq_num = -1;
+		short           ind_merchant_ref = -1;
+                short           ind_country = -1;
+                short           ind_identity_id = -1;
+                short           ind_account_num = -1;
+                short           ind_account_name = -1;
+                short           ind_bank_name = -1;
+                short           ind_bank_code = -1;
+                short           ind_branch = -1;
+                short           ind_phone_num = -1;
+                short           ind_province = -1;
+                short           ind_city = -1;
+                short           ind_payout_currency = -1;
+                short           ind_request_currency = -1;
+                short           ind_payout_amount = -1;
+                short           ind_request_amount = -1;
+                short           ind_merchant_fee_ccy = -1;
+                short           ind_member_fee_ccy = -1;
+                short           ind_merchant_fee = -1;
+                short           ind_member_fee = -1;
+                short           ind_markup_ccy = -1;
+                short           ind_markup_amt = -1;
+                short           ind_ex_rate = -1;
+                short           ind_status = -1;
+                short           ind_remark = -1;
+
+                short           hv_return_value;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("AddUploadDetail: Begin\n"));
+
+/*batch_id*/
+        if(GetField_CString(hRls,"batch_id",&csTmp)){
+                hv_batch_id.len = strlen(csTmp);
+                memcpy(hv_batch_id.arr, csTmp, hv_batch_id.len);
+                ind_batch_id= 0;
+DEBUGLOG(("Add:batch_id= [%.*s]\n",hv_batch_id.len,hv_batch_id.arr));
+        }
+
+/*txn_id*/
+        if(GetField_CString(hRls,"txn_id",&csTmp)){
+                hv_txn_id.len = strlen(csTmp);
+                memcpy(hv_txn_id.arr, csTmp, hv_txn_id.len);
+                ind_txn_id= 0;
+DEBUGLOG(("Add:txn_id= [%.*s]\n",hv_txn_id.len,hv_txn_id.arr));
+        }
+
+/*aux_txn_id*/
+        if(GetField_CString(hRls,"aux_txn_id",&csTmp)){
+                hv_aux_txn_id.len = strlen(csTmp);
+                memcpy(hv_aux_txn_id.arr, csTmp, hv_aux_txn_id.len);
+                ind_aux_txn_id= 0;
+DEBUGLOG(("Add:aux_txn_id= [%.*s]\n",hv_aux_txn_id.len,hv_aux_txn_id.arr));
+        }
+
+/*seq_num*/
+        if(GetField_Int(hRls,"seq_num",&iTmp)){
+                hv_seq_num = iTmp;
+                ind_seq_num = 0;
+DEBUGLOG(("Add:seq_num = [%d]\n",hv_seq_num));
+        }
+
+/*merchant ref no*/
+        if(GetField_CString(hRls,"merchant_ref",&csTmp)){
+                hv_merchant_ref.len = strlen(csTmp);
+                memcpy(hv_merchant_ref.arr, csTmp, hv_merchant_ref.len);
+                ind_merchant_ref = 0;
+DEBUGLOG(("Add:merchant_ref = [%.*s]\n",hv_merchant_ref.len,hv_merchant_ref.arr));
+        }
+/*country*/
+        if(GetField_CString(hRls,"country",&csTmp)){
+                hv_country.len = strlen(csTmp);
+                memcpy(hv_country.arr, csTmp, hv_country.len);
+                ind_country = 0;
+DEBUGLOG(("Add:country = [%.*s]\n",hv_country.len,hv_country.arr));
+        }
+
+/*identity id no*/
+        if(GetField_CString(hRls,"identity_id",&csTmp)){
+                hv_identity_id.len = strlen(csTmp);
+                memcpy(hv_identity_id.arr, csTmp, hv_identity_id.len);
+                ind_identity_id = 0;
+DEBUGLOG(("Add:identity_id = [%.*s]\n",hv_identity_id.len,hv_identity_id.arr));
+        }
+
+/*account_num*/
+        if(GetField_CString(hRls,"account_num",&csTmp)){
+                hv_account_num.len = strlen(csTmp);
+                memcpy(hv_account_num.arr, csTmp, hv_account_num.len);
+                ind_account_num = 0;
+DEBUGLOG(("Add:account_num = [%.*s]\n",hv_account_num.len,hv_account_num.arr));
+        }
+
+/*account name*/
+        if(GetField_CString(hRls,"account_name",&csTmp)){
+                hv_account_name.len = strlen(csTmp);
+                memcpy(hv_account_name.arr, csTmp, hv_account_name.len);
+                ind_account_name = 0;
+DEBUGLOG(("Add:account_name = [%.*s]\n",hv_account_name.len,hv_account_name.arr));
+        }
+
+/*bank_name*/
+        if(GetField_CString(hRls,"bank_name",&csTmp)){
+                hv_bank_name.len = strlen(csTmp);
+                memcpy(hv_bank_name.arr, csTmp, hv_bank_name.len);
+                ind_bank_name = 0;
+DEBUGLOG(("Add:bank_name = [%.*s]\n",hv_bank_name.len,hv_bank_name.arr));
+        }
+/*bank_code*/
+        if(GetField_CString(hRls,"bank_code",&csTmp)){
+                hv_bank_code.len = strlen(csTmp);
+                memcpy(hv_bank_code.arr, csTmp, hv_bank_code.len);
+                ind_bank_code= 0;
+DEBUGLOG(("Add:bank_code= [%.*s]\n",hv_bank_code.len,hv_bank_code.arr));
+        }
+
+/*branch*/
+        if(GetField_CString(hRls,"branch",&csTmp)){
+                hv_branch.len = strlen(csTmp);
+                memcpy(hv_branch.arr, csTmp, hv_branch.len);
+                ind_branch = 0;
+DEBUGLOG(("Add:branch = [%.*s]\n",hv_branch.len,hv_branch.arr));
+        }
+
+/*phone_num*/
+        if(GetField_CString(hRls,"phone_num",&csTmp)){
+                hv_phone_num.len = strlen(csTmp);
+                memcpy(hv_phone_num.arr, csTmp, hv_phone_num.len);
+                ind_phone_num = 0;
+DEBUGLOG(("Add:phone_num = [%.*s]\n",hv_phone_num.len,hv_phone_num.arr));
+        }
+
+/*province*/
+        if(GetField_CString(hRls,"province",&csTmp)){
+                hv_province.len = strlen(csTmp);
+                memcpy(hv_province.arr, csTmp, hv_province.len);
+                ind_province = 0;
+DEBUGLOG(("Add:province = [%.*s]\n",hv_province.len,hv_province.arr));
+        }
+
+/*city*/
+        if(GetField_CString(hRls,"city",&csTmp)){
+                hv_city.len = strlen(csTmp);
+                memcpy(hv_city.arr, csTmp, hv_city.len);
+                ind_city = 0;
+DEBUGLOG(("Add:city = [%.*s]\n",hv_city.len,hv_city.arr));
+        }
+/*payout currency*/
+        if(GetField_CString(hRls,"payout_currency",&csTmp)){
+                hv_payout_currency.len = strlen(csTmp);
+                memcpy(hv_payout_currency.arr, csTmp, hv_payout_currency.len);
+                ind_payout_currency = 0;
+DEBUGLOG(("Add:payout_currency = [%.*s]\n",hv_payout_currency.len,hv_payout_currency.arr));
+        }
+
+/*payout_amount*/
+        if (GetField_Double(hRls,"payout_amount",&dTmp)) {
+                hv_payout_amount = dTmp;
+                ind_payout_amount = 0;
+DEBUGLOG(("Add:payout_amount = [%lf]\n",hv_payout_amount));
+        }
+
+/*request currency*/
+        if(GetField_CString(hRls,"request_currency",&csTmp)){
+                hv_request_currency.len = strlen(csTmp);
+                memcpy(hv_request_currency.arr, csTmp, hv_request_currency.len);
+                ind_request_currency = 0;
+DEBUGLOG(("Add:request_currency = [%.*s]\n",hv_request_currency.len,hv_request_currency.arr));
+        }
+
+/*request amount*/
+        if (GetField_Double(hRls,"request_amount",&dTmp)) {
+                hv_request_amount = dTmp;
+                ind_request_amount = 0;
+DEBUGLOG(("Add:request_amount = [%lf]\n",hv_request_amount));
+        }
+
+/*merchant_fee_ccy*/
+        if(GetField_CString(hRls,"merchant_fee_ccy",&csTmp)){
+                hv_merchant_fee_ccy.len = strlen(csTmp);
+                memcpy(hv_merchant_fee_ccy.arr, csTmp, hv_merchant_fee_ccy.len);
+                ind_merchant_fee_ccy= 0;
+DEBUGLOG(("Add:merchant_fee_ccy = [%.*s]\n",hv_merchant_fee_ccy.len,hv_merchant_fee_ccy.arr));
+        }
+
+/*merchant_fee*/
+        if (GetField_Double(hRls,"merchant_fee",&dTmp)) {
+                hv_merchant_fee = dTmp;
+                ind_merchant_fee = 0;
+DEBUGLOG(("Add:merchant_fee = [%lf]\n",hv_merchant_fee));
+        }
+/*member_fee_ccy*/
+        if(GetField_CString(hRls,"member_fee_ccy",&csTmp)){
+                hv_member_fee_ccy.len = strlen(csTmp);
+                memcpy(hv_member_fee_ccy.arr, csTmp, hv_member_fee_ccy.len);
+                ind_member_fee_ccy= 0;
+DEBUGLOG(("Add:member_fee_ccy = [%.*s]\n",hv_member_fee_ccy.len,hv_member_fee_ccy.arr));
+        }
+
+/*member_fee*/
+        if (GetField_Double(hRls,"member_fee",&dTmp)) {
+                hv_member_fee= dTmp;
+                ind_member_fee= 0;
+DEBUGLOG(("Add:member_fee = [%lf]\n",hv_member_fee));
+        }
+
+/*markup_ccy*/
+        if(GetField_CString(hRls,"markup_ccy",&csTmp)){
+                hv_markup_ccy.len = strlen(csTmp);
+                memcpy(hv_markup_ccy.arr, csTmp, hv_markup_ccy.len);
+                ind_markup_ccy= 0;
+DEBUGLOG(("Add:markup_ccy = [%.*s]\n",hv_markup_ccy.len,hv_markup_ccy.arr));
+        }
+
+/*markup_amt*/
+        if (GetField_Double(hRls,"markup_amt",&dTmp)) {
+                hv_markup_amt= dTmp;
+                ind_markup_amt= 0;
+DEBUGLOG(("Add:markup_amt = [%lf]\n",hv_markup_amt));
+        }
+
+/*ex_rate*/
+        if (GetField_Double(hRls,"ex_rate",&dTmp)) {
+                hv_ex_rate= dTmp;
+                ind_ex_rate= 0;
+DEBUGLOG(("Add:ex_rate = [%lf]\n",hv_ex_rate));
+        }
+
+/*status*/
+        if(GetField_Int(hRls,"status",&iTmp)){
+                hv_status = iTmp;
+                ind_status = 0;
+DEBUGLOG(("Add:status = [%i]\n",hv_status));
+        }
+/*remark*/
+        if(GetField_CString(hRls,"remark",&csTmp)){
+                hv_remark.len = strlen(csTmp);
+                memcpy(hv_remark.arr, csTmp, hv_remark.len);
+                ind_remark = 0;
+DEBUGLOG(("Add:remark = [%.*s]\n",hv_remark.len,hv_remark.arr));
+        }
+
+        FREE_ME(csTmp);
+
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_merch_upload_dt_insert(
+                                        :hv_batch_id:ind_batch_id,
+                                        :hv_seq_num:ind_seq_num,
+                                        :hv_txn_id:ind_txn_id,
+                                        :hv_aux_txn_id:ind_aux_txn_id,
+                                        :hv_merchant_ref:ind_merchant_ref,
+                                        :hv_country:ind_country,
+                                        :hv_identity_id:ind_identity_id,
+                                        :hv_account_num:ind_account_num,
+                                        :hv_account_name:ind_account_name,
+                                        :hv_bank_name:ind_bank_name,
+                                        :hv_bank_code:ind_bank_code,
+                                        :hv_branch:ind_branch,
+                                        :hv_phone_num:ind_phone_num,
+                                        :hv_province:ind_province,
+                                        :hv_city:ind_city,
+                                        :hv_payout_currency:ind_payout_currency,
+                                        :hv_payout_amount:ind_payout_amount,
+                                        :hv_request_currency:ind_request_currency,
+                                        :hv_request_amount:ind_request_amount,
+                                        :hv_merchant_fee_ccy:ind_merchant_fee_ccy,
+                                        :hv_merchant_fee:ind_merchant_fee,
+                                        :hv_member_fee_ccy:ind_member_fee_ccy,
+                                        :hv_member_fee:ind_member_fee,
+                                        :hv_markup_ccy:ind_markup_ccy,
+                                        :hv_markup_amt:ind_markup_amt,
+                                        :hv_ex_rate:ind_ex_rate,
+                                        :hv_status:ind_status,
+                                        :hv_remark:ind_remark);
+                END;
+        END-EXEC;
+DEBUGLOG(("Add:Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("Add:Normal Exit\n"));
+                return PD_OK;
+        }
+
+        if (hv_return_value == SP_OTHER_ERR)  {
+ERRLOG("AddUploadDetail_Add: SP_OTHER_ERR\n");
+DEBUGLOG(("Add: SP_OTHER_ERR\n"));
+                return PD_OTHER_ERR;
+        }
+
+        if (hv_return_value == SP_ERR)  {
+ERRLOG("AddUploadDetail_Add: SP_ERR\n");
+DEBUGLOG(("Add: SP_ERR\n"));
+                return PD_ERR;
+        }
+
+add_error:
+DEBUGLOG(("add_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("AddUploadDetail_Add: SP_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_dtfile,"");
+        strcpy(cs_hdfile,"");
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"h:t:d:")) != EOF) {
+                switch (c) {
+                        case 'h':
+                                strcpy(cs_hdfile, optarg);
+                                break;
+                        case 't':
+                                strcpy(cs_dtfile, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_hdfile,"") || !strcmp(cs_dtfile,"") || !strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+

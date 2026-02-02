@@ -1,0 +1,134 @@
+DROP VIEW PSP_LIMIT_SEGMENT_PID_VIEW;
+
+CREATE OR REPLACE FORCE VIEW PSP_LIMIT_SEGMENT_PID_VIEW
+(
+    CLIENT_ID,
+    CLIENT_NAME,
+    MERCHANT_ID,
+    SHORT_NAME,
+    BUSINESS_TYPE,
+    PSP_CLIENT_ID,
+    PSP_CLIENT_NAME,
+    PSP_ID,
+    PSP_NAME,
+    PSP_REMARK,
+    CURRENCY_ID,
+    LIMIT,
+    REMAINING_LIMIT,
+    DEPOSIT_CARD_TYPE,
+    MIN_TRANSACTION_AMOUNT,
+    MAX_TRANSACTION_AMOUNT,
+    CUSTOMER_SEGMENT,
+    ALLOW_SPECIAL_REGION,
+    CRITERIA_POOL_ID,
+    CARD_TYPE_OPT,
+    PID_GROUP
+)
+AS
+      SELECT MERCH_DETAIL.CLIENT_ID               AS CLIENT_ID,
+             MERCH_DETAIL.CLIENT_NAME             AS CLIENT_NAME,
+             MERCH_DETAIL.MERCHANT_ID             AS MERCHANT_ID,
+             MERCH_DETAIL.SHORT_NAME              AS SHORT_NAME,
+             MERCH_DETAIL.BUSINESS_TYPE,
+             PSP_DT.PSP_CLIENT_ID                 AS PSP_CLIENT_ID,
+             PSP_DT.PSP_CLIENT_NAME               AS PSP_CLIENT_NAME,
+             PSP_DT.PSP_ID                        AS PSP_ID,
+             PSP_DT.PSP_NAME                      AS PSP_NAME,
+             PSP_DT.PSP_REMARK                    AS PSP_REMARK,
+             PSP_DT.CURRENCY_ID                   AS CURRENCY_ID,
+             PSP_DT.LIMIT                         AS LIMIT,
+             PSP_DT.REMAINING_LIMIT               AS REMAINING_LIMIT,
+             PSP_DT.DEPOSIT_CARD_TYPE             AS DEPOSIT_CARD_TYPE,
+             MERCH_DETAIL.RC_MIN_TRANSACTION_AMOUNT AS MIN_TRANSACTION_AMOUNT,
+             MERCH_DETAIL.RC_MAX_TRANSACTION_AMOUNT AS MAX_TRANSACTION_AMOUNT,
+             MERCH_DETAIL.RC_CUSTOMER_SEGMENT     AS CUSTOMER_SEGMENT,
+             MERCH_DETAIL.RC_ALLOW_SPECIAL_REGION AS ALLOW_SPECIAL_REGION,
+             MERCH_DETAIL.RC_CRITERIA_POOL_ID     AS CRITERIA_POOL_ID,
+             MERCH_DETAIL.RC_CARD_TYPE_OPT        AS CARD_TYPE_OPT,
+             psp_filter.pid_group                 AS pid_group
+        FROM (  SELECT CLIENT_ID,
+                       CLIENT_NAME,
+                       MERCHANT_ID,
+                       SHORT_NAME,
+                       BUSINESS_TYPE,
+                       RC_MIN_TRANSACTION_AMOUNT,
+                       RC_MAX_TRANSACTION_AMOUNT,
+                       RC_CUSTOMER_SEGMENT,
+                       RC_ALLOW_SPECIAL_REGION,
+                       RM_PSP_ID,
+                       RC_CRITERIA_POOL_ID,
+                       RC_CARD_TYPE_OPT
+                  FROM (SELECT RC_CHANNEL_CODE,
+                               RC_SERVICE_CODE,
+                               RC_PAYMENT_METHOD,
+                               RC_COUNTRY,
+                               RC_CCY,
+                               RC_PARTY_TYPE,
+                               RC_PARTY_ID,
+                               RC_BUSINESS_TYPE,
+                               RC_CRITERIA_POOL_ID,
+                               RC_CARD_TYPE_OPT,
+                               RC_MIN_TRANSACTION_AMOUNT,
+                               RC_MAX_TRANSACTION_AMOUNT,
+                               RC_CUSTOMER_SEGMENT,
+                               RC_ALLOW_SPECIAL_REGION,
+                               RP_CRITERIA_POOL_ID,
+                               RP_POOL_ID
+                          FROM RULE_PSP_LB_CRITERIA, RULE_PSP_LB_POOLS
+                         WHERE     RULE_SCHEDULE_PKG.INRUNNINGPERIOD (
+                                       RC_SCHEDULER_ID) =
+                                   1
+                               AND RC_CRITERIA_POOL_ID = RP_CRITERIA_POOL_ID
+                               AND RP_DISABLED = 0
+                               AND RC_DISABLED = 0),
+                       (SELECT BUSINESS_TYPE,
+                               MERCHANT_ID,
+                               SHORT_NAME,
+                               CLIENTS.CLIENT_ID,
+                               CLIENTS.CLIENT_NAME
+                          FROM MERCH_DETAIL, CLIENTS, CUSTOMER_GROUP_MERCHANT
+                         WHERE     DISABLED = 0
+                               AND MERCH_DETAIL.STATUS = 'O'
+                               AND MERCH_DETAIL.CLIENT_ID = CLIENTS.CLIENT_ID
+                               AND CLIENTS.STATUS = 'O'
+                               AND MERCH_DETAIL.MERCHANT_ID = CGM_MERCHANT_ID
+                               AND CGM_DISABLED = 0),
+                       RULE_PSP_LB_MAPPING
+                 WHERE     RC_BUSINESS_TYPE = BUSINESS_TYPE
+                       AND RP_POOL_ID = RM_POOL_ID
+                       AND RM_DISABLED = 0
+                       AND (   (RC_PARTY_TYPE = 'M' AND RC_PARTY_ID = MERCHANT_ID)
+                            OR (RC_PARTY_TYPE = 'C' AND RC_PARTY_ID = CLIENT_ID)
+                            OR (RC_PARTY_TYPE = 'G'))
+              GROUP BY CLIENT_ID,
+                       CLIENT_NAME,
+                       MERCHANT_ID,
+                       SHORT_NAME,
+                       BUSINESS_TYPE,
+                       RC_MIN_TRANSACTION_AMOUNT,
+                       RC_MAX_TRANSACTION_AMOUNT,
+                       RC_CUSTOMER_SEGMENT,
+                       RC_ALLOW_SPECIAL_REGION,
+                       RM_PSP_ID,
+                       RC_CRITERIA_POOL_ID,
+                       RC_CARD_TYPE_OPT) MERCH_DETAIL
+             INNER JOIN psp_limit_psp_view PSP_DT
+                 ON MERCH_DETAIL.RM_PSP_ID = PSP_DT.PSP_ID
+             INNER JOIN psp_detail ON psp_detail.psp_id = PSP_DT.PSP_ID
+             LEFT JOIN
+             (SELECT psp_id, pid_group
+                FROM psp_detail
+               WHERE pid_group NOT IN
+                         (  SELECT pgm_pid_group
+                              FROM PID_BANK_GROUP_MAPPING
+                             WHERE pgm_service_code = 'MPG' AND pgm_disabled = 0
+                          GROUP BY pgm_pid_group)) psp_filter
+                 ON psp_filter.psp_id = PSP_DT.PSP_ID
+       WHERE (   (    MERCH_DETAIL.RC_CARD_TYPE_OPT = 'C'
+                  AND PSP_DETAIL.DEPOSIT_CARD_TYPE <> 'D')
+              OR (    MERCH_DETAIL.RC_CARD_TYPE_OPT = 'D'
+                  AND PSP_DETAIL.DEPOSIT_CARD_TYPE <> 'C'))
+    ORDER BY CLIENT_NAME,
+             SHORT_NAME,
+             PSP_CLIENT_NAME,
+             PSP_NAME;

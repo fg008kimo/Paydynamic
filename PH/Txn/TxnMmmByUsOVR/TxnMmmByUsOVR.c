@@ -1,0 +1,222 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/07/26              Cody Chan
+Remove From AcctBal if OverPaid			   2015/08/05		   Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmmByUsOVR.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnMmmByUsOVR(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int	iTidCnt = 0,j;
+	char	cRsType = ' ';
+	char	*csPtr;
+	char	*csResolveTxnId;
+	char	csTag[PD_TAG_LEN +1];
+	double	dTmp;
+	hash_t	*hData;
+
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+DEBUGLOG(("Authorize()\n"));
+
+	GetField_Char(hContext,"rs_type",&cRsType);
+DEBUGLOG(("Authorize() rs_type = [%c]\n",cRsType));
+
+
+	if (!GetField_Int(hContext,"txn_cnt",&iTidCnt)) {	
+DEBUGLOG(("Authorize() txn_cnt not found\n"));
+ERRLOG("Authorize() txn_cnt not found\n");
+		iRet = PD_ERR;
+	}
+
+	for (j = 0; j < iTidCnt; j++) {
+		sprintf(csTag,"tid.%d.txn_id",j+1);
+		if (GetField_CString(hContext,csTag,&csResolveTxnId)) {
+			hash_init(hData,0);
+/* txn seq */
+			PutField_CString(hData,"txn_seq",csResolveTxnId);
+			PutField_CString(hData,"txn_id",csResolveTxnId);
+
+/* txn_code */
+			PutField_CString(hData,"txn_code",PD_TXN_CODE_MMS_OVERPAID);
+
+/* status */
+			PutField_Char(hData,"status",PD_COMPLETE);
+
+/* ar_ind */
+			PutField_Char(hData,"ar_ind",PD_ACCEPT);
+
+/* sub_status_cnt */
+			PutField_Int(hData,"sub_status_cnt",1);
+
+/* sub_status */
+			PutField_CString(hData,"sub_status_0",PD_PENDING);
+
+			DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","MatchTxnStatusForUpdate");
+			if (((unsigned long)(DBObjPtr)(hData)) == PD_FOUND) {
+DEBUGLOG(("Authorize() txn record [%s] found\n",csResolveTxnId));
+				iRet = PD_OK;
+			}
+			else {
+DEBUGLOG(("Authorize() txn record [%s] not found\n",csResolveTxnId));
+ERRLOG("Authorize() txn record [%s] not found\n",csResolveTxnId);
+				iRet = INT_NOT_RECORD;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+			if (iRet == PD_OK) {
+				BOObjPtr = CreateObj(DBPtr,"BOMMSTransaction","GetTxnInfo");
+				iRet = (unsigned long)(BOObjPtr)(csResolveTxnId,hData);
+			}
+
+			if (iRet == PD_OK) {
+/* txn_ccy */
+				if (GetField_CString(hData,"txn_ccy",&csPtr)) {
+DEBUGLOG(("Authorze() txn_ccy = [%s]\n",csPtr));
+					PutField_CString(hContext,"txn_ccy",csPtr);
+				}
+/* txn_amt */
+				if (GetField_Double(hData,"txn_amt",&dTmp)) {
+DEBUGLOG(("Authorze() txn_amt = [%lf]\n",dTmp));
+					PutField_Double(hContext,"txn_amt",dTmp);
+				}
+/* net_amt */
+				if (GetField_Double(hData,"net_amt",&dTmp)) {
+DEBUGLOG(("Authorze() net_amt = [%lf]\n",dTmp));
+					PutField_Double(hContext,"net_amt",dTmp);
+				}
+/* net_ccy */
+				if (GetField_CString(hData,"net_ccy",&csPtr)) {
+DEBUGLOG(("Authorze() net_ccy = [%s]\n",csPtr));
+					PutField_CString(hContext,"net_ccy",csPtr);
+				}
+/* entity id */
+				if (GetField_CString(hData,"entity_id",&csPtr)) {
+DEBUGLOG(("Authorze() entity_id = [%s]\n",csPtr));
+					PutField_CString(hContext,"entity_id",csPtr);
+					PutField_CString(hData,"entity_id",csPtr);
+				}
+/* txn_ccy */
+				if (GetField_CString(hData,"txn_ccy",&csPtr)) {
+DEBUGLOG(("Authorze() txn_ccy = [%s]\n",csPtr));
+					PutField_CString(hContext,"txn_ccy",csPtr);
+					PutField_CString(hData,"ccy",csPtr);
+				}
+				PutField_CString(hContext,"bal_amt","prepaid");
+				BOObjPtr = CreateObj(DBPtr,"BOMMSTxnEng","RemoveFromBal");
+				iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+DEBUGLOG(("Authorize() iRet = [%d] from BOMMSTxnEng:RemoveFromBal Prepaid\n",iRet));
+
+				if (iRet == PD_OK && cRsType == PD_MMS_RESOLVE_OVER_SETTLEMENT) {
+			   		BOObjPtr = CreateObj(BOPtr,"BOMMSTxnEng","PutOpen");
+					iRet = (unsigned long)((BOObjPtr)(hContext));
+
+					PutField_CString(hContext,"bal_amt","acct_bal");
+					BOObjPtr = CreateObj(DBPtr,"BOMMSTxnEng","RemoveFromBal");
+					iRet = (unsigned long)(BOObjPtr)(hContext,hData);
+
+DEBUGLOG(("Authorize() iRet = [%d] from BOMMSTxnEng:RemoveFromBal Acct_Bal\n",iRet));
+					if (iRet == PD_OK) {
+						BOObjPtr = CreateObj(BOPtr,"BOMMSTxnEng","GetOpen");
+                 				iRet = (unsigned long)((BOObjPtr)(hContext));
+					}
+				}
+			}
+			if (iRet == PD_OK) {
+				if (iRet == PD_OK) {
+					hash_t  *hTmpContext;
+
+					hTmpContext = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(hTmpContext,0);
+
+/* update sub status to complete */
+/* reset remaining amount */
+					PutField_Double(hTmpContext,"remaining_amt",0.0);
+					PutField_CString(hTmpContext,"txn_seq",csResolveTxnId);
+					PutField_CString(hTmpContext,"sub_status",PD_COMPLETED);
+					PutField_CString(hContext,"sub_status",PD_COMPLETED);
+DEBUGLOG(("Authorze() update the txn_id [%s] to completed\n",csResolveTxnId));
+					BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","UpdateTxnHd");
+					iRet = (unsigned long)(BOObjPtr)(hTmpContext,hData);
+
+/* update related txn id */
+					if (iRet == PD_OK) {
+						hash_init(hTmpContext,0);
+DEBUGLOG(("Authorize() try to update related txn\n"));
+						if (GetField_CString(hData,"related_txn_id",&csPtr)) {
+							PutField_CString(hTmpContext,"txn_seq",csPtr);
+							PutField_CString(hTmpContext,"sub_status",PD_COMPLETED);
+							BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","UpdateTxnHd");
+							iRet = (unsigned long)(BOObjPtr)(hTmpContext,hData);
+						}
+						else {
+DEBUGLOG(("Authorize() related txn id not found\n"));
+ERRLOG("TxnMmmByUsOVR::Authorize() related txn id not found\n");
+							iRet = PD_ERR;
+						}
+					}
+					FREE_ME(hTmpContext);
+				}
+			}
+			if (iRet == PD_OK) {
+				if (cRsType == PD_MMS_RESOLVE_REVENUE) {
+					PutField_CString(hContext,"txn_code",PD_TXN_CODE_MMS_REVENUE);
+				}
+				else if (cRsType == PD_MMS_RESOLVE_OVER_SETTLEMENT ) {
+					PutField_CString(hContext,"txn_code",PD_TXN_CODE_MMS_OVERSETT);
+					TxnObjPtr = CreateObj(TxnPtr,"TxnMmsByUs2Host","Authorize");
+       				 	iRet = (unsigned long) (*TxnObjPtr)(hContext,hRequest,hResponse);
+DEBUGLOG(("Authorize iRet = [%d] from TxnMmsByUs2Host\n",iRet));
+				}
+				else {
+DEBUGLOG(("Authorze() invalid rs_type [%c]\n",cRsType));
+ERRLOG("Authorze() invalid rs_type [%c]\n",cRsType);
+					iRet = PD_ERR;
+				}
+			}
+		}
+		else {
+DEBUGLOG(("Authorze() [%s] not found\n",csTag));
+ERRLOG("Authorze() [%s] not found\n",csTag);
+			iRet = PD_ERR;
+			break;
+		}
+	}
+
+	FREE_ME(hData);
+DEBUGLOG(("TxnMmmByUsOVR Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+

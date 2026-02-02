@@ -1,0 +1,2660 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2017/08/17              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include <dirent.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "dbutility.h"
+#include "upload_bank_stmt.h"
+
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char *CS_UPLOAD_FIELD_NAME[] = {"BANK_INIT", "BANK_ACCT_NAME", "BANK_ACCT_NUM", "TXN_DATE"};
+char *CS_UPLOAD_DETAIL_CHECK_TYPE[] = {"ENGLISH_CHAR", NULL, "DIGIT", "DIGIT"};
+int INT_UPLOAD_DETAIL_CHECK_TYPE[IMPORT_MAX_FIELD] = {1, -1, 1, 1};
+int INT_UPLOAD_DETAIL_MAX_LEN[IMPORT_MAX_FIELD] = {0, 0, 6, 10};
+int INT_UPLOAD_DETAIL_CHECK_LEN[IMPORT_MAX_FIELD] = {-1, -1, 1, 1};
+
+char cs_stmt_path[PD_MAX_FILE_LEN + 1];
+char cs_upload_path[PD_MAX_FILE_LEN + 1];
+char cs_process_file[PD_MAX_FILE_LEN + 1];
+char cs_succ_file[PD_MAX_FILE_LEN + 1];
+char cs_unsucc_file[PD_MAX_FILE_LEN + 1];
+char cs_error_file[PD_MAX_FILE_LEN + 1];
+char cs_acct_type_name[IMPORT_FIELD_LEN + 1];
+char cs_provider_name[PD_CLIENT_NAME_LEN + 1];
+char cs_bank_short_name[PD_EXT_BANK_CODE_LEN + 1];
+
+int parse_arg(int argc,char **argv);
+int check_filename(char *cs_bank_stmt_file_ext,char *cs_bank_stmt_file);
+int check_detail(int iNumOfField,char csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN]);
+int process_bank_acct(hash_t *hData,recordset_t *rBankAcctDetail);
+int process_file(hash_t *hData,FILE *fproc,recordset_t *rProcessBankStmt);
+int prcoess_match(recordset_t *rBankAcctDetail,recordset_t *rProcessBankStmt,recordset_t *rUploadBankStmt,recordset_t *rErrorBankStmt,FILE *ferr);
+int process_upload(recordset_t *rUploadBankStmt,recordset_t *rSuccBankStmt,recordset_t *rUnsuccBankStmt,recordset_t *rErrorBankStmt,FILE *ferr);
+int process_success_file(recordset_t *rSuccBankStmt,FILE *fsucc);
+int process_unsuccess_file(recordset_t *rUnsuccBankStmt,FILE *funsucc);
+int process_error_file(hash_t *hErrorStmtRec,FILE *ferr);
+//int process_error_file(recordset_t *rErrorBankStmt,FILE *ferr);
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 8) {
+    	printf("usage: -t process_path -l upload_path -o process_file -s succ_file -u unsucc_file -e error_file -a acct_type -p provider_name\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet = SUCCESS;
+
+	char	csAcctType[PD_ACCT_TYPE_LEN + 1];
+	char 	csProviderId[PD_CLIENT_ID_LEN + 1];
+	char	csBankCode[PD_BANK_CODE_LEN + 1];
+
+	FILE	*fproc,*fsucc,*funsucc,*ferr;	
+
+	hash_t  *hData = NULL;
+        hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+        recordset_t *rBankAcctDetail;
+        rBankAcctDetail = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rBankAcctDetail, 0);
+
+      	recordset_t *rProcessBankStmt;
+        rProcessBankStmt = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rProcessBankStmt, 0);
+
+	recordset_t *rUploadBankStmt;
+        rUploadBankStmt = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rUploadBankStmt, 0);
+
+	recordset_t *rSuccBankStmt;
+        rSuccBankStmt = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rSuccBankStmt, 0);
+
+	recordset_t *rUnsuccBankStmt;
+        rUnsuccBankStmt = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rUnsuccBankStmt, 0);
+
+        recordset_t *rErrorBankStmt;
+        rErrorBankStmt = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rErrorBankStmt, 0);
+
+DEBUGLOG(("batch_proc: start\n"));
+
+	//memset(cs_stmt_path, 0, sizeof(cs_stmt_path));
+	//memset(cs_upload_path, 0, sizeof(cs_upload_path));
+	//memset(cs_process_file, 0, sizeof(cs_process_file));
+	//memset(cs_succ_file, 0, sizeof(cs_succ_file));
+	//memset(cs_unsucc_file, 0, sizeof(cs_unsucc_file));
+	//memset(cs_error_file, 0, sizeof(cs_error_file));
+	//memset(cs_acct_type_name, 0, sizeof(cs_acct_type_name));
+	//memset(cs_provider_name, 0, sizeof(cs_provider_name));
+	//memset(cs_bank_short_name, 0, sizeof(cs_bank_short_name));
+
+	memset(csAcctType, 0, sizeof(csAcctType));
+	memset(csProviderId, 0, sizeof(csProviderId));
+	memset(csBankCode, 0, sizeof(csBankCode));
+
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+    		printf("*usage: -t process_path -l upload_path -o process_file -s succ_file -u unsucc_file -e error_file -a acct_type -p provider_name\n");
+		return (iRet);
+	}
+
+DEBUGLOG(("batch_proc: process_path = [%s]\n",cs_stmt_path));
+DEBUGLOG(("batch_proc: upload_path = [%s]\n",cs_upload_path));
+DEBUGLOG(("batch_proc: process_file = [%s]\n",cs_process_file));
+DEBUGLOG(("batch_proc: succ_file = [%s]\n",cs_succ_file));
+DEBUGLOG(("batch_proc: unsucc_file = [%s]\n",cs_unsucc_file));
+DEBUGLOG(("batch_proc: error_file = [%s]\n",cs_error_file));
+DEBUGLOG(("batch_proc: acct_type_name = [%s]\n",cs_acct_type_name));
+DEBUGLOG(("batch_proc: provider_name = [%s]\n",cs_provider_name));
+DEBUGLOG(("batch_proc: bank_short_name = [%s]\n",cs_bank_short_name));
+
+	fproc = fopen(cs_process_file,"r");
+	if (fproc == NULL) {
+DEBUGLOG(("batch_proc: Error Opening file = [%s]\n",cs_process_file));
+		return FAILURE;
+	}
+
+	fsucc = fopen(cs_succ_file,"w");
+        if (fsucc == NULL) {
+DEBUGLOG(("batch_proc: Error Opening file = [%s]\n",cs_succ_file));
+                fclose(fproc);
+                return FAILURE;
+        }
+
+	funsucc = fopen(cs_unsucc_file,"w");
+        if (funsucc == NULL) {
+DEBUGLOG(("batch_proc: Error Opening file = [%s]\n",cs_unsucc_file));
+                fclose(fproc);
+                fclose(fsucc);
+                return FAILURE;
+        }
+
+	ferr = fopen(cs_error_file,"a");
+        if (ferr == NULL) {
+DEBUGLOG(("batch_proc: Error Opening file = [%s]\n",cs_error_file));
+                fclose(fproc);
+                fclose(fsucc);
+                fclose(funsucc);
+                return FAILURE;
+        }
+
+	// Get Acct Type
+	if (iRet == SUCCESS) {
+		if (!strcmp(cs_acct_type_name, PD_AUTO_UPLOAD_NATURE_DSI)) {
+			sprintf(csAcctType, "%s", PD_NATURE_DEPOSIT);	
+			PutField_CString(hData, "acct_type", csAcctType);
+DEBUGLOG(("batch_proc: acct_type = [%s]\n", csAcctType));
+		} else if (!strcmp(cs_acct_type_name, PD_AUTO_UPLOAD_NATURE_POA)) {
+			sprintf(csAcctType, "%s", PD_NATURE_PAYOUT);	
+			PutField_CString(hData, "acct_type", csAcctType);
+DEBUGLOG(("batch_proc: acct_type = [%s]\n", csAcctType));
+		} else if (!strcmp(cs_acct_type_name, PD_AUTO_UPLOAD_NATURE_ITM)) {
+			sprintf(csAcctType, "%s", PD_NATURE_INTERMEDIATE);	
+			PutField_CString(hData, "acct_type", csAcctType);
+DEBUGLOG(("batch_proc: acct_type = [%s]\n", csAcctType));
+		} else {
+DEBUGLOG(("batch_proc: acct_type invalid\n"));
+			iRet = FAILURE;
+		}
+	}
+
+        // Get Provider Id
+        if (iRet == SUCCESS) {
+                DBObjPtr = CreateObj(DBPtr,"DBPspMaster","GetClientIdByClientName");
+                if ((unsigned long)(DBObjPtr)(cs_provider_name,csProviderId) == PD_OK) {
+DEBUGLOG(("batch_proc: DBPspMaster: GetClientIdByClientName: client_id = [%s]\n", csProviderId));
+			PutField_CString(hData, "client_id", csProviderId);
+			PutField_CString(hData, "client_name", cs_provider_name);
+                } else {
+DEBUGLOG(("batch_proc: DBPspMaster: GetClientIdByClientName Failed\n"));
+ERRLOG("upload_bank_stmt: batch_proc: DBPspMaster: GetClientIdByClientName Failed\n");
+                        iRet = FAILURE;
+                }
+        }
+
+	// Get Bank Code
+	if (iRet == SUCCESS) {
+		if (strlen(cs_bank_short_name) > 0) {
+			DBObjPtr = CreateObj(DBPtr,"DBBankDesc","FindOfflineBankByBankAbbrevName");
+                	if ((unsigned long)(DBObjPtr)(cs_bank_short_name,csBankCode) == FOUND) {
+				PutField_CString(hData, "int_bank_code", csBankCode);
+				PutField_CString(hData, "bank_short_name", cs_bank_short_name);
+DEBUGLOG(("batch_proc: DBBankDesc: FindOfflineBankByBankAbbrevName: int_bank_code = [%s]\n", csBankCode));
+                	} else {
+DEBUGLOG(("batch_proc: DBBankDesc: FindOfflineBankByBankAbbrevName Failed\n"));
+ERRLOG("upload_bank_stmt: batch_proc: DBBankDesc: FindOfflineBankByBankAbbrevName Failed\n");
+                	        iRet = FAILURE;
+                	}
+		}
+	}
+	
+	// Process Bank Acct
+	if (iRet == SUCCESS) {
+		iRet = process_bank_acct(hData,rBankAcctDetail);
+	}
+
+	// Process File
+        if (iRet == SUCCESS) {
+                iRet = process_file(hData,fproc,rProcessBankStmt);
+        }
+
+	// Process Matching
+	if (iRet == SUCCESS) {
+		iRet = prcoess_match(rBankAcctDetail,rProcessBankStmt,rUploadBankStmt,rErrorBankStmt,ferr);
+	}
+
+	// Process Upload Stmt, file handling and error handling
+	if (iRet == SUCCESS) {
+		iRet = process_upload(rUploadBankStmt,rSuccBankStmt,rUnsuccBankStmt,rErrorBankStmt,ferr);
+	}
+
+	// Process Results
+	if (iRet == SUCCESS) {
+
+		// Success File
+		//iRet = process_success_file(rSuccBankStmt,fsucc);
+		
+		// Unsuccess File
+		if (iRet == SUCCESS) {		
+			//iRet = process_unsuccess_file(rUnsuccBankStmt,funsucc);
+		}
+		
+		// Error File
+		if (iRet == SUCCESS) {
+			//iRet = process_error_file(rErrorBankStmt,ferr);
+		}
+	}
+
+	hash_destroy(hData);
+        FREE_ME(hData);	
+
+	RecordSet_Destroy(rBankAcctDetail);
+        FREE_ME(rBankAcctDetail);
+
+	RecordSet_Destroy(rProcessBankStmt);
+	FREE_ME(rProcessBankStmt);
+
+	RecordSet_Destroy(rUploadBankStmt);
+        FREE_ME(rUploadBankStmt);
+
+	RecordSet_Destroy(rSuccBankStmt);
+        FREE_ME(rSuccBankStmt);
+
+	RecordSet_Destroy(rUnsuccBankStmt);
+        FREE_ME(rUnsuccBankStmt);
+
+	RecordSet_Destroy(rErrorBankStmt);
+        FREE_ME(rErrorBankStmt);
+
+	fclose(fproc);
+	fclose(fsucc);
+	fclose(funsucc);
+	fclose(ferr);
+
+DEBUGLOG(("batch_proc: iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+                        
+int parse_arg(int argc,char **argv)
+{               
+        char    c;
+        strcpy(cs_stmt_path,"");
+        strcpy(cs_upload_path,"");
+        strcpy(cs_process_file,"");
+	strcpy(cs_succ_file,"");
+	strcpy(cs_unsucc_file,"");
+        strcpy(cs_error_file,"");
+        strcpy(cs_acct_type_name,"");
+	strcpy(cs_provider_name,"");
+        strcpy(cs_bank_short_name,"");
+                        
+        while ((c = getopt(argc,argv,"t:l:o:s:u:e:a:p:b:")) != EOF) {
+                switch (c) {
+			case 't':
+                                strcpy(cs_stmt_path, optarg);
+                                break;
+			case 'l':
+                                strcpy(cs_upload_path, optarg);
+                                break;
+                        case 'o':
+                                strcpy(cs_process_file, optarg);
+                                break;
+			case 's':
+                                strcpy(cs_succ_file, optarg);
+                                break;
+			case 'u':
+                                strcpy(cs_unsucc_file, optarg);
+                                break;
+			case 'e':
+                                strcpy(cs_error_file, optarg);
+                                break;
+			case 'a':
+                                strcpy(cs_acct_type_name, optarg);
+                                break;
+			case 'p':
+                                strcpy(cs_provider_name, optarg);
+                                break;
+			case 'b':
+                                strcpy(cs_bank_short_name, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }       
+        
+        if (!strcmp(cs_stmt_path,"") || !strcmp(cs_upload_path,"") || !strcmp(cs_process_file,"") || !strcmp(cs_succ_file,"") || !strcmp(cs_unsucc_file,"") || !strcmp(cs_error_file,"") || !strcmp(cs_acct_type_name,"") || !strcmp(cs_provider_name,""))
+                return FAILURE;
+                
+        return SUCCESS; 
+}               
+
+
+int check_filename(char *cs_bank_stmt_file_ext, char *cs_bank_stmt_file)
+{
+        int iRet = PD_TRUE;
+
+        char *csTmp = NULL;
+
+//DEBUGLOG(("******************** check_filename::start ********************\n"));
+
+        if (strlen(cs_bank_stmt_file_ext) > IMPORT_MAX_FILE_LEN) {
+DEBUGLOG(("check_filename:: Length [%d] > Max Length [%d]\n",strlen(cs_bank_stmt_file_ext),IMPORT_MAX_FILE_LEN));
+                iRet = PD_FALSE;
+        } else {
+                csTmp = cs_bank_stmt_file;
+                while (*csTmp) {
+                        if (!(*csTmp >= 'a' && *csTmp <= 'z') &&
+                            !(*csTmp >= 'A' && *csTmp <= 'Z') &&
+                            !(*csTmp >= '0' && *csTmp <= '9') &&
+                            !(*csTmp == '-' || *csTmp == '_')) {
+DEBUGLOG(("check_filename:: NOT Match [a-zA-Z0-9-_]\n", *csTmp));
+                                iRet = PD_FALSE;
+                        }
+                        csTmp++;
+                }
+        }
+
+//DEBUGLOG(("******************** check_filename::end ********************\n"));
+
+DEBUGLOG(("check_filename:: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+
+int check_detail(int iNumOfField, char csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN])
+{
+        int iRet = PD_TRUE;
+        int i,j = 0;
+
+//DEBUGLOG(("******************** check_detail::start ********************\n"));
+
+        if (iNumOfField != IMPORT_MAX_FIELD) {
+DEBUGLOG(("check_detail:: Number of Field = [%d] not equal to Max Field Number [%d]\n",iNumOfField,IMPORT_MAX_FIELD));
+                iRet = PD_FALSE;
+        } else {
+                for (i=0;i<iNumOfField;i++) {
+
+DEBUGLOG(("check_detail:: %s=[%s](%d)\n", CS_UPLOAD_FIELD_NAME[i], csList[i], (int)strlen(csList[i])));
+
+                        // Check Length
+                        if (INT_UPLOAD_DETAIL_CHECK_LEN[i] != -1) {
+                                if (strlen(csList[i]) != INT_UPLOAD_DETAIL_MAX_LEN[i]) {
+DEBUGLOG(("check_detail:: Length [%d] NOT Match [%d]\n", (int)strlen(csList[i]), INT_UPLOAD_DETAIL_MAX_LEN[i]));
+                                        iRet = PD_FALSE;
+                                }
+                        } else {
+//DEBUGLOG(("check_detail:: SKIP Check Length \n"));
+                        }
+
+                        // Check Content
+                        if (INT_UPLOAD_DETAIL_CHECK_TYPE[i] != -1) {
+                                if (!strcmp(CS_UPLOAD_DETAIL_CHECK_TYPE[i],"ALL_CHAR")) {
+
+                                        for (j=0;j<strlen(csList[i]);j++) {
+
+                                                if (!(csList[i][j] >= 'a' && csList[i][j] <= 'z') &&
+                                                    !(csList[i][j] >= 'A' && csList[i][j] <= 'Z') &&
+                                                    !(csList[i][j] >= '0' && csList[i][j] <= '9') &&
+                                                    !(csList[i][j] >= '-' || csList[i][j] <= '_')
+                                                ) {
+DEBUGLOG(("check_detail:: [%c] NOT Match [a-zA-Z0-9-_]\n", csList[i][j]));
+                                                        iRet = PD_FALSE;
+                                                        break;
+                                                }
+                                        }
+				
+				} else if (!strcmp(CS_UPLOAD_DETAIL_CHECK_TYPE[i],"ENGLISH_CHAR")) {
+
+                                        for (j=0;j<strlen(csList[i]);j++) {
+
+                                                if (!(csList[i][j] >= 'a' && csList[i][j] <= 'z') &&
+                                                    !(csList[i][j] >= 'A' && csList[i][j] <= 'Z')
+                                                ) {
+DEBUGLOG(("check_detail:: [%c] NOT Match [a-zA-Z]\n", csList[i][j]));
+                                                        iRet = PD_FALSE;
+                                                        break;
+                                                }
+                                        }
+
+                                } else if (!strcmp(CS_UPLOAD_DETAIL_CHECK_TYPE[i],"DIGIT")) {
+
+                                        for (j=0;j<strlen(csList[i]);j++) {
+
+                                                if (!(csList[i][j] >= '0' && csList[i][j] <= '9')) {
+DEBUGLOG(("check_detail:: [%c] NOT Match [0-9]\n", csList[i][j]));
+                                                        iRet = PD_FALSE;
+                                                        break;
+                                                }
+                                        }
+                                }
+                        } else {
+//DEBUGLOG(("check_detail:: SKIP Check Content \n"));
+                        }
+                }
+        }
+
+//DEBUGLOG(("******************** check_detail::end ********************\n"));
+
+        return iRet;
+}
+
+
+int process_bank_acct(hash_t *hData,recordset_t *rBankAcctDetail)
+{
+	int     iRet = SUCCESS;
+	
+	// Loop All PIDs for input Provider
+	// OL_PSP_MASTER (Provider ID, Provider Name, Status), 
+	// OL_PSP_DETAIL (Provider ID, PSP ID, PSP Name, Bank Acct Type, Status),
+	// OL_BANK_ACCT_ID (PSP ID, BAID, BAID Name, Internal Bank Acct Code, Bank Acct Number, Status, Category),
+	// OL_BANK_ACCTS (Internal Bank Acct Code, Bank Acct Number, Bank Acct Name, Acct Type, Status Type)
+	
+	// Check PID (Status)
+	// Check BAID (Status)
+	// Check Bank Acct (Status, Nature, System Switch Enabled)
+	// Check Auto-Upload Option (Bank Level and Bank Acct Level)
+
+	// Put into the rBankAcctDetail
+
+       	DBObjPtr = CreateObj(DBPtr,"DBOLAutoUploadBankDetail","GetAutoUploadBankAccts");
+        if ((unsigned long)(DBObjPtr)(hData,rBankAcctDetail) == PD_OK) {
+DEBUGLOG(("process_bank_acct: DBOLAutoUploadBankDetail: GetAutoUploadBankAccts Success\n"));
+        } else {
+DEBUGLOG(("process_bank_acct: DBOLAutoUploadBankDetail: GetAutoUploadBankAccts Failed\n"));
+ERRLOG("upload_bank_stmt: process_bank_acct: DBOLAutoUploadBankDetail: GetAutoUploadBankAcctsFailed\n");
+        	iRet = FAILURE;
+        }
+
+	return iRet;
+}
+
+
+int process_file(hash_t *hData,FILE *fproc,recordset_t *rProcessBankStmt)
+{
+	int     iRet = SUCCESS;
+	//int	i = 0;
+        int     iFieldCnt = 0;
+        int     iStmtCnt = 0;
+	char    *p;
+	char    csTmp[PD_TMP_BUF_LEN+1];
+        char    csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN];
+        char    cs_input_buf[PD_MAX_BUFFER+1];
+        char    cs_bank_stmt_file_ext[PD_MAX_BUFFER+1];
+        char    cs_bank_stmt_file[IMPORT_MAX_FILE_LEN+1];
+        char    cs_file_ext[IMPORT_MAX_FILE_LEN+1];
+
+	memset(cs_input_buf, 0, sizeof(cs_input_buf));
+	memset(cs_bank_stmt_file_ext, 0, sizeof(cs_bank_stmt_file_ext));
+	memset(cs_bank_stmt_file, 0, sizeof(cs_bank_stmt_file));
+	memset(cs_file_ext, 0, sizeof(cs_file_ext));
+
+        while (fgets(cs_input_buf,PD_MAX_BUFFER, fproc) != NULL) {
+
+		int     iStmtFileSkip = PD_FALSE;
+		int     iStmtFileValid = PD_TRUE;                
+
+		iFieldCnt = 0;
+		
+		// Check 0x0A
+                if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) {
+                        cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+		}
+
+		// Trim OxOD
+		strcpy(cs_input_buf,TrimAllChar((const unsigned char*)cs_input_buf,strlen(cs_input_buf),PD_CHAR));
+DEBUGLOG(("process_file: [%d][ORG_INPUT_FILE]=[%s]\n",iStmtCnt,cs_input_buf));
+
+		// Copy to cs_bank_stmt_file_ext
+		strcpy(cs_bank_stmt_file_ext, cs_input_buf);
+
+		// Trim Extension
+            	p = mystrtok(cs_input_buf,PD_EXT_DELIMITOR);
+             	if (p == NULL) {
+                    	iRet = FAILURE;
+             	} else {
+                    	while ((p = mystrtok(NULL,PD_EXT_DELIMITOR)) != NULL) {
+                          	strcpy(cs_file_ext,p);
+                     	}
+DEBUGLOG(("process_file: [%d][INPUT_FILE]=[%s][%s]\n",iStmtCnt,cs_input_buf,cs_file_ext));
+		}
+
+		// Copy to cs_bank_stmt_file
+                strcpy(cs_bank_stmt_file, cs_input_buf);
+
+		// Verify Raw Stmt File Name
+                if (iRet == SUCCESS) {
+                        iStmtFileValid = check_filename(cs_bank_stmt_file_ext, cs_bank_stmt_file);
+                }
+
+		// Verify Raw Stmt File Detail
+                if ((iRet == SUCCESS) && (iStmtFileValid == PD_TRUE)) {
+
+                        // Breakdown Raw Stmt File Name
+                        p = mystrtok(cs_input_buf,PD_PROC_DELIMITOR);
+                        if (p == NULL) {
+                                iRet = FAILURE;
+                        } else {
+                                strcpy(csList[iFieldCnt],p);
+                                iFieldCnt++;
+
+                                while ((p = mystrtok(NULL,PD_PROC_DELIMITOR)) != NULL) {
+                                        strcpy(csList[iFieldCnt],p);
+                                        iFieldCnt++;
+                                }
+                        }
+
+                        // Check Number of Field Valid
+                        if (iRet == SUCCESS) {
+                                iStmtFileValid = check_detail(iFieldCnt, csList);
+/*
+                                if (iStmtFileValid == PD_TRUE) {
+                                        for (i=0;i<IMPORT_MAX_FIELD;i++) {
+DEBUGLOG(("process_file: [%d][%s]=[%s](%d)\n",iStmtCnt,CS_UPLOAD_FIELD_NAME[i],csList[i],(int)strlen(csList[i])));
+                                        }
+                                }
+*/
+                        }
+                }
+
+		// Verify Raw Stmt File Field - Bank Init
+                if ((iRet == SUCCESS) && (iStmtFileValid == PD_TRUE)) {
+
+                        int iDtlRet = FOUND;
+
+                        // Check All Support Offline Bank Name
+                        DBObjPtr = CreateObj(DBPtr,"DBBankDesc","FindOfflineBankByBankAbbrevName");
+                        iDtlRet = (unsigned long)(DBObjPtr)(csList[IDX_BANK_INIT],csTmp);
+                        if (iDtlRet == FOUND) {
+DEBUGLOG(("process_file: [%d]DBBankDesc: FindOfflineBankByBankAbbrevName Found\n", iStmtCnt));
+                        } else if (iDtlRet == NOT_FOUND) {
+DEBUGLOG(("process_file: [%d]DBBankDesc: FindOfflineBankByBankAbbrevName Not Found\n", iStmtCnt));
+                                iStmtFileValid = PD_FALSE;
+                        } else {
+DEBUGLOG(("process_file: [%d]DBBankDesc: FindOfflineBankByBankAbbrevName Failed\n", iStmtCnt));
+ERRLOG("scan_bank_stmt: process_file: DBBankDesc: FindOfflineBankByBankAbbrevName Failed\n");
+                                iRet = FAILURE;
+                        }
+
+                        if ((iRet == SUCCESS) && (iStmtFileValid == PD_TRUE)) {
+
+				char *csBankShortName = NULL;
+
+/* bank_short_name */
+	                        if (GetField_CString(hData,"bank_short_name",&csBankShortName)) {
+DEBUGLOG(("process_file: [%d]bank_short_name = [%s]\n",iStmtCnt,csBankShortName));
+
+					if (strcmp(cs_bank_short_name, csList[IDX_BANK_INIT])) {
+                                        	iStmtFileSkip = PD_TRUE;
+DEBUGLOG(("process_file: [%d]Bank Statement File Skip\n", iStmtCnt));
+                                	}
+                	        } else {
+DEBUGLOG(("process_file: [%d]bank_short_name is missing!!\n",iStmtCnt));
+ERRLOG("scan_bank_stmt: process_file: bank_short_name is missing!!\n");
+					iRet = FAILURE;
+                       	 	}
+                        }
+                }
+
+		if ((iRet == SUCCESS) && (iStmtFileSkip == PD_FALSE)) {
+
+			char    *csAcctType = NULL;
+       	 		char    *csProviderId = NULL;
+       	 		char    *csProviderName = NULL;
+        		char    *csBankCode = NULL;
+
+			hash_t  *hProcessStmtRec = NULL;
+                        hProcessStmtRec = (hash_t*) malloc (sizeof(hash_t));
+                       	hash_init(hProcessStmtRec,0);
+
+/* acct_type */
+                     	if (GetField_CString(hData,"acct_type",&csAcctType)) {
+                       		PutField_CString(hProcessStmtRec, "acct_type", csAcctType);
+DEBUGLOG(("process_file: [%d]acct_type = [%s]\n",iStmtCnt,csAcctType));
+                    	} else {
+DEBUGLOG(("process_file: [%d]acct_type is missing!!\n",iStmtCnt));
+ERRLOG("upload_bank_stmt: process_file: acct_type is missing!!\n");
+				iRet = FAILURE;
+                    	}
+
+/* provider_id */
+                  	if (GetField_CString(hData,"client_id",&csProviderId)) {
+                          	PutField_CString(hProcessStmtRec, "client_id", csProviderId);
+DEBUGLOG(("process_file: [%d]provider_id = [%s]\n",iStmtCnt,csProviderId));
+                     	} else {
+DEBUGLOG(("process_file: [%d]provider_id is missing!!\n",iStmtCnt));
+ERRLOG("upload_bank_stmt: process_file: provider_id is missing!!\n");
+				iRet = FAILURE;
+                   	}
+
+/* provider_name */
+                        if (GetField_CString(hData,"client_name",&csProviderName)) {
+                                PutField_CString(hProcessStmtRec, "client_name", csProviderName);
+DEBUGLOG(("process_file: [%d]provider_name = [%s]\n",iStmtCnt,csProviderName));
+                        } else {
+DEBUGLOG(("process_file: [%d]provider_name is missing!!\n",iStmtCnt));
+ERRLOG("upload_bank_stmt: process_file: provider_name is missing!!\n");
+                                iRet = FAILURE;
+                        }
+
+/* int_bank_code */
+                    	if (GetField_CString(hData,"int_bank_code",&csBankCode)) {
+                              	PutField_CString(hProcessStmtRec, "int_bank_code", csBankCode);
+DEBUGLOG(("process_file: [%d]int_bank_code = [%s]\n",iStmtCnt,csBankCode));
+                    	} else {
+DEBUGLOG(("process_file: [%d]int_bank_code is missing!!\n",iStmtCnt));
+//ERRLOG("upload_bank_stmt: process_file: int_bank_code is missing!!\n");
+                     	}
+
+			if (iRet == SUCCESS) { 
+	
+				if (iStmtFileValid == PD_TRUE) {	
+					PutField_CString(hProcessStmtRec, "bank_init", csList[IDX_BANK_INIT]);
+                               		PutField_CString(hProcessStmtRec, "bank_acct_init", csList[IDX_BANK_ACCT_INIT]);
+                              		PutField_CString(hProcessStmtRec, "last_6_bank_acct_num", csList[IDX_BANK_ACCT_NUM]);
+                              		PutField_CString(hProcessStmtRec, "datetime", csList[IDX_TXN_DATE]);
+				}		
+
+				if (strlen(cs_file_ext) != 0) {
+                               		PutField_CString(hProcessStmtRec, "file_ext", cs_file_ext);
+				}
+                             	PutField_CString(hProcessStmtRec, "bank_stmt_file", cs_bank_stmt_file);
+                             	PutField_CString(hProcessStmtRec, "bank_stmt_file_ext", cs_bank_stmt_file_ext);
+				//PutField_Char(hProcessStmtRec, "status", PD_STMT_DECLINED);
+                               	//PutField_Int(hProcessStmtRec, "error_code", INT_INVALID_FILE_FORMAT);
+				PutField_Int(hProcessStmtRec, "stmt_file_valid", iStmtFileValid);
+DEBUGLOG(("process_file: [%d]stmt_file_valid = [%d]\n",iStmtCnt,iStmtFileValid));
+	
+				RecordSet_Add(rProcessBankStmt, hProcessStmtRec);
+			}
+
+			//hash_destroy(hProcessStmtRec);
+                       	//FREE_ME(hProcessStmtRec);
+                }	
+
+		// Clear input file buffer
+		memset(cs_input_buf,0,sizeof(cs_input_buf));
+		memset(cs_bank_stmt_file_ext,0,sizeof(cs_bank_stmt_file_ext));
+		memset(cs_bank_stmt_file,0,sizeof(cs_bank_stmt_file));
+		memset(cs_file_ext,0,sizeof(cs_file_ext));
+		
+                iStmtCnt++;
+        }
+	
+	return iRet;
+}
+
+
+int prcoess_match(recordset_t *rBankAcctDetail,recordset_t *rProcessBankStmt,recordset_t *rUploadBankStmt,recordset_t *rErrorBankStmt,FILE *ferr)
+{
+	int iRet = SUCCESS;
+
+	int iTmp = 0;
+
+	int iBankAcctCnt = 0;
+
+	char *csTmp = NULL;
+
+        hash_t *hBankAcctRec = NULL;
+	hash_t *hProcessStmtRec = NULL;
+
+	recordset_t *rMatch;
+        rMatch = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rMatch, 0);
+
+	// Do Matching
+        hBankAcctRec = RecordSet_GetFirst(rBankAcctDetail);
+        while ((iRet == SUCCESS) && (hBankAcctRec)) {
+
+		int iProcessCnt = 0;
+
+		char csBankAbbrevName[PD_EXT_BANK_CODE_LEN + 1];
+		char csBankAcctNum[PD_BANK_ACCT_NUM_LEN + 1];
+
+		memset(csBankAbbrevName, 0, sizeof(csBankAbbrevName));
+		memset(csBankAcctNum, 0, sizeof(csBankAcctNum));
+
+/* bank_abbrev_name */
+		if (GetField_CString(hBankAcctRec,"bank_abbrev_name",&csTmp)) {
+                        sprintf(csBankAbbrevName, "%s", csTmp);
+DEBUGLOG(("prcoess_match: [bank_acct][%d]bank_abbrev_name = [%s]\n",iBankAcctCnt,csBankAbbrevName));
+                } else {
+DEBUGLOG(("prcoess_match: [bank_acct][%d]bank_abbrev_name is missing!!\n",iBankAcctCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_abbrev_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_acct_num */
+	        if (GetField_CString(hBankAcctRec,"bank_acct_num",&csTmp)) {
+	                sprintf(csBankAcctNum, "%s", csTmp);
+DEBUGLOG(("prcoess_match: [bank_acct][%d]bank_acct_num = [%s]\n",iBankAcctCnt,csBankAcctNum));
+	        } else {
+DEBUGLOG(("prcoess_match: [bank_acct][%d]bank_acct_num is missing!!\n",iBankAcctCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_num is missing!!\n");
+			iRet = FAILURE;
+	        }
+
+        	hProcessStmtRec = RecordSet_GetFirst(rProcessBankStmt);
+        	while ((iRet == SUCCESS) && (hProcessStmtRec)) {
+
+			int iStmtFileValid = PD_FALSE;
+	
+			char csProcessBankInit[IMPORT_MAX_FILE_LEN + 1];
+			char csProcessShortBankAcctNum[IMPORT_MAX_FILE_LEN + 1];
+
+			memset(csProcessBankInit, 0, sizeof(csProcessBankInit));
+			memset(csProcessShortBankAcctNum, 0, sizeof(csProcessShortBankAcctNum));
+
+/* stmt_file_valid */
+			if (GetField_Int(hProcessStmtRec,"stmt_file_valid",&iStmtFileValid)) {
+DEBUGLOG(("prcoess_match: [process][%d]stmt_file_valid = [%d]\n",iProcessCnt,iStmtFileValid));
+                        } else {
+DEBUGLOG(("prcoess_match: [process][%d]stmt_file_valid is missing!!\n",iProcessCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: stmt_file_valid is missing!!\n");
+                                iRet = FAILURE;
+                        }
+
+			/* matching */
+                        if (iStmtFileValid == PD_TRUE) {
+/* bank_init */
+				if (GetField_CString(hProcessStmtRec,"bank_init",&csTmp)) {
+                                	sprintf(csProcessBankInit, "%s", csTmp);
+DEBUGLOG(("prcoess_match: [process][%d]bank_init = [%s]\n",iProcessCnt,csProcessBankInit));
+                        	} else {
+DEBUGLOG(("prcoess_match: [process][%d]bank_init is missing!!\n",iProcessCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_init is missing!!\n");
+                                	iRet = FAILURE;
+                        	}
+
+/* last_6_bank_acct_num */
+                		if (GetField_CString(hProcessStmtRec,"last_6_bank_acct_num",&csTmp)) {
+	                	        sprintf(csProcessShortBankAcctNum, "%s", csTmp);
+DEBUGLOG(("prcoess_match: [process][%d]last_6_bank_acct_num = [%s]\n",iProcessCnt,csProcessShortBankAcctNum));
+	               	 	} else {
+DEBUGLOG(("prcoess_match: [process][%d]last_6_bank_acct_num is missing!!\n",iProcessCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: last_6_bank_acct_num is missing!!\n");
+					iRet = FAILURE;
+	                	}
+
+				if (!strcmp(csBankAbbrevName, csProcessBankInit)) {
+					csTmp = strstr(csBankAcctNum, csProcessShortBankAcctNum);
+                        		if (csTmp != NULL) {	
+	
+						hash_t *hMatchRec = NULL;
+        					hMatchRec = (hash_t*) malloc (sizeof(hash_t));
+        					hash_init(hMatchRec,0);
+
+/* bank_acct_disabled */
+						if (GetField_Int(hBankAcctRec,"bank_acct_disabled",&iTmp)) {
+							PutField_Int(hMatchRec, "bank_acct_disabled", iTmp);
+                				}
+
+/* bank_country */
+                                                if (GetField_CString(hBankAcctRec,"bank_country",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "bank_country", csTmp);
+                                                }
+
+/* int_bank_code */
+                                                if (GetField_CString(hBankAcctRec,"int_bank_code",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "int_bank_code", csTmp);
+                                                }
+
+/* bank_name */
+						if (GetField_CString(hBankAcctRec,"bank_name",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "bank_name", csTmp);
+                                                }
+
+/* bank_acct_num */
+                                                if (GetField_CString(hBankAcctRec,"bank_acct_num",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "bank_acct_num", csTmp);
+                                                }
+
+/* bank_acct_name */
+                                                if (GetField_CString(hBankAcctRec,"bank_acct_name",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "bank_acct_name", csTmp);
+                                                }
+
+/* bank_acct_short_name */
+                                                if (GetField_CString(hBankAcctRec,"bank_acct_short_name",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "bank_acct_short_name", csTmp);
+                                                }
+
+/* bank_acct_init */
+                                                if (GetField_CString(hProcessStmtRec,"bank_acct_init",&csTmp)) {
+                                                        PutField_CString(hMatchRec, "bank_acct_init", csTmp);
+                                                }
+
+/* bank_stmt_file_ext */
+						if (GetField_CString(hProcessStmtRec,"bank_stmt_file_ext",&csTmp)) {
+							PutField_CString(hMatchRec, "match_stmt_file_ext", csTmp);
+						}
+
+	                	        	RecordSet_Add(rMatch, hMatchRec);
+
+						//hash_destroy(hMatchRec);
+                        	        	//FREE_ME(hMatchRec);
+					}
+				}
+			}
+
+                	hProcessStmtRec = RecordSet_GetNext(rProcessBankStmt);
+        	}
+
+                hBankAcctRec = RecordSet_GetNext(rBankAcctDetail);
+        }
+
+	// Check Matching Results
+	if (iRet == SUCCESS) {
+
+		int iMatchCnt = 0;
+		int iErrorCnt = 0;
+
+		hash_t *hMatchRec = NULL;
+            	hMatchRec = (hash_t*) malloc (sizeof(hash_t));
+            	hash_init(hMatchRec,0);
+
+		hProcessStmtRec = RecordSet_GetFirst(rProcessBankStmt);
+                while ((iRet == SUCCESS) && (hProcessStmtRec)) {
+
+			int iMatch = PD_FALSE;
+	
+			char *csBankStmtFile = NULL;
+
+/* bank_stmt_file_ext */
+                        if (!GetField_CString(hProcessStmtRec,"bank_stmt_file_ext",&csBankStmtFile)) {
+DEBUGLOG(("prcoess_match: bank_stmt_file_ext is missing!!\n"));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_stmt_file_ext is missing!!\n");
+                                iRet = FAILURE;
+                        }
+
+			hMatchRec = RecordSet_GetFirst(rMatch);
+                	while ((iRet == SUCCESS) && (hMatchRec)) {		
+				
+				char *csMatchStmtFile = NULL;
+
+/* match_stmt_file_ext */
+              		      	if (!GetField_CString(hMatchRec,"match_stmt_file_ext",&csMatchStmtFile)) {
+DEBUGLOG(("prcoess_match: match_stmt_file_ext is missing!!\n"));
+ERRLOG("upload_bank_stmt: prcoess_match: match_stmt_file_ext is missing!!\n");
+                        	        iRet = FAILURE;
+                        	}
+
+				if (iRet == SUCCESS) {
+
+					if (!strcmp(csBankStmtFile, csMatchStmtFile)) {
+
+						/* Matched */
+                                              	iMatch = PD_TRUE;
+						break;
+					}
+				}
+
+				hMatchRec = RecordSet_GetNext(rMatch);
+			}	
+
+			// Put into Process/Error Recordset
+			if (iRet == SUCCESS) {
+
+				if (iMatch == PD_TRUE) {
+
+					/* Put into Upload Recordset */
+
+ 					hash_t *hUploadStmtRec = NULL;
+                               		hUploadStmtRec = (hash_t*) malloc (sizeof(hash_t));
+                             		hash_init(hUploadStmtRec,0);
+
+/* bank_stmt_file_ext */
+	                                PutField_CString(hUploadStmtRec, "bank_stmt_file_ext", csBankStmtFile);
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_stmt_file_ext] = [%s]\n",iMatchCnt,csBankStmtFile));
+
+/* acct_type */
+	                           	if (GetField_CString(hProcessStmtRec,"acct_type",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][acct_type] = [%s]\n",iMatchCnt,csTmp));
+	                                    	PutField_CString(hUploadStmtRec, "acct_type", csTmp);
+	                            	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]acct_type is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: acct_type is missing!!\n");
+	                                      	iRet = FAILURE;
+	                            	}
+
+/* client_id */
+        	                    	if (GetField_CString(hProcessStmtRec,"client_id",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][client_id] = [%s]\n",iMatchCnt,csTmp));
+        	                             	PutField_CString(hUploadStmtRec, "client_id", csTmp);
+        	                   	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]client_id is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: client_id is missing!!\n");
+        	                             	iRet = FAILURE;
+        	                     	}
+
+/* client_name */
+        	                    	if (GetField_CString(hProcessStmtRec,"client_name",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][client_name] = [%s]\n",iMatchCnt,csTmp));
+        	                        	PutField_CString(hUploadStmtRec, "client_name", csTmp);
+        	                    	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]client_name is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: client_name is missing!!\n");
+        	                               	iRet = FAILURE;
+        	                   	}
+
+/* bank_init */
+        	                    	if (GetField_CString(hProcessStmtRec,"bank_init",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_init] = [%s]\n",iMatchCnt,csTmp));
+        	                          	PutField_CString(hUploadStmtRec, "bank_init", csTmp);
+                	            	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_init is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_init is missing!!\n");
+                	                     	iRet = FAILURE;
+                	            	}
+
+/* bank_acct_init */
+                	           	if (GetField_CString(hProcessStmtRec,"bank_acct_init",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_acct_init] = [%s]\n",iMatchCnt,csTmp));
+                	                  	PutField_CString(hUploadStmtRec, "bank_acct_init", csTmp);
+                	            	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_acct_init is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_init is missing!!\n");
+                	                      	iRet = FAILURE;
+                	           	}
+
+/* last_6_bank_acct_num */
+                	           	if (GetField_CString(hProcessStmtRec,"last_6_bank_acct_num",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][last_6_bank_acct_num] = [%s]\n",iMatchCnt,csTmp));
+                	                  	PutField_CString(hUploadStmtRec, "last_6_bank_acct_num", csTmp);
+                	             	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]last_6_bank_acct_num is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: last_6_bank_acct_num is missing!!\n");
+                	                    	iRet = FAILURE;
+                	              	}
+
+/* datetime */
+                       		     	if (GetField_CString(hProcessStmtRec,"datetime",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][datetime] = [%s]\n",iMatchCnt,csTmp));
+                       		             	PutField_CString(hUploadStmtRec, "datetime", csTmp);
+                       		   	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]datetime is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: datetime is missing!!\n");
+                       		              	iRet = FAILURE;
+                       		     	}
+
+/* file_ext */
+                            		if (GetField_CString(hProcessStmtRec,"file_ext",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][file_ext] = [%s]\n",iMatchCnt,csTmp));
+                                	   	PutField_CString(hUploadStmtRec, "file_ext", csTmp);
+                             		} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]file_ext is missing!!\n",iMatchCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: file_ext is missing!!\n");
+                            	 	       	//iRet = FAILURE;
+                            		}
+
+/* bank_stmt_file */
+                            	    	if (GetField_CString(hProcessStmtRec,"bank_stmt_file",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_stmt_file] = [%s]\n",iMatchCnt,csTmp));
+                            	            	PutField_CString(hUploadStmtRec, "bank_stmt_file", csTmp);
+                            	    	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_stmt_file is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_stmt_file is missing!!\n");
+                                        	iRet = FAILURE;
+                                	}
+			
+/* bank_country */
+                                	if (GetField_CString(hMatchRec,"bank_country",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_country] = [%s]\n",iMatchCnt,csTmp));
+                                        	PutField_CString(hUploadStmtRec, "bank_country", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_country is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_country is missing!!\n");
+                                	        iRet = FAILURE;
+                                	}
+
+/* int_bank_code */
+					if (GetField_CString(hMatchRec,"int_bank_code",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][int_bank_code] = [%s]\n",iMatchCnt,csTmp));
+                                        	PutField_CString(hUploadStmtRec, "int_bank_code", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]int_bank_code is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: int_bank_code is missing!!\n");
+                                        	iRet = FAILURE;
+                                	}
+
+/* bank_name */
+					if (GetField_CString(hMatchRec,"bank_name",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_name] = [%s]\n",iMatchCnt,csTmp));
+                                	        PutField_CString(hUploadStmtRec, "bank_name", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_name is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_name is missing!!\n");
+                                	        iRet = FAILURE;
+                                	}
+
+/* bank_acct_num */
+					if (GetField_CString(hMatchRec,"bank_acct_num",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_acct_num] = [%s]\n",iMatchCnt,csTmp));
+                                	        PutField_CString(hUploadStmtRec, "bank_acct_num", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_acct_num is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_num is missing!!\n");
+                                	        iRet = FAILURE;
+                                	}				
+
+/* bank_acct_name */
+					if (GetField_CString(hMatchRec,"bank_acct_name",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_acct_name] = [%s]\n",iMatchCnt,csTmp));
+                                	        PutField_CString(hUploadStmtRec, "bank_acct_name", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_acct_name is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_name is missing!!\n");
+                                	        iRet = FAILURE;
+                                	}
+
+/* bank_acct_short_name */
+					if (GetField_CString(hMatchRec,"bank_acct_short_name",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_acct_short_name] = [%s]\n",iMatchCnt,csTmp));
+                                	        PutField_CString(hUploadStmtRec, "bank_acct_short_name", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_acct_short_name is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_short_name is missing!!\n");
+                                	        iRet = FAILURE;
+                                	}
+
+/* bank_acct_disabled */
+                                        if (GetField_Int(hMatchRec,"bank_acct_disabled",&iTmp)) {
+DEBUGLOG(("prcoess_match: [Matched][%d][bank_acct_disabled] = [%d]\n",iMatchCnt,iTmp));
+                                                PutField_Int(hUploadStmtRec, "bank_acct_disabled", iTmp);
+                                        } else {
+DEBUGLOG(("prcoess_match: [Matched][%d]bank_acct_disabled is missing!!\n",iMatchCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_disabled is missing!!\n");
+                                                iRet = FAILURE;
+                                        }
+
+                            		iMatchCnt++;
+
+                           		RecordSet_Add(rUploadBankStmt, hUploadStmtRec);
+
+                           		//hash_destroy(hUploadStmtRec);
+                            		//FREE_ME(hUploadStmtRec);
+ 				} else {
+
+					/* Put into Error Recordset */
+
+					hash_t *hErrorStmtRec = NULL;
+                            		hErrorStmtRec = (hash_t*) malloc (sizeof(hash_t));
+                              		hash_init(hErrorStmtRec,0);
+
+/* bank_stmt_file_ext */	
+                                	PutField_CString(hErrorStmtRec, "bank_stmt_file_ext", csBankStmtFile);
+DEBUGLOG(("prcoess_match: [Error][%d][bank_stmt_file_ext] = [%s]\n",iErrorCnt,csBankStmtFile));
+
+/* acct_type */
+                         		if (GetField_CString(hProcessStmtRec,"acct_type",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][acct_type] = [%s]\n",iErrorCnt,csTmp));
+                                	   	PutField_CString(hErrorStmtRec, "acct_type", csTmp);
+                             		} else {
+DEBUGLOG(("prcoess_match: [Error][%d]acct_type is missing!!\n",iErrorCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: acct_type is missing!!\n");
+                                	      	iRet = FAILURE;
+                           		}
+
+/* client_id */
+                            		if (GetField_CString(hProcessStmtRec,"client_id",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][client_id] = [%s]\n",iErrorCnt,csTmp));
+                                	   	PutField_CString(hErrorStmtRec, "client_id", csTmp);
+                            		} else {
+DEBUGLOG(("prcoess_match: [Error][%d]client_id is missing!!\n",iErrorCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: client_id is missing!!\n");
+                                	    	iRet = FAILURE;
+                             		}
+
+/* client_name */
+                         	     	if (GetField_CString(hProcessStmtRec,"client_name",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][client_name] = [%s]\n",iErrorCnt,csTmp));
+                         	            	PutField_CString(hErrorStmtRec, "client_name", csTmp);
+                         	  	} else {
+DEBUGLOG(("prcoess_match: [Error][%d]client_name is missing!!\n",iErrorCnt));
+ERRLOG("upload_bank_stmt: prcoess_match: client_name is missing!!\n");
+                         	            	iRet = FAILURE;
+                         	   	}
+
+/* bank_init */
+                         	 	if (GetField_CString(hProcessStmtRec,"bank_init",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][bank_init] = [%s]\n",iErrorCnt,csTmp));
+                         	        	PutField_CString(hErrorStmtRec, "bank_init", csTmp);
+                         	    	} else {
+DEBUGLOG(("prcoess_match: [Error][%d]bank_init is missing!!\n",iErrorCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: bank_init is missing!!\n");
+                         	           	//iRet = FAILURE;
+                         	   	}
+
+/* bank_acct_init */
+                           		if (GetField_CString(hProcessStmtRec,"bank_acct_init",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][bank_acct_init] = [%s]\n",iErrorCnt,csTmp));
+                                	      	PutField_CString(hErrorStmtRec, "bank_acct_init", csTmp);
+                               		} else {
+DEBUGLOG(("prcoess_match: [Error][%d]bank_acct_init is missing!!\n",iErrorCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: bank_acct_init is missing!!\n");
+                                	       	//iRet = FAILURE;
+                             		}
+
+/* last_6_bank_acct_num */
+                            		if (GetField_CString(hProcessStmtRec,"last_6_bank_acct_num",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][last_6_bank_acct_num] = [%s]\n",iErrorCnt,csTmp));
+                                	  	PutField_CString(hErrorStmtRec, "last_6_bank_acct_num", csTmp);
+                              		} else {
+DEBUGLOG(("prcoess_match: [Error][%d]last_6_bank_acct_num is missing!!\n",iErrorCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: last_6_bank_acct_num is missing!!\n");
+                                	      	//iRet = FAILURE;
+                            		}
+
+/* datetime */
+                          		if (GetField_CString(hProcessStmtRec,"datetime",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][datetime] = [%s]\n",iErrorCnt,csTmp));
+                                	    	PutField_CString(hErrorStmtRec, "datetime", csTmp);
+                            		} else {
+DEBUGLOG(("prcoess_match: [Error][%d]datetime is missing!!\n",iErrorCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: datetime is missing!!\n");
+                                	   	//iRet = FAILURE;
+                             		}
+
+/* file_ext */
+                            		if (GetField_CString(hProcessStmtRec,"file_ext",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][file_ext] = [%s]\n",iErrorCnt,csTmp));
+                                	  	PutField_CString(hErrorStmtRec, "file_ext", csTmp);
+                           		} else {
+DEBUGLOG(("prcoess_match: [Error][%d]file_ext is missing!!\n",iErrorCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: file_ext is missing!!\n");
+                                	     	//iRet = FAILURE;
+                           		}
+
+/* bank_stmt_file */
+                                	if (GetField_CString(hProcessStmtRec,"bank_stmt_file",&csTmp)) {
+DEBUGLOG(("prcoess_match: [Error][%d][bank_stmt_file] = [%s]\n",iErrorCnt,csTmp));
+                                	        PutField_CString(hErrorStmtRec, "bank_stmt_file", csTmp);
+                                	} else {
+DEBUGLOG(("prcoess_match: [Error][%d]bank_stmt_file is missing!!\n",iErrorCnt));
+//ERRLOG("upload_bank_stmt: prcoess_match: bank_stmt_file is missing!!\n");
+                                	        iRet = FAILURE;
+                                	}
+
+/* status */
+					PutField_Char(hErrorStmtRec, "status", PD_STMT_DECLINED);
+DEBUGLOG(("prcoess_match: [Error][%d][status] = [%c]\n",iErrorCnt,PD_STMT_DECLINED));
+
+/* error_code */	
+					PutField_Int(hErrorStmtRec, "error_code", INT_INVALID_FILE_FORMAT);
+DEBUGLOG(("prcoess_match: [Error][%d][error_code] = [%d]\n",iErrorCnt,INT_INVALID_FILE_FORMAT));	
+
+	
+					// Create Error Occurs File
+		                	if (iRet == SUCCESS) {
+
+						iRet = process_error_file(hErrorStmtRec, ferr);
+
+#if 0
+                        			char csTmpBuf[PD_TMP_BUF_LEN + 1];
+
+                        			memset(csTmpBuf, 0, sizeof(csTmpBuf));
+
+                        			// acct_type
+/*
+                        			sprintf(csTmpBuf,"%s",csAcctType);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][acct_type]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+*/
+
+                        			// client_id
+/*
+                        			sprintf(csTmpBuf,"%s",csClientId);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][client_id]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+*/
+
+                        			// client_name
+                        			sprintf(csTmpBuf,"%s",csClientName);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][client_name]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+                        			// bank_name
+                        			sprintf(csTmpBuf,"%s",csBankName);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][bank_name]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+                        			// bank_acct_short_name and bank_acct_num
+                        			sprintf(csTmpBuf,"%s %s",csBankAcctShortName, csBankAcctNum);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][bank_acct_short_name bank_acct_num]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+                        			// bank_stmt_file_ext
+                        			sprintf(csTmpBuf,"%s",csNewFileName);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][bank_stmt_file_ext]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+                        			// status
+                        			sprintf(csTmpBuf,"%c",cStatus);
+                        			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_match: [error_file][%d][status]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+						// error_code
+                        			sprintf(csTmpBuf,"%d",iMsgCode);
+                        			fprintf(ferr,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+DEBUGLOG(("process_match: [error_file][%d][error_code]=[%s][%d]\n", iErrorCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+                        			fprintf(ferr,"\n");
+#endif
+					}
+		
+					iErrorCnt++;
+
+					//RecordSet_Add(rErrorBankStmt, hErrorStmtRec);
+
+                              		//hash_destroy(hErrorStmtRec);
+                              		//FREE_ME(hErrorStmtRec);
+
+				}
+			}
+
+              		hProcessStmtRec = RecordSet_GetNext(rProcessBankStmt);
+		}
+	}
+
+	return iRet;
+}
+
+
+int process_upload(recordset_t *rUploadBankStmt,recordset_t *rSuccBankStmt,recordset_t *rUnsuccBankStmt,recordset_t *rErrorBankStmt,FILE *ferr)
+{
+	int iRet = SUCCESS;
+
+	int iRecCnt = 0;
+
+        hash_t *hUploadStmtRec = NULL;
+
+	hash_t *hRequest;
+        hRequest = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRequest, 0);
+
+        hash_t *hContext;
+        hContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hContext, 0);
+
+        hash_t *hResponse;
+        hResponse = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hResponse, 0);
+
+	hUploadStmtRec = RecordSet_GetFirst(rUploadBankStmt);
+        while ((iRet == SUCCESS) && (hUploadStmtRec)) {
+		
+		int iDtlRet = PD_OK;
+		int iBankAcctDisabled = PD_FALSE;
+		int iMsgCode = INT_NO_ERR;
+		int iNoFileExt = PD_FALSE;
+
+		char cStatus;
+
+		char *csAcctType = NULL;
+        	char *csClientId = NULL;
+        	char *csClientName = NULL;
+        	char *csBankInit = NULL;
+        	char *csBankAcctInit = NULL;
+        	char *csBankAcctShortNum = NULL;
+        	char *csDatetime = NULL;
+        	char *csFileExt = NULL;
+        	char *csBankStmtFile = NULL;
+        	char *csBankCountry = NULL;
+        	char *csBankCode = NULL;
+		char *csBankName = NULL;
+        	char *csBankAcctNum = NULL;
+        	char *csBankAcctName = NULL;
+        	char *csBankAcctShortName = NULL;
+        	char *csFileName = NULL;
+
+		char *csFileId = NULL;
+
+        	//char *csTmp = NULL;
+
+		char csNewFileName[PD_TMP_BUF_LEN];
+		char csNewFullPath[PD_TMP_BUF_LEN];
+
+		cStatus = ' ';
+
+		memset(csNewFileName, 0, sizeof(csNewFileName));
+		memset(csNewFullPath, 0, sizeof(csNewFullPath));
+		
+/* user */
+        	PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+        	PutField_CString(hRequest, "update_user", PD_UPDATE_USER);
+DEBUGLOG(("prcoess_upload: [%d][user] = [%s]\n",iRecCnt,PD_UPDATE_USER));
+
+/* upload_path */
+DEBUGLOG(("prcoess_upload: [%d][upload_path] = [%s]\n",iRecCnt,cs_upload_path));
+
+/* bank_stmt_file_ext */
+                if (GetField_CString(hUploadStmtRec,"bank_stmt_file_ext",&csFileName)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_stmt_file_ext] = [%s]\n",iRecCnt,csFileName));
+			PutField_CString(hRequest, "in_file_name", csFileName);
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_stmt_file_ext is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_stmt_file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }		
+
+/* acct_type */
+        	if (GetField_CString(hUploadStmtRec,"acct_type",&csAcctType)) {
+DEBUGLOG(("prcoess_upload: [%d][acct_type] = [%s]\n",iRecCnt,csAcctType));
+			PutField_CString(hRequest, "bank_acct_type", csAcctType);
+            	} else {
+DEBUGLOG(("prcoess_upload: [%d]acct_type is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: acct_type is missing!!\n");
+                     	iRet = FAILURE;
+            	}
+
+/* client_id */
+                if (GetField_CString(hUploadStmtRec,"client_id",&csClientId)) {
+DEBUGLOG(("prcoess_upload: [%d][client_id] = [%s]\n",iRecCnt,csClientId));
+			PutField_CString(hRequest, "provider_id", csClientId);
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]client_id is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: client_id is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* client_name */
+                if (GetField_CString(hUploadStmtRec,"client_name",&csClientName)) {
+DEBUGLOG(("prcoess_upload: [%d][client_name] = [%s]\n",iRecCnt,csClientName));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]client_name is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: client_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_init */
+                if (GetField_CString(hUploadStmtRec,"bank_init",&csBankInit)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_init] = [%s]\n",iRecCnt,csBankInit));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_init is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_init is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_acct_init */
+                if (GetField_CString(hUploadStmtRec,"bank_acct_init",&csBankAcctInit)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_acct_init] = [%s]\n",iRecCnt,csBankAcctInit));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_acct_init is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_acct_init is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* last_6_bank_acct_num */
+                if (GetField_CString(hUploadStmtRec,"last_6_bank_acct_num",&csBankAcctShortNum)) {
+DEBUGLOG(("prcoess_upload: [%d][last_6_bank_acct_num] = [%s]\n",iRecCnt,csBankAcctShortNum));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]last_6_bank_acct_num is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: last_6_bank_acct_num is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* datetime */
+                if (GetField_CString(hUploadStmtRec,"datetime",&csDatetime)) {
+DEBUGLOG(("prcoess_upload: [%d][datetime] = [%s]\n",iRecCnt,csDatetime));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]datetime is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: datetime is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* file_ext */
+                if (GetField_CString(hUploadStmtRec,"file_ext",&csFileExt)) {
+DEBUGLOG(("prcoess_upload: [%d][file_ext] = [%s]\n",iRecCnt,csFileExt));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]file_ext is missing!!\n",iRecCnt));
+//ERRLOG("upload_bank_stmt: prcoess_upload: file_ext is missing!!\n");
+                        iNoFileExt = PD_TRUE;
+			//iRet = FAILURE;
+                }
+
+/* bank_stmt_file */
+                if (GetField_CString(hUploadStmtRec,"bank_stmt_file",&csBankStmtFile)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_stmt_file] = [%s]\n",iRecCnt,csBankStmtFile));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_stmt_file is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_stmt_file is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_country */
+                if (GetField_CString(hUploadStmtRec,"bank_country",&csBankCountry)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_country] = [%s]\n",iRecCnt,csBankCountry));
+                        PutField_CString(hRequest, "bank_country", csBankCountry);
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_country is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_country is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* int_bank_code */
+                if (GetField_CString(hUploadStmtRec,"int_bank_code",&csBankCode)) {
+DEBUGLOG(("prcoess_upload: [%d][int_bank_code] = [%s]\n",iRecCnt,csBankCode));
+			PutField_CString(hRequest, "int_bank_code", csBankCode);
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]int_bank_code is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: int_bank_code is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_name */
+                if (GetField_CString(hUploadStmtRec,"bank_name",&csBankName)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_name] = [%s]\n",iRecCnt,csBankName));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_name is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_acct_num */
+               	if (GetField_CString(hUploadStmtRec,"bank_acct_num",&csBankAcctNum)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_acct_num] = [%s]\n",iRecCnt,csBankAcctNum));
+			PutField_CString(hRequest, "bank_acct_num", csBankAcctNum);
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_acct_num is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_acct_num is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_acct_name */
+                if (GetField_CString(hUploadStmtRec,"bank_acct_name",&csBankAcctName)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_acct_name] = [%s]\n",iRecCnt,csBankAcctName));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_acct_name is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_acct_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_acct_short_name */
+                if (GetField_CString(hUploadStmtRec,"bank_acct_short_name",&csBankAcctShortName)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_acct_short_name] = [%s]\n",iRecCnt,csBankAcctShortName));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_acct_short_name is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_acct_short_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_acct_disabled */
+                if (GetField_Int(hUploadStmtRec,"bank_acct_disabled",&iBankAcctDisabled)) {
+DEBUGLOG(("prcoess_upload: [%d][bank_acct_disabled] = [%d]\n",iRecCnt,iBankAcctDisabled));
+                } else {
+DEBUGLOG(("prcoess_upload: [%d]bank_acct_disabled is missing!!\n",iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: bank_acct_disabled is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+		// Check Bank Account Disabled
+		if (iRet == SUCCESS) {
+			
+			if (iBankAcctDisabled == PD_TRUE) {
+DEBUGLOG(("prcoess_upload: [%d]Bank Acct Disabled\n",iRecCnt));
+                             	iMsgCode = INT_AUTO_UPLOAD_BANK_ACCT_DIS;
+                               	cStatus = PD_STMT_DECLINED;
+			}
+		}	
+
+		// Copy bank statement file to NFS server
+		if ((iRet == SUCCESS) && (iMsgCode == INT_NO_ERR)) {
+	
+			int iCnt = 0;
+			char csInFullName[PD_TMP_BUF_LEN];
+        		char csNewFullName[PD_TMP_BUF_LEN];
+                      	char *command[64];
+			FILE *fbankstmt;
+			DIR *dbankstmt;
+
+			memset(csInFullName, 0, sizeof(csInFullName));
+                	memset(csNewFullName, 0, sizeof(csNewFullName));
+
+DEBUGLOG(("prcoess_upload: [%d]Copy Bank Statement File to NFS Server\n", iRecCnt));
+
+			// Source
+			if (iRet == SUCCESS) {
+
+				// Check file exists			
+				sprintf(csInFullName, "%s/%s/%s/%s/%s", cs_stmt_path, cs_provider_name, cs_acct_type_name, PD_PATH_PROCESSING, csFileName);
+DEBUGLOG(("prcoess_upload: [%d]Source: csInFullName = [%s]\n", iRecCnt, csInFullName));
+	
+                              	fbankstmt = fopen(csInFullName,"r");
+                            	if (fbankstmt != NULL) {
+                                   	fclose(fbankstmt);
+                                } else {
+DEBUGLOG(("prcoess_upload: [%d]Source: File Not Exists\n", iRecCnt));
+					iMsgCode = INT_FILE_NOT_FOUND;
+					cStatus = PD_STMT_DECLINED; 
+				}
+			}
+
+			// Destination
+			if ((iRet == SUCCESS) && (iMsgCode == INT_NO_ERR)) {
+
+				// Check directory exists
+				for (iCnt=0;iCnt<2;iCnt++) {
+					
+					// Raw/Converted
+					if (iCnt == 0) {
+						sprintf(csNewFullPath, "%s/%s/%s/%s", cs_upload_path, csBankCountry, csBankCode, PD_CONVERTED);
+DEBUGLOG(("prcoess_upload: [%d]Destionation: csNewFullPath = [%s]\n", iRecCnt, csNewFullPath));
+					} else if (iCnt == 1) {
+						sprintf(csNewFullPath, "%s/%s/%s/%s", cs_upload_path, csBankCountry, csBankCode, PD_RAW);
+DEBUGLOG(("prcoess_upload: [%d]Destionation: csNewFullPath = [%s]\n", iRecCnt, csNewFullPath));
+					}
+			
+					dbankstmt = opendir(csNewFullPath);
+					if(dbankstmt == NULL) {
+						command[0] = "mkdir";
+                        			command[1] = "-p";
+                        			command[2] = csNewFullPath;
+                        			command[3] = NULL;
+                        			command[4] = NULL;
+
+                        			execute(command);
+DEBUGLOG(("prcoess_upload: [%d]Destionation: Make Directory: Call execute() [%s %s %s %s %s]\n", iRecCnt, command[0], command[1], command[2], command[3], command[4]));
+
+					} else {
+DEBUGLOG(("prcoess_upload: [%d]Destionation: Directory Exists\n", iRecCnt));
+						closedir(dbankstmt);
+					}
+				}
+
+				// Change Mode
+				if (iRet == SUCCESS) {				
+                                      	dbankstmt = opendir(cs_upload_path);
+                                      	if(dbankstmt != NULL) {
+                                             	command[0] = "chmod";
+                                              	command[1] = "-R";
+                                               	command[2] = "777";
+                                               	command[3] = cs_upload_path;
+                                              	command[4] = NULL;
+
+                                            	execute(command);
+DEBUGLOG(("prcoess_upload: [%d]Destionation: Change Mode: Call execute() [%s %s %s %s %s]\n", iRecCnt, command[0], command[1], command[2], command[3], command[4]));
+						
+						closedir(dbankstmt);
+					}
+				}
+
+				// Check file exists
+				if (iRet == SUCCESS) {
+					sprintf(csNewFullName, "%s/%s", csNewFullPath, csFileName);
+DEBUGLOG(("prcoess_upload: [%d]Destionation: csNewFullName = [%s]\n", iRecCnt, csNewFullName));
+
+					fbankstmt = fopen(csNewFullName,"r");
+        				if (fbankstmt != NULL) {
+DEBUGLOG(("prcoess_upload: [%d]Destionation: File Exists\n", iRecCnt));
+						fclose(fbankstmt);
+						iMsgCode = INT_FILE_NAME_ALREADY_EXIST;
+						cStatus = PD_STMT_DECLINED;
+        				} 
+				}
+			}
+
+			// Copy file from Source Path to Destination Path
+			if ((iRet == SUCCESS) && (iMsgCode == INT_NO_ERR)) {
+                      		command[0] = "cp";
+                   		command[1] = "-p";
+                    		command[2] = csInFullName;
+                     		command[3] = csNewFullName;
+                    		command[4] = NULL;
+
+                     		execute(command);
+DEBUGLOG(("prcoess_upload: [%d]Copy Statement File: Call execute() [%s %s %s %s %s]\n", iRecCnt,command[0], command[1], command[2], command[3], command[4]));
+			}
+		}
+
+		// Call TxnOmtByUsBSU
+		if ((iRet == SUCCESS) && (iMsgCode == INT_NO_ERR)) {
+
+        		char    *p;
+
+			char    csTmpUploadPath[PD_MAX_BUFFER+1];
+        		char    csDate[PD_DATE_LEN+1];
+
+			memset(csTmpUploadPath, 0, sizeof(csTmpUploadPath));
+			memset(csDate, 0, sizeof(csDate));
+
+			sprintf(csTmpUploadPath, cs_upload_path);
+
+			p = mystrtok(csTmpUploadPath,PD_DIR_DELIMITOR);
+                        if (p == NULL) {
+                                iRet = FAILURE;
+                        } else {
+                                while ((p = mystrtok(NULL,PD_DIR_DELIMITOR)) != NULL) {
+                                        strcpy(csDate,p);
+                                }
+                        }
+
+			if (iRet == SUCCESS) {
+
+				PutField_CString(hContext, "PHDATE", csDate);
+DEBUGLOG(("prcoess_upload: [%d][PHDATE] = [%s]\n",iRecCnt,csDate));
+
+                        	PutField_CString(hRequest, "in_file_path", csNewFullPath);
+DEBUGLOG(("prcoess_upload: [%d][in_file_path] = [%s]\n",iRecCnt,csNewFullPath));
+
+                        	PutField_CString(hRequest, "channel_code", PD_CHANNEL_OMT);
+                        	PutField_CString(hContext, "channel_code", PD_CHANNEL_OMT);
+DEBUGLOG(("prcoess_upload: [%d][channel_code] = [%s]\n",iRecCnt,PD_CHANNEL_OMT));
+
+                        	//PutField_CString(hRequest, "ip_addr", "192.168.100.113");
+//DEBUGLOG(("prcoess_upload: [%d][ip_addr] = [%s]\n",iRecCnt,"192.168.100.113"));
+
+                        	PutField_Int(hRequest, "auto_upload", PD_TRUE);
+DEBUGLOG(("prcoess_upload: [%d][auto_upload] = [%d]\n",iRecCnt,PD_TRUE));
+
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize()\n", iRecCnt));
+	                	TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsBSU", "Authorize");
+	                	iDtlRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+				if (iDtlRet == PD_OK) {
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize() Success, iDtlRet = [%d]\n", iRecCnt, iDtlRet));	
+				} else if (iDtlRet == INT_ERR) {
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize() Internal Error, iDtlRet = [%d]\n", iRecCnt, iDtlRet));			
+ERRLOG("upload_bank_stmt: prcoess_upload: Call TxnOmtByUsBSU: Authorize() Internal Error!!\n");
+					iRet = FAILURE;
+				} else {
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize() Other Error, iDtlRet = [%d]\n", iRecCnt, iDtlRet));			
+				}	
+
+				// Update OL_Statement_Header
+				if (iRet == SUCCESS) {
+
+/* file_id */
+	                                if (GetField_Char(hContext,"auto_upload_file_id",&csFileId)) {
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize() file_id = [%c]\n", iRecCnt, csFileId));
+        	                                PutField_CString(hContext, "file_id", csFileId);
+        	                        }
+
+/* status */
+        	                        if (GetField_Char(hContext,"status",&cStatus)) {
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize() status = [%c]\n", iRecCnt, cStatus));
+        	                        }
+
+/* msg_code */
+        	                        if (GetField_Int(hContext,"auto_upload_msg_code",&iMsgCode)) {
+DEBUGLOG(("prcoess_upload: [%d]Call TxnOmtByUsBSU: Authorize() msg_code = [%d]\n", iRecCnt, iMsgCode));
+        	                        }
+
+/* acct_type */
+					PutField_CString(hContext, "acct_type", csAcctType);
+
+DEBUGLOG(("prcoess_upload: [%d]Call DBOLStatement: UpdateAutoUploadDetail\n", iRecCnt));
+                                	DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "UpdateAutoUploadDetail");
+                                	iRet = (unsigned long)(*DBObjPtr)(hContext);
+                                	if (iRet == PD_OK) {
+DEBUGLOG(("prcoess_upload: [%d]Call DBOLStatement: UpdateAutoUploadDetail Success\n", iRecCnt));
+
+						TxnCommit();
+DEBUGLOG(("prcoess_upload: [%d]Call DBOLStatement: UpdateAutoUploadDetail TxnCommit()\n", iRecCnt));
+                                	} else {
+DEBUGLOG(("prcoess_upload: [%d]Call DBOLStatement: UpdateAutoUploadDetail Failure\n", iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: Call DBOLStatement: UpdateAutoUploadDetail Failure!!\n");
+						iRet = FAILURE;
+                                	}	
+				}
+			}
+		}
+
+		// Remove raw bank statement file in NFS server 
+		if (iRet == SUCCESS) {
+
+                        char csFullName[PD_TMP_BUF_LEN];
+                        char *command[64];
+                        FILE *fbankstmt;
+
+DEBUGLOG(("prcoess_upload: [%d]Remove Raw Bank Statement File in NFS Server\n", iRecCnt));
+
+			// Check file exists
+			sprintf(csFullName, "%s/%s/%s/%s/%s", cs_upload_path, csBankCountry, csBankCode, PD_RAW, csFileName);
+DEBUGLOG(("prcoess_upload: [%d]csFullName = [%s]\n", iRecCnt, csFullName));
+
+                     	fbankstmt = fopen(csFullName,"r");
+                      	if (fbankstmt != NULL) {
+DEBUGLOG(("prcoess_upload: [%d]File Exists\n", iRecCnt));
+                            	fclose(fbankstmt);
+
+                        	// Remove file
+                                command[0] = "rm";
+                                command[1] = csFullName;
+                                command[2] = NULL;
+                                command[3] = NULL;
+                                command[4] = NULL;
+
+                                execute(command);
+DEBUGLOG(("prcoess_upload: [%d]Remove Raw Statement File: Call execute() [%s %s %s %s %s]\n", iRecCnt,command[0], command[1], command[2], command[3], command[4]));
+                        }
+		}
+
+		// Put into Success/Unsuccess/Error Recordset
+		if (iRet == SUCCESS) {	
+
+/*
+			hash_t *hStmtRec = NULL;
+                       	hStmtRec = (hash_t*) malloc (sizeof(hash_t));
+                       	hash_init(hStmtRec,0);
+
+			PutField_CString(hStmtRec, "acct_type", csAcctType);
+                       	PutField_CString(hStmtRec, "client_id", csClientId);
+                      	PutField_CString(hStmtRec, "client_name", csClientName);
+                    	PutField_CString(hStmtRec, "int_bank_code", csBankCode);
+                    	PutField_CString(hStmtRec, "bank_name", csBankName);
+                      	PutField_CString(hStmtRec, "bank_acct_num", csBankAcctNum);
+                     	PutField_CString(hStmtRec, "bank_init", csBankInit);
+                     	PutField_CString(hStmtRec, "bank_acct_init", csBankAcctInit);
+                    	PutField_CString(hStmtRec, "last_6_bank_acct_num", csBankAcctShortNum);
+                      	PutField_CString(hStmtRec, "bank_acct_name", csBankAcctName);
+                      	PutField_CString(hStmtRec, "bank_acct_short_name", csBankAcctShortName);
+                       	PutField_CString(hStmtRec, "datetime", csDatetime);
+			if (iNoFileExt == PD_FALSE) {
+                     		PutField_CString(hStmtRec, "file_ext", csFileExt);
+			}
+                     	PutField_CString(hStmtRec, "bank_stmt_file", csBankStmtFile);
+                     	PutField_CString(hStmtRec, "bank_stmt_file_ext", csFileName);
+			PutField_Char(hStmtRec, "status", cStatus);
+                     	PutField_Int(hStmtRec, "error_code", iMsgCode);		
+
+			if (iMsgCode == INT_NO_ERR) {				
+				RecordSet_Add(rSuccBankStmt, hStmtRec);
+DEBUGLOG(("prcoess_upload: [%d]Add Record to Success Bank Statement Recordset\n", iRecCnt));
+			} else {
+				RecordSet_Add(rUnsuccBankStmt, hStmtRec);
+				RecordSet_Add(rErrorBankStmt, hStmtRec);
+DEBUGLOG(("prcoess_upload: [%d]Add Record to Unsuccess Bank Statement Recordset and Error Recordset\n", iRecCnt));
+			}
+
+			//hash_destroy(hStmtRec);
+                       	//FREE_ME(hStmtRec);
+*/
+		}
+
+		// Copy Bank Statement File to Processed Folder
+		if (iRet == SUCCESS) {
+	
+			char csInFullName[PD_TMP_BUF_LEN];
+                        char csNewFullName[PD_TMP_BUF_LEN];
+			char csNewFullPath[PD_TMP_BUF_LEN];
+                        char *command[64];
+                        FILE *fbankstmt;
+                        DIR *dbankstmt;
+
+			memset(csInFullName, 0, sizeof(csInFullName));
+			memset(csNewFullName, 0, sizeof(csNewFullName));
+			memset(csNewFullPath, 0, sizeof(csNewFullPath));
+
+DEBUGLOG(("prcoess_upload: [%d]Copy Bank Statement File to Prcessed Folder\n", iRecCnt));
+
+			// Source
+                        if (iRet == SUCCESS) {
+		
+				// Check file exists
+				sprintf(csInFullName, "%s/%s/%s/%s/%s", cs_stmt_path, cs_provider_name, cs_acct_type_name, PD_PATH_PROCESSING, csFileName);
+DEBUGLOG(("prcoess_upload: [%d]Source: csInFullName = [%s]\n", iRecCnt, csInFullName));
+	
+				fbankstmt = fopen(csInFullName,"r");
+                                if (fbankstmt != NULL) {
+DEBUGLOG(("prcoess_upload: [%d]Source: File Exists\n", iRecCnt));
+                                        fclose(fbankstmt);
+                                } else {
+DEBUGLOG(("prcoess_upload: [%d]Source: File Not Exists\n", iRecCnt));
+                                        iMsgCode = INT_FILE_NOT_FOUND;
+					cStatus = PD_STMT_DECLINED;
+                                }
+	
+			}
+
+			// Destination
+			if (iRet == SUCCESS) {
+
+				if (iMsgCode == INT_NO_ERR) {
+
+					// Check directory exists
+					sprintf(csNewFullPath, "%s/%s/%s/%s", cs_stmt_path, cs_provider_name, cs_acct_type_name, PD_PATH_SUCCESSFUL);
+DEBUGLOG(("prcoess_upload: [%d]Destination: csNewFullPath = [%s]\n", iRecCnt, csNewFullPath));
+			
+					dbankstmt = opendir(csNewFullPath);
+                             		if (dbankstmt == NULL) {
+DEBUGLOG(("prcoess_upload: [%d]Destination: Successful Path Not Exists\n", iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: Successful Path Not Exists\n");
+						iRet = FAILURE;
+                               		} else {
+                                	 	closedir(dbankstmt);
+                               		}
+			
+					// Check file exists
+					if (iRet == SUCCESS) {
+                         		       sprintf(csNewFullName, "%s/%s", csNewFullPath, csFileName);
+DEBUGLOG(("prcoess_upload: [%d]Destination: csNewFullName = [%s]\n", iRecCnt, csNewFullName));
+
+                                		fbankstmt = fopen(csNewFullName,"r");
+                                		if (fbankstmt != NULL) {
+DEBUGLOG(("prcoess_upload: [%d]Destination: File Exists\n", iRecCnt));
+                                		        fclose(fbankstmt);
+                                		}
+					}
+				} else {
+	
+					// Check directory exists
+        	                        sprintf(csNewFullPath, "%s/%s/%s/%s", cs_stmt_path, cs_provider_name, cs_acct_type_name, PD_PATH_UNSUCCESSFUL);
+DEBUGLOG(("prcoess_upload: [%d]Destination: csNewFullPath = [%s]\n", iRecCnt, csNewFullPath));
+
+        	                        dbankstmt = opendir(csNewFullPath);
+        	                        if (dbankstmt == NULL) {
+DEBUGLOG(("prcoess_upload: [%d]Destination: Unsuccessful Path Not Exists\n", iRecCnt));
+ERRLOG("upload_bank_stmt: prcoess_upload: Unsuccessful Path Not Exists\n");
+        	                                iRet = FAILURE;
+        	                        } else {
+        	                                closedir(dbankstmt);
+        	                        }
+
+                   	             	// Change file name
+                   	             	if (iRet == SUCCESS) {
+
+                   	     			char csDateTime[PD_DATETIME_LEN + 1] = "";
+                        			time_t  tNow = time(NULL);
+                        			struct  tm tStruct = *localtime(&tNow);
+
+                        			strftime(csDateTime, sizeof(csDateTime), PD_DEFAULT_DATETIME_FORMAT, &tStruct);
+                			
+						if (iNoFileExt == PD_TRUE) {
+                                       			sprintf(csNewFileName, "%s_%s", csBankStmtFile, csDateTime);
+						} else {
+							sprintf(csNewFileName, "%s_%s.%s", csBankStmtFile, csDateTime, csFileExt);
+						}
+                                       		sprintf(csNewFullName, "%s/%s", csNewFullPath, csNewFileName);
+DEBUGLOG(("prcoess_upload: [%d]Destination: csNewFullName = [%s]\n", iRecCnt, csNewFullName));
+                                	}
+				}
+			}
+
+			// Copy file from Source Path to Destination Path
+			if (iRet == SUCCESS) {	
+				command[0] = "cp";
+                             	command[1] = "-p";
+                               	command[2] = csInFullName;
+                              	command[3] = csNewFullName;
+                             	command[4] = NULL;
+
+                             	execute(command);
+DEBUGLOG(("prcoess_upload: [%d]Copy Statement File: Call execute() [%s %s %s %s %s]\n", iRecCnt, command[0], command[1], command[2], command[3], command[4]));
+			}
+		}
+		
+		// Create Error Occurs File
+                if ((iRet == SUCCESS) && (iMsgCode != INT_NO_ERR)) {
+
+			hash_t *hStmtRec = NULL;
+                        hStmtRec = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(hStmtRec,0);
+
+                        PutField_CString(hStmtRec, "acct_type", csAcctType);
+                        PutField_CString(hStmtRec, "client_id", csClientId);
+                        PutField_CString(hStmtRec, "client_name", csClientName);
+                        PutField_CString(hStmtRec, "int_bank_code", csBankCode);
+                        PutField_CString(hStmtRec, "bank_name", csBankName);
+                        PutField_CString(hStmtRec, "bank_acct_num", csBankAcctNum);
+                        PutField_CString(hStmtRec, "bank_init", csBankInit);
+                        PutField_CString(hStmtRec, "bank_acct_init", csBankAcctInit);
+                        PutField_CString(hStmtRec, "last_6_bank_acct_num", csBankAcctShortNum);
+                        PutField_CString(hStmtRec, "bank_acct_name", csBankAcctName);
+                        PutField_CString(hStmtRec, "bank_acct_short_name", csBankAcctShortName);
+                        PutField_CString(hStmtRec, "datetime", csDatetime);
+                        if (iNoFileExt == PD_FALSE) {
+                                PutField_CString(hStmtRec, "file_ext", csFileExt);
+                        }
+                        PutField_CString(hStmtRec, "bank_stmt_file", csBankStmtFile);
+                        PutField_CString(hStmtRec, "bank_stmt_file_ext", csFileName);
+                        PutField_Char(hStmtRec, "status", cStatus);
+                        PutField_Int(hStmtRec, "error_code", iMsgCode);
+
+                        if (iMsgCode != INT_NO_ERR) {
+
+				iRet = process_error_file(hStmtRec, ferr);
+                        }
+
+                        hash_destroy(hStmtRec);
+                        FREE_ME(hStmtRec);
+		
+#if 0
+                	char csTmpBuf[PD_TMP_BUF_LEN + 1];
+
+                	memset(csTmpBuf, 0, sizeof(csTmpBuf));			
+
+			// acct_type
+/*
+			sprintf(csTmpBuf,"%s",csAcctType);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_upload: [error_file][%d][acct_type]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+*/
+
+			// client_id
+/*
+			sprintf(csTmpBuf,"%s",csClientId);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);			
+DEBUGLOG(("process_upload: [error_file][%d][client_id]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+*/
+
+			// client_name
+			sprintf(csTmpBuf,"%s",csClientName);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_upload: [error_file][%d][client_name]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+			// bank_name
+			sprintf(csTmpBuf,"%s",csBankName);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_upload: [error_file][%d][bank_name]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+			// bank_acct_short_name and bank_acct_num
+			sprintf(csTmpBuf,"%s %s",csBankAcctShortName, csBankAcctNum);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_upload: [error_file][%d][bank_acct_short_name bank_acct_num]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+			// bank_stmt_file_ext 
+			sprintf(csTmpBuf,"%s",csNewFileName);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_upload: [error_file][%d][bank_stmt_file_ext]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+				
+			// status
+			sprintf(csTmpBuf,"%c",cStatus);
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+DEBUGLOG(("process_upload: [error_file][%d][status]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+			// error_code 
+			sprintf(csTmpBuf,"%d",iMsgCode);
+                        fprintf(ferr,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+DEBUGLOG(("process_upload: [error_file][%d][error_code]=[%s][%d]\n", iRecCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+
+			fprintf(ferr,"\n");
+#endif
+		}
+		
+		iRecCnt++;
+
+                hUploadStmtRec = RecordSet_GetNext(rUploadBankStmt);
+	}	
+
+	FREE_ME(hRequest);
+        FREE_ME(hContext);
+        FREE_ME(hResponse);
+
+	return iRet;
+}
+
+
+int process_success_file(recordset_t *rSuccBankStmt,FILE *fsucc)
+{
+	int iRet = SUCCESS;
+
+	int iCnt = 0;
+	
+	char *csTmp = NULL;
+
+	hash_t *hSuccStmtRec = NULL;
+
+	hSuccStmtRec = RecordSet_GetFirst(rSuccBankStmt);
+        while ((iRet == SUCCESS) && (hSuccStmtRec)) {
+
+        	char csTmpBuf[PD_TMP_BUF_LEN + 1];
+
+		memset(csTmpBuf, 0, sizeof(csTmpBuf));
+
+/* acct_type */
+/*
+		if (GetField_CString(hSuccStmtRec,"acct_type",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][acct_type]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]acct_type is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: acct_type is missing!!\n");
+			iRet = FAILURE;
+               	}
+*/
+
+/* client_id */
+/*
+		if (GetField_CString(hSuccStmtRec,"client_id",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][client_id]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]client_id is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: client_id is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* client_name */
+/*
+                if (GetField_CString(hSuccStmtRec,"client_name",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][client_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]client_name is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: client_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_init */
+/*
+		if (GetField_CString(hSuccStmtRec,"bank_init",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][bank_init]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+		} else {
+DEBUGLOG(("process_success_file: [%d]bank_init is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: bank_init is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_acct_name */
+/*
+		if (GetField_CString(hSuccStmtRec,"bank_acct_name",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][bank_acct_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]bank_acct_name is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: bank_acct_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* last_6_bank_acct_num */
+/*
+		if (GetField_CString(hSuccStmtRec,"last_6_bank_acct_num",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][last_6_bank_acct_num]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]last_6_bank_acct_num is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: last_6_bank_acct_num is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+		
+/* datetime */
+/*
+		if (GetField_CString(hSuccStmtRec,"datetime",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][datetime]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]datetime is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: datetime is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* file_ext */
+/*
+		if (GetField_CString(hSuccStmtRec,"file_ext",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+		} else {
+DEBUGLOG(("process_success_file: [%d]file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_stmt_file */
+/*
+                if (GetField_CString(hSuccStmtRec,"bank_stmt_file",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][bank_stmt_file]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_success_file: [%d]bank_stmt_file is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: bank_stmt_file is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_stmt_file_ext */
+		if (GetField_CString(hSuccStmtRec,"bank_stmt_file_ext",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_success_file: [%d][bank_stmt_file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+                } else {
+DEBUGLOG(("process_success_file: [%d]bank_stmt_file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_success_file: bank_stmt_file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+		fprintf(fsucc,"\n");
+
+		iCnt++;
+
+		hSuccStmtRec = RecordSet_GetNext(rSuccBankStmt);
+	}
+
+	return iRet;
+}
+
+
+int process_unsuccess_file(recordset_t *rUnsuccBankStmt,FILE *fsucc)
+{
+	int iRet = SUCCESS;
+
+	int iCnt = 0;
+	
+	char *csTmp = NULL;
+
+	hash_t *hUnsuccStmtRec = NULL;
+
+	hUnsuccStmtRec = RecordSet_GetFirst(rUnsuccBankStmt);
+        while ((iRet == SUCCESS) && (hUnsuccStmtRec)) {
+
+        	char csTmpBuf[PD_TMP_BUF_LEN + 1];
+
+		memset(csTmpBuf, 0, sizeof(csTmpBuf));
+
+/* acct_type */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"acct_type",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][acct_type]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]acct_type is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: acct_type is missing!!\n");
+			iRet = FAILURE;
+               	}
+*/
+
+/* client_id */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"client_id",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][client_id]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]client_id is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: client_id is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* client_name */
+/*
+                if (GetField_CString(hUnsuccStmtRec,"client_name",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][client_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]client_name is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: client_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_init */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"bank_init",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][bank_init]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_UNSUCC_DELIMITOR);
+		} else {
+DEBUGLOG(("process_unsuccess_file: [%d]bank_init is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: bank_init is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_acct_name */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"bank_acct_name",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][bank_acct_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_UNSUCC_DELIMITOR);
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]bank_acct_name is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: bank_acct_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* last_6_bank_acct_num */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"last_6_bank_acct_num",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][last_6_bank_acct_num]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_UNSUCC_DELIMITOR);
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]last_6_bank_acct_num is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: last_6_bank_acct_num is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+		
+/* datetime */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"datetime",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+			sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][datetime]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_EXT_DELIMITOR);
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]datetime is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: datetime is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* system_datetime */
+/*
+                if (iRet == SUCCESS) {
+                        char csDateTime[PD_DATETIME_LEN + 1] = "";
+                        time_t  tNow = time(NULL);
+                        struct  tm tStruct = *localtime(&tNow);
+
+                        strftime(csDateTime, sizeof(csDateTime), PD_DEFAULT_DATETIME_FORMAT, &tStruct);
+                        sprintf(csTmpBuf,"%s",csDateTime);
+
+DEBUGLOG(("process_unsuccess_file: [%d][system_datetime]=[%s][%d]\n", csDateTime));
+                        fprintf(fsucc,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_UNSUCC_DELIMITOR);
+                }
+*/
+
+/* file_ext */
+/*
+		if (GetField_CString(hUnsuccStmtRec,"file_ext",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+		} else {
+DEBUGLOG(("process_unsuccess_file: [%d]file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_stmt_file */
+/*
+                if (GetField_CString(hUnsuccStmtRec,"bank_stmt_file",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][bank_stmt_file]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]bank_stmt_file is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: bank_stmt_file is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_stmt_file_ext */
+		if (GetField_CString(hUnsuccStmtRec,"bank_stmt_file_ext",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_unsuccess_file: [%d][bank_stmt_file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(fsucc,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+                } else {
+DEBUGLOG(("process_unsuccess_file: [%d]bank_stmt_file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_unsuccess_file: bank_stmt_file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+		fprintf(fsucc,"\n");
+
+		iCnt++;
+
+		hUnsuccStmtRec = RecordSet_GetNext(rUnsuccBankStmt);
+	}
+
+	return iRet;
+}
+
+
+int process_error_file(hash_t *hErrorStmtRec,FILE *ferr)
+{
+        int iRet = SUCCESS;
+
+        int iCnt = 0;
+	int iTmp = 0;
+	char cTmp;
+        char *csTmp = NULL;
+       	char csTmpBuf[PD_TMP_BUF_LEN + 1];
+
+	cTmp = ' ';
+
+      	memset(csTmpBuf, 0, sizeof(csTmpBuf));
+
+/* acct_type */
+/*
+     	if (GetField_CString(hErrorStmtRec,"acct_type",&csTmp)) {
+             	//sscanf(csTmpBuf,"%s",csTmp);
+             	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][acct_type]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+		fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+     	} else {
+DEBUGLOG(("prcoess_error_file: [%d]acct_type is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: prcoess_error_file: acct_type is missing!!\n");
+           	iRet = FAILURE;
+     	}
+*/
+
+/* client_id */
+/*
+      	if (GetField_CString(hErrorStmtRec,"client_id",&csTmp)) {
+           	//sscanf(csTmpBuf,"%s",csTmp);
+             	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][client_id]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+		fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+      	} else {
+DEBUGLOG(("process_error_file: [%d]client_id is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: client_id is missing!!\n");
+              	iRet = FAILURE;
+      	}
+*/
+
+/* client_name */
+   	if (GetField_CString(hErrorStmtRec,"client_name",&csTmp)) {
+             	//sscanf(csTmpBuf,"%s",csTmp);
+            	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][client_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+             	fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+    	} else {
+DEBUGLOG(("process_error_file: [%d]client_name is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: client_name is missing!!\n");
+              	iRet = FAILURE;
+     	}
+
+/* bank_name */
+	if (GetField_CString(hErrorStmtRec,"bank_name",&csTmp)) {
+		//sscanf(csTmpBuf,"%s",csTmp);
+              	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+             	fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+	} else {
+                fprintf(ferr," %s",PD_ERR_DELIMITOR);
+	}
+
+/* bank_acct_short_name */
+	if (GetField_CString(hErrorStmtRec,"bank_acct_short_name",&csTmp)) {
+           	//sscanf(csTmpBuf,"%s",csTmp);
+             	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_acct_short_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+              	fprintf(ferr,"%.*s ",(int)strlen(csTmpBuf),csTmpBuf);
+       	}		
+
+/* bank_acct_num */
+	if (GetField_CString(hErrorStmtRec,"bank_acct_num",&csTmp)) {
+             	//sscanf(csTmpBuf,"%s",csTmp);
+             	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_acct_num]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+           	fprintf(ferr,"(%.*s)%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+     	} else {
+		fprintf(ferr," %s",PD_ERR_DELIMITOR);
+       	}
+
+/* bank_stmt_file */
+/*
+     	if (GetField_CString(hErrorStmtRec,"bank_stmt_file",&csTmp)) {
+             	//sscanf(csTmpBuf,"%s",csTmp);
+               	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_stmt_file]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+             	fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_EXT_DELIMITOR);
+    	} else {
+DEBUGLOG(("process_error_file: [%d]bank_stmt_file is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: bank_stmt_file is missing!!\n");
+           	iRet = FAILURE;
+       	}
+*/
+
+/* file_ext */
+/*
+   	if (GetField_CString(hErrorStmtRec,"file_ext",&csTmp)) {
+            	//sscanf(csTmpBuf,"%s",csTmp);
+              	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+              	fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+     	} else {
+DEBUGLOG(("process_error_file: [%d]file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: file_ext is missing!!\n");
+             	iRet = FAILURE;
+     	}
+*/
+
+/* bank_stmt_file_ext */
+       	if (GetField_CString(hErrorStmtRec,"bank_stmt_file_ext",&csTmp)) {
+              	//sscanf(csTmpBuf,"%s",csTmp);
+             	sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_stmt_file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+		fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+	} else {
+DEBUGLOG(("process_error_file: [%d]bank_stmt_file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: bank_stmt_file_ext is missing!!\n");
+             	iRet = FAILURE;
+      	}
+
+/* status */
+	if (GetField_Char(hErrorStmtRec,"status",&cTmp)) {
+            	//sscanf(csTmpBuf,"%c",cTmp);
+              	sprintf(csTmpBuf,"%c",cTmp);
+DEBUGLOG(("process_error_file: [%d][status]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+		fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+       	} else {
+DEBUGLOG(("process_error_file: [%d]status is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: status is missing!!\n");
+              	iRet = FAILURE;
+      	}
+
+/* error_code */
+	if (GetField_Int(hErrorStmtRec,"error_code",&iTmp)) {
+                //sscanf(csTmpBuf,"%d",iTmp);
+               	sprintf(csTmpBuf,"%d",iTmp);
+DEBUGLOG(("process_error_file: [%d][error_code]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+               	fprintf(ferr,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+       	} else {
+DEBUGLOG(("process_error_file: [%d]error_code is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: error_code is missing!!\n");
+             	iRet = FAILURE;
+     	}
+
+	fprintf(ferr,"\n");
+
+        return iRet;
+}
+
+
+#if 0
+int process_error_file(recordset_t *rErrorBankStmt,FILE *ferr)
+{
+        int iRet = SUCCESS;
+
+        int iCnt = 0;
+	int iTmp = 0;
+
+	char cTmp;
+
+        char *csTmp = NULL;
+
+        hash_t *hErrorStmtRec = NULL;
+
+	cTmp = ' ';
+
+        hErrorStmtRec = RecordSet_GetFirst(rErrorBankStmt);
+        while ((iRet == SUCCESS) && (hErrorStmtRec)) {
+
+                char csTmpBuf[PD_TMP_BUF_LEN + 1];
+
+                memset(csTmpBuf, 0, sizeof(csTmpBuf));
+
+/* acct_type */
+/*
+                if (GetField_CString(hErrorStmtRec,"acct_type",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][acct_type]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+                } else {
+DEBUGLOG(("prcoess_error_file: [%d]acct_type is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: prcoess_error_file: acct_type is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* client_id */
+/*
+                if (GetField_CString(hErrorStmtRec,"client_id",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][client_id]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+                } else {
+DEBUGLOG(("process_error_file: [%d]client_id is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: client_id is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* client_name */
+                if (GetField_CString(hErrorStmtRec,"client_name",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][client_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+                } else {
+DEBUGLOG(("process_error_file: [%d]client_name is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: client_name is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* bank_name */
+		if (GetField_CString(hErrorStmtRec,"bank_name",&csTmp)) {
+			//sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+		} else {
+                	fprintf(ferr," %s",PD_ERR_DELIMITOR);
+		}
+
+/* bank_acct_short_name */
+		if (GetField_CString(hErrorStmtRec,"bank_acct_short_name",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_acct_short_name]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s ",(int)strlen(csTmpBuf),csTmpBuf);
+                }		
+
+/* bank_acct_num */
+		if (GetField_CString(hErrorStmtRec,"bank_acct_num",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_acct_num]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+                } else {
+			fprintf(ferr," %s",PD_ERR_DELIMITOR);
+                }
+
+/* bank_stmt_file */
+/*
+                if (GetField_CString(hErrorStmtRec,"bank_stmt_file",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_stmt_file]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_EXT_DELIMITOR);
+                } else {
+DEBUGLOG(("process_error_file: [%d]bank_stmt_file is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: bank_stmt_file is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* file_ext */
+/*
+                if (GetField_CString(hErrorStmtRec,"file_ext",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+                } else {
+DEBUGLOG(("process_error_file: [%d]file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }
+*/
+
+/* bank_stmt_file_ext */
+                if (GetField_CString(hErrorStmtRec,"bank_stmt_file_ext",&csTmp)) {
+                        //sscanf(csTmpBuf,"%s",csTmp);
+                        sprintf(csTmpBuf,"%s",csTmp);
+DEBUGLOG(("process_error_file: [%d][bank_stmt_file_ext]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+	        } else {
+DEBUGLOG(("process_error_file: [%d]bank_stmt_file_ext is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: bank_stmt_file_ext is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* status */
+		if (GetField_Char(hErrorStmtRec,"status",&cTmp)) {
+                        //sscanf(csTmpBuf,"%c",cTmp);
+                        sprintf(csTmpBuf,"%c",cTmp);
+DEBUGLOG(("process_error_file: [%d][status]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+			fprintf(ferr,"%.*s%s",(int)strlen(csTmpBuf),csTmpBuf,PD_ERR_DELIMITOR);
+                } else {
+DEBUGLOG(("process_error_file: [%d]status is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: status is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+/* error_code */
+		//if (GetField_Int(hErrorStmtRec,"internal_error",&iTmp)) {
+		if (GetField_Int(hErrorStmtRec,"error_code",&iTmp)) {
+                        //sscanf(csTmpBuf,"%d",iTmp);
+                        sprintf(csTmpBuf,"%d",iTmp);
+DEBUGLOG(("process_error_file: [%d][error_code]=[%s][%d]\n", iCnt, csTmpBuf, (int)strlen(csTmpBuf)));
+                        fprintf(ferr,"%.*s",(int)strlen(csTmpBuf),csTmpBuf);
+                } else {
+DEBUGLOG(("process_error_file: [%d]error_code is missing!!\n",iCnt));
+ERRLOG("upload_bank_stmt: process_error_file: error_code is missing!!\n");
+                        iRet = FAILURE;
+                }
+
+		fprintf(ferr,"\n");
+
+                iCnt++;
+
+                hErrorStmtRec = RecordSet_GetNext(rErrorBankStmt);
+        }
+
+        return iRet;
+}
+#endif

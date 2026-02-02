@@ -1,0 +1,606 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[28];
+};
+static struct sqlcxp sqlfpn =
+{
+    27,
+    "create_psp_bal_trf_adhoc.pc"
+};
+
+
+static unsigned int sqlctx = 1042335267;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+PDProTech (c)2021. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2021/03/01              [WMC]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_DATA_DELIMITOR              	","
+#define PD_MAX_FIELD			6
+
+#define IDX_PSP_ID                   	0
+#define IDX_TXN_COUNTRY              	1	
+#define IDX_TXN_CCY              	2
+#define IDX_TXN_AMOUNT               	3
+#define IDX_PAID_AMOUNT               	4
+#define IDX_SERVICE_FEE               	5
+
+char cs_input_file[PD_TMP_BUF_LEN + 1];
+
+static char cDebug = 'Y';
+
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+int parse_arg(int argc, char **argv);
+int process_main();
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+	int iDtlRet = PD_OK;
+
+//DEBUGLOG(("batch_proc()\n"));
+
+	iRet = parse_arg(argc, argv);
+	if (iRet != SUCCESS) {
+		printf("*usage: -f input_file\n");
+                return FAILURE;
+	}
+
+	iDtlRet = process_main();
+	if (iDtlRet != PD_OK) {
+		iRet = FAILURE;
+	}
+
+//DEBUGLOG(("batch_proc() iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc, char **argv)
+{
+	char    c;
+	strcpy(cs_input_file, "");
+
+        if (argc < 2) {
+DEBUGLOG(("argc = [%d]\n",argc));
+                return FAILURE;
+        }
+
+        while ((c = getopt(argc,argv,"f:")) != EOF) {
+                switch (c) {
+                        case 'f':
+                                strcpy(cs_input_file, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+	if (!strcmp(cs_input_file, ""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+int process_main()
+{
+	int iRet = PD_OK;
+	int iPspCnt = 0;
+        FILE *fproc;
+	char csPHDate[PD_DATETIME_LEN +1];
+        char cs_input_buf[PD_MAX_BUFFER + 1];
+
+DEBUGLOG(("process_main()\n"));
+
+	memset(csPHDate, 0, sizeof(csPHDate));
+	memset(cs_input_buf, 0, sizeof(cs_input_buf));
+
+	// Get System Control PHDate
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","FindCode");
+        if ((unsigned long)(*DBObjPtr)("CTPHDATE",csPHDate) != FOUND) {
+DEBUGLOG(("process_main: Call DBSystemControl: FindCode() No Record Found!!\n"));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBSystemControl: FindCode() No Record Found!!\n");
+                return PD_ERR;
+        }
+
+	fproc = fopen(cs_input_file, "r");
+        if (fproc == NULL) {
+DEBUGLOG(("process_main: Error opening file = [%s]\n", cs_input_file));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Error opening file = [%s]\n", cs_input_file);
+                return PD_ERR;
+        }
+
+        while ((iRet == PD_OK) && (fgets(cs_input_buf, PD_MAX_BUFFER, fproc) != NULL)) {
+DEBUGLOG(("++++++++++++++++++++++++++++++++++++++++++++++++++\n"));
+
+		int	iFieldCnt = 0;
+		int	iCnt = 0;
+
+		double	dTxnAmt = 0.0;
+		double	dPaidAmt = 0.0;
+		double	dNetAmt = 0.0;
+		double	dFee = 0.0;
+		double	dPtr = 0.0;
+
+		char    *p;
+		char	*csPtr = NULL;
+		char    csList[PD_MAX_FIELD][PD_TMP_BUF_LEN];
+		char    csTxnSeq[PD_TXN_SEQ_LEN + 1];
+
+		char 	*csPspId = (char*) malloc (PD_PSP_ID_LEN+1);
+		char 	*csTxnCountry = (char*) malloc (PD_COUNTRY_LEN+1);
+		char 	*csTxnCcy = (char*) malloc (PD_CCY_ID_LEN+1);
+
+		char    csTxnDateTime[PD_DATETIME_LEN+1];
+		char    csTmDate[PD_DATE_LEN+1];
+        	char    csTmTime[PD_TIME_LEN+1];
+
+		hash_t *hPspDetail;
+	        hPspDetail = (hash_t*) malloc (sizeof(hash_t));
+	        hash_init(hPspDetail, 0);
+
+	        hash_t *hPspBal;
+	        hPspBal = (hash_t*) malloc (sizeof(hash_t));
+	        hash_init(hPspBal, 0);
+
+	        hash_t *hTxn;
+	        hTxn = (hash_t*) malloc (sizeof(hash_t));
+	        hash_init(hTxn, 0);
+
+        	hash_t *hTxnElem;
+        	hTxnElem = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hTxnElem, 0);
+
+		memset(csTxnDateTime, 0, sizeof(csTxnDateTime));
+		memset(csTmDate, 0, sizeof(csTmDate));
+		memset(csTmTime, 0, sizeof(csTmTime));
+	
+		cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+		// Breakdown the data
+              	p = mystrtok(cs_input_buf,PD_DATA_DELIMITOR);
+             	if (p == NULL) {
+                   	iRet = PD_ERR;
+               	} else {
+                    	strcpy(csList[iFieldCnt],p);
+                    	iFieldCnt++;
+
+                      	while ((p = mystrtok(NULL,PD_DATA_DELIMITOR)) != NULL) {
+                       		if (iFieldCnt < PD_MAX_FIELD) {
+                                    	strcpy(csList[iFieldCnt],p);
+                                       	iFieldCnt++;
+                    		} else {
+                                      	iFieldCnt = PD_MAX_FIELD;
+                              	}
+                     	}
+           	}
+
+		for (iCnt=0;iCnt<iFieldCnt;iCnt++) {
+//DEBUGLOG(("process_main: [%d]csList[%d] = [%s]\n", iPspCnt, iCnt, csList[iCnt]));		
+
+			if (iCnt == IDX_PSP_ID) {
+				strcpy(csPspId,csList[IDX_PSP_ID]);
+DEBUGLOG(("process_main: [%d]psp_id = [%s]\n", iPspCnt, csPspId));
+			} else if (iCnt == IDX_TXN_COUNTRY) {
+                               strcpy(csTxnCountry,csList[IDX_TXN_COUNTRY]);
+DEBUGLOG(("process_main: [%d]txn_country = [%s]\n", iPspCnt, csTxnCountry));
+			} else if (iCnt == IDX_TXN_CCY) {
+                               strcpy(csTxnCcy,csList[IDX_TXN_CCY]);
+DEBUGLOG(("process_main: [%d]txn_ccy = [%s]\n", iPspCnt, csTxnCcy));
+			} else if (iCnt == IDX_TXN_AMOUNT) {
+				dTxnAmt = string2double((const unsigned char *)csList[IDX_TXN_AMOUNT]);
+DEBUGLOG(("process_main: [%d]txn_amt = [%lf]\n", iPspCnt, dTxnAmt));				
+			} else if (iCnt == IDX_PAID_AMOUNT) {
+				dPaidAmt = string2double((const unsigned char *)csList[IDX_PAID_AMOUNT]);
+DEBUGLOG(("process_main: [%d]paid_amt = [%lf]\n", iPspCnt, dPaidAmt));
+			} else if (iCnt == IDX_SERVICE_FEE) {
+                                dFee = string2double((const unsigned char *)csList[IDX_SERVICE_FEE]);
+DEBUGLOG(("process_main: [%d]service_fee = [%lf]\n", iPspCnt, dFee));
+			}
+
+			dNetAmt = dPaidAmt - dFee;
+		}
+
+		// Get Psp Detail
+		if (iRet == PD_OK) {
+DEBUGLOG(("process_main: [%d]Call DBPspDetail: GetPspDetail()\n", iPspCnt));
+                        DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetPspDetail");
+                       	if ((unsigned long)(*DBObjPtr)(csPspId, hPspDetail) != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call DBPspDetail: GetPspDetail() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBPspDetail: GetPspDetail() Failure!!\n");
+                                iRet = PD_ERR;
+                        } else {
+				if (!GetField_CString(hPspDetail,"status",&csPtr)) {
+DEBUGLOG(("process_main: [%d]Call DBPspDetail: GetPspDetail() No Record Found!!\n",iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBPspDetail: GetPspDetail() No Record Found!!\n");
+					iRet = PD_ERR;
+                                }	
+			}
+		}
+
+		// Generate Next Txn Seq
+		if (iRet == PD_OK) {
+                	DBObjPtr = CreateObj(DBPtr, "DBTxnSeq", "GetNextMgtTxnSeq");
+                	strcpy((char*)csTxnSeq, (*DBObjPtr)());
+DEBUGLOG(("process_main: [%d]Call DBTxnSeq: GetNextMgtTxnSeq() txn_seq = [%s]\n", iPspCnt, csTxnSeq));
+		}
+
+		// Add Txn Log
+		if (iRet == PD_OK) {
+
+			PutField_CString(hTxn, "txn_seq", csTxnSeq);
+			PutField_CString(hTxn, "channel_code", PD_CHANNEL_MGT);
+			PutField_Char(hTxn,"status",PD_PROCESSING);
+			PutField_CString(hTxn, "txn_code", PD_PSP_BAL_TRANSFER);
+			PutField_CString(hTxn,"process_code", PD_PROCESS_CODE_DEF);
+			PutField_CString(hTxn,"process_type", PD_PROCESS_TYPE_DEF);
+        	        PutField_CString(hTxn, "PHDATE", csPHDate);
+			
+			strcpy(csTxnDateTime,getdatetime());
+        	        PutField_CString(hTxn, "transmission_datetime", csTxnDateTime);
+			
+			sprintf(csTmDate,"%.*s",PD_DATE_LEN,csTxnDateTime);
+	                PutField_CString(hTxn,"local_tm_date",csTmDate);
+	                PutField_CString(hTxn,"tm_date",csTmDate);
+			PutField_CString(hTxn,"PHDATE",csPHDate);
+
+                	sprintf(csTmTime,"%.*s",PD_TIME_LEN,&csTxnDateTime[PD_DATE_LEN]);
+                	PutField_CString(hTxn,"local_tm_time",csTmTime);
+
+			PutField_CString(hTxn,"txn_country",csTxnCountry);	
+			PutField_CString(hTxn,"txn_ccy",csTxnCcy);
+			PutField_CString(hTxn,"net_ccy",csTxnCcy);
+			PutField_Double(hTxn, "txn_amt", dTxnAmt);
+			PutField_Double(hTxn, "net_amt", dNetAmt);	
+
+			PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+			PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+	
+			PutField_Int(hTxn,"do_logging",PD_TRUE);
+
+DEBUGLOG(("process_main: [%d]Call MGTChannel: AddTxnLog()\n", iPspCnt));
+	                ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+        	        iRet = (unsigned long)(*ChannelObjPtr)(hTxn,hTxn);
+                	if (iRet != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call MGTChannel: AddTxnLog() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call MGTChannel: AddTxnLog() Failure!!\n");
+                        	iRet = PD_ERR;
+                	}
+		}	
+
+		// Update Psp Balance "TransferPspBalance"
+		if (iRet == PD_OK) {
+
+			PutField_CString(hPspBal, "psp_id", csPspId);			
+			PutField_CString(hPspBal, "txn_country", csTxnCountry);			
+			PutField_CString(hPspBal, "txn_ccy", csTxnCcy);			
+			PutField_Double(hPspBal, "txn_amt", dPaidAmt);			
+			PutField_Double(hPspBal, "service_fee", dFee);			
+			PutField_Char(hPspBal,"transfer_from",PD_PSP_FLOAT);
+
+DEBUGLOG(("process_main: [%d]Call DBPspBalance: GetBalance()\n", iPspCnt));
+			DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+                	if ((unsigned long)(*DBObjPtr)(csPspId,csTxnCountry,csTxnCcy,hPspBal) != PD_OK){
+DEBUGLOG(("process_main: [%d]Call DBPspBalance: GetBalance() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBPspBalance: GetBalance() Failure!!\n");
+                                iRet = PD_ERR;			
+			} else {
+				if (GetField_Double(hPspBal,"balance",&dPtr)) {
+DEBUGLOG(("process_main: [%d]Call DBPspBalance: TransferPspBalance() psp_balance = [%lf]\n",iPspCnt,dPtr));
+                                }
+                                if (GetField_Double(hPspBal,"total_float",&dPtr)) {
+DEBUGLOG(("process_main: [%d]Call DBPspBalance: TransferPspBalance() psp_total_float = [%lf]\n",iPspCnt,dPtr));
+                                }
+                                if (GetField_Double(hPspBal,"total_hold",&dPtr)) {
+DEBUGLOG(("process_main: [%d]Call DBPspBalance: TransferPspBalance() psp_total_hold = [%lf]\n",iPspCnt,dPtr));
+                                }
+                	}
+			
+			if (iRet == PD_OK) {
+DEBUGLOG(("process_main: [%d]Call BOBalance: TransferPspBalance()\n", iPspCnt));
+				BOObjPtr = CreateObj(BOPtr,"BOBalance","TransferPspBalance");
+                        	if ((unsigned long) ((*BOObjPtr)(hPspBal,hPspBal)) != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call BOBalance: TransferPspBalance() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call BOBalance: TransferPspBalance() Failure!!\n");
+                        	        iRet = PD_ERR;
+                        	} else {
+					if (GetField_Double(hPspBal,"psp_balance",&dPtr)) {
+                                	        PutField_Double(hTxn,"bal",dPtr);
+DEBUGLOG(("process_main: [%d]Call BOBalance: TransferPspBalance() psp_balance = [%lf]\n",iPspCnt,dPtr));
+                                	}
+                                	if (GetField_Double(hPspBal,"psp_total_float",&dPtr)) {
+                                	        PutField_Double(hTxn,"total_float",dPtr);
+DEBUGLOG(("process_main: [%d]Call BOBalance: TransferPspBalance() psp_total_float = [%lf]\n",iPspCnt,dPtr));
+                                	}
+                                	if (GetField_Double(hPspBal,"psp_total_hold",&dPtr)) {
+                                	        PutField_Double(hTxn,"total_hold",dPtr);
+DEBUGLOG(("process_main: [%d]Call BOBalance: TransferPspBalance() psp_total_hold = [%lf]\n",iPspCnt,dPtr));
+                                	}
+				}
+			}
+		}
+
+		// Add Txn Psp Detail
+		if (iRet == PD_OK) {
+	
+			PutField_CString(hTxn, "psp_id", csPspId);	
+			PutField_CString(hTxn, "txn_ccy", csTxnCcy);
+			PutField_CString(hTxn, "txn_date", csPHDate);
+			PutField_CString(hTxn, "desc", "Psp Balance Transfer");
+
+DEBUGLOG(("process_main: [%d]Call DBTxnPspDetail: Add()\n", iPspCnt));
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Add");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                        if (iRet != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call DBTransaction: Add() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBTransaction: Add() Failure!!\n");
+                                iRet = PD_ERR;
+                        }			
+		}
+		
+		// Update Txn Psp Detail
+		if (iRet == PD_OK) {
+
+			PutField_Double(hTxn, "paid_amount", dPaidAmt);
+			PutField_Double(hTxn, "service_fee", dFee);
+
+DEBUGLOG(("process_main: [%d]Call DBTxnPspDetail: Update()\n", iPspCnt));
+                  	DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+                    	iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                     	if (iRet != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call DBTxnPspDetail: Update() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBTxnPspDetail: Update() Failure!!\n");
+                            	iRet = PD_ERR;
+                    	}
+		}
+
+		// Update Transaction Detail
+		if (iRet == PD_OK) {
+DEBUGLOG(("process_main: [%d]Call DBTransaction: UpdateDetail()\n", iPspCnt));
+                	DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                	iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                	if (iRet != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call DBTransaction: Update() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call DBTransaction: Update() Failure!!\n");
+                        	iRet = PD_ERR;
+               	 	}
+		}
+
+		// Add TxnElements
+		if (iRet == PD_OK) {
+			PutField_CString(hTxnElem,"from_txn_seq",csTxnSeq);
+			PutField_CString(hTxnElem,"org_txn_ccy",csTxnCcy);
+			PutField_Double(hTxnElem,"transfer_amt",dNetAmt);	
+			PutField_Char(hTxnElem,"transfer_amt",PD_TYPE_PSP);	
+
+DEBUGLOG(("process_main: [%d]Call BOTxnElements: Add()\n", iPspCnt));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTransferAmtElement");
+                	if ((unsigned long)(*BOObjPtr)(hTxnElem) != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call BOTxnElements: Add() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call BOTxnElements: Add() Failure!!\n");
+                        	iRet = PD_ERR;
+                	}
+		}
+
+		// Update Txn Log
+		if (iRet == PD_OK) {
+                        PutField_Char(hTxn,"status",PD_COMPLETE);
+			PutField_Char(hTxn,"ar_ind",PD_ACCEPT);
+			PutField_Int(hTxn,"internal_code",PD_OK);
+			PutField_CString(hTxn,"response_code","0");
+
+DEBUGLOG(("process_main: [%d]Call MGTChannel: UpdateTxnLog()\n", iPspCnt));
+                        ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnLog");
+                        iRet = (unsigned long)(*ChannelObjPtr)(hTxn,hTxn);
+                        if (iRet != PD_OK) {
+DEBUGLOG(("process_main: [%d]Call MGTChannel: UpdateTxnLog() Failure!!\n", iPspCnt));
+ERRLOG("create_psp_bal_trf_adhoc: process_main: Call MGTChannel: UpdateTxnLog() Failure!!\n");
+                                iRet = PD_ERR;
+                        }
+
+			PutField_Int(hTxn,"do_logging",PD_FALSE);
+		}
+
+		if (iRet == PD_OK) {
+			TxnCommit();
+		} else {
+			TxnAbort();
+		}
+
+		iPspCnt++;
+
+		RemoveField_Char(hTxn,"status");
+        	RemoveField_Char(hTxn,"ar_ind");
+		RemoveField_Int(hTxn,"internal_code");
+		RemoveField_Int(hTxn,"response_code");
+
+		FREE_ME(csPspId);
+		FREE_ME(csTxnCountry);
+		FREE_ME(csTxnCcy);
+
+		hash_destroy(hPspDetail);
+        	FREE_ME(hPspDetail);
+
+        	hash_destroy(hPspBal);
+        	FREE_ME(hPspBal);
+
+        	hash_destroy(hTxn);
+       	 	FREE_ME(hTxn);
+
+        	hash_destroy(hTxnElem);
+        	FREE_ME(hTxnElem);
+		
+DEBUGLOG(("--------------------------------------------------\n"));
+	}
+
+        fclose(fproc);
+
+DEBUGLOG(("process_main() iRet = [%d]\n", iRet));
+	return iRet;
+}
+

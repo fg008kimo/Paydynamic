@@ -1,0 +1,463 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/12/30              Dirk Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include <math.h>
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "batchcommon.h"
+#include "TxnSeq.h"
+#include "import_crr_ofl_mi_txn_data.h"
+#include "internal.h"
+
+char    cDebug;
+char    cs_inputfile[PD_MAX_FILE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+
+int 	parse_arg(int argc,char **argv);
+int	parse_file(FILE *fin);
+int	InsertTxnData(char csList[][IMPORT_FIELD_LEN]);
+int	DeleteRecordByDate(const char* csDate);
+
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 3) {
+        printf("usage:  -f inputfile -d Date\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        FILE    *fin;
+        int     iRet;
+        
+        iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS){
+		printf("usage:  -f inputfile -d Date\n");
+                return (iRet);
+	}
+
+        fin = fopen(cs_inputfile,"r");
+        
+        if (fin == NULL) {
+DEBUGLOG(("Error Opening file = [%s]\n",cs_inputfile));
+                return FAILURE;
+        }
+
+	iRet =  DeleteRecordByDate(cs_date);
+	if (iRet == SUCCESS) {
+        	iRet = parse_file(fin);
+	}
+        fclose(fin);
+
+        return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_inputfile,"");
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"f:d:")) != EOF) {
+                switch (c) {
+                        case 'f':
+                                strcpy(cs_inputfile, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_inputfile,"") || !strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+
+int     parse_file(FILE *fin)
+{
+        int     iRet = SUCCESS;
+        char    csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN];
+        char    cs_input_buf[PD_MAX_BUFFER +1];;
+        char*   p;
+        int     iCount;
+
+
+while (fgets(cs_input_buf,PD_MAX_BUFFER,fin) != NULL)
+        {
+                iCount = 0;
+                if ((cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) || (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D))
+                cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+DEBUGLOG(("*[%s]\n",cs_input_buf));
+                p = mystrtok(cs_input_buf,",");
+                if (p == NULL)  {
+                        return FAILURE;
+                }
+
+                if (strlen(p) > 0) {
+
+                        if(p[strlen(p) - 1] == 0x0D)
+                                p[strlen(p) - 1] = '\0';
+                        strcpy(csList[iCount],p);
+                }
+                else {
+                        csList[iCount][0] ='\0';
+                }
+                iCount++;
+
+                while ( (p = mystrtok(NULL,",")) != NULL) {
+                        if(p[strlen(p) - 1] == 0x0D)
+                                p[strlen(p) - 1] = '\0';
+                        strcpy(csList[iCount],p);
+                        iCount++;
+                }
+		
+		if (strcmp(cs_date,csList[IDX_APPROVAL_DATE])) {
+DEBUGLOG(("Parse file [%s] != record date [%s], now break....\n",cs_date,csList[IDX_APPROVAL_DATE]));
+			iRet = FAILURE;
+			break;
+		}
+
+		iRet = InsertTxnData(csList);
+
+                if (iRet != SUCCESS)
+                        break;
+
+        }
+
+DEBUGLOG(("Parsefile ret =[%d]\n",iRet));
+
+        return iRet;
+}
+
+
+int     InsertTxnData(char csList[][IMPORT_FIELD_LEN])
+{
+        int     iRet = SUCCESS;
+        double  dTmp;
+
+
+        EXEC SQL WHENEVER SQLERROR GOTO insert_txn_data_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                short           hv_return_value;
+
+		varchar		hv_txn_id[PD_TXN_ID_LEN];
+		varchar		hv_txn_code[PD_TXN_CODE_LEN];
+		varchar		hv_approval_date[PD_DATE_LEN];
+		varchar		hv_entity_id[CRR_MI_PARTY_ID_LEN];
+		varchar		hv_party_type[PD_MMS_ENTITY_TYPE_LEN];
+		varchar		hv_party_id[CRR_MI_PARTY_ID_LEN];
+		varchar		hv_txn_product[PD_PRODUCT_CODE_LEN];
+		varchar		hv_country[PD_COUNTRY_CODE_LEN];
+		varchar		hv_ccy[PD_CCY_ID_LEN];
+                double          hv_txn_amt;
+                varchar         hv_net_ccy[PD_CCY_ID_LEN];
+                double          hv_net_amt;
+                double          hv_intr_amt;
+                double          hv_ovpa_amt;
+                double          hv_udpa_amt;
+                varchar         hv_fee_ccy[PD_CCY_ID_LEN];
+                double          hv_fee_amt;
+                varchar         hv_create_user[PD_USER_LEN];
+
+                short           ind_txn_id = -1;
+                short           ind_txn_code = -1;
+                short           ind_approval_date = -1;
+                short           ind_entity_id = -1;
+                short           ind_party_type = -1;
+                short           ind_party_id = -1;
+                short           ind_txn_product = -1;
+                short           ind_country = -1;
+                short           ind_ccy = -1;
+                short           ind_txn_amt = -1;
+                short           ind_net_ccy = -1;
+                short           ind_net_amt = -1;
+                short           ind_intr_amt = -1;
+                short           ind_ovpa_amt = -1;
+                short           ind_udpa_amt = -1;
+                short           ind_fee_ccy = -1;
+                short           ind_fee_amt = -1;
+                short           ind_create_user = -1;
+
+        EXEC SQL END DECLARE SECTION;
+DEBUGLOG(("Insert txn data\n"));
+
+/* txn id */
+        if (strlen(csList[IDX_TXN_ID]) > 0 ) {
+                hv_txn_id.len = strlen(csList[IDX_TXN_ID]);
+                memcpy(hv_txn_id.arr,csList[IDX_TXN_ID],hv_txn_id.len);
+                ind_txn_id = 0;
+DEBUGLOG(("Insert Data txn_id = [%.*s]\n",hv_txn_id.len,hv_txn_id.arr));
+        }
+
+/* txn code */
+        if (strlen(csList[IDX_TXN_CODE]) > 0 ) {
+                hv_txn_code.len = strlen(csList[IDX_TXN_CODE]);
+                memcpy(hv_txn_code.arr,csList[IDX_TXN_CODE],hv_txn_code.len);
+                ind_txn_code = 0;
+DEBUGLOG(("Insert Data txn_code = [%.*s]\n",hv_txn_code.len,hv_txn_code.arr));
+        }
+
+/* approval_date */
+        if (strlen(csList[IDX_APPROVAL_DATE]) > 0 ) {
+                hv_approval_date.len = strlen(csList[IDX_APPROVAL_DATE]);
+                memcpy(hv_approval_date.arr,csList[IDX_APPROVAL_DATE],hv_approval_date.len);
+                ind_approval_date = 0;
+DEBUGLOG(("Insert Data approval_date = [%.*s]\n",hv_approval_date.len,hv_approval_date.arr));
+        }
+
+/* entity_id */
+        if (strlen(csList[IDX_ENTITY_ID]) > 0 ) {
+                hv_entity_id.len = strlen(csList[IDX_ENTITY_ID]);
+                memcpy(hv_entity_id.arr,csList[IDX_ENTITY_ID],hv_entity_id.len);
+                ind_entity_id = 0;
+DEBUGLOG(("Insert Data entity_id = [%.*s]\n",hv_entity_id.len,hv_entity_id.arr));
+        }
+
+/* party_type */
+        if (strlen(csList[IDX_PARTY_TYPE]) > 0 ) {
+                hv_party_type.len = strlen(csList[IDX_PARTY_TYPE]);
+                memcpy(hv_party_type.arr,csList[IDX_PARTY_TYPE],hv_party_type.len);
+                ind_party_type = 0;
+DEBUGLOG(("Insert Data party_type = [%.*s]\n",hv_party_type.len,hv_party_type.arr));
+        }
+
+/* party_id */
+        if (strlen(csList[IDX_PARTY_ID]) > 0 ) {
+                hv_party_id.len = strlen(csList[IDX_PARTY_ID]);
+                memcpy(hv_party_id.arr,csList[IDX_PARTY_ID],hv_party_id.len);
+                ind_party_id = 0;
+DEBUGLOG(("Insert Data party_id = [%.*s]\n",hv_party_id.len,hv_party_id.arr));
+        }
+
+/* txn_product */
+        if (strlen(csList[IDX_TXN_PRODUCT]) > 0 ) {
+                hv_txn_product.len = strlen(csList[IDX_TXN_PRODUCT]);
+                memcpy(hv_txn_product.arr,csList[IDX_TXN_PRODUCT],hv_txn_product.len);
+                ind_txn_product = 0;
+DEBUGLOG(("Insert Data txn_product = [%.*s]\n",hv_txn_product.len,hv_txn_product.arr));
+        }
+
+/* country */
+        if (strlen(csList[IDX_COUNTRY]) > 0 ) {
+                hv_country.len = strlen(csList[IDX_COUNTRY]);
+                memcpy(hv_country.arr,csList[IDX_COUNTRY],hv_country.len);
+                ind_country = 0;
+DEBUGLOG(("Insert Data country = [%.*s]\n",hv_country.len,hv_country.arr));
+        }
+
+
+/* ccy */
+        if (strlen(csList[IDX_CCY]) > 0 ) {
+                hv_ccy.len = strlen(csList[IDX_CCY]);
+                memcpy(hv_ccy.arr,csList[IDX_CCY],hv_ccy.len);
+                ind_ccy = 0;
+DEBUGLOG(("Insert Data ccy = [%.*s]\n",hv_ccy.len,hv_ccy.arr));
+        } else if (strlen(csList[IDX_NET_CCY]) > 0 ) {
+                hv_ccy.len = strlen(csList[IDX_NET_CCY]);
+                memcpy(hv_ccy.arr,csList[IDX_NET_CCY],hv_ccy.len);
+                ind_ccy = 0;
+DEBUGLOG(("Insert Data ccy = [%.*s]\n",hv_ccy.len,hv_ccy.arr));
+        }
+
+/* txn_amt */
+        if (strlen(csList[IDX_TXN_AMT]) > 0 ) {
+		dTmp = string2double(csList[IDX_TXN_AMT]);
+                hv_txn_amt = dTmp;
+DEBUGLOG(("Insert Data txn_amt = [%lf]\n",hv_txn_amt));
+        }
+	else 
+		hv_txn_amt = 0.0;
+        ind_txn_amt = 0;
+
+/* net_ccy */
+        if (strlen(csList[IDX_NET_CCY]) > 0 ) {
+                hv_net_ccy.len = strlen(csList[IDX_NET_CCY]);
+                memcpy(hv_net_ccy.arr,csList[IDX_NET_CCY],hv_net_ccy.len);
+                ind_net_ccy = 0;
+DEBUGLOG(("Insert Data net_ccy = [%.*s]\n",hv_net_ccy.len,hv_net_ccy.arr));
+        }
+
+/* net_amt */
+        if (strlen(csList[IDX_NET_AMT]) > 0 ) {
+		dTmp = string2double(csList[IDX_NET_AMT]);
+                hv_net_amt = dTmp;
+DEBUGLOG(("Insert Data net_amt = [%d]\n",hv_net_amt));
+        }
+	else
+		hv_net_amt = 0.0;
+        ind_net_amt = 0;
+
+/* intr_amt */
+        if (strlen(csList[IDX_INTR_AMT]) > 0 ) {
+		dTmp = string2double(csList[IDX_INTR_AMT]);
+                hv_intr_amt = dTmp;
+DEBUGLOG(("Insert Data intr_amt = [%d]\n",hv_intr_amt));
+        }
+	else 
+		hv_intr_amt = 0.0;
+        ind_intr_amt = 0;
+
+/* ovpa_amt */
+        if (strlen(csList[IDX_OVPA_AMT]) > 0 ) {
+		dTmp = string2double(csList[IDX_OVPA_AMT]);
+                hv_ovpa_amt = dTmp;
+DEBUGLOG(("Insert Data ovpa_amt = [%d]\n",hv_ovpa_amt));
+        }
+	else 
+		hv_ovpa_amt = 0.0;
+        ind_ovpa_amt = 0;
+
+/* udpa_amt */
+        if (strlen(csList[IDX_UDPA_AMT]) > 0 ) {
+		dTmp = string2double(csList[IDX_UDPA_AMT]);
+                hv_udpa_amt = dTmp;
+DEBUGLOG(("Insert Data udpa_amt = [%d]\n",hv_udpa_amt));
+        }
+	else 
+		hv_udpa_amt = 0.0;
+        ind_udpa_amt = 0;
+
+/* fee_ccy */
+        if (strlen(csList[IDX_FEE_CCY]) > 0 ) {
+                hv_fee_ccy.len = strlen(csList[IDX_FEE_CCY]);
+                memcpy(hv_fee_ccy.arr,csList[IDX_FEE_CCY],hv_fee_ccy.len);
+                ind_fee_ccy = 0;
+DEBUGLOG(("Insert Data fee_ccy = [%.*s]\n",hv_fee_ccy.len,hv_fee_ccy.arr));
+        }
+
+/* net_amt */
+        if (strlen(csList[IDX_FEE_AMT]) > 0 ) {
+		dTmp = string2double(csList[IDX_FEE_AMT]);
+                hv_fee_amt = dTmp;
+DEBUGLOG(("Insert Data fee_amt = [%d]\n",hv_fee_amt));
+        }
+	else
+		hv_fee_amt = 0.0;
+        ind_fee_amt = 0;
+
+/* create_user */
+        hv_create_user.len = strlen(PD_UPDATE_USER);
+	memcpy(hv_create_user.arr,PD_UPDATE_USER,hv_create_user.len);
+	ind_create_user = 0;
+
+	EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_crr_mi_txn_data_insert(
+                                        :hv_txn_id:ind_txn_id,
+                                        :hv_txn_code:ind_txn_code,
+                                        :hv_approval_date:ind_approval_date,
+                                        :hv_entity_id:ind_entity_id,
+                                        :hv_party_type:ind_party_type,
+                                        :hv_party_id:ind_party_id,
+                                        :hv_txn_product:ind_txn_product,
+                                        :hv_country:ind_country,
+                                        :hv_ccy:ind_ccy,
+                                        :hv_txn_amt:ind_txn_amt,
+                                        :hv_net_ccy:ind_net_ccy,
+                                        :hv_net_amt:ind_net_amt,
+                                        :hv_intr_amt:ind_intr_amt,
+                                        :hv_ovpa_amt:ind_ovpa_amt,
+                                        :hv_udpa_amt:ind_udpa_amt,
+                                        :hv_fee_ccy:ind_fee_ccy,
+                                        :hv_fee_amt:ind_fee_amt,
+                                        :hv_create_user:ind_create_user);
+
+                END;
+        END-EXEC;
+
+
+        if (hv_return_value == SP_OK) {
+                iRet = SUCCESS;
+        }
+        else {
+DEBUGLOG(("insert_txn_data_error code %d from sp\n", hv_return_value));
+                iRet = FAILURE;
+        }
+
+DEBUGLOG(("Insert Data iRet = [%d]\n",iRet));
+        return iRet;
+insert_txn_data_error:
+DEBUGLOG(("insert_txn_data_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+}
+
+int	DeleteRecordByDate(const char* csDate)
+{
+	char	*csBuf;
+	
+	EXEC SQL WHENEVER SQLERROR GOTO delete_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+        varchar         hv_dynstmt[PD_TMP_MSG_BUF_LEN];
+
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("DeleteRcordByDate: to Delete date [%s]\n",csDate));
+	csBuf = (char*) malloc (PD_TMP_BUF_LEN);
+
+/* delete txn data */
+        strcpy((char*)hv_dynstmt.arr,"delete from crr_mi_txn_data where ");
+
+        strcat((char*)hv_dynstmt.arr, "cmtd_approval_date = '");
+        strcat((char*)hv_dynstmt.arr, csDate);
+        strcat((char*)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("delete [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+	return SUCCESS;
+delete_error:
+DEBUGLOG(("delete_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+
+}

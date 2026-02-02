@@ -1,0 +1,102 @@
+CREATE OR REPLACE FUNCTION sp_ol_payout_gen_dt_insert(
+	in_file_id		ol_payout_generated_file_dt.ofd_file_id%type,
+	in_batch_id		ol_payout_generated_file_dt.ofd_batch_id%type,
+	in_seq_num		ol_payout_generated_file_dt.ofd_seq_num%type,
+	in_merchant_ref		ol_payout_generated_file_dt.ofd_merchant_ref%type,
+	in_country		ol_payout_generated_file_dt.ofd_country%type,
+	in_identity_id		ol_payout_generated_file_dt.ofd_identity_id%type,
+	in_account_num		ol_payout_generated_file_dt.ofd_account_num%type,
+	in_account_name		ol_payout_generated_file_dt.ofd_account_name%type,
+	in_bank_name		ol_payout_generated_file_dt.ofd_bank_name%type,
+	in_bank_code		ol_payout_generated_file_dt.ofd_bank_code%type,
+	in_branch		ol_payout_generated_file_dt.ofd_branch%type,
+	in_phone_num		ol_payout_generated_file_dt.ofd_phone_num%type,
+	in_province		ol_payout_generated_file_dt.ofd_province%type,
+	in_city			ol_payout_generated_file_dt.ofd_city%type,
+	in_payout_amount	ol_payout_generated_file_dt.ofd_payout_amount%type,
+	in_unique_amount	ol_payout_generated_file_dt.ofd_unique_amount%type,
+	in_request_amount	ol_payout_generated_file_dt.ofd_request_amount%type,
+	in_payout_currency	ol_payout_generated_file_dt.ofd_payout_currency%type,
+	in_request_currency	ol_payout_generated_file_dt.ofd_request_currency%type,
+	in_txn_id		ol_payout_generated_file_dt.ofd_txn_id%type,
+	in_upload_txn_id	ol_payout_generated_file_dt.ofd_upload_txn_id%type,
+	in_status		ol_payout_generated_file_dt.ofd_status%type,
+	in_add_user		ol_payout_generated_file_dt.ofd_create_user%type)
+  RETURN NUMBER IS
+
+BEGIN
+  INSERT INTO ol_payout_generated_file_dt(
+	ofd_file_id,
+	ofd_txn_id,
+	ofd_upload_txn_id,
+	ofd_batch_id,
+	ofd_seq_num,
+	ofd_merchant_ref,
+	ofd_country,
+	ofd_identity_id,
+	ofd_account_num,
+	ofd_account_name,
+	ofd_bank_name,
+	ofd_bank_code,
+	ofd_branch,
+	ofd_phone_num,
+	ofd_province,
+	ofd_city,
+	ofd_payout_amount,
+	ofd_unique_amount,
+	ofd_request_amount,
+	ofd_payout_currency,
+	ofd_request_currency,
+	ofd_status,
+	ofd_version_no,
+	ofd_create_user,
+	ofd_update_user,
+	ofd_create_timestamp,
+	ofd_update_timestamp
+	)
+
+  VALUES(
+	in_file_id,
+	in_txn_id,
+	in_upload_txn_id,
+	in_batch_id,
+	in_seq_num,
+	in_merchant_ref,
+	in_country,
+	in_identity_id,
+	in_account_num,
+	in_account_name,
+	in_bank_name,
+	in_bank_code,
+	in_branch,
+	in_phone_num,
+	in_province,
+	in_city,
+	in_payout_amount,
+	in_unique_amount,
+	in_request_amount,
+	in_payout_currency,
+	in_request_currency,
+	in_status,
+	(select sp_val
+		from system_parameter
+		where sp_code = 'OFL_TXN_VERSION_NO'
+	),
+	in_add_user,
+	in_add_user,
+	sysdate,
+	sysdate
+	);
+
+  IF SQL%ROWCOUNT = 0 THEN
+     RETURN 1;
+  ELSE
+     RETURN 0;
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+
+END sp_ol_payout_gen_dt_insert;
+/

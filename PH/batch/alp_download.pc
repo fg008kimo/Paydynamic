@@ -1,0 +1,261 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "alp_download.h"
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+char    cs_outputfile[PD_MAX_FILE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+char    cs_psp_id[PD_PSP_ID_LEN + 1];
+char    cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+int process_txn(const char* csDate, FILE *fp);
+int process_CURL(const char *csPspMerchId, const char *csDate, const char *csMac, FILE *fp);
+struct string
+{
+	char *ptr;
+	size_t len;
+};
+
+void init_string(struct string *s)
+{
+	s->len = 0;
+	s->ptr = malloc(s->len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "malloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	s->ptr[0] = '\0';
+}
+
+size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s)
+{
+	size_t new_len = s->len + size*nmemb;
+	s->ptr = realloc(s->ptr, new_len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "realloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	memcpy(s->ptr+s->len, ptr, size*nmemb);
+	s->ptr[new_len] = '\0';
+	s->len = new_len;
+
+	return size*nmemb;
+}
+
+int process_CURL(const char *csPspMerchId, const char *csDate, const char *csMac, FILE *fp)
+{
+	int	iRet=PD_OK;
+        CURL *curl;
+        //CURLcode res;
+	char csReq[REQ_STRING_LEN];
+	char csBuf[1024];
+	char	*csDomain;
+	hash_t	*hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBPspUrl","GetPspUrl");
+	if (!(*DBObjPtr)(cs_psp_id,hRec)) {
+		if (GetField_CString(hRec,"url",&csDomain)) {
+DEBUGLOG(("process_CURL: get psp_url = [%s]\n",csDomain));
+		}
+	}
+
+	FREE_ME(hRec);
+	/*testing*/
+        snprintf(csReq, REQ_STRING_LEN, "%s%s",REQ_DOMAIN,REQ_DETAIL);
+        //snprintf(csReq, REQ_STRING_LEN, "%s%s",csDomain,REQ_DETAIL);
+DEBUGLOG(("process_CURL: URL string [%s]\n",csReq));
+	sprintf(csBuf,"mchtCd=%s&settleDate=%s&signMsg=%s",csPspMerchId,csDate,csMac);
+DEBUGLOG(("process_CURL: post string [%s]\n",csBuf));
+
+	curl = curl_easy_init();
+        if(curl)
+        {
+                struct string sBuffer;
+                init_string(&sBuffer);
+
+                curl_easy_setopt(curl, CURLOPT_URL,csReq);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sBuffer);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+		curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS,csBuf);
+                iRet = curl_easy_perform(curl);
+DEBUGLOG(("Send DATA  Result = [%d]\n",iRet));
+                if (iRet == PD_OK) {
+DEBUGLOG(("Receive DATA= [%s]\n", sBuffer.ptr));
+			fprintf(fp,"%s",sBuffer.ptr);
+                }
+                curl_easy_cleanup(curl);
+
+		free(sBuffer.ptr);
+	}
+	else
+	{
+		DEBUGLOG(("Init CURL failed\n"));
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 3) {
+		printf("usage: -d Date -o Output File -p PspID\n");
+		return FAILURE;
+	}
+	else
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet;
+	FILE    *fp;
+	char	csDate[PD_DATE_LEN+3];
+
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage:  -o Output File -d Date -p PspID\n");
+		return (iRet);
+	}
+
+	fp = fopen(cs_outputfile,"w");
+	if (fp == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outputfile));
+		return FAILURE;
+	}
+
+	sprintf(csDate,"%.*s-%.*s-%.*s",PD_YYYY_LEN,cs_date,PD_MM_LEN,&cs_date[PD_YYYY_LEN],PD_DD_LEN,&cs_date[PD_YYYYMM_LEN]);
+
+	iRet = process_txn(csDate,fp);
+	fclose(fp);
+	return iRet;
+
+
+}
+
+int process_txn(const char* csDate, FILE *fp)
+{
+	int	iRet = PD_OK;
+	hash_t	*hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+	char	*csPspMerchId; 
+	char	*csKey;
+	char	*csData;
+	char    *csMac;
+	csMac = (char*) malloc (PD_TMP_MSG_BUF_LEN  +1);
+	csData= (char*) malloc (PD_VALUE_LEN  +1);
+
+	csData[0]='\0';
+DEBUGLOG(("process_txn\n"));
+	
+	DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetPspDetail");
+	if ((*DBObjPtr)(cs_psp_id,hRec) == PD_OK) {
+		if(GetField_CString(hRec,"psp_merchant_id",&csPspMerchId)){
+DEBUGLOG(("process_txn: get psp_merchant_id [%s]\n",csPspMerchId));
+			/*testing*/
+			strcpy(csPspMerchId,"100020091218001");
+			strcat(csData,(char*)csPspMerchId);
+		}
+	}
+	else{
+DEBUGLOG(("process_txn: get psp_merchant_id failed!!!\n"));
+		iRet =PD_ERR;
+	}
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBPspKeys","GetPspKey");
+		if (!(*DBObjPtr)(cs_psp_id,PD_PTK_KEY_NAME,rRecordSet)) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while(hRec){
+				if(GetField_CString(hRec,"key_value",&csKey)){
+DEBUGLOG(("process_txn: get psp_key [%s]\n",csKey));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("process_txn: get psp_key failed!!!\n"));
+			iRet =PD_ERR;
+		}
+	}
+
+	if(iRet==PD_OK){
+		strcat(csData,(char*)csDate);
+		BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateMD5Mac");
+		iRet = (unsigned long)(*BOObjPtr)((const unsigned char*)csKey,(const unsigned char*)csData,strlen(csData),(unsigned char*)csMac);
+	}
+
+	if(iRet==PD_OK){
+		iRet = process_CURL(csPspMerchId,csDate,csMac,fp);
+	}
+
+	FREE_ME(csData);
+	FREE_ME(csMac);
+	FREE_ME(hRec);
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_outputfile,"");
+        strcpy(cs_psp_id,"");
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"o:p:d:")) != EOF) {
+                switch (c) {
+                        case 'o':
+                                strcpy(cs_outputfile, optarg);
+                                break;
+                        case 'p':
+                                strcpy(cs_psp_id, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_outputfile,"") || !strcmp(cs_psp_id,"") || !strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}

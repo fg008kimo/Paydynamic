@@ -1,0 +1,1019 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 		Change Date             Change By
+-------------------------------                    		------------            --------------
+Init Version                                       		2013/09/09              Virginia Yun
+Add Sim Cards Mgt				   		2013/12/19		Stan Poon
+Amend for sys_switch_enabled                       		2014/01/17              Virginia Yun
+Amend for province                                 		2014/05/09              Virginia Yun
+Modify Sim Card Management			   		2014/09/01		Dirk Wong
+Add bank_acct_source				   		2015/01/28		Dirk Wong
+Check SimCard Status before associate		   		2015/02/04		Dirk Wong
+Add DBOLBankAccts(ChkDepositBankAcctsUnique)	   		2015/02/26		Elvis Wong
+Add DBOLBankAccts(ChkNotDepositBankAcctsUnique)
+Add sub_provider				   		2015/02/27		Dirk Wong
+Change DBOLBankAccts(ChkDepositBankAcctsUnique)	   		2015/02/27              Elvis Wong
+   to DBOLBankAccts(ChkNumOfDepositBankAccts)
+Change DBOLBankAccts(ChkNotDepositBankAcctsUnique)
+   to DBOLBankAccts(ChkNumOfNotDepositBankAccts)
+Add DBOLBankAccts(ChkBankAcctExists)
+Add DBOLBankAccts(GetLatestBankAcctsShortNameSeq)
+Add DBBankDesc(GetBankAbbrevName) 
+Add key_expired_datetime		  	   		2015/03/12              Elvis Wong
+Add init_provider_id                               		2018/12/07              Michael Chow     
+Add 
+   DBOLAutoUploadBankDetail(UpdateDisabled)	   		2019/03/05		Elvis Wong
+   DBOLAutoUploadAcctStatus(ChkBankAcctStatusSetEnable)
+   DBOLAutoUploadAcctStatus(ChkBankAcctStatusSetDisable)	
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsBKA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+#define DEPOSIT_BANK_ACCT_TYPE "DSI"
+#define PD_BANK_ACCTS_SHORT_NAME_PREFIX	"SYS"
+
+void TxnOmtByUsBKA(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		const hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	int	iTmp;
+	char	*csTmp = NULL;
+	int 	iTmpRet = PD_FOUND;
+//	int	iActive;
+	int	iUpdateMobileNum = 0;
+	int	iBankAcctShortNameSeq = 0;
+	int	iRenewBankAcct = PD_FALSE;
+
+	char	cAction;
+	int	iOnlyStatus = PD_FALSE;
+
+	char	*csIntBankCode = NULL;
+	char	*csBankAcctNum = NULL;
+	char	*csStatusType = NULL, *csOrgStatusType = NULL;
+	char	*csRegMobileNum = NULL, *csOrgMobileNum = NULL;
+	char	*csProviderID = NULL;
+        char    *csInitProviderID = NULL;
+	char	*csSubProvider = NULL;
+	char	*csBankAbbrevName = NULL;
+	//char	*csFullBankAcctNum = NULL;
+
+	char	*csAcctType = NULL, *csOrgAcctType = NULL;
+
+	char	csStatusGroup[PD_ACCT_STATUS_GROUP_LEN + 1];	
+	char	csOrgStatusGroup[PD_ACCT_STATUS_GROUP_LEN + 1];	
+	char	csBankAcctShortName[PD_BANK_ACCT_SHORT_NAME_LEN + 1];
+
+	hash_t *hBankAcct;
+	hBankAcct = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t *hBankAcctId;
+	hBankAcctId = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t	*hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	hash_t *hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	
+DEBUGLOG(("TxnOmtByUsBKA:: Authorize\n"));
+
+/* action */
+	if (GetField_CString(hRequest, "action", &csTmp)) {
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize:: action = [%c]\n", cAction));
+		// not support delete
+		if (cAction != PD_ACTION_ADD && cAction != PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize:: action [%d] not accepted!!\n", cAction));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: action not accepted!!\n");
+
+			iRet = INT_ACTION_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	} else {
+DEBUGLOG(("Authorize:: action not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: action not found!!\n");
+		iRet = INT_ACTION_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* bank code */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "int_bank_code", &csIntBankCode)) {
+			PutField_CString(hTxn, "bank_code", csIntBankCode);
+DEBUGLOG(("Authorize:: bank_code = [%s]\n", csIntBankCode));
+		} else {
+DEBUGLOG(("Authorize:: bank_code not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: bank_code not found!!\n");
+			iRet = INT_BANK_CODE_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* new acct num */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "new_acct_num", &csBankAcctNum)) {
+			PutField_CString(hTxn, "new_acct_num", csBankAcctNum);
+DEBUGLOG(("Authorize:: new_acct_num = [%s]\n", csBankAcctNum));
+		} else {
+DEBUGLOG(("Authorize:: new_acct_num not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: new_acct_num not found!!\n");
+			iRet = INT_BANK_AC_ID_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* user */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "add_user", &csTmp)) {
+DEBUGLOG(("Authorize:: user = [%s]\n", csTmp));
+			PutField_CString(hTxn, "create_user", csTmp);
+			PutField_CString(hTxn, "update_user", csTmp);
+		}
+	}
+
+/* name and short name */
+	if (iRet == PD_OK) {
+/*
+		if (GetField_CString(hRequest, "name", &csTmp)) {
+DEBUGLOG(("Authorize:: name = [%s]\n", csTmp));
+			PutField_CString(hTxn, "name", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: name not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: name not found!!\n");
+				iRet = INT_BANK_AC_NAME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+
+		if (GetField_CString(hRequest, "short_name", &csTmp)) {
+DEBUGLOG(("Authorize:: short_name = [%s]\n", csTmp));
+			PutField_CString(hTxn, "short_name", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: short_name not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: short_name not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+*/
+	
+		if (cAction == PD_ACTION_ADD) {
+			// Get Bank Acct Short Name Seq
+			iTmpRet = PD_OK;
+			hash_init(hRec, 0);
+DEBUGLOG(("Authorize::Call DBOLBankAccts:GetLatestBankAcctsShortNameSeq\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","GetLatestBankAcctsShortNameSeq");
+                       	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, hRec);
+                       	if (iTmpRet == PD_OK) {
+DEBUGLOG(("Authorize::DBOLBankAccts:GetLatestBankAcctsShortNameSeq Success\n"));
+
+				if (GetField_Int(hRec, "bank_acct_short_name_seq", &iBankAcctShortNameSeq)) {
+DEBUGLOG(("Authorize::DBOLBankAccts:GetLatestBankAcctsShortNameSeq bank_acct_short_name_seq = [%d]\n", iBankAcctShortNameSeq));
+                		} else {
+					iBankAcctShortNameSeq = 0;
+DEBUGLOG(("Authorize::DBOLBankAccts:GetLatestBankAcctsShortNameSeq bank_acct_short_name_seq = [%d]\n", iBankAcctShortNameSeq));
+				}
+                        	PutField_Int(hTxn, "short_name_seq", ++iBankAcctShortNameSeq);
+				
+                     	} else {
+DEBUGLOG(("Authorize::DBOLBankAccts:GetLatestBankAcctsShortNameSeq Fail\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:GetLatestBankAcctsShortNameSeq Fail!\n");
+                           	iRet = INT_ERR;
+                             	PutField_Int(hContext,"internal_error",iRet);
+                     	}		
+			hash_destroy(hRec);
+
+			// Get Bank Abbrev Name
+			if (iRet == PD_OK) {
+				iTmpRet = FOUND;
+ 				hash_init(hRec, 0);
+DEBUGLOG(("Authorize::Call BankDesc:GetBankAbbrevName\n"));
+                        	DBObjPtr = CreateObj(DBPtr,"DBBankDesc","GetBankAbbrevName");
+                        	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, hRec);
+                        	if (iTmpRet == FOUND) {
+DEBUGLOG(("Authorize::DBBankDesc:GetBankAbbrevName Success\n"));
+
+                                	if (GetField_CString(hRec, "bank_abbrev_name", &csBankAbbrevName)) {
+DEBUGLOG(("Authorize::DBBankDesc:GetBankAbbrevName bank_abbrev_name = [%s]\n", csBankAbbrevName));
+						
+						// Bank Acct Short Name
+                        			sprintf(csBankAcctShortName,"%s-%s-%05d",PD_BANK_ACCTS_SHORT_NAME_PREFIX,csBankAbbrevName,iBankAcctShortNameSeq);
+                 			} else {
+DEBUGLOG(("Authorize::DBBankDesc:GetBankAbbrevName bank_abbrev_name = [NULL]\n"));
+
+						// Bank Acct Short Name
+						sprintf(csBankAcctShortName,"%s-%05d",PD_BANK_ACCTS_SHORT_NAME_PREFIX,iBankAcctShortNameSeq);
+					}
+
+					PutField_CString(hTxn, "name", csBankAcctShortName);
+DEBUGLOG(("Authorize::DBBankDesc:GetBankAbbrevName name = [%s]\n", csBankAcctShortName));
+
+					PutField_CString(hTxn, "short_name", csBankAcctShortName);
+DEBUGLOG(("Authorize::DBBankDesc:GetBankAbbrevName short_name = [%s]\n", csBankAcctShortName));
+
+                        	} else {
+DEBUGLOG(("Authorize::DBBankDesc:GetBankAbbrevName Fail\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBBankDesc:GetBankAbbrevName Fail!\n");
+                                	iRet = INT_ERR;
+                                	PutField_Int(hContext,"internal_error",iRet);
+                        	}
+				hash_destroy(hRec);
+			}
+		} else if (cAction == PD_ACTION_UPDATE) {
+                	if (GetField_CString(hRequest, "short_name", &csTmp)) {
+                        	PutField_CString(hTxn, "name", csTmp);
+DEBUGLOG(("Authorize:: name = [%s]\n", csTmp));
+                        	PutField_CString(hTxn, "short_name", csTmp);
+DEBUGLOG(("Authorize:: short_name = [%s]\n", csTmp));
+                	}
+		}
+	}
+
+/* ccy */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "txn_ccy", &csTmp)) {
+DEBUGLOG(("Authorize:: ccy = [%s]\n", csTmp));
+			PutField_CString(hTxn, "ccy", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: ccy not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: ccy not found!!\n");
+				iRet = INT_CURRENCY_CODE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* share */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "share", &csTmp)) {
+			iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize:: share = [%d]\n", iTmp));
+			PutField_Int(hTxn, "share", iTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: share not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: share not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* key expired datetime */
+        if (iRet == PD_OK) {
+                if (GetField_CString(hRequest, "key_expired_datetime", &csTmp)) {
+DEBUGLOG(("Authorize:: ket_expired_datetime = [%s]\n", csTmp));
+                        PutField_CString(hTxn, "key_expired_datetime", csTmp);
+                } else {
+/*
+                        if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: key_expired_datetime not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: key_expired_datetime not found!!\n");
+                                iRet = INT_ERR;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+*/
+                }
+        }
+
+/* rec datetime */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "rec_datetime", &csTmp)) {
+DEBUGLOG(("Authorize:: rec_datetime = [%s]\n", csTmp));
+			PutField_CString(hTxn, "rec_datetime", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: rec_datetime not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: rec_datetime not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* rec by */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "rec_by", &csTmp)) {
+DEBUGLOG(("Authorize:: rec_by = [%s]\n", csTmp));
+			PutField_CString(hTxn, "rec_by", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: rec_by not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: rec_by not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* support sms stmt */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "sms_stmt", &csTmp)) {
+			iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize:: support_sms_stmt = [%d]\n", iTmp));
+			PutField_Int(hTxn, "support_sms_stmt", iTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: support_sms_stmt not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: support_sms_stmt not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+
+/* reg mob num */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "reg_mob_num", &csRegMobileNum)) {
+DEBUGLOG(("Authorize:: reg_mob_num = [%s]\n", csRegMobileNum));
+			PutField_CString(hTxn, "reg_mob_num", csRegMobileNum);
+		}
+	}
+
+/* status type */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "status_type", &csStatusType)) {
+DEBUGLOG(("Authorize:: status_type = [%s]\n", csStatusType));
+			PutField_CString(hTxn, "status_type", csStatusType);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: status_type not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: status_type not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+/* init provider id */
+        if (iRet == PD_OK) {
+                if (GetField_CString(hRequest, "init_provider_id", &csInitProviderID)) {
+DEBUGLOG(("Authorize:: init_provider_id = [%s]\n", csInitProviderID));
+                        PutField_CString(hTxn, "init_provider_id", csInitProviderID);
+                }
+        } 
+
+/* prov id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "prov_id", &csProviderID)) {
+DEBUGLOG(("Authorize:: prov_id = [%s]\n", csProviderID));
+			PutField_CString(hTxn, "prov_id", csProviderID);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: prov_id not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: prov_id not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* sub_provider */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "sub_provider", &csSubProvider)) {
+DEBUGLOG(("Authorize:: sub_provider = [%s]\n", csSubProvider));
+			PutField_CString(hTxn, "sub_provider", csSubProvider);
+		}
+	}
+
+/* owner id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "owner_id", &csTmp)) {
+DEBUGLOG(("Authorize:: owner_id = [%s]\n", csTmp));
+			PutField_CString(hTxn, "owner_id", csTmp);
+		}
+	}
+
+/* owner */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "owner", &csTmp)) {
+DEBUGLOG(("Authorize:: owner = [%s]\n", csTmp));
+			PutField_CString(hTxn, "owner", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: owner not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: owner not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* branch code */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "branch_code", &csTmp)) {
+DEBUGLOG(("Authorize:: branch_code = [%s]\n", csTmp));
+			PutField_CString(hTxn, "branch_code", csTmp);
+		}
+	}
+
+/* branch */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "branch", &csTmp)) {
+DEBUGLOG(("Authorize:: branch = [%s]\n", csTmp));
+			PutField_CString(hTxn, "branch", csTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: branch not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: branch not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* swift code */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "swift_code", &csTmp)) {
+DEBUGLOG(("Authorize:: swift_code = [%s]\n", csTmp));
+			PutField_CString(hTxn, "swift_code", csTmp);
+		}
+	}
+
+/* city */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "city", &csTmp)) {
+DEBUGLOG(("Authorize:: city = [%s]\n", csTmp));
+			PutField_CString(hTxn, "city", csTmp);
+		}
+	}
+
+/* province */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "province", &csTmp)) {
+DEBUGLOG(("Authorize:: province = [%s]\n", csTmp));
+			PutField_CString(hTxn, "province", csTmp);
+		}
+	}
+
+/* remark */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "remark", &csTmp)) {
+DEBUGLOG(("Authorize:: remark = [%s]\n", csTmp));
+			PutField_CString(hTxn, "remark", csTmp);
+		}
+	}
+
+/* sys switch */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "sys_switch", &csTmp)) {
+			iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize:: sys_switch = [%d]\n", iTmp));
+			PutField_Int(hTxn, "sys_switch_enabled", iTmp);
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: sys_switch_enabled not found!!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: sys_switch_enabled not found!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* bank_acct_source */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "bank_acct_source", &csTmp)) {
+DEBUGLOG(("Authorize:: bank_acct_source = [%s]\n", csTmp));
+			PutField_CString(hTxn, "bank_acct_source", csTmp);
+		}
+	}
+
+/* acct_type */
+	if (iRet == PD_OK) {
+		iTmpRet = PD_NOT_FOUND;
+	
+		hash_init(hRec, 0);
+
+		if (GetField_CString(hRequest, "acct_type", &csAcctType)) {
+DEBUGLOG(("Authorize:: acct_type = [%s]\n", csAcctType));
+                        PutField_CString(hTxn, "acct_type", csAcctType);
+		} else {
+DEBUGLOG(("Authorize:: acct_type = [NULL]\n"));		
+		}
+		
+		if ((csAcctType != NULL) && (!strcmp(csAcctType, DEPOSIT_BANK_ACCT_TYPE))) {
+			// Check Unique Last 4 Digit By Bank
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize::Call DBOLBankAccts:ChkNumOfDepositBankAccts\n"));
+                               	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","ChkNumOfDepositBankAccts");
+                           	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+                            	if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts NOT FOUND, OK for Add!\n"));
+
+DEBUGLOG(("Authorize::call DBOLBankAccts:ChkBankAcctExists()\n"));
+                                        DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "ChkBankAcctExists");
+                                        iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+                                        if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkBankAcctExists() NOT FOUND\n"));
+					} else if (iTmpRet == 1) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkBankAcctExists() Exists\n"));
+						iRenewBankAcct = PD_TRUE;
+                                               	cAction = PD_ACTION_UPDATE;
+					} else {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkBankAcctExists() Duplicated\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkBankAcctExists DUPLICATED!\n");
+						iRet = INT_BANK_ACCT_DUPLICATE;
+                                               	PutField_Int(hContext,"internal_error",iRet);
+					}
+				 } else {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts DUPLICATED\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts DUPLICATED!\n");
+                                     	iRet = INT_BANK_ACCT_DUPLICATE;
+                                    	PutField_Int(hContext,"internal_error",iRet);
+                            	}
+			} else if (cAction == PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize::Call DBOLBankAccts:ChkNumOfDepositBankAccts\n"));
+                            	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","ChkNumOfDepositBankAccts");
+                              	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+				if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts NOT FOUND\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts NOT FOUND!\n");
+                                        iRet = INT_BANK_ACCT_NOT_FOUND;
+                                        PutField_Int(hContext,"internal_error",iRet);
+				} else if (iTmpRet == 1) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts NOT DUPLICATE, OK for Update!\n"));
+                            	} else {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts DUPLICATED\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkNumOfDepositBankAccts DUPLICATED!\n");
+                                      	iRet = INT_BANK_ACCT_DUPLICATE;
+                                     	PutField_Int(hContext,"internal_error",iRet);
+                            	}
+			} 
+		} else {
+			// Check Unique All Digit By Bank
+			if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize::Call DBOLBankAccts:ChkNumOfNotDepositBankAccts\n"));
+                            	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","ChkNumOfNotDepositBankAccts");
+                            	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+                             	if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts NOT FOUND, OK for Add!\n"));
+
+DEBUGLOG(("Authorize::call DBOLBankAccts:ChkBankAcctExists()\n"));
+                                        DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "ChkBankAcctExists");
+                                        iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+                                        if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkBankAcctExists() NOT FOUND\n"));
+                                        } else if (iTmpRet == 1) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkBankAcctExists() Exists\n"));
+						// Set Nil to acct_type
+                                             	if (csAcctType == NULL) {
+                                               		PutField_CString(hTxn, "acct_type", "NIL");
+                                               	}
+						iRenewBankAcct = PD_TRUE;
+                                               	cAction = PD_ACTION_UPDATE;
+                                        } else {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkBankAcctExists() Duplicated\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkBankAcctExists DUPLICATED!\n");
+                                                iRet = INT_BANK_ACCT_DUPLICATE;
+                                                PutField_Int(hContext,"internal_error",iRet);
+                                        }
+                          	} else {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts DUPLICATED\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAcctsDUPLICATED!\n");
+                                      	iRet = INT_BANK_ACCT_DUPLICATE;
+                                    	PutField_Int(hContext,"internal_error",iRet);
+                           	}
+                        } else if (cAction == PD_ACTION_UPDATE) {
+				// Set Nil to acct_type
+				if (csAcctType == NULL) {
+                                	PutField_CString(hTxn, "acct_type", "NIL");
+                        	}
+
+DEBUGLOG(("Authorize::Call DBOLBankAccts:ChkNumOfNotDepositBankAccts\n"));
+                             	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","ChkNumOfNotDepositBankAccts");
+                             	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+                             	if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts NOT FOUND\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts NOT FOUND!\n");
+                                       	iRet = INT_BANK_ACCT_NOT_FOUND;
+                                      	PutField_Int(hContext,"internal_error",iRet);
+                              	} else if (iTmpRet == 1) {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts NOT DUPLICATE, OK for Update!\n"));
+                               	} else {
+DEBUGLOG(("Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts DUPLICATED\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBOLBankAccts:ChkNumOfNotDepositBankAccts DUPLICATED!\n");
+                                       	iRet = INT_BANK_ACCT_DUPLICATE;
+                                       	PutField_Int(hContext,"internal_error",iRet);
+                             	}
+                        }
+		}
+	
+		hash_destroy(hRec);
+	}
+
+/* if Update, and existing status is Frozen, and new status is not frozen, only update status */
+/* if Update, and existing status is Frozen, and new status is frozen, return error */
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_UPDATE) {
+			hash_init(hBankAcct, 0);
+
+                        DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","GetBankAccts");
+                        if ((*DBObjPtr)(csIntBankCode, csBankAcctNum, hBankAcct) != PD_OK) {
+ERRLOG("TxnOmtByUsBKA:: Authorize:: DBOLBankAccts:GetBankAccts Failed\n");
+DEBUGLOG(("Authorize:DBOLBankAccts: GetBankAccts Failed\n"));
+                                iRet = PD_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+                        } else {
+
+				if (GetField_CString(hBankAcct, "status_type", &csOrgStatusType)) {
+
+DEBUGLOG(("Authorize:: Org Status Type [%s]\n", csOrgStatusType));
+
+					memset(csStatusGroup, 0, sizeof(csStatusGroup));
+					memset(csOrgStatusGroup, 0, sizeof(csOrgStatusGroup));
+
+
+
+					/* ?? Keep??
+					DBObjPtr = CreateObj(DBPtr,"DBOLDefAcctStatus","GetStatusGroup");
+					if ((*DBObjPtr)(csStatusType, &csStatusGroup) == PD_OK) {
+DEBUGLOG(("Authorize::OLDefAcctStatus: GetStatusGroup status [%s] group [%s]\n", csStatusType, csStatusGroup));
+					} else {
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::OLDefAcctStatus: GetStatusGroup Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: OLDefAcctStatus:GetStatusGroup\n");
+					}
+
+					if (iRet == PD_OK) {
+						DBObjPtr = CreateObj(DBPtr,"DBOLDefAcctStatus","GetStatusGroup");
+						if ((*DBObjPtr)(csOrgStatusType, &csOrgStatusGroup) == PD_OK) {
+DEBUGLOG(("Authorize::OLDefAcctStatus: (org) GetStatusGroup status [%s] group [%s]\n", csOrgStatusType, csOrgStatusGroup));
+						} else {
+							iRet = INT_ERR;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::OLDefAcctStatus: (Org) GetStatusGroup Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: OLDefAcctStatus: (Org)GetStatusGroup\n");
+						}
+					}
+
+					if (iRet == PD_OK) {
+						if (!strcmp(csOrgStatusGroup, PD_BANKACCT_GROUP_FROZEN)) {
+							if (!strcmp(csStatusGroup, PD_BANKACCT_GROUP_FROZEN)) {
+								// org = FROZEN, new = FROZEN 
+								if (!strcmp(csStatusType, csOrgStatusType)) {
+									iRet = INT_ALREADY_FROZEN_STATUS;
+									PutField_Int(hContext,"internal_error",iRet);
+								} else {
+									iOnlyStatus = PD_TRUE;
+								}
+							} else {
+								// org = FROZEN, new != FROZEN -> only update status!!
+								iOnlyStatus = PD_TRUE;
+							}
+						}
+					}
+					*/
+					
+
+					/*
+					if (!strcmp(csOrgStatusType, PD_BANK_ACCT_STATUS_FROZEN)) {
+						if (!strcmp(csStatusType, PD_BANK_ACCT_STATUS_FROZEN)) {
+							// error
+							iRet = INT_ALREADY_FROZEN_STATUS;
+							PutField_Int(hContext,"internal_error",iRet);
+						} else {
+							// only update Status!!
+							iOnlyStatus = PD_TRUE;
+						}
+					}
+					*/
+				}
+
+				if (iRet == PD_OK) {
+					if (GetField_CString(hBankAcct, "reg_mob_num", &csOrgMobileNum)) {
+						if (csRegMobileNum != NULL) {
+							if (strcmp(csOrgMobileNum,csRegMobileNum)) {
+								iUpdateMobileNum = 1;
+							}
+						} else {
+							iUpdateMobileNum = 1;
+						}
+					}
+				}
+
+
+
+				if (iRet == PD_OK) {
+					/* Check Acct Type */
+					hash_init(hBankAcctId, 0);
+					DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetDtlByBankAcct");
+					if ((*DBObjPtr)(csIntBankCode, csBankAcctNum, hBankAcctId) == PD_OK) {
+						// Already map with BAID
+						if (iRenewBankAcct == PD_TRUE) {
+							iRet = INT_EXISTING_ASSOCIATED_BAID_OPEN;
+                                               		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: existing associated BAID open, not allow to process!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: existing associated BAID open, not allow to process!\n");
+						} else {
+							if (GetField_CString(hBankAcct, "acct_type", &csOrgAcctType)) {
+DEBUGLOG(("Authorize:: Org Acct Type [%s]\n", csOrgAcctType));
+							} else {
+DEBUGLOG(("Authorize:: Org Acct Type [NULL]\n"));
+							}
+							
+							if (csAcctType != NULL && csOrgAcctType != NULL) {
+								if (strcmp(csAcctType, csOrgAcctType)) {
+									iRet = INT_BANK_ACCT_NATURE_NOT_MATCH;
+                                                                	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: bank account nature not match to associated BAID nature, not allow to process!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: bank account nature not match to associated BAID nature, not allow to process!\n");
+                                                                }
+							} else {
+								if ((csAcctType == NULL && csOrgAcctType != NULL) ||
+								    (csAcctType != NULL && csOrgAcctType == NULL)) 
+								{
+									iRet = INT_BANK_ACCT_NATURE_NOT_MATCH;
+                                                                	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: bank account nature not match to associated BAID nature, not allow to process!\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: bank account nature not match to associated BAID nature, not allow to process!\n");
+								}
+							}
+						}
+					}
+					hash_destroy(hBankAcctId);
+				}
+
+
+			}
+		
+			hash_destroy(hBankAcct);
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if ((csIntBankCode != NULL) && (csBankAcctNum != NULL) && (csRegMobileNum != NULL)) {
+
+// Check mobile status
+DEBUGLOG(("Authorize:: Call DBOLSimCards:GetSimCardStatus [%s]\n",csRegMobileNum));
+			char	cMobileStatus;
+			DBObjPtr = CreateObj(DBPtr,"DBOLSimCards","GetSimCardStatus");
+			iRet = (unsigned long)((*DBObjPtr)(csRegMobileNum,&cMobileStatus));
+			if (iRet == PD_OK) {
+				if (cMobileStatus == PD_MOBILE_STATUS_NEW) {
+DEBUGLOG(("Authorize:: ERR! mobile status is NEW, not allow associate!\n"));
+ERRLOG("TxnOmtByUsSCU:: Authorize:: mobile status is NEW, not allow associate!\n");
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+				}
+			} else {
+DEBUGLOG(("Authorize:: Call DBOLSimCards::GetSimCardStatus Error!\n"));
+ERRLOG("TxnOmtByUsSCU:: Authorize:: Call DBOLSimCards::GetSimCardStatus Error!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+// Check Mobile Number if already exists 
+DEBUGLOG(("Authorize:: Call DBOLBankAccts:ChkMobileNumByBank\n"));
+			iTmpRet = PD_FOUND;
+
+                        DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","ChkMobileNumByBank");
+                        iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, csRegMobileNum);
+                        if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize:: DBOLBankAccts:ChkMobileNumByBank NOT FOUND, OK to Add or Update\n")); 
+                        } else {
+DEBUGLOG(("Authorize:: DBOLBankAccts:ChkMobileNumByBank FOUND\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize:: DBOLBankAccts:ChkMobileNumByBank FOUND!\n");
+				iRet = INT_MOBILE_NUM_DUPLICATE;
+				PutField_Int(hContext,"internal_error",iRet);
+                        }
+		}
+	}
+
+/* povider_id should be Offline or All */
+	if (iRet == PD_OK) {
+		if (csProviderID != NULL) {
+			hash_init(hBankAcct, 0);
+
+DEBUGLOG(("Authorize::Call DBPspMaster:GetPspMasterMode provider_id [%s]\n", csProviderID));
+
+			DBObjPtr = CreateObj(DBPtr,"DBPspMaster","GetPspMasterMode");
+
+			iTmpRet = PD_FOUND;
+			if ((unsigned long)(DBObjPtr)(csProviderID, hBankAcct) == PD_OK) {
+				if (GetField_CString(hBankAcct, "mode_type", &csTmp)) {
+DEBUGLOG(("Authorize::DBPspMaster: GetPspMasterMode mode_type [%s]\n", csTmp));
+					if (strcmp(csTmp, PD_PSP_MASTER_MODE_OFFLINE) &&
+					    strcmp(csTmp, PD_PSP_MASTER_MODE_ALL)) {
+DEBUGLOG(("Authorize::Call DBPspMaster:GetPspMasterMode NOT CORRECT\n"));
+						iTmpRet = PD_NOT_FOUND;
+					}
+				} else {
+DEBUGLOG(("Authorize::DBPspMaster: GetPspMasterMode mode_type NOT FOUND\n")); 
+					iTmpRet = PD_NOT_FOUND;
+				}
+			} else {
+DEBUGLOG(("Authorize::DBPspMaster: GetPspMasterMode NOT_FOUND\n")); 
+				iTmpRet = PD_NOT_FOUND;
+			}
+
+			if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize::DBPspMaster:GetPspMasterMode NOT FOUND\n"));
+ERRLOG("TxnOmtByUsBKA::Authorize::DBPspMaster:GetPspMasterMode NOT FOUND!\n");
+				iRet = INT_CLIENT_ID_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			hash_destroy(hBankAcct);
+		}
+	}
+
+
+/* OLSimCards */
+/*
+	if (iRet == PD_OK) {
+		if (csOrgMobileNum != NULL && iUpdateMobileNum == 1) {
+DEBUGLOG(("Authorize:: CDEBUGLOG(("Authorize:: Call DBOLBankAccts:ChkMobileNum [%s]\n",csOrgMobileNum));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "ChkMobileNum");
+			if ((unsigned long)(*DBObjPtr)(csOrgMobileNum,csBankAcctNum) == FOUND) {
+DEBUGLOG(("Authorize:: DBOLBankAccts:ChkMobileNum [%s] FOUND\n",csOrgMobileNum));
+				iActive = 1;
+			} else {
+DEBUGLOG(("Authorize:: DBOLBankAccts:ChkMobileNum [%s] NOT FOUND\n",csOrgMobileNum));
+				iActive = 0;
+			}
+
+DEBUGLOG(("Authorize:: Call DBOLSimCards:AddOrUpdate org[%s]\n",csOrgMobileNum));
+			PutField_CString(hTxn,"mob_num",csOrgMobileNum);
+			PutField_Int(hTxn,"active",iActive);
+			DBObjPtr = CreateObj(DBPtr, "DBOLSimCards", "AddOrUpdate");
+			if ((unsigned long)(*DBObjPtr)(hTxn) != PD_OK) {
+DEBUGLOG(("Authorize:: DBOLSimCards:AddOrUpdate org[%s] Failed\n",csOrgMobileNum));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: DBOLSimCards:AddOrUpdate org[%s] Failed\n",csOrgMobileNum);
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			} else {
+DEBUGLOG(("Authorize:: DBOLSimCards:AddOrUpdate org[%s] Success\n",csOrgMobileNum));
+			}
+		}
+
+		if (csRegMobileNum != NULL) {
+			if (csStatusType != NULL) {
+				if (!strcmp(csStatusType,PD_BANK_ACCT_STATUS_ACTIVE)) iActive = 1;
+				else iActive = 0;
+			}
+
+DEBUGLOG(("Authorize:: Call DBOLSimCards:AddOrUpdate [%s]\n",csRegMobileNum));
+			PutField_CString(hTxn,"mob_num",csRegMobileNum);
+			PutField_Int(hTxn,"active",iActive);
+			DBObjPtr = CreateObj(DBPtr, "DBOLSimCards", "AddOrUpdate");
+			if ((unsigned long)(*DBObjPtr)(hTxn) != PD_OK) {
+DEBUGLOG(("Authorize:: DBOLSimCards:AddOrUpdate [%s] Failed\n",csRegMobileNum));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: DBOLSimCards:AddOrUpdate [%s] Failed\n",csRegMobileNum);
+				iRet = INT_ERR;
+			} else {
+DEBUGLOG(("Authorize:: DBOLSimCards:AddOrUpdate [%s] Success\n",csRegMobileNum));
+			}
+		}
+	}
+*/
+
+
+/* OLAutoUploadBankDetail */
+	if (iRet == PD_OK) {
+                if ((cAction == PD_ACTION_UPDATE) && (iRenewBankAcct == PD_FALSE)) {
+			if ((csAcctType != NULL) && (csOrgStatusType != NULL) && (csStatusType != NULL)) {
+	
+				int iDtlRet = PD_NOT_FOUND;
+				int iDisabled = PD_TRUE;
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadAcctStatus", "ChkBankAcctStatusSetEnable");
+				iDtlRet = (unsigned long)(*DBObjPtr)(csAcctType,csOrgStatusType,csStatusType);
+                       		if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetEnable Found\n"));
+					iDisabled = PD_FALSE;
+				} else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetEnable Not Found\n"));
+				} else {		
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetEnable Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetEnable Failed\n");
+                        	      	iRet = INT_ERR;
+                      		}
+			
+				if ((iRet == PD_OK) && (iDtlRet == PD_NOT_FOUND)) {
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadAcctStatus", "ChkBankAcctStatusSetDisable");
+                        	        iDtlRet = (unsigned long)(*DBObjPtr)(csAcctType,csOrgStatusType,csStatusType);
+                        	        if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetDisable Found\n"));
+                        	                iDisabled = PD_TRUE;
+                        	        } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetDisable Not Found\n"));
+                        	        } else {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetDisable Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: Call DBOLAutoUploadAcctStatus:ChkBankAcctStatusSetDisable Failed\n");
+                        	        	iRet = INT_ERR;
+                        	        } 
+				}
+
+				if ((iRet == PD_OK) && (iDtlRet == PD_FOUND)) {
+
+					hash_t *hAutoUplBankDtl;
+                        		hAutoUplBankDtl = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(hAutoUplBankDtl, 0);
+	
+					PutField_CString(hAutoUplBankDtl,"int_bank_code",csIntBankCode);
+					PutField_CString(hAutoUplBankDtl,"bank_acct_num",csBankAcctNum);
+					PutField_CString(hAutoUplBankDtl,"acct_type",csAcctType);
+					PutField_Int(hAutoUplBankDtl,"disabled",iDisabled);
+					PutField_CString(hAutoUplBankDtl,"update_user",PD_UPDATE_USER);
+	
+                			DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadBankDetail", "UpdateDisabled");
+                			if ((unsigned long)(*DBObjPtr)(hAutoUplBankDtl) != PD_OK) {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadBankDetail:UpdateDisabled Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: Call DBOLAutoUploadBankDetail:UpdateDisabled Failed\n");
+						iRet = INT_ERR;
+                			} else {
+DEBUGLOG(("Authorize:: Call DBOLAutoUploadBankDetail:UpdateDisabled Success\n"));
+               	 			}
+	
+					hash_destroy(hAutoUplBankDtl);	
+					FREE_ME(hAutoUplBankDtl);
+				}
+			}
+		}
+	}
+
+/* OLBankAccts */
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize:: Call DBOLBankAccts:Add\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "Add");
+			if ((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)) {
+DEBUGLOG(("Authorize:: DBOLBankAccts:Add Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: DBOLBankAccts:Add Failed\n");
+				iRet = INT_ERR;
+			} else {
+DEBUGLOG(("Authorize:: DBOLBankAccts:Add Success\n"));
+			}
+		} else if (cAction == PD_ACTION_UPDATE) {
+			// Update !!!!
+
+			if (iOnlyStatus == PD_TRUE) {
+DEBUGLOG(("Authorize:: Call DBOLBankAccts:UpdateStatus\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "UpdateStatus");
+				if ((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)) {
+DEBUGLOG(("Authorize:: DBOLBankAccts:UpdateStatus Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: DBOLBankAccts:UpdateStatus Failed\n");
+					iRet = INT_ERR;
+				} else {
+DEBUGLOG(("Authorize:: DBOLBankAccts:UpdateStatus Success\n"));
+				}
+			} else {
+DEBUGLOG(("Authorize:: Call DBOLBankAccts:Update\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "Update");
+				if ((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)) {
+DEBUGLOG(("Authorize:: DBOLBankAccts:Update Failed\n"));
+ERRLOG("TxnOmtByUsBKA:: Authorize:: DBOLBankAccts:Update Failed\n");
+					iRet = INT_ERR;
+				} else {
+DEBUGLOG(("Authorize:: DBOLBankAccts:Update Success\n"));
+				}
+			}
+		}
+	}
+
+	/*
+	if (iRet != PD_OK) {
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+	*/
+
+	hash_destroy(hTxn);
+
+	FREE_ME(hBankAcct);
+	FREE_ME(hBankAcctId);
+	FREE_ME(hTxn);
+	FREE_ME(hRec);
+
+DEBUGLOG(("TxnOmtByUsBKA Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+}
+

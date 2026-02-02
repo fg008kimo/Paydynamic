@@ -1,0 +1,856 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/01/29              Virginia Yun
+Handle auto-generated BAID                         2014/05/05              Virginia Yun
+Handle BAID name & category changes		   2014/09/19		   Dirk Wong
+Use Init Bal as the BAID open bal                  2015/01/12              Virginia Yun
+when closing BAID, check any unknown stmt here	   2015/03/25		   LokMan Chow
+Use pre-assigned BAID if provided                  2015/05/26              David Wong
+Add sub provider & modify BAID name generation     2015/06/19              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsBAI.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#include "sha1.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnOmtByUsBAI(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+
+	char	*csTmp = NULL;	
+	double	dTmp = 0.0;
+
+	char	*csBAID = strdup("");
+	char	cAction;
+	char	*csStatus = NULL;
+
+	char	*csOrgBAID = NULL;
+	char	*csOrgStatus = NULL;
+
+	char	*csBankCode = NULL;
+	char	*csAcctNum = NULL;
+	char	*csPspId = NULL;
+
+	char	*csOrgBankCode = NULL;
+	char	*csOrgAcctNum = NULL;
+
+	int     iCodeInNum = -1;
+
+	char	csSysBAID[PD_BAID_LEN + 1];
+
+	char	*csPIDAcctType = NULL;
+	char	*csPIDCurrency = NULL;
+
+
+	char	*csBankAcctType = NULL;
+	char	*csBankCurrency = NULL;
+
+	int	iNextPidCode = -1;
+	char	csCategory[PD_BAID_CATEGORY_TYPE_LEN+1];
+	char	*csPspName = NULL;
+	char	csBaidName[PD_BAID_NAME_LEN + 1];
+	char    csBaidCountry[PD_COUNTRY_LEN + 1];
+	char	cAmtType;
+	double  dInitAmt = 0.0;
+	char	csBalTxnSeq[PD_TXN_SEQ_LEN + 1];
+	char	csCodeInNum[6 + 1];
+
+	int	iAllowFeCreate = -1;
+	int	iAllowMultiple = -1;
+
+	char	*csClientId = NULL;
+	char	*csClientName = NULL;
+	char	*csSubProviderId = NULL;
+	char	*csSubProviderName = NULL;
+	char	*csBankAcctOwnerName = NULL;
+	char	*csBankAbbrevName = NULL;
+	char	*csBaidNameCode = NULL;
+
+	hash_t  *hTxn, *hOrgTxn, *hPSPDetail, *hBaidCategoryDtl;
+	hash_t *hBalTxn;
+	hash_t *hTmp;
+
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	hOrgTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOrgTxn, 0);
+
+	hPSPDetail = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hPSPDetail, 0);
+
+	hBaidCategoryDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBaidCategoryDtl, 0);
+
+	hBalTxn = (hash_t*) malloc(sizeof(hash_t));
+	hash_init(hBalTxn, 0);	
+
+	hTmp = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTmp, 0);
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("TxnOmtByUsBAI::Authorize\n"));
+
+/* Action */
+	if (GetField_CString(hRequest, "action", &csTmp)) {
+		cAction = csTmp[0];
+		// not support delete
+		if (cAction != PD_ACTION_ADD && cAction != PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize::action [%c] not accepted!!\n", cAction));
+ERRLOG("TxnOmtByUsBAI::Authorize::action not found!!\n");
+			iRet=INT_ACTION_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+DEBUGLOG(("Authorize:: action [%c]\n", cAction));
+
+	} 
+	else {
+DEBUGLOG(("Authorize::action not found!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::action not found!!\n");
+                iRet=INT_ACTION_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* BAID */
+	// BAID is expected auto-generated in create!!
+	if (cAction == PD_ACTION_ADD) {
+
+		if (GetField_CString(hRequest, "pre_assigned_baid", &csTmp)) {
+			PutField_CString(hTxn, "baid", csTmp);
+			memcpy(csCodeInNum, &csTmp[4], 6);
+			csCodeInNum[6] = '\0';
+			iCodeInNum = atoi(csCodeInNum);
+			PutField_Int(hTxn, "code_in_num", iCodeInNum);
+		} else {
+			DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetNextBAIDCode");
+			if((unsigned long)((*DBObjPtr)(&iCodeInNum)) == PD_OK) {
+
+DEBUGLOG(("Authorize:: Code in Num [%d]\n", iCodeInNum));
+
+				if (iCodeInNum < 0) {
+DEBUGLOG(("Authorize::code_in_num error!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::code_in_num error!!\n");
+					iRet=INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+				} else {
+					if (iCodeInNum > PD_BAID_MAX_VALUE) {
+DEBUGLOG(("Authorize::code_in_num max error!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::code_in_num max error!!\n");
+						iRet=INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+				}
+
+				if (iRet== PD_OK) {
+					memset(csSysBAID, 0, sizeof(csSysBAID));
+
+					sprintf(csSysBAID, "%s%06d", PD_BAID_PREFIX, iCodeInNum);
+
+					PutField_Int(hTxn, "code_in_num", iCodeInNum);
+					PutField_CString(hTxn, "baid", csSysBAID);
+				}
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+			if (GetField_CString(hTxn, "baid", &csBAID)) {
+DEBUGLOG(("Authorize::sys baid = [%s]\n",csBAID));
+
+			} else {
+DEBUGLOG(("Authorize::sys baid not found!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::sys baid not found!!\n");
+				iRet=INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		} else if (cAction == PD_ACTION_UPDATE) {
+			if (GetField_CString(hRequest, "new_baid", &csBAID)){
+				PutField_CString(hTxn, "baid", csBAID);
+DEBUGLOG(("Authorize::baid = [%s]\n",csBAID));
+			}
+			else {
+DEBUGLOG(("Authorize::baid not found!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::baid not found!!\n");
+				iRet=INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* status */
+	if (GetField_CString(hRequest, "status", &csStatus)) {
+		PutField_CString(hTxn, "status", csStatus);
+DEBUGLOG(("Authorize()::status = [%s]\n",csStatus));
+	} else {
+DEBUGLOG(("Authorize::status not found!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::status not found!!\n");
+		iRet = INT_STATUS_NOT_FOUND;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+/* add_user */
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"create_user",csTmp);
+		PutField_CString(hTxn, "update_user", csTmp);
+        }
+
+
+	if (iRet == PD_OK) {
+		// Try to get the BAID record
+DEBUGLOG(("Authorize::Call DBOLBankAcctId:GetBankAcctIdDtl\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetBankAcctIdDtl");
+		if ((unsigned long)(*DBObjPtr)(csBAID, hOrgTxn) != PD_OK) {
+DEBUGLOG(("Authorize::DBOLBankAcctId:GetBankAcctIdDtl Failed!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::DBOLBankAcctId:GetBankAcctIdDtl Failed!\n");
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+				if (GetField_CString(hOrgTxn, "org_baid", &csOrgBAID)) {
+					iRet = INT_BAID_ALREADY_EXISTS;
+					PutField_Int(hContext, "internal_error", iRet);
+				}
+			} else if (cAction == PD_ACTION_UPDATE) {
+				if (GetField_CString(hOrgTxn, "status", &csOrgStatus)) {
+DEBUGLOG(("Authorize:: org_status [%s]\n", csOrgStatus));
+				}
+
+				if (GetField_CString(hOrgTxn, "int_bank_code", &csOrgBankCode)) {
+DEBUGLOG(("Authorize:: org_bank_code [%s]\n", csOrgBankCode));
+				}
+
+				if (GetField_CString(hOrgTxn, "bank_acct_num", &csOrgAcctNum)) {
+DEBUGLOG(("Authorize:: org_acct_num [%s]\n", csOrgAcctNum));
+				}
+			}
+	
+		}
+	}
+
+	if (iRet == PD_OK) {
+		/* Checking for Add */
+		if (cAction == PD_ACTION_ADD) {
+			/* BAID Name */ /* use BAID */ /*Put below*/
+			//PutField_CString(hTxn, "baid_name", csBAID);
+
+			/*
+			if (GetField_CString(hRequest, "baid_name", &csTmp)) {
+DEBUGLOG(("Authorize:: new baid name [%s]\n", csTmp));
+				PutField_CString(hTxn, "baid_name", csTmp);
+			}
+			else {
+DEBUGLOG(("Authorize::baid name not found!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::baid name not found!!\n");
+				iRet=INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			*/
+
+			/* Optional for bank_code and acct_num */
+			if (GetField_CString(hRequest, "int_bank_code", &csBankCode)) {
+DEBUGLOG(("Authorize:: bank_code [%s]\n", csBankCode));
+				PutField_CString(hTxn, "int_bank_code", csBankCode);
+			}
+
+			if (GetField_CString(hRequest, "bank_acct_num", &csAcctNum)) {
+DEBUGLOG(("Authorize:: acct_num [%s]\n", csAcctNum));
+				PutField_CString(hTxn, "bank_acct_num", csAcctNum);
+			}
+
+			if (GetField_CString(hRequest, "psp_id", &csPspId)) {
+DEBUGLOG(("Authorize:: psp_id [%s]\n", csPspId));
+				PutField_CString(hTxn, "psp_id", csPspId);
+			}
+			else {
+DEBUGLOG(("Authorize::psp id not found!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::psp id not found!!\n");
+				iRet=INT_PSP_ID_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+			if (GetField_CString(hRequest, "sub_provider_id", &csSubProviderId)) {
+DEBUGLOG(("Authorize:: sub_provider_id [%s]\n", csSubProviderId));
+				PutField_CString(hTxn, "sub_provider_id", csSubProviderId);
+			}
+
+			if (GetField_CString(hRequest, "init_bal", &csTmp)) {
+				dTmp = string2double((const unsigned char *) csTmp);
+				PutField_Double(hTxn, "init_bal", dTmp);
+DEBUGLOG(("Authorize:: init_bal [%f]\n", dTmp));
+			}
+
+			if (iRet == PD_OK) {
+				if (csBankCode != NULL && csAcctNum != NULL) {
+					/* Check Bank Account Exists */
+DEBUGLOG(("Authorize::Call DBOLBankAccts:GetBankAccts\n"));
+					hash_destroy(hOrgTxn);
+					hash_init(hOrgTxn,0);
+
+					DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","GetBankAccts");
+					if ((unsigned long)(*DBObjPtr)(csBankCode, csAcctNum, hOrgTxn) != PD_OK) {
+						iRet = INT_BANK_ACCT_ID_NOT_FOUND;
+						PutField_Int(hContext,"internal_error",iRet);
+					} else {
+						/* Need to check bank acct status? */
+DEBUGLOG(("Authorize::Call DBOLBankAccts:GetBankAccts Valid\n"));
+
+						if (GetField_CString(hOrgTxn, "acct_type", &csBankAcctType)) {
+DEBUGLOG(("Authorize:: Bank Acct Type [%s]\n", csBankAcctType));
+						}
+
+						if (GetField_CString(hOrgTxn, "acct_ccy", &csBankCurrency)) {
+DEBUGLOG(("Authorize:: Bank Acct Currency [%s]\n", csBankCurrency));
+						}
+
+						if (GetField_CString(hOrgTxn, "owner_name", &csBankAcctOwnerName)) {
+DEBUGLOG(("Authorize:: Bank Acct Owner Name [%s]\n", csBankAcctOwnerName));
+						}
+					}
+				}
+			}
+
+			/* Get Bank Abbrev Name */
+			if (iRet == PD_OK) {
+				if (csBankCode != NULL) {
+					hash_destroy(hTmp);
+					hash_init(hTmp, 0);
+
+DEBUGLOG(("Authorize::Call DBBankDesc:GetBankAbbrevName\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBBankDesc", "GetBankAbbrevName");
+					if ((unsigned long)(*DBObjPtr)(csBankCode, hTmp) != PD_FOUND) {
+DEBUGLOG(("Authorize::Call DBBankDesc:GetBankAbbrevName Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBBankDesc:GetBankAbbrevName Failed\n");
+					} else {
+						if (GetField_CString(hTmp, "bank_abbrev_name", &csBankAbbrevName)) {
+DEBUGLOG(("Authorize:: Bank Abbrev Name [%s]\n", csBankAbbrevName));
+						}
+					}
+				}
+			}
+
+			if (iRet == PD_OK) {
+				/* Get PSP Exists */
+DEBUGLOG(("Authorize::Call DBOLPspDetail:GetPspDetail\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLPspDetail","GetPspDetail");
+				if ((unsigned long)(*DBObjPtr)(csPspId, hPSPDetail) != PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLPspDetail:GetPspDetail Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBOLPspDetail:GetPspDetail Failed\n");
+				}
+				else {
+					if (!GetField_CString(hPSPDetail, "client_id", &csClientId)) {
+						DEBUGLOG(("Authorize:: PSP Not Found\n")); 
+						ERRLOG("TxnOmtByUsBAI::Authorize::PSP Not Found!\n");
+						iRet = INT_PSP_ID_NOT_FOUND;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+
+					if (iRet == PD_OK) {
+						if (GetField_CString(hPSPDetail, "bank_acct_type", &csPIDAcctType)) {
+DEBUGLOG(("Authorize:: PSP Acct Type [%s]\n", csPIDAcctType)); 
+						}
+
+						if (GetField_CString(hPSPDetail, "ccy", &csPIDCurrency)) {
+DEBUGLOG(("Authorize:: PSP Ccy [%s]\n", csPIDCurrency)); 
+						}
+					}
+
+				}
+			}
+
+			/* Get Bank Acct Type Code for BAID Name */
+			if (iRet == PD_OK) {
+				if (csPIDAcctType != NULL) {
+					hash_destroy(hTmp);
+					hash_init(hTmp, 0);
+
+DEBUGLOG(("Authorize::Call DBOLDefBankAcctType:GetBaidNameCode\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLDefBankAcctType", "GetBaidNameCode");
+					if ((unsigned long)(*DBObjPtr)(csPIDAcctType, hTmp) != PD_FOUND) {
+DEBUGLOG(("Authorize::Call DBOLDefBankAcctType:GetBaidNameCode Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBOLDefBankAcctType:GetBaidNameCode Failed\n");
+					} else {
+						if (GetField_CString(hTmp, "baid_name_code", &csBaidNameCode)) {
+DEBUGLOG(("Authorize:: BAID Name Bank Acct Type Code [%s]\n", csBaidNameCode));
+						}
+					}
+				}
+			}
+
+			/* Get Provider */
+			if (iRet == PD_OK) {
+				hash_destroy(hTmp);
+				hash_init(hTmp, 0);
+
+DEBUGLOG(("Authorize::Call DBPspMaster:GetPspMaster\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBPspMaster", "GetPspMaster");
+				if ((unsigned long)(*DBObjPtr)(csClientId, hTmp) != PD_OK) {
+DEBUGLOG(("Authorize::Call DBPspMaster:GetPspMaster Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBPspMaster:GetPspMaster Failed\n");
+				} else {
+					if (!GetField_CString(hTmp, "client_name", &csClientName)) {
+DEBUGLOG(("Authorize::Provider Not Found\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Provider Not Found\n");
+						iRet = INT_CLIENT_ID_NOT_FOUND;
+						PutField_Int(hContext, "internal_error", iRet);
+					} else {
+DEBUGLOG(("Authorize:: Provider Name [%s]\n", csClientName));
+					}
+				}
+			}
+
+			/* Get Sub Provider */
+			if (iRet == PD_OK) {
+				if (csSubProviderId != NULL) {
+					hash_destroy(hTmp);
+					hash_init(hTmp, 0);
+
+DEBUGLOG(("Authorize::Call DBOLDefSubProvider:GetSubProviderName\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLDefSubProvider", "GetSubProviderName");
+					if ((unsigned long)(*DBObjPtr)(csSubProviderId, hTmp) != PD_FOUND) {
+DEBUGLOG(("Authorize::Call DBOLDefSubProvider:GetSubProviderName Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBOLDefSubProvider:GetSubProviderName Failed\n");
+					} else {
+						if (GetField_CString(hTmp, "sub_provider_name", &csSubProviderName)) {
+DEBUGLOG(("Authorize:: Sub Provider Name [%s]\n", csSubProviderName));
+						}
+					}
+				}
+			}
+
+			if (iRet == PD_OK) {
+				if (GetField_CString(hPSPDetail, "psp_name", &csPspName)) {
+DEBUGLOG(("Authorize:: PSP Name [%s]\n", csPspName));
+				} else {
+DEBUGLOG(("Authorize:: PSP Name error!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Psp_Name error!!\n");
+					iRet = INT_ERR;
+				}
+			}
+
+			/* baid_category */
+			if (GetField_CString(hRequest, "category", &csTmp)){
+				sprintf(csCategory,"%s",csTmp);
+DEBUGLOG(("Authorize:: Category [%s]\n", csCategory));
+				PutField_CString(hTxn,"category",csCategory);
+			} else {
+				sprintf(csCategory,"%s",PD_BAID_CATEGORY_DEFAULT);
+DEBUGLOG(("Authorize:: Category not found, use default [%s]\n", csCategory));
+				PutField_CString(hTxn,"category",csCategory);
+			}
+
+			DBObjPtr = CreateObj(DBPtr,"DBOLDefBaidCategory","GetBaidCategoryDtl");
+			if ((unsigned long)(*DBObjPtr)((const char*)csCategory,hBaidCategoryDtl) != PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLDefBaidCategory::GetBaidCategoryDtl Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBOLDefBaidCategory:GetBaidCategoryDtl Failed\n");
+			} else {
+/*
+				if (GetField_CString(hBaidCategoryDtl,"cat_name",&csTmp)) {
+					sprintf(csBaidName, "%s_%s", csPspName, csTmp);
+DEBUGLOG(("Authorize::DBOLDefBaidCategory::GetBaidCategoryDtl cat_name = [%s]\n",csTmp));
+				} else {
+					// Get next sequence of BAID_Code under PspId
+					DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetNextBAIDCodeByPspId");
+					if((unsigned long)((*DBObjPtr)(&iNextPidCode,csPspId)) == PD_OK) {
+						if (iNextPidCode < 0) {
+DEBUGLOG(("Authorize::next_pid_code error!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::next_pid_code error!!\n");
+							iRet=INT_NEXT_PID_CODE_ERROR;
+							PutField_Int(hContext,"internal_error",iRet);
+						} else	if (iNextPidCode > PD_BAID_MAX_VALUE) {
+DEBUGLOG(("Authorize::next_pid_code max error!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::next_pid_code max error!!\n");
+							iRet=INT_NEXT_PID_CODE_ERROR;
+							PutField_Int(hContext,"internal_error",iRet);
+						} else {
+DEBUGLOG(("Authorize:: Next Pid Code [%d]\n", iNextPidCode));
+							sprintf(csBaidName, "%s_%06d", csPspName, iNextPidCode);
+							PutField_Int(hTxn, "pid_code", iNextPidCode);
+						}
+					}
+				}
+*/
+				if (GetField_CString(hBaidCategoryDtl,"cat_name",&csBankAbbrevName)) {
+DEBUGLOG(("Authorize::DBOLDefBaidCategory::GetBaidCategoryDtl cat_name = [%s]\n",csBankAbbrevName));
+				}
+			}
+
+			/* baid_name */
+			if (csSubProviderName != NULL) {
+				sprintf(csBaidName, "%s_%s", csClientName, csSubProviderName);
+			} else {
+				sprintf(csBaidName, "%s", csClientName);
+			}
+			if (csBankAbbrevName != NULL) {
+				sprintf(csBaidName, "%s_%s_%s", csBaidName, csBaidNameCode, csBankAbbrevName);
+			} else {
+				sprintf(csBaidName, "%s_%s", csBaidName, csBaidNameCode);
+			}
+			if ((csBankAcctOwnerName != NULL) && !(strcmp(csCategory, PD_BAID_CATEGORY_DEFAULT))) {
+				sprintf(csBaidName, "%s_%s_%06d", csBaidName, csBankAcctOwnerName, iCodeInNum);
+			} else {
+				sprintf(csBaidName, "%s_%06d", csBaidName, iCodeInNum);
+			}
+
+			/* Get PSP Type is allow fe to create & is allow multiple */
+			if (GetField_Int(hBaidCategoryDtl, "allow_fe_create", &iAllowFeCreate)) {
+DEBUGLOG(("Authorize::DBOLDefBaidCategory::GetBaidCategoryDtl allow_fe_create = [%d]\n",iAllowFeCreate));
+			}
+
+			if (GetField_Int(hBaidCategoryDtl, "allow_multiple", &iAllowMultiple)) {
+DEBUGLOG(("Authorize::DBOLDefBaidCategory::GetBaidCategoryDtl allow_multiple = [%d]\n",iAllowMultiple));
+			}
+
+			if (iAllowMultiple == 0) {
+				DBObjPtr = CreateObj(DBObjPtr,"DBOLBankAcctId","CheckPspCategoryExist");
+				if ((unsigned long)((*DBObjPtr)(csPspId,csCategory)) != PD_OK) {
+DEBUGLOG(("Authorize:: DBOLBankAcctId::CheckPspCategory Exist found exist baid acct, ERROR occur!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Same PspId and Category found!!\n");
+					iRet = INT_BAID_UNDER_PSP_CAT_EXISTS;
+				}
+			}
+
+			/* BAID Name */
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: BAID Name [%s]\n", csBaidName));
+				PutField_CString(hTxn, "baid_name", csBaidName);
+			}
+
+
+			if (iRet == PD_OK) {
+				// check Acct Type and Currency
+				if (csBankCode != NULL && csAcctNum != NULL && csBankAcctType == NULL) {
+
+					if (iAllowFeCreate == 1) {
+DEBUGLOG(("Authorize:: BankCode and Acct Num exists, but no AcctType!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize:: BankCode and Acct Num exists, but no AcctType!\n");
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+
+				} else {
+					if (iAllowFeCreate == 1) {
+						if (strcmp(csBankAcctType, csPIDAcctType)) {
+DEBUGLOG(("Authorize:: BankAcctType diff with PIDAcctType!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize:: BankAcctType diff with PIDAcctType!\n");
+							iRet = INT_ERR;
+							PutField_Int(hContext,"internal_error",iRet);
+						} 
+
+						if (strcmp(csBankCurrency, csPIDCurrency)) {
+DEBUGLOG(("Authorize:: Bank Currency diff with PID Currency !\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize:: Bank Currency diff with PID Currency!\n");
+							iRet = INT_ERR;
+							PutField_Int(hContext,"internal_error",iRet);
+						}
+					}
+				}
+			}
+
+				
+			if (iRet == PD_OK) {
+				if (iAllowFeCreate == 1) {
+					/* Check Status NO OPEN record */
+					if (!strcmp(csStatus, PD_BAID_STATUS_OPEN)) {
+						hash_destroy(hOrgTxn);
+						hash_init(hOrgTxn,0);
+
+DEBUGLOG(("Authorize::Call DBOLBankAcctId:GetDtlByBankAcct\n"));
+						DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetDtlByBankAcct");
+						if ((unsigned long)(*DBObjPtr)(csBankCode, csAcctNum, hOrgTxn) != PD_OK) {
+							/* Not Found Open BAID */
+DEBUGLOG(("Authorize::Call DBOLBankAcctId:GetDtlByBankAcct NOT Found OPEN BAID, continue to process\n"));
+						} else {
+DEBUGLOG(("Authorize::Call DBOLBankAcctId:GetDtlByBankAcct Found OPEN BAID !!!!\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::Call DBOLBankAcctId:GetDtlByBankAcct Found OPEN BAID !!!!\n");
+							iRet = INT_OTHER_OPEN_BAID_FOUND;
+							PutField_Int(hContext,"internal_error",iRet);
+						}
+					}
+				}
+			}
+		} else if (cAction == PD_ACTION_UPDATE) {
+			/* Update */
+			/* BAID Name */
+			if (GetField_CString(hRequest, "baid_name", &csTmp)) {
+DEBUGLOG(("Authorize:: new baid name [%s]\n", csTmp));
+				PutField_CString(hTxn, "baid_name", csTmp);
+			}
+
+			if (iRet == PD_OK) {
+				/* Check Status */
+
+DEBUGLOG(("Authorize:: org status [%s] new status [%s]\n", csOrgStatus, csStatus));
+
+				if (strcmp(csStatus, csOrgStatus)) {
+					/* Status Not the same */
+					/* NEW -> OPEN / CLOSE */
+					/* OPEN -> CLOSE */
+
+					if (	((!strcmp(csOrgStatus, PD_BAID_STATUS_NEW)) && 
+							(!strcmp(csStatus, PD_BAID_STATUS_OPEN) || !strcmp(csStatus, PD_BAID_STATUS_CLOSE)))  ||
+						((!strcmp(csOrgStatus, PD_BAID_STATUS_OPEN)) && (!strcmp(csStatus, PD_BAID_STATUS_CLOSE)))
+					   ) 
+					{
+DEBUGLOG(("Authorize:: status from [%s] to [%s]\n", csOrgStatus, csStatus));
+					} else {
+						iRet = INT_INVALID_BAID_STATUS;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+				}	
+			}
+			if (iRet == PD_OK) {
+				if(!strcmp(csStatus, PD_BAID_STATUS_CLOSE)){
+					int iTmpRet = PD_OK;
+					//check CheckUnknownBaidTxnExist
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn: CheckUnknownBaidTxn\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "CheckUnknownBaidTxn");
+					iTmpRet = (unsigned long)(*DBObjPtr)(hTxn);
+					if(iTmpRet==PD_FOUND){
+						iRet = INT_UNKNOWN_TXN_EXISTS;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: CheckUnknownBaidTxn unknown statement found!!!\n"));
+					}
+					else if(iTmpRet == PD_ERR){
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: CheckUnknownBaidTxn Failed!!!\n"));
+					}
+				}
+			}
+
+			if (iRet == PD_OK) {
+				/* Check Status NO OPEN record */
+                                if (strcmp(csStatus, csOrgStatus) && !strcmp(csStatus, PD_BAID_STATUS_OPEN)) {
+                                        hash_destroy(hOrgTxn);
+                                        hash_init(hOrgTxn,0);
+
+					if (csOrgBankCode != NULL && csOrgAcctNum != NULL) {
+DEBUGLOG(("Authorize::(Update) Call DBOLBankAcctId:GetDtlByBankAcct\n"));
+	                                        DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetDtlByBankAcct");
+						if ((unsigned long)(*DBObjPtr)(csBankCode, csAcctNum, hOrgTxn) != PD_OK) {
+                                                	/* Not Found Open BAID */
+DEBUGLOG(("Authorize::(Update) Call DBOLBankAcctId:GetDtlByBankAcct NOT Found OPEN BAID, continue to process\n"));
+	                                        } else {
+DEBUGLOG(("Authorize::(Update) Call DBOLBankAcctId:GetDtlByBankAcct Found OPEN BAID !!!!\n"));
+ERRLOG("TxnOmtByUsBAI::(Update) Authorize::Call DBOLBankAcctId:GetDtlByBankAcct Found OPEN BAID !!!!\n");
+							iRet = INT_OTHER_OPEN_BAID_FOUND;
+							PutField_Int(hContext,"internal_error",iRet);
+						}
+					}
+                                }
+			}
+		}
+	}		
+	
+
+	/* BAID Detail */
+        if (iRet == PD_OK) {
+ 		if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize::Call DBOLBankAcctId:Add\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","Add");
+	                if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBOLBankAcctId:Add Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::DBOLBankAcctId:Add Failed\n");
+       	                 iRet = INT_ERR;
+			}
+			else {
+DEBUGLOG(("Authorize::DBOLBankAcctId:Add Succ\n"));
+			}
+		} else if (cAction == PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize::Call DBOLBankAcctId:Update\n"));
+	               	DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","Update");
+			if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBOLBankAcctId:Update Failed\n"));
+ERRLOG("TxnOmtByUsBAI::Authorize::DBOLBankAcctId:Update Failed\n");
+				iRet = INT_ERR;
+			}
+			else {
+DEBUGLOG(("Authorize::DBOLBankAcctId:Update Succ\n"));
+			}	
+		}
+
+	}
+
+	// Handle init bal 
+
+	if (cAction == PD_ACTION_ADD && iRet == PD_OK) {
+
+		if (GetField_Double(hTxn, "init_bal", &dInitAmt)) {
+
+			PutField_CString(hBalTxn, "baid", csBAID);
+
+DEBUGLOG(("Authorize:: Call DBOLBankAcctId: GetBankAcctIdCountry [%s]\n", csBAID));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+			if ((unsigned long)(*DBObjPtr)(csBAID, csBaidCountry) == FOUND) {
+DEBUGLOG(("Authorize:: txn_country by baid = [%s]\n", csBaidCountry));
+				PutField_CString(hBalTxn, "txn_country", csBaidCountry);
+
+                	} else {
+DEBUGLOG(("Authorize:: txn_country not found!!\n"));
+ERRLOG("TxnOmtByUsBAI:: Authorize:: txn_country not found!!\n");
+				iRet = INT_COUNTRY_PSP_NOT_AVABILE;
+			}
+
+			if (iRet == PD_OK) {
+				PutField_CString(hBalTxn, "txn_ccy", csPIDCurrency);
+
+DEBUGLOG(("Authorize:: Handle Init Bal [%s] [%s] [%s]\n", csBAID, csBaidCountry, csPIDCurrency));
+				if (dInitAmt < 0.0) {
+					cAmtType = PD_IND_DEBIT;
+					PutField_Char(hBalTxn, "amt_type", cAmtType);
+					dInitAmt = dTmp * (-1.0);
+				} else if (dTmp >= 0.0) {
+					cAmtType = PD_IND_CREDIT;
+					PutField_Char(hBalTxn, "amt_type", cAmtType);
+				}
+	
+				PutField_Double(hBalTxn, "txn_amt", dTmp);
+DEBUGLOG(("Authorize:: Handle Init Bal [%c] [%lf]\n", cAmtType, dTmp));
+
+        			if (GetField_CString(hRequest,"add_user",&csTmp)) {
+					PutField_CString(hBalTxn, "update_user", csTmp);
+					PutField_CString(hBalTxn, "add_user", csTmp);
+				}
+
+				PutField_CString(hBalTxn, "pool", PD_ACCT_BAL_POOL);
+
+DEBUGLOG(("Authorize::Call BOOLBalance:UpdateAmount\n"));
+				BOObjPtr = CreateObj(BOPtr,"BOOLBalance","UpdateAmount");
+				iRet = (unsigned long)(*BOObjPtr)(hBalTxn);
+				if (iRet == PD_OK) {
+					if (GetField_Double(hBalTxn, "open_bal", &dTmp)) {
+DEBUGLOG(("Authorize::Call BOOLBalance:open_bal [%f]\n", dTmp));
+					}
+
+					if (GetField_Double(hBalTxn, "open_in_transit", &dTmp)) {
+DEBUGLOG(("Authorize::Call BOOLBalance:open_in_transit [%f]\n", dTmp));
+                        		}
+
+					// use early date
+					if (GetField_CString(hBalTxn, "approval_date", &csTmp)) {
+						PutField_CString(hBalTxn, "approval_date", "20100101");
+DEBUGLOG(("Authorize::Call BOOLBalance:approval_date [%s] to [2010]\n", csTmp));
+					}
+
+					if (GetField_CString(hBalTxn, "approval_timestamp", &csTmp))  {
+						PutField_CString(hBalTxn, "approval_timestamp", "20100101000000");
+DEBUGLOG(("Authorize::Call BOOLBalance:approval_timestamp [%s] to [20100101000000]\n", csTmp));
+					}
+
+					if (GetField_Double(hBalTxn, "bal", &dTmp)) {
+DEBUGLOG(("Authorize::Call BOOLBalance:balance = [%f]\n", dTmp));
+                        		}
+
+					if (GetField_Double(hBalTxn, "total_hold", &dTmp)) {
+DEBUGLOG(("Authorize::Call BOOLBalance:total_hold = [%f]\n", dTmp));
+                        		}
+
+					if (GetField_Double(hBalTxn, "prepaid", &dTmp)) {
+DEBUGLOG(("Authorize::Call BOOLBalance:prepaid = [%f]\n", dTmp));
+					}
+
+					if (GetField_Double(hBalTxn, "in_transit", &dTmp)) {
+DEBUGLOG(("Authorize::Call BOOLBalance:in_transit = [%f]\n", dTmp));
+                        		}
+				}
+
+				if (iRet == PD_OK) {
+
+DEBUGLOG(("Authorize::Call DBOLTxnSeq:: GetNextOmtTxnSeq\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+					strcpy(csBalTxnSeq, (*DBObjPtr)());
+
+DEBUGLOG(("Authorize::Call DBOLTxnSeq:: New Txn Seq [%s]\n", csBalTxnSeq));
+
+					PutField_CString(hBalTxn, "txn_seq", csBalTxnSeq);
+					PutField_Char(hBalTxn, "ar_ind", PD_ACCEPT);
+
+					PutField_CString(hBalTxn, "psp_id", csPspId);
+
+DEBUGLOG(("Authorize::Call DBOLTransaction:: Add\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Add");
+					iRet = (unsigned long)(*DBObjPtr)(hBalTxn);
+					if (iRet != PD_OK) {	
+DEBUGLOG(("Authorize::Call DBOLTransaction:: Add Failed!!\n"));
+
+					} else {
+						DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+						iRet = (unsigned long)(*DBObjPtr)(hBalTxn);
+
+						if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLTxnPspDetail:: Add\n"));
+							DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+							iRet = (unsigned long)(*DBObjPtr)(hBalTxn);
+DEBUGLOG(("Authorize::Call DBOLTxnPspDetail:: Return [%d]\n", iRet));
+						}
+					}
+
+				}
+			}
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		PutField_CString(hResponse, "new_baid", csBAID);
+	}
+
+	hash_destroy(hBalTxn);
+	FREE_ME(hBalTxn);
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+	hash_destroy(hOrgTxn);
+	FREE_ME(hOrgTxn);
+
+	hash_destroy(hPSPDetail);
+	FREE_ME(hPSPDetail);
+
+	hash_destroy(hBaidCategoryDtl);
+	FREE_ME(hBaidCategoryDtl);
+
+	hash_destroy(hTmp);
+	FREE_ME(hTmp);
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+	FREE_ME(csBAID);
+
+
+DEBUGLOG(("TxnOmtByUsBAI Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

@@ -1,0 +1,813 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/04/11              LokMan Chow
+add FindAllBalance				   2011/04/14		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cs_fundin_date[PD_DATE_LEN + 1];
+char    cDebug;
+
+#define PD_TMP_TAG_LEN  25
+//#define PD_ROUND_UP_DEC 5
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int process_fundin(unsigned char* csFundInDate, hash_t* hFundIn);
+int process_balance(hash_t* hFundIn);
+int UpdateRateRatio(const hash_t* hFundIn);
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 2) {
+        printf("usage:  -d fundin_date\n");
+        return INT_INVALID_TXN;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+        	printf("usage:  -d fundin_date\n");
+                return (iRet);
+        }
+
+	hash_t *hFundIn;
+	hFundIn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hFundIn,0);
+
+        iRet = process_fundin((unsigned char*)cs_fundin_date, hFundIn);
+
+
+	if(iRet==SUCCESS){
+		iRet = process_balance(hFundIn);
+	}
+
+	if(iRet==PD_NOT_FOUND){
+		iRet = SUCCESS;
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+	FREE_ME(hFundIn);
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int process_fundin(unsigned char* csFundInDate, hash_t*	hFundIn)
+{               
+ 
+        int     iRet = SUCCESS;
+	int	iCnt = 0;
+	char    csTag[PD_TMP_TAG_LEN +1];
+	double	dTotalFundIn = 0;
+
+DEBUGLOG(("*****Process FundIn Start*****[%s]\n",csFundInDate));
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	hv_fundin_date[PD_DATE_LEN];
+
+		varchar	v_fundin_id[PD_TXN_SEQ_LEN+1];
+		varchar	v_fundin_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_bank_ccy[PD_CCY_ID_LEN + 1];
+		double	v_fundin_amount;
+		double	v_bank_amount;
+		varchar	v_approval_datetime[PD_DATETIME_LEN +1];
+		varchar v_approval_user[PD_USER_LEN +1];
+		//varchar	v_cal_datetime[PD_DATETIME_LEN +1];
+		//varchar v_cal_user[PD_USER_LEN +1];
+
+		short	ind_fundin_id = -1;
+		short	ind_fundin_ccy = -1;
+		short	ind_bank_ccy = -1;
+		short	ind_fundin_amount = -1;
+		short	ind_bank_amount = -1;
+		short	ind_approval_datetime = -1;
+		short	ind_approval_user = -1;
+		//short	ind_cal_datetime = -1;
+		//short	ind_cal_user = -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_fundin_date.len = strlen((const char*)csFundInDate);
+        memcpy(hv_fundin_date.arr,(const char*)csFundInDate,hv_fundin_date.len);
+
+
+        EXEC SQL DECLARE c_cursor_get_fundin CURSOR FOR
+		select 	f_id,
+			f_fundin_ccy,
+         		f_bank_ccy,
+         		f_fundin_amount,
+         		f_bank_amount,
+			f_approval_timestamp,
+			f_approval_user
+		  from 	funds_in
+		 where	f_fundin_date <= :hv_fundin_date
+		 and	f_approval_user is NOT NULL
+		 and	f_calculation_user is NULL
+		 order by f_id;
+		
+                
+        EXEC SQL OPEN c_cursor_get_fundin;
+        do {    
+                EXEC SQL FETCH c_cursor_get_fundin
+                INTO
+         		v_fundin_id:ind_fundin_id,
+         		v_fundin_ccy:ind_fundin_ccy,
+         		v_bank_ccy:ind_bank_ccy,
+         		v_fundin_amount:ind_fundin_amount,
+         		v_bank_amount:ind_bank_amount,
+         		v_approval_datetime:ind_approval_datetime,
+			v_approval_user:ind_approval_user;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+/* approval and calculation user + time*/
+		if ((ind_approval_datetime >= 0) && (ind_approval_user >= 0)){
+
+/* fundin_id */
+			if (ind_fundin_id >= 0){
+				v_fundin_id.arr[v_fundin_id.len] = '\0';
+				sprintf(csTag,"fundin_id_%d",iCnt);
+				PutField_CString(hFundIn,csTag,(const char *)v_fundin_id.arr);
+DEBUGLOG(("Process FundIn: %s =[%.*s]\n",csTag,v_fundin_id.len,v_fundin_id.arr));
+			}
+
+/* fundin_date*/
+			//sprintf(csTag,"fundin_date_%d",iCnt);
+			PutField_CString(hFundIn,"fundin_date",(const char *)csFundInDate);
+DEBUGLOG(("Process FundIn: fundin_date =[%s]\n",csFundInDate));
+		
+/* fundin_ccy */
+			if (ind_fundin_ccy >= 0){
+				v_fundin_ccy.arr[v_fundin_ccy.len] = '\0';
+				sprintf(csTag,"fundin_ccy_%d",iCnt);
+				PutField_CString(hFundIn,csTag,(const char *)v_fundin_ccy.arr);
+DEBUGLOG(("Process FundIn: %s =[%.*s]\n",csTag,v_fundin_ccy.len,v_fundin_ccy.arr));
+			}
+
+/* bank_ccy */
+			if (ind_bank_ccy >= 0 ){
+				v_bank_ccy.arr[v_bank_ccy.len] = '\0';
+				sprintf(csTag,"bank_ccy_%d",iCnt);
+				PutField_CString(hFundIn,csTag,(const char *)v_bank_ccy.arr);
+DEBUGLOG(("Process FundIn: %s =[%.*s]\n",csTag,v_bank_ccy.len,v_bank_ccy.arr));
+			}
+
+/* fundin_amount */
+			if (ind_fundin_amount < 0 ){
+DEBUGLOG(("Process FundIn: fundin_amount missing!!\n"));
+				iRet = INT_TXN_AMT_MISSING;
+			}
+			else{
+				sprintf(csTag,"fundin_amount_%d",iCnt);
+				PutField_Double(hFundIn,csTag,v_fundin_amount);
+DEBUGLOG(("Process FundIn: %s =[%f]\n",csTag,v_fundin_amount));
+
+				dTotalFundIn +=v_fundin_amount;
+			}
+
+/* bank_amount */
+			if (ind_bank_amount < 0 ){
+DEBUGLOG(("Process FundIn: bank_amount missing!!\n"));
+				iRet = INT_TXN_AMT_MISSING;
+			}
+			else{
+				sprintf(csTag,"bank_amount_%d",iCnt);
+				PutField_Double(hFundIn,csTag,v_bank_amount);
+DEBUGLOG(("Process FundIn: %s =[%f]\n",csTag,v_bank_amount));
+			}
+
+			iCnt ++;
+		}
+ 	}
+        while(PD_TRUE && iRet == SUCCESS);
+
+        EXEC SQL CLOSE c_cursor_get_fundin;
+
+	if(iCnt!=0){
+		PutField_Int(hFundIn,"total_record",iCnt);
+DEBUGLOG(("Process FundIn: total_record=[%d]\n",iCnt));
+
+	}
+	else{
+		iRet=PD_NOT_FOUND;
+DEBUGLOG(("No Record Found\n"));
+		return iRet;
+	}
+
+	if(iRet==SUCCESS){
+DEBUGLOG(("Process FundIn Normal Exit\n"));
+	}
+	else{
+DEBUGLOG(("Process FundIn Error\n"));
+	}
+        return iRet;
+
+sql_error:
+    DEBUGLOG(("process_fundin error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("fundin_balance sql error %d\n",sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_fundin;
+    EXEC SQL ROLLBACK RELEASE;
+    return INT_ERR;
+}
+
+
+int process_balance(hash_t* hFundIn)
+{
+	int	iRet = PD_ERR;
+	int	iTotal = 0;
+	int	i,j, iCnt = 0;
+	double	dTmpAmt= 0.0;
+	double	dFundInAmt = 0.0;
+	double	dBankAmt = 0.0;
+	double	dOrgBankAmt = 0.0;
+	double	dOrgRate= 0.0;
+	double	dOrgRatio= 0.0;
+	double	dOrgDspBal= 0.0;
+	char	*csFromCcy;
+	char	*csBankCcy;
+	char	*csTmp = strdup("");
+	char	*csBuf = strdup("");
+	char	csTag[PD_TAG_LEN +1];
+
+	double	dRate_N = 0.0;
+	double	dRate_D = 0.0;
+	//double	dRatio_N = 0.0;
+	//double	dRatio_D = 0.0;
+
+	hash_t  *hRec;
+	hRec= (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+
+DEBUGLOG(("*****Process Balance Start*****\n"));
+
+	if(GetField_Int(hFundIn,"total_record",&iTotal)){
+DEBUGLOG(("Process Balance: total_record = [%d]\n", iTotal));
+	}
+
+	for(i=0; i<iTotal; i++){
+
+////fundin_ccy////
+		sprintf(csTag,"fundin_ccy_%d",i);
+		if(GetField_CString(hFundIn,csTag,&csFromCcy)){
+DEBUGLOG(("Process Balance: fundin_ccy = [%s]\n", csFromCcy));
+		}
+
+////fundin_amt////
+		sprintf(csTag,"fundin_amount_%d",i);
+		if(GetField_Double(hFundIn,csTag,&dFundInAmt)){
+			dRate_N = dFundInAmt;
+DEBUGLOG(("Process Balance: fundin_amt = [%f]\n", dFundInAmt));
+		}
+
+////bank_ccy////
+		sprintf(csTag,"bank_ccy_%d",i);
+		if(GetField_CString(hFundIn,csTag,&csBankCcy)){
+DEBUGLOG(("Process Balance: bank_ccy = [%s]\n", csBankCcy));
+		}
+
+////bank_amt////
+		sprintf(csTag,"bank_amount_%d",i);
+		if(GetField_Double(hFundIn,csTag,&dBankAmt)){
+			dTmpAmt = 0.0;
+			sprintf(csTag,"%s_ratio_D",csBankCcy);
+			GetField_Double(hFundIn,csTag,&dTmpAmt);
+			PutField_Double(hFundIn,csTag,dTmpAmt+dBankAmt);
+			sprintf(csTag,"%s%s_ratio_N",csFromCcy,csBankCcy);
+			PutField_Double(hFundIn,csTag,dBankAmt);
+
+			dRate_D = dBankAmt;
+			//dRatio_N = dBankAmt;
+			//dRatio_D += dBankAmt;
+DEBUGLOG(("Process Balance: bank_amt = [%f], %s_ratio_D = [%f] %s%s_ratio_N = [%f]\n", dBankAmt,csBankCcy,dTmpAmt+dBankAmt,csFromCcy,csBankCcy,dBankAmt));
+		}
+
+
+		hash_init(hRec,0);
+		DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBalanceByCcy");
+		if ((unsigned long)(*DBObjPtr)(csFromCcy,csBankCcy,hRec) == PD_FOUND) {
+
+DEBUGLOG(("Process Balance -> FindBalanceByCcy : SUCCESS\n"));
+
+			strcpy(csTmp,csFromCcy);
+			strcat(csTmp,csBankCcy);
+			csTmp[strlen(csTmp)]='\0';
+			sprintf(csTag,"have_ccy_%d",iCnt);
+			PutField_CString(hFundIn,csTag,csTmp);
+			iCnt++;
+
+			if (GetField_Double(hRec,"bank_bal",&dOrgBankAmt)) {
+				sprintf(csTag,"org_bank_amt_%d",i);
+				PutField_Double(hFundIn,csTag,dOrgBankAmt);
+DEBUGLOG(("FindBalanceByCcy : org_bank_amt = [%f]\n", dOrgBankAmt));
+			}
+
+			if (GetField_Double(hRec,"dsp_bal",&dOrgDspBal)) {
+				sprintf(csTag,"org_dsp_bal_%d",i);
+				PutField_Double(hFundIn,csTag,dOrgDspBal);
+DEBUGLOG(("FindBalanceByCcy : org_dsp_bal = [%f]\n", dOrgDspBal));
+			}
+
+			if (GetField_Double(hRec,"rate",&dOrgRate)) {
+				sprintf(csTag,"org_rate_%d",i);
+				PutField_Double(hFundIn,csTag,dOrgRate);
+DEBUGLOG(("FindBalanceByCcy : org_rate = [%f]\n", dOrgRate));
+			}
+
+			if (GetField_Double(hRec,"ratio",&dOrgRatio)) {
+				sprintf(csTag,"org_ratio_%d",i);
+				PutField_Double(hFundIn,csTag,dOrgRatio);
+DEBUGLOG(("FindBalanceByCcy : org_ratio = [%f]\n", dOrgRatio));
+			}
+
+			if(dOrgBankAmt>0.0){
+				dRate_N += (dOrgBankAmt*dOrgRate);
+				dRate_D += dOrgBankAmt;
+			}
+
+			dTmpAmt = 0.0;
+			sprintf(csTag,"%s_ratio_D",csBankCcy);
+			GetField_Double(hFundIn,csTag,&dTmpAmt);
+DEBUGLOG(("before adding: %s_ratio_D = [%f]\n",csBankCcy,dTmpAmt));
+			if((dTmpAmt+dOrgBankAmt)>0.0){
+				PutField_Double(hFundIn,csTag,dTmpAmt+dOrgBankAmt);
+DEBUGLOG(("after adding: %s_ratio_D = [%f]\n",csBankCcy,dTmpAmt+dOrgBankAmt));
+			}
+			else{
+DEBUGLOG(("nothing change: %s_ratio_D = [%f]\n",csBankCcy,dTmpAmt));
+			}
+				
+			dTmpAmt = 0.0;
+			sprintf(csTag,"%s%s_ratio_N",csFromCcy,csBankCcy);
+			GetField_Double(hFundIn,csTag,&dTmpAmt);
+DEBUGLOG(("before adding: %s%s_ratio_N = [%f]\n",csFromCcy,csBankCcy,dTmpAmt));
+			if((dTmpAmt+dOrgBankAmt)>0.0){
+				PutField_Double(hFundIn,csTag,dTmpAmt+dOrgBankAmt);
+DEBUGLOG(("after adding: %s%s_ratio_N = [%f]\n",csFromCcy,csBankCcy,dTmpAmt+dOrgBankAmt));
+			}
+			else{
+DEBUGLOG(("nothing change: %s%s_ratio_N = [%f]\n",csFromCcy,csBankCcy,dTmpAmt));
+			}
+		}
+
+		sprintf(csTag,"cal_rate_n_%d",i);
+		PutField_Double(hFundIn,csTag,dRate_N);
+DEBUGLOG(("Process Balance : cal_rate_n = [%f]\n", dRate_N));
+
+		sprintf(csTag,"cal_rate_d_%d",i);
+		PutField_Double(hFundIn,csTag,dRate_D);
+DEBUGLOG(("Process Balance : cal_rate_d = [%f]\n", dRate_D));
+
+/*
+		sprintf(csTag,"cal_ratio_n_%d",i);
+		PutField_Double(hFundIn,csTag,dRatio_N);
+DEBUGLOG(("Process Balance : cal_ratio_n = [%f]\n", dRatio_N));
+*/
+		dRate_N=0;
+		dRate_D=0;
+		//dRatio_N=0;
+
+	}
+
+///////////////////////////////
+
+	DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindAllBalance");
+	if ((unsigned long)(*DBObjPtr)(rRecordSet) == PD_FOUND) {
+
+DEBUGLOG(("Process Balance -> FindAllBalance : SUCCESS\n"));
+
+		i = iTotal;
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec){
+			iRet = PD_OK;
+			if(GetField_CString(hRec,"from_ccy",&csFromCcy)){
+				strcpy(csBuf,csFromCcy);
+				sprintf(csTag,"fundin_ccy_%d",i);
+				PutField_CString(hFundIn,csTag,csFromCcy);
+DEBUGLOG(("FindAllBalance : from_ccy = [%s]\n",csFromCcy));
+			}
+			if(GetField_CString(hRec,"bank_ccy",&csBankCcy)){
+				strcat(csBuf,csBankCcy);
+				sprintf(csTag,"bank_ccy_%d",i);
+				PutField_CString(hFundIn,csTag,csBankCcy);
+DEBUGLOG(("FindAllBalance : bank_ccy = [%s]\n",csBankCcy));
+			}
+			csBuf[strlen(csBuf)]='\0';
+
+			for(j=0;j<iCnt;j++){
+				sprintf(csTag,"have_ccy_%d",j);
+				if(GetField_CString(hFundIn,csTag,&csTmp)){
+					if(strcmp(csTmp,csBuf)==0){
+						iRet = PD_FOUND;
+					}
+				}
+			}
+
+			if(iRet==PD_FOUND){
+DEBUGLOG(("FindAllBalance : Record already processed, ignore\n"));
+			}
+			else{			
+
+				if (GetField_Double(hRec,"bank_bal",&dOrgBankAmt)) {
+					sprintf(csTag,"org_bank_amt_%d",i);
+					PutField_Double(hFundIn,csTag,dOrgBankAmt);
+DEBUGLOG(("FindAllBalance : org_bank_amt = [%f]\n", dOrgBankAmt));
+				}
+	
+				if (GetField_Double(hRec,"rate",&dOrgRate)) {
+					sprintf(csTag,"org_rate_%d",i);
+					PutField_Double(hFundIn,csTag,dOrgRate);
+DEBUGLOG(("FindAllBalance : org_rate = [%f]\n", dOrgRate));
+				}
+	
+				if (GetField_Double(hRec,"ratio",&dOrgRatio)) {
+					sprintf(csTag,"org_ratio_%d",i);
+					PutField_Double(hFundIn,csTag,dOrgRatio);
+DEBUGLOG(("FindAllBalance : org_ratio = [%f]\n", dOrgRatio));
+				}
+
+				if(dOrgBankAmt>0.0){
+					dRate_N += newround((dOrgBankAmt*dOrgRate),PD_DECIMAL_LEN);
+					dRate_D += dOrgBankAmt;
+					//dRatio_N += dOrgBankAmt;
+					//dRatio_D += dOrgBankAmt;
+
+					dTmpAmt = 0.0;
+					sprintf(csTag,"%s_ratio_D",csBankCcy);
+					GetField_Double(hFundIn,csTag,&dTmpAmt);
+DEBUGLOG(("before adding: %s_ratio_D = [%f]\n",csBankCcy,dTmpAmt));
+					PutField_Double(hFundIn,csTag,dTmpAmt+dOrgBankAmt);
+DEBUGLOG(("after adding: %s_ratio_D = [%f]\n",csBankCcy,dTmpAmt+dOrgBankAmt));
+					dTmpAmt = 0.0;
+					sprintf(csTag,"%s%s_ratio_N",csFromCcy,csBankCcy);
+					GetField_Double(hFundIn,csTag,&dTmpAmt);
+DEBUGLOG(("before adding: %s%s_ratio_N = [%f]\n",csFromCcy,csBankCcy,dTmpAmt));
+					PutField_Double(hFundIn,csTag,dTmpAmt+dOrgBankAmt);
+DEBUGLOG(("after adding: %s%s_ratio_N = [%f]\n",csFromCcy,csBankCcy,dTmpAmt+dOrgBankAmt));
+				}
+				else{
+					dRate_N = dOrgRate;
+					dRate_D = 1;
+				}
+
+				sprintf(csTag,"cal_rate_n_%d",i);
+				PutField_Double(hFundIn,csTag,dRate_N);
+DEBUGLOG(("Process Balance : cal_rate_n = [%f]\n", dRate_N));
+
+				sprintf(csTag,"cal_rate_d_%d",i);
+				PutField_Double(hFundIn,csTag,dRate_D);
+DEBUGLOG(("Process Balance : cal_rate_d = [%f]\n", dRate_D));
+				
+
+				dRate_N=0;
+				dRate_D=0;
+//				dRatio_N=0;
+
+				i++;
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+///////////////////////////////
+
+//	PutField_Double(hFundIn,"cal_ratio_d",dRatio_D);
+//DEBUGLOG(("Process Balance: cal_ratio_d = [%f]\n", dRatio_D));
+
+	PutField_Int(hFundIn,"total_record",i);
+DEBUGLOG(("Process Balance: total_record = [%d]\n", i));
+
+	iRet = UpdateRateRatio(hFundIn);
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Process Balance Normal Exit\n"));
+	}
+	else{
+DEBUGLOG(("Process Balance Error [%d]\n",iRet));
+ERRLOG("fundin_balance::Process Balance Error [%d]\n",iRet);
+	}
+
+	FREE_ME(csTmp);
+	FREE_ME(csBuf);
+	FREE_ME(hRec);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	return iRet;
+
+
+}
+
+
+int UpdateRateRatio(const hash_t* hFundIn)
+{
+	int	iRet = PD_OK;
+	
+	double	dNumerator=0.0;
+	double	dDenominator=0.0;
+	double	dRate=0.0;
+	double	dRatio=0.0;
+	double	dOrgRate=0.0;
+	double	dOrgRatio=0.0;
+	double	dOrgDspBal=0.0;
+	double	dDspBal=0.0;
+	double	dTmp=0.0;
+	double	dFundinAmt=0.0;
+	double	dBankAmt=0.0;
+	int	iTotal=0;
+	int	i=0;
+	char	*csTmp;
+	char	*csBankCcy;
+	char	*csFromCcy;
+	char	csTag[PD_TAG_LEN +1];
+
+	hash_t *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+	
+DEBUGLOG(("*****Update Rate/Ratio Start*****\n"));
+
+	if(GetField_Int(hFundIn,"total_record",&iTotal)){
+DEBUGLOG(("Update RateRatio: total_record = [%d]\n", iTotal));
+	}
+
+	for(i=0; i<iTotal; i++){
+
+DEBUGLOG(("Update RateRatio: process record[%d]\n", i));
+
+////fundin_id////
+		sprintf(csTag,"fundin_id_%d",i);
+                if(GetField_CString(hFundIn,csTag,&csTmp)){
+			PutField_CString(hTxn,"fundsin_id",csTmp);
+DEBUGLOG(("Update RateRatio: fundin_id = [%s]\n", csTmp));
+		}
+
+////fundin_date////
+		//sprintf(csTag,"fundin_date_%d",i);
+                if(GetField_CString(hFundIn,"fundin_date",&csTmp)){
+			PutField_CString(hTxn,"fundin_date",csTmp);
+DEBUGLOG(("Update RateRatio: fundin_date = [%s]\n", csTmp));
+                }
+
+////fundin_ccy////
+		sprintf(csTag,"fundin_ccy_%d",i);
+                if(GetField_CString(hFundIn,csTag,&csFromCcy)){
+			PutField_CString(hTxn,"from_ccy",csFromCcy);
+			PutField_CString(hTxn,"fundin_ccy",csFromCcy);
+DEBUGLOG(("Update RateRatio: fundin_ccy = [%s]\n", csFromCcy));
+		}
+
+////fundin_amt////
+		sprintf(csTag,"fundin_amount_%d",i);
+		if(!GetField_Double(hFundIn,csTag,&dFundinAmt)){
+			dFundinAmt = 0;
+		}
+		PutField_Double(hTxn,"fundin_amt",dFundinAmt);
+DEBUGLOG(("Update RateRatio: fundin_amt = [%f]\n", dFundinAmt));
+
+////bank_ccy////
+		sprintf(csTag,"bank_ccy_%d",i);
+		if(GetField_CString(hFundIn,csTag,&csBankCcy)){
+			PutField_CString(hTxn,"bank_ccy",csBankCcy);
+DEBUGLOG(("Update RateRatio: bank_ccy = [%s]\n", csBankCcy));
+		}
+
+////bank_amt////
+		sprintf(csTag,"bank_amount_%d",i);
+		if(!GetField_Double(hFundIn,csTag,&dBankAmt)){
+			dBankAmt = 0;
+		}
+		PutField_Double(hTxn,"bank_amt",dBankAmt);
+DEBUGLOG(("Update RateRatio: bank_amt = [%f] (new)\n", dBankAmt));
+
+////org_dsp_bal////
+		sprintf(csTag,"org_dsp_bal_%d",i);
+                if(GetField_Double(hFundIn,csTag,&dOrgDspBal)){
+DEBUGLOG(("Update RateRatio: org_dsp_bal = [%f]\n", dOrgDspBal));
+			dDspBal = dBankAmt + dOrgDspBal;
+			PutField_Double(hTxn,"dsp_bal",dBankAmt);
+DEBUGLOG(("Update RateRatio: bank_bal = [%f] (total)\n", dDspBal));
+		}
+
+		sprintf(csTag,"org_bank_amt_%d",i);
+                if(GetField_Double(hFundIn,csTag,&dTmp)){
+                        dBankAmt += dTmp;
+DEBUGLOG(("Update RateRatio: bank_amt = [%f] (org)\n", dTmp));
+                }
+		PutField_Double(hTxn,"bank_bal",dBankAmt);
+DEBUGLOG(("Update RateRatio: bank_bal = [%f] (total)\n", dBankAmt));
+
+
+////org_rate////
+		sprintf(csTag,"org_rate_%d",i);
+                if(GetField_Double(hFundIn,csTag,&dOrgRate)){
+                        PutField_Double(hTxn,"org_rate",dOrgRate);
+DEBUGLOG(("Update RateRatio: org_rate = [%f]\n", dOrgRate));
+                }
+
+////org_ratio////
+		sprintf(csTag,"org_ratio_%d",i);
+                if(GetField_Double(hFundIn,csTag,&dOrgRatio)){
+                        PutField_Double(hTxn,"org_ratio",dOrgRatio);
+DEBUGLOG(("Update RateRatio: org_ratio = [%f]\n", dOrgRatio));
+                }
+
+
+////rate////
+		sprintf(csTag,"cal_rate_n_%d",i);
+                if(GetField_Double(hFundIn,csTag,&dNumerator)){
+			if(dNumerator!=0){
+				sprintf(csTag,"cal_rate_d_%d",i);
+                		if(!GetField_Double(hFundIn,csTag,&dDenominator)){
+DEBUGLOG(("Failed to calculate rate!!!!\n"));
+ERRLOG("fundin_balance::Failed to calculate rate!!!!\n");
+					iRet = INT_ERR;
+				}
+			}
+			
+		}
+		else{
+DEBUGLOG(("Failed to calculate rate!!!!\n"));
+ERRLOG("fundin_balance::Failed to calculate rate!!!!\n");
+			iRet = INT_ERR;
+		}
+
+
+		if(iRet==PD_OK){
+			if((dNumerator==0)||(dNumerator==0)){
+				dRate = 0;
+			}
+			else{
+				dRate = newround((dNumerator/dDenominator),PD_ROUND_UP_DEC);
+			}
+
+			if(dRate<0){
+DEBUGLOG(("Calculate rate Error!!!!\n"));
+ERRLOG("fundin_balance::Calculate rate Error!!!!\n");
+				iRet = INT_ERR;
+			}
+			else{
+				PutField_Double(hTxn,"rate",dRate);
+DEBUGLOG(("Update RateRatio: rate = [%f]\n", dRate));
+			}
+		}
+
+////ratio////
+		dDenominator = 0.0;
+		sprintf(csTag,"%s_ratio_D",csBankCcy);
+		GetField_Double(hFundIn,csTag,&dDenominator);
+DEBUGLOG(("before Calculation: %s_ratio_D = [%f]\n",csBankCcy,dDenominator));
+		dNumerator = 0.0;
+		sprintf(csTag,"%s%s_ratio_N",csFromCcy,csBankCcy);
+		GetField_Double(hFundIn,csTag,&dNumerator);
+DEBUGLOG(("before Calculation: %s%s_ratio_N = [%f]\n",csFromCcy,csBankCcy,dNumerator));
+/*
+		sprintf(csTag,"cal_ratio_n_%d",i);
+                if(GetField_Double(hFundIn,csTag,&dNumerator)){
+			if(!GetField_Double(hFundIn,"cal_ratio_d",&dDenominator)){
+DEBUGLOG(("Failed to calculate ratio!!!!\n"));
+ERRLOG("fundin_balance::Failed to calculate ratio!!!!\n");
+				iRet = INT_ERR;
+			}
+		}
+		else{
+DEBUGLOG(("Failed to calculate ratio!!!!\n"));
+ERRLOG("fundin_balance::Failed to calculate ratio!!!!\n");
+			iRet = INT_ERR;
+		}
+*/
+		if((iRet==PD_OK)&&(dDenominator>0.0)){
+			dRatio = newround((dNumerator/dDenominator),PD_ROUND_UP_DEC);
+			if(dRatio<0){
+DEBUGLOG(("Calculate ratio Error!!!!\n"));
+ERRLOG("fundin_balance::Calculate ratio Error!!!!\n");
+				iRet = INT_ERR;
+			}
+			else{
+				PutField_Double(hTxn,"ratio",dRatio);
+DEBUGLOG(("Update RateRatio: ratio = [%f]\n", dRatio));
+			}
+		}
+		else{
+			PutField_Double(hTxn,"ratio",0.0);
+DEBUGLOG(("Update RateRatio: ratio = [0.0]\n"));
+		}
+
+		PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+		PutField_CString(hTxn,"cal_user",PD_UPDATE_USER);
+
+		if(iRet==PD_OK){
+DEBUGLOG(("*****Update SebBalance table*****\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBSebBalance","Add");
+			iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }
+
+		if(iRet==PD_OK){
+			if(dFundinAmt!=0){
+DEBUGLOG(("*****Update FundsIn table*****\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBFundsIn","UpdateCal");
+				iRet = (unsigned long)(*DBObjPtr)(hTxn);
+			}
+		}
+
+		if(iRet==PD_OK){
+DEBUGLOG(("*****Update FundsIn History table*****\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBFundsInHistory","Add");
+			iRet = (unsigned long)(*DBObjPtr)(hTxn);
+		}
+	}
+
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Update RateRatio Normal Exit\n"));
+	}
+	else{
+DEBUGLOG(("Update RateRatio Error [%d]\n",iRet));
+ERRLOG("fundin_balance::Update RateRatio Error [%d]\n",iRet);
+	}
+
+	FREE_ME(hTxn);
+	return iRet;
+}
+
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+	strcpy(cs_fundin_date,"");
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_fundin_date, optarg);
+                                break;
+                        default:
+                                return INT_INVALID_TXN;
+                }
+        }
+
+        if (!strcmp(cs_fundin_date,"")) 
+                return INT_TRASMISSION_TIME_NOT_FOUND;
+
+        return SUCCESS;
+}

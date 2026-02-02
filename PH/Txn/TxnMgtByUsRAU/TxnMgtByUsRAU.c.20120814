@@ -1,0 +1,184 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/09/12              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsRAU.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsRAU(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char    *csUser = NULL;
+	char	*csMerchantId = NULL;
+	char	*csTxnCountry = NULL;
+	char	*csTxnCcy = NULL;
+	char	*csServiceCode = NULL;
+        char    *csPhDate = NULL;
+        int     iDayOfWeek;
+	char	*csTmp = NULL;
+	char	cParty;
+	double	dAmt = 0.0;
+	double	dMerchantAmt = 0.0;
+
+	
+	if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csUser));
+		PutField_CString(hContext,"update_user",csUser);
+	}
+
+	if(GetField_CString(hRequest,"merchant_id",&csMerchantId)){
+DEBUGLOG(("Authorize::merchant_id= [%s]\n",csMerchantId));
+		PutField_CString(hContext,"merchant_id",csMerchantId);
+	}
+	else{
+DEBUGLOG(("Authorize::merchant_id not found!!\n"));
+ERRLOG("TxnMgtByUsRAU::Authorize::merchant_id not found!!\n");
+		iRet=INT_MERCHANT_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTxnCcy));
+		//PutField_CString(hResponse,"txn_ccy",csTxnCcy);
+		PutField_CString(hContext,"request_ccy",csTxnCcy);
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMgtByUsRAU::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"txn_country",&csTxnCountry)){
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTxnCountry));
+		PutField_CString(hContext,"txn_country",csTxnCountry);
+	}
+	else{
+DEBUGLOG(("Authorize::country not found!!\n"));
+ERRLOG("TxnMgtByUsRAU::Authorize::country not found!!\n");
+		iRet=INT_TXN_COUNTRY_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"service_code",&csServiceCode)){
+DEBUGLOG(("Authorize::sevice_code= [%s]\n",csServiceCode));
+		PutField_CString(hContext,"service_code",csServiceCode);
+	}
+        else{
+DEBUGLOG(("Authorize::service_code not found!!\n"));
+ERRLOG("TxnMgtByUsRAU::Authorize::service_code not found!!\n");
+                iRet=INT_SERVICE_CODE_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+
+
+        if(GetField_CString(hRequest,"day_of_week",&csTmp)){
+DEBUGLOG(("Authorize::day_of_week= [%s]\n",csTmp));
+                iDayOfWeek = atoi(csTmp);
+DEBUGLOG(("Authorize::iDayOfWeek= [%d]\n",iDayOfWeek));
+                PutField_Int(hContext,"day_of_week",iDayOfWeek);
+        }
+        else{
+                if(GetField_CString(hContext,"PHDATE",&csPhDate)){
+DEBUGLOG(("Authorize::phdate= [%s]\n",csPhDate));
+
+                        iDayOfWeek = day_of_week((const unsigned char *)csPhDate);
+DEBUGLOG(("Authorize::iDayOfWeek= [%i]\n",iDayOfWeek));
+
+                        PutField_Int(hContext,"day_of_week",iDayOfWeek);
+                }
+                else{
+DEBUGLOG(("Authorize::phdate not found!!\n"));
+ERRLOG("TxnMgtByUsRAU::Authorize::phdate not found!!\n");
+                        iRet=INT_PHDATE_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+                }
+        }
+
+
+	if(GetField_Double(hContext,"txn_amt",&dAmt)){
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMgtByUsRAU::Authorize::txn_amt not found!!\n");
+		iRet=INT_PAY_AMOUNT_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"party_type",&csTmp)){
+		cParty = csTmp[0];
+DEBUGLOG(("Authorize:: action_party = [%c]\n",cParty));
+	}
+	else{
+		cParty = PD_TYPE_MERCHANT;
+DEBUGLOG(("Authorize:: action_party(default) = [%c]\n",cParty));
+	}
+
+	if(iRet==PD_OK){
+		if(cParty!=PD_TYPE_MERCHANT){
+DEBUGLOG(("Authorize::Call DBMerchantReservedAmt: UpdateReserved\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","UpdateReserved");
+			if((unsigned long) ((*DBObjPtr)(csMerchantId,csTxnCountry,csTxnCcy,
+							csServiceCode,iDayOfWeek,dAmt,csUser))!=PD_OK){
+
+                        	iRet = INT_ERR;
+			}
+		}
+		else{
+DEBUGLOG(("Authorize::Call DBMerchantReservedAmt: SetPreferLimit\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","SetPreferLimit");
+			if((unsigned long) ((*DBObjPtr)(csMerchantId,csTxnCountry,csTxnCcy,
+							csServiceCode,iDayOfWeek,dAmt,csUser))!=PD_OK){
+
+				iRet = INT_ERR;
+			}
+		}
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantReservedAmt: GetAllReservedAmt\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","GetAllReservedAmt");
+                if((unsigned long) ((*DBObjPtr)(csMerchantId,csTxnCountry,csTxnCcy,
+                                                csServiceCode,iDayOfWeek,&dAmt,&dMerchantAmt))!=PD_OK){
+                        iRet = INT_ERR;
+		}
+                else{   
+                        PutField_Double(hResponse,"reserved_amt", dAmt);
+                        PutField_Double(hResponse,"merchant_amt", dMerchantAmt);
+                }
+         
+        }
+
+DEBUGLOG(("TxnMgtByUsRAU Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

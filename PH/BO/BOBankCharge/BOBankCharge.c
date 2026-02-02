@@ -1,0 +1,297 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/12/17              Elvis Wong
+Refine                                             2014/12/27              David Wong
+Edit CalBankCharge() formula                       2015/03/31              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOBankCharge.h"
+
+char cDebug;
+OBJPTR(DB);
+
+void BOBankCharge(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+double CalBankCharge(const char* csCcy, char cType, double dTxnAmt, double dValue, double dAddValue, double dMin, double dMax);
+int FindBankCharge(hash_t *hRls);
+
+int GetTxnBankCharge(hash_t *hRls)
+{
+	int iRet = PD_OK;
+
+	double	dTxnAmt = 0.0;
+	double	dTmp = 0.0;
+	char	*csBankCode;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csChannelCode;
+	char	*csTxnCode;
+
+	// txn_amt
+	if (iRet == PD_OK) {
+		if (GetField_Double(hRls, "txn_amt", &dTxnAmt)) {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_amt = [%f]\n", dTxnAmt));
+		} else {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_amt is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// bank_code
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRls, "bank_code", &csBankCode)) {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() bank_code = [%s]\n", csBankCode));
+		} else {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() bank_code is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// txn_country
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRls, "txn_country", &csTxnCountry)) {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_country = [%s]\n", csTxnCountry));
+			PutField_CString(hRls, "country_id", csTxnCountry);
+		} else {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_country is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// txn_ccy
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRls, "txn_ccy", &csTxnCcy)) {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_ccy = [%s]\n", csTxnCcy));
+			PutField_CString(hRls, "ccy", csTxnCcy);
+		} else {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_ccy is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// channel_code
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRls, "channel_code", &csChannelCode)) {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() channel_code = [%s]\n", csChannelCode));
+		} else {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() channel_code is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// txn_code
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRls, "txn_code", &csTxnCode)) {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_code = [%s]\n", csTxnCode));
+		} else {
+DEBUGLOG(("BOBankCharge::GetTxnBankCharge() txn_code is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// call FindBankCharge
+	if (iRet == PD_OK) {
+		iRet = FindBankCharge(hRls);
+DEBUGLOG(("BOBankCharge: Call FindBankCharge = [%d]\n", iRet));
+		if (GetField_Double(hRls, "txn_bank_charge", &dTmp)) {
+DEBUGLOG(("BOBankCharge: txn_bank_charge = [%lf]\n", dTmp));
+		}
+	}
+
+DEBUGLOG(("BOBankCharge exit = [%d]\n", iRet));
+	return iRet;
+}
+
+double CalBankCharge(const char* csCcy, char cType, double dTxnAmt, double dValue, double dAddValue, double dMin, double dMax)
+{
+	double dResult = 0.0;
+
+DEBUGLOG(("BOBankCharge:CalBankCharge() [%c] TxnAmt[%lf] Value[%lf] AddValue[%lf] i[%lf] x[%lf]\n", cType, dTxnAmt, dValue, dAddValue, dMin, dMax));
+
+	if (cType == PD_PRECENTAGE) {
+DEBUGLOG(("BOBankCharge:CalBankCharge() [%c]\n", PD_PRECENTAGE));
+		double dTmp = 0;
+		dTmp = dTxnAmt - (dTxnAmt / (1 + dValue / 100));
+		dResult = newround(dTmp, PD_DECIMAL_LEN);
+	}
+	else if (cType == PD_FIXED_AMOUNT) {
+DEBUGLOG(("BOBankCharge:CalBankCharge() [%c]\n", PD_FIXED_AMOUNT));
+		dResult = newround(dValue, PD_DECIMAL_LEN);
+	}
+	else if (cType == PD_PRECENT_WITH_FIX) {
+DEBUGLOG(("BOBankCharge:CalBankCharge() [%c]\n", PD_PRECENT_WITH_FIX));
+		double dTmp = 0;
+		dTmp = ((dTxnAmt - dAddValue) - ((dTxnAmt - dAddValue) / (1 + dValue / 100))) + dAddValue;
+		dResult = newround(dTmp, PD_DECIMAL_LEN);
+	}
+
+DEBUGLOG(("BOBankCharge:CalBankCharge() BankCharge = [%lf]\n", dResult));
+
+	if (dMin >= 1) {
+		if (dResult < dMin) {
+DEBUGLOG(("BOBankCharge:CalBankCharge() BankCharge = [%lf], min = [%lf]\n", dResult, dMin));
+			dResult = dMin;
+		}
+	}
+
+	if (dMax >= 1) {
+		if (dResult > dMax) {
+DEBUGLOG(("BOBankCharge:CalBankCharge() BankCharge = [%lf], max = [%lf]\n", dResult, dMax));
+			dResult = dMax;
+		}
+	}
+
+DEBUGLOG(("BOBankCharge:CalBankCharge() after min max BankCharge = [%lf]\n", dResult));
+
+	DBObjPtr = CreateObj(DBPtr, "DBCurrency", "IsSupportDecimal");
+	if ((unsigned long)((DBObjPtr)(csCcy)) != PD_TRUE) {
+DEBUGLOG(("BOBankCharge:CalBankCharge() [%s] doesn't support decimal\n", csCcy));
+		dResult = newround(dResult, 0);
+DEBUGLOG(("BOBankCharge:CalBankCharge() new min max Fee = [%lf]\n", dResult));
+	}
+
+	return dResult;
+}
+
+int FindBankCharge(hash_t *hRls)
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csCcy;
+	double dTxnAmt;
+	double dTierMinVal;
+	double dTierMaxVal;
+	int iRuleId;
+	int iSelectedRuleId = 0;
+	char cType;
+	double dValue;
+	double dAddValue;
+	double dMinValue;
+	double dMaxValue;
+	double dBankCharge;
+
+	hash_t *hRec;
+
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	// ccy
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRls, "ccy", &csCcy)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() ccy = [%s]\n", csCcy));
+		} else {
+DEBUGLOG(("BOBankCharge::FindBankCharge() ccy is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// txn_amt
+	if (iRet == PD_OK) {
+		if (GetField_Double(hRls, "txn_amt", &dTxnAmt)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() txn_amt = [%f]\n", dTxnAmt));
+		} else {
+DEBUGLOG(("BOBankCharge::FindBankCharge() txn_amt is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBRuleTxnBankCharge", "Find");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hRls, rRecordSet);
+		if (iTmpRet == PD_ERR) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() call DBRuleTxnBankCharge::Find() failed!!!\n"));
+			iRet = PD_ERR;
+		} else if (iTmpRet == PD_FOUND) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				dTierMinVal = 0.0;
+				dTierMaxVal = 0.0;
+				iRuleId = 0;
+
+				// tier_min_value
+				if (GetField_Double(hRec, "tier_min_value", &dTierMinVal)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() tier_min_value = [%f]\n", dTierMinVal));
+				}
+
+				// tier_max_value
+				if (GetField_Double(hRec, "tier_max_value", &dTierMaxVal)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() tier_max_value = [%f]\n", dTierMaxVal));
+				}
+
+				// rule_id
+				if (GetField_Int(hRec, "rule_id", &iRuleId)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() rule_id = [%d]\n", iRuleId));
+				}
+
+				if (dTxnAmt > dTierMinVal && (dTxnAmt <= dTierMaxVal || dTierMaxVal == 0.0)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() tier_min_value[%f] tier_max_value[%f] is selected\n", dTierMinVal, dTierMaxVal));
+					iSelectedRuleId = iRuleId;
+
+					// type
+					if (GetField_Char(hRec, "type", &cType)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() type = [%c]\n", cType));
+					}
+
+					// value
+					if (GetField_Double(hRec, "value", &dValue)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() value = [%lf]\n", dValue));
+					}
+
+					// add_value
+					if (GetField_Double(hRec, "add_value", &dAddValue)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() add_value = [%lf]\n", dAddValue));
+					}
+
+					// min_value
+					if (GetField_Double(hRec, "min_value", &dMinValue)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() min_value = [%lf]\n", dMinValue));
+					}
+
+					// max_value
+					if (GetField_Double(hRec, "max_value", &dMaxValue)) {
+DEBUGLOG(("BOBankCharge::FindBankCharge() max_value = [%lf]\n", dMaxValue));
+					}
+
+					break;
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (iSelectedRuleId != 0) {
+			// CalBankCharge
+			dBankCharge = CalBankCharge(csCcy, cType, dTxnAmt, dValue, dAddValue, dMinValue, dMaxValue);
+DEBUGLOG(("BOBankCharge:: bank_charge = [%lf]\n", dBankCharge));
+		} else {
+DEBUGLOG(("BOBankCharge:: no bank_charge\n"));
+			dBankCharge = 0.0;
+		}
+		PutField_Double(hRls, "txn_bank_charge", dBankCharge);
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	return iRet;
+}

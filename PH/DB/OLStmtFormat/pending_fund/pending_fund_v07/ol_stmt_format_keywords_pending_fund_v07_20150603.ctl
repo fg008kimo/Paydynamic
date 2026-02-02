@@ -1,0 +1,139 @@
+LOAD DATA
+ CHARACTERSET UTF8
+ INFILE *
+ APPEND
+ INTO TABLE OL_STMT_FORMAT_KEYWORDS
+ WHEN (1:2) <> '--'
+ FIELDS TERMINATED BY '|' OPTIONALLY ENCLOSED BY '"'
+ TRAILING NULLCOLS
+(
+ OLFK_INT_BANK_CODE,
+ OLFK_FORMAT_TYPE,
+ OLFK_FORMAT_VALUE,
+ OLFK_FORMAT_TXN_CODE,
+ OLFK_FORMAT_TEMPLATE "TRIM(:OLFK_FORMAT_TEMPLATE)",
+ OLFK_FORMAT_COL_NAME "TRIM(:OLFK_FORMAT_COL_NAME)",
+ OLFK_DISPLAY_ORDER,
+
+ OLFK_DISABLED CONSTANT 0,
+ OLFK_CREATE_TIMESTAMP "SYSDATE",
+ OLFK_CREATE_USER CONSTANT "SYSTEM",
+ OLFK_UPDATE_TIMESTAMP "SYSDATE",
+ OLFK_UPDATE_USER CONSTANT "SYSTEM"
+)
+BEGINDATA
+--INT_BANK_CODE|FORMAT_TYPE|FORMAT_VALUE|FORMAT_TXN_CODE|FORMAT_TEMPLATE|FORMAT_COL_NAME|DISPLAY_ORDER
+086000|TXN_CODE_PDF|001|SNF|S/I to Pending Fund from Online|Transaction Type*|1
+886000|TXN_CODE_PDF|001|SNF|S/I to Pending Fund from Online|Transaction Type*|1
+086000|TXN_CODE_PDF|002|SNF|S/I to Pending Fund from Intermediate|Transaction Type*|2
+886000|TXN_CODE_PDF|002|SNF|S/I to Pending Fund from Intermediate|Transaction Type*|2
+086000|TXN_CODE_PDF|003|SNF|S/I to Pending Fund from Payout|Transaction Type*|3
+886000|TXN_CODE_PDF|003|SNF|S/I to Pending Fund from Payout|Transaction Type*|3
+086000|TXN_CODE_PDF|004|SUF|S/O from Pending Fund to Intermediate|Transaction Type*|1
+886000|TXN_CODE_PDF|004|SUF|S/O from Pending Fund to Intermediate|Transaction Type*|1
+086000|TXN_CODE_PDF|005|SUF|S/O from Pending Fund to Payout|Transaction Type*|2
+886000|TXN_CODE_PDF|005|SUF|S/O from Pending Fund to Payout|Transaction Type*|2
+086000|TXN_CODE_PDF|006|OPT|PSP Settlement|Transaction Type*|1
+886000|TXN_CODE_PDF|006|OPT|PSP Settlement|Transaction Type*|1
+086000|TXN_CODE_PDF|007|OBP|Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|007|OBP|Payout (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|008|OVC|Overpaid Payout Cr Adj (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|008|OVC|Overpaid Payout Cr Adj (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|009|OVD|Overpaid Payout Dr Adj (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|009|OVD|Overpaid Payout Dr Adj (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|010|OFC|PSP Over-Settlement Cr Adj|Transaction Type*|2
+886000|TXN_CODE_PDF|010|OFC|PSP Over-Settlement Cr Adj|Transaction Type*|2
+086000|TXN_CODE_PDF|011|CGP|Provider Charge|Transaction Type*|1
+886000|TXN_CODE_PDF|011|CGP|Provider Charge|Transaction Type*|1
+086000|TXN_CODE_PDF|012|OPC|PSP Prepaid from Online|Transaction Type*|1
+886000|TXN_CODE_PDF|012|OPC|PSP Prepaid from Online|Transaction Type*|1
+086000|TXN_CODE_PDF|013|OPD|Prepaid Debit Adjustment|Transaction Type*|1
+886000|TXN_CODE_PDF|013|OPD|Prepaid Debit Adjustment|Transaction Type*|1
+086000|TXN_CODE_PDF|014|PPC|Overpaid Provider Charge Cr Adj|Transaction Type*|1
+886000|TXN_CODE_PDF|014|PPC|Overpaid Provider Charge Cr Adj|Transaction Type*|1
+086000|TXN_CODE_PDF|015|CPD|Provider Charge Discount|Transaction Type*|1
+886000|TXN_CODE_PDF|015|CPD|Provider Charge Discount|Transaction Type*|1
+086000|TXN_CODE_PDF|016|VUF|RTN S/O from Pending Fund to Intermediate|Transaction Type*|1
+886000|TXN_CODE_PDF|016|VUF|RTN S/O from Pending Fund to Intermediate|Transaction Type*|1
+086000|TXN_CODE_PDF|017|VUF|RTN S/O from Pending Fund to Payout|Transaction Type*|2
+886000|TXN_CODE_PDF|017|VUF|RTN S/O from Pending Fund to Payout|Transaction Type*|2
+086000|TXN_CODE_PDF|018|UBC|Unknown credits|Transaction Type*|1
+886000|TXN_CODE_PDF|018|UBC|Unknown credits|Transaction Type*|1
+086000|TXN_CODE_PDF|019|UBD|Unknown debits|Transaction Type*|1
+886000|TXN_CODE_PDF|019|UBD|Unknown debits|Transaction Type*|1
+886000|TXN_CODE_PDF|020|CPO|Provider Charge Consolidated|Transaction Type*|1
+086000|TXN_CODE_PDF|020|CPO|Provider Charge Consolidated|Transaction Type*|1
+886000|TXN_CODE_PDF|021|XPT|Void PSP Settlement|Transaction Type*|1
+086000|TXN_CODE_PDF|021|XPT|Void PSP Settlement|Transaction Type*|1
+886000|TXN_CODE_PDF|022|XPG|Void Payout (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|022|XPG|Void Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|023|XVC|Void Overpaid Payout Cr Adj (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|023|XVC|Void Overpaid Payout Cr Adj (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|024|XFC|Void PSP Over-Settlement Cr Adj|Transaction Type*|1
+086000|TXN_CODE_PDF|024|XFC|Void PSP Over-Settlement Cr Adj|Transaction Type*|1
+886000|TXN_CODE_PDF|025|XGP|Void Provider Charge|Transaction Type*|1
+086000|TXN_CODE_PDF|025|XGP|Void Provider Charge|Transaction Type*|1
+886000|TXN_CODE_PDF|026|XCO|Void Provider Charge Consolidated|Transaction Type*|1
+086000|TXN_CODE_PDF|026|XCO|Void Provider Charge Consolidated|Transaction Type*|1
+886000|TXN_CODE_PDF|027|XPC|Void Overpaid Provider Charge Cr Adj|Transaction Type*|1
+086000|TXN_CODE_PDF|027|XPC|Void Overpaid Provider Charge Cr Adj|Transaction Type*|1
+886000|TXN_CODE_PDF|028|XCD|Void Provider Charge Discount|Transaction Type*|1
+086000|TXN_CODE_PDF|028|XCD|Void Provider Charge Discount|Transaction Type*|1
+086000|TXN_CODE_PDF|029|OVG|Returned Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|029|OVG|Returned Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|030|OSF|Overtime Service Fee (-)|Transaction Type*|1
+086000|TXN_CODE_PDF|030|OSF|Overtime Service Fee (-)|Transaction Type*|1
+886000|TXN_CODE_PDF|031|APF|New Account Purchase Fee (-)|Transaction Type*|1
+086000|TXN_CODE_PDF|031|APF|New Account Purchase Fee (-)|Transaction Type*|1
+886000|TXN_CODE_PDF|032|MPC|MR Provider Charge|Transaction Type*|1
+086000|TXN_CODE_PDF|032|MPC|MR Provider Charge|Transaction Type*|1
+886000|TXN_CODE_PDF|033|MPA|MR Payout (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|033|MPA|MR Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|034|MRO|MR Returned Sweep Out|Transaction Type*|1
+086000|TXN_CODE_PDF|034|MRO|MR Returned Sweep Out|Transaction Type*|1
+886000|TXN_CODE_PDF|035|MWI|MR Sweep In|Transaction Type*|1
+086000|TXN_CODE_PDF|035|MWI|MR Sweep In|Transaction Type*|1
+886000|TXN_CODE_PDF|036|MIO|MR Sweep In from Online|Transaction Type*|1
+086000|TXN_CODE_PDF|036|MIO|MR Sweep In from Online|Transaction Type*|1
+886000|TXN_CODE_PDF|037|MWO|MR Sweep Out|Transaction Type*|1
+086000|TXN_CODE_PDF|037|MWO|MR Sweep Out|Transaction Type*|1
+886000|TXN_CODE_PDF|038|XSF|Void Overtime Service Fee (-)|Transaction Type*|1
+086000|TXN_CODE_PDF|038|XSF|Void Overtime Service Fee (-)|Transaction Type*|1
+886000|TXN_CODE_PDF|039|XAF|Void New Account Purchase Fee (-)|Transaction Type*|1
+086000|TXN_CODE_PDF|039|XAF|Void New Account Purchase Fee (-)|Transaction Type*|1
+886000|TXN_CODE_PDF|040|XMC|Void MR Provider Charge|Transaction Type*|1
+086000|TXN_CODE_PDF|040|XMC|Void MR Provider Charge|Transaction Type*|1
+886000|TXN_CODE_PDF|041|XMA|Void MR Payout (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|041|XMA|Void MR Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|042|XMS|Void MR Returned Sweep Out|Transaction Type*|1
+086000|TXN_CODE_PDF|042|XMS|Void MR Returned Sweep Out|Transaction Type*|1
+886000|TXN_CODE_PDF|043|XMI|Void MR Sweep In|Transaction Type*|1
+086000|TXN_CODE_PDF|043|XMI|Void MR Sweep In|Transaction Type*|1
+886000|TXN_CODE_PDF|044|XMW|Void MR Sweep In from Online|Transaction Type*|1
+086000|TXN_CODE_PDF|044|XMW|Void MR Sweep In from Online|Transaction Type*|1
+886000|TXN_CODE_PDF|045|XMO|Void MR Sweep Out|Transaction Type*|1
+086000|TXN_CODE_PDF|045|XMO|Void MR Sweep Out|Transaction Type*|1
+886000|TXN_CODE_PDF|046|OPF|PSP Fund-in|Transaction Type*|1
+086000|TXN_CODE_PDF|046|OPF|PSP Fund-in|Transaction Type*|1
+886000|TXN_CODE_PDF|047|XPF|Void PSP Fund-in|Transaction Type*|1
+086000|TXN_CODE_PDF|047|XPF|Void PSP Fund-in|Transaction Type*|1
+086000|TXN_CODE_PDF|048|NEF|Void S/I to Pending Fund from Intermediate|Transaction Type*|1
+886000|TXN_CODE_PDF|048|NEF|Void S/I to Pending Fund from Intermediate|Transaction Type*|1
+086000|TXN_CODE_PDF|049|KXF|Void S/I to Pending Fund from Online|Transaction Type*|1
+886000|TXN_CODE_PDF|049|KXF|Void S/I to Pending Fund from Online|Transaction Type*|1
+086000|TXN_CODE_PDF|050|NPF|Void S/I to Pending Fund from Payout|Transaction Type*|1
+886000|TXN_CODE_PDF|050|NPF|Void S/I to Pending Fund from Payout|Transaction Type*|1
+886000|TXN_CODE_PDF|051|KFE|Void S/O from Pending Fund to Intermediate|Transaction Type*|1
+086000|TXN_CODE_PDF|051|KFE|Void S/O from Pending Fund to Intermediate|Transaction Type*|1
+886000|TXN_CODE_PDF|052|KFP|Void S/O from Pending Fund to Payout|Transaction Type*|1
+086000|TXN_CODE_PDF|052|KFP|Void S/O from Pending Fund to Payout|Transaction Type*|1
+086000|TXN_CODE_PDF|053|XVD|Void Overpaid Payout Dr Adj (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|053|XVD|Void Overpaid Payout Dr Adj (PSP)|Transaction Type*|1
+086000|TXN_CODE_PDF|054|QEF|S/I to Pending Fund from Intermediate(OFST)|Transaction Type*|1
+886000|TXN_CODE_PDF|054|QEF|S/I to Pending Fund from Intermediate(OFST)|Transaction Type*|1
+086000|TXN_CODE_PDF|055|QXF|S/I to Pending Fund from Online(OFST)|Transaction Type*|1
+886000|TXN_CODE_PDF|055|QXF|S/I to Pending Fund from Online(OFST)|Transaction Type*|1
+886000|TXN_CODE_PDF|056|QPF|S/I to Pending Fund from Payout(OFST)|Transaction Type*|1
+086000|TXN_CODE_PDF|056|QPF|S/I to Pending Fund from Payout(OFST)|Transaction Type*|1
+086000|TXN_CODE_PDF|057|XVG|Void Returned Payout (PSP)|Transaction Type*|1
+886000|TXN_CODE_PDF|057|XVG|Void Returned Payout (PSP)|Transaction Type*|1

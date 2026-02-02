@@ -1,0 +1,197 @@
+/*
+Partnerdelight (c)2016. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/01/16              Cody Chan
+*/
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <string.h>
+#include <ctype.h>
+#include "queue_utility.h"
+#include "OCKChannel.h"
+#include "utilitys.h"
+#include "common.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "mydb.h"
+#include "mq_db.h"
+#include "dbutility.h"
+#include "langconvert.h"
+
+#define PD_RETRY        'R'
+
+char	cDebug;
+
+void OCKChannel(char	cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+OBJPTR(DB);
+
+
+int     ResendAck(hash_t* hIn);
+int     process_resp_txn(hash_t *hContext,
+			   	const hex_t* inMsg);
+int	process_txn(hash_t *hContext,
+			   	const hex_t* inMsg,
+				hex_t *outMsg)
+{
+
+	int	iRet = INT_NO_ERR;
+
+	char*	csChannelCode;
+	char	cTxnType;
+	
+DEBUGLOG(("process_txn\n"));
+
+	GetField_Char(hContext,"txn_type",&cTxnType);
+DEBUGLOG(("txn type = [%c]\n",cTxnType));
+
+
+	if (GetField_CString(hContext,"channel_code",&csChannelCode)) {
+/* set default return channel code */
+DEBUGLOG(("channel code = [%s]\n",csChannelCode));
+	}
+
+	if (cTxnType ==  MQ_RESP ) {
+DEBUGLOG(("call process_resp_txn\n"));
+		return process_resp_txn(hContext,inMsg);
+	}
+	else 
+		return iRet;
+
+}
+
+int     process_resp_txn(hash_t *hContext,
+			   	const hex_t* inMsg)
+{
+	int	iRet = PD_OK;
+	hash_t  *hAck;
+	hash_t  *hCon;
+
+	char	cStatus;
+	char	csTxnSeq[PD_TXN_SEQ_LEN +1];;
+	char	csBatchTxnSeq[PD_TXN_SEQ_LEN +1];;
+
+DEBUGLOG(("process_resp_txn()\n"));
+
+	hAck = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hAck,0);
+	hCon = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hCon,0);
+	
+	iRet = inMsg->msg[0] - '0';
+	if (iRet == PD_OK)
+		cStatus = PD_COMPLETE;
+        else
+        	cStatus = PD_REJECT;
+
+
+	memcpy(csTxnSeq,&inMsg->msg[1],PD_TXN_SEQ_LEN);
+	csTxnSeq[PD_TXN_SEQ_LEN] = '\0';
+
+	memcpy(csBatchTxnSeq,&inMsg->msg[PD_TXN_SEQ_LEN +1],PD_TXN_SEQ_LEN);
+	csBatchTxnSeq[PD_TXN_SEQ_LEN] = '\0';
+
+DEBUGLOG(("process_resp_txn status = [%c] txn_seq = [%s] batch_txn_seq = [%s]\n",cStatus,csTxnSeq,csBatchTxnSeq));
+
+	PutField_CString(hAck,"org_txn_seq",csTxnSeq);
+	PutField_CString(hAck,"txn_seq",csBatchTxnSeq);
+        PutField_CString(hAck,"add_user",PD_UPDATE_USER);
+	PutField_Int(hAck,"internal_error",iRet);
+	PutField_Char(hAck,"status",cStatus);
+
+	PutField_CString(hCon,"txn_seq",csTxnSeq);
+	if (cStatus == PD_REJECT) {
+		PutField_CString(hCon,"sub_status",PD_PENDING_ACK_RETRY);
+		PutField_CString(hCon,"ack_status",PD_PENDING_ACK_RETRY);
+		ResendAck(hAck);
+	}
+	else {
+		PutField_CString(hCon,"sub_status",PD_ACK_TO_MERCHANT);
+		PutField_CString(hCon,"ack_status",PD_ACK_TO_MERCHANT);
+	}
+
+        DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","Update");
+        if ((*DBObjPtr)(hCon) != PD_OK) {
+		iRet = PD_ERR;
+	}
+
+        DBObjPtr = CreateObj(DBPtr,"DBOLTxnAckLog","Update");
+        if ((*DBObjPtr)(hAck) != PD_OK) {
+		iRet = PD_ERR;
+	}
+	else {
+		iRet = PD_OK;
+	}
+
+	
+
+DEBUGLOG(("process_resp_txn exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int     ResendAck(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csOrgTxnSeq;
+        char*   csOrgBatchTxnSeq;
+        char    csDateTime[PD_DATETIME_LEN + 1];
+        char    csDate[PD_DATE_LEN +1];
+        char    csTime[PD_TIME_LEN +1];
+        hash_t  *hReq;
+
+        hReq = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hReq,0);
+
+DEBUGLOG(("ResendAck Authorize()\n"));
+        if (GetField_CString(hIn,"org_txn_seq",&csOrgTxnSeq)) {
+DEBUGLOG(("TxnWebByUsRCK org_txn_seq = [%s]\n",csOrgTxnSeq));
+/* txn_seq */
+                PutField_CString(hReq,"txn_seq",csOrgTxnSeq);
+
+/* user */     // PutField_CString(hReq,"add_user",PD_UPDATE_USER);
+
+        	if (GetField_CString(hIn,"txn_seq",&csOrgBatchTxnSeq)) {
+                	PutField_CString(hReq,"batch_txn_seq",csOrgBatchTxnSeq);
+		}
+		else {
+DEBUGLOG(("TxnWebByUsRCK batch_txn_seq is missing!!!\n"));
+		}
+
+
+                strcpy(csDateTime,getdatetime());
+DEBUGLOG(("TxnWebByUsRCK local transmission date time = [%s]\n",csDateTime));
+
+                memcpy(csDate,csDateTime,PD_DATE_LEN);
+                csDate[PD_DATE_LEN] = '\0';
+/* tm_date */   PutField_CString(hReq,"local_tm_date",csDate);
+DEBUGLOG(("TxnWebByUsRCK local transmission date = [%s]\n",csDate));
+
+                memcpy(csTime,&csDateTime[PD_DATE_LEN],PD_DATE_LEN);
+                csTime[PD_TIME_LEN] = '\0';
+/* tm_time */   PutField_CString(hReq,"local_tm_time",csTime);
+DEBUGLOG(("TxnWebByUsRCK local transmission time = [%s]\n",csTime));
+
+/* status */
+                PutField_Char(hReq,"status",PD_RETRY);
+                DBObjPtr = CreateObj(DBPtr,"DBOLTxnAckRetry","Add");
+                iRet = (unsigned long) (*DBObjPtr)(hReq);
+        }
+        else
+                iRet = INT_ERR;
+
+        FREE_ME(hReq);
+DEBUGLOG(("ResendAck Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

@@ -1,0 +1,270 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version  					   2011/10/18		   Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmsByUsCOM.h"
+#include "myrecordset.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMmsByUsCOM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	//int	iCnt;
+	//int	iCheck;
+	char	*csPtr;
+	//char	*p;
+	char	*csTxnCountry;
+	double	dTmp;
+
+
+/* merchant id */
+	if(GetField_CString(hRequest,"merchant_id",&csPtr)){
+DEBUGLOG(("Authorize()merchant_id from request[%s]\n",csPtr));
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+		if(iRet!=PD_OK){
+DEBUGLOG(("Authorize()merchant_id Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() merchant_id Invalid\n");
+		}
+	}
+
+/* to merchant id */
+/*
+	if(GetField_CString(hRequest,"to_merchant_id",&csPtr) && iRet == PD_OK){
+DEBUGLOG(("Authorize() to_merchant_id from request[%s]\n",csPtr));
+		hash_t* hReq;
+		hReq = (hash_t*) malloc (sizeof(hash_t));	
+		hash_init(hReq,0);
+		PutField_CString(hReq,"merchant_id",csPtr);
+
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hReq);
+		if(iRet!=PD_OK){
+DEBUGLOG(("Authorize() to_merchant_id Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize()  to_merchant_id Invalid\n");
+		}
+		FREE_ME(hReq);
+	}
+*/
+/* txn amt */
+/*
+	if(GetField_CString(hRequest,"txn_amt",&csPtr) && iRet == PD_OK){
+		iCheck = PD_FALSE;
+		p = (char*)strchr(csPtr, '.');
+		if (p == NULL){
+			iCheck = is_numeric(csPtr);
+			if(iCheck!=PD_FALSE){
+				//dTmp = myctod(csPtr,strlen(csPtr) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+				if(sscanf(csPtr,"%lf",&dTmp)==1){
+					PutField_Double(hContext,"txn_amt",dTmp);
+DEBUGLOG(("Authorize() txn_amt = [%f]\n",dTmp));
+				}
+			}
+		}
+		else{
+			if(sscanf(csPtr,"%lf",&dTmp)==1){
+				PutField_Double(hContext,"txn_amt",dTmp);
+DEBUGLOG(("Authorize() txn_amt = [%f]\n",dTmp));
+				iCheck = PD_TRUE;
+			}
+		}	
+		if(iCheck==PD_FALSE){
+			iRet =  INT_INVALID_PAY_AMOUNT;
+                       	PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize()txn_amt Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() txn_amt Invalid\n");
+		}
+	}
+*/
+
+	if(GetField_CString(hRequest,"txn_amt",&csPtr) && iRet == PD_OK){       
+		int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize()txn_amt from request[%s]\n",csPtr));
+		iCheck = is_numeric(csPtr);
+                if(iCheck==PD_FALSE){
+               		iRet =  INT_INVALID_PAY_AMOUNT;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize()txn_amt Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() txn_amt Invalid\n");
+               	}     
+                else {  
+                        dTmp = myctod((const unsigned char *)csPtr,strlen(csPtr) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+               		PutField_Double(hContext,"txn_amt",dTmp);
+DEBUGLOG(("Authorize() txn_amt = [%f]\n",dTmp));
+                }
+	}
+
+
+/* txn ccy */
+        if(GetField_CString(hRequest,"txn_ccy",&csPtr) && iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+             	if ((unsigned long)(DBObjPtr)(csPtr) == FOUND) {
+DEBUGLOG(("Authorize() Found txn_ccy [%s]\n",csPtr));
+                }
+                else{
+               		iRet = INT_INVALID_CURRENCY_CODE;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_CURRENCY_CODE);
+DEBUGLOG(("Authorize() Currency code invalid [%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM:Authorize() Currency code invalid\n",csPtr);
+                }
+        }
+/* to txn ccy */
+/*
+        if(GetField_CString(hRequest,"to_txn_ccy",&csPtr) && iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+             	if ((unsigned long)(DBObjPtr)(csPtr) == FOUND) {
+DEBUGLOG(("Authorize() Found to_txn_ccy [%s]\n",csPtr));
+                }
+                else{
+               		iRet = INT_INVALID_CURRENCY_CODE;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_CURRENCY_CODE);
+DEBUGLOG(("Authorize() to Currency code invalid [%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM:Authorize() to Currency code invalid\n",csPtr);
+                }
+        }
+*/
+/* txn country */
+        if(GetField_CString(hRequest,"txn_country",&csTxnCountry) && iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBCountry","FindCountry");
+             	if ((unsigned long)(DBObjPtr)(csTxnCountry) == PD_FOUND) {
+DEBUGLOG(("Authorize() Found [%s]\n",csTxnCountry));
+                }
+                else{
+               		iRet = INT_TXN_COUNTRY_NOT_FOUND;
+                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() invalid country [%s]\n",csTxnCountry));
+ERRLOG("TxnMmsByUsCOM:Authorize() invalid country [%s]\n",csTxnCountry);
+                }
+
+/* service */
+		if(GetField_CString(hRequest,"service_code",&csPtr) && iRet == PD_OK){
+			DBObjPtr = CreateObj(DBPtr,"DBService","FindCountryByService");
+             		if ((unsigned long)(DBObjPtr)(csPtr,csTxnCountry) == PD_FOUND) {
+DEBUGLOG(("Authorize() Found Service [%s] for Country [%s]\n",csPtr,csTxnCountry));
+             	  	}
+               		else{
+               			iRet = INT_INVALID_SERVICE_CODE;
+                       		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() invalid service code[%s] for [%s]\n",csPtr,csTxnCountry));
+ERRLOG("TxnMmsByUsCOM:Authorize() invalid service code [%s] for [%s]\n",csPtr,csTxnCountry);
+               		}
+        	}
+	}
+
+/* total cnt */
+/*
+	if(GetField_CString(hRequest,"total_cnt",&csPtr) && iRet == PD_OK){
+		iCheck = is_numeric(csPtr);
+		if(iCheck==PD_FALSE){
+			iRet =  INT_INVALID_COUNT;
+                       	PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+		}
+		else {
+			iCnt = atoi(csPtr);
+DEBUGLOG(("Authorize() total_cnt = [%d]\n",iCnt));
+			PutField_Int(hContext,"total_cnt",iCnt);
+		}
+	}
+*/
+
+
+/* processing_cost */
+        if(GetField_CString(hRequest,"pc_amt",&csPtr) && iRet == PD_OK){
+                int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize() pc_amt from request[%s]\n",csPtr));
+                iCheck = is_numeric(csPtr);
+                if(iCheck==PD_FALSE){
+                        iRet =  INT_INVALID_PAY_AMOUNT;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize() pc_amt Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() pc_amt Invalid\n");
+                }
+                else {
+                        dTmp = myctod((const unsigned char *)csPtr,strlen(csPtr) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+                        PutField_Double(hContext,"pc_amt",dTmp);
+DEBUGLOG(("Authorize() pc_amt = [%f]\n",dTmp));
+                }
+        }
+
+/* bk_chrg */
+        if(GetField_CString(hRequest,"bk_chrg",&csPtr) && iRet == PD_OK){
+                int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize() bk_chrg from request[%s]\n",csPtr));
+                iCheck = is_numeric(csPtr);
+                if(iCheck==PD_FALSE){
+                        iRet =  INT_INVALID_PAY_AMOUNT;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize() bk_chrg Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() bk_chrg Invalid\n");
+                }
+                else {
+                        dTmp = myctod((const unsigned char *)csPtr,strlen(csPtr) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+                        PutField_Double(hContext,"bk_chrg",dTmp);
+DEBUGLOG(("Authorize() bk_chrg = [%f]\n",dTmp));
+                }
+        }
+
+/* adjustment */
+        if(GetField_CString(hRequest,"adj",&csPtr) && iRet == PD_OK){
+                int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize() adj from request[%s]\n",csPtr));
+                iCheck = is_numeric(csPtr);
+                if(iCheck==PD_FALSE){
+                        iRet =  INT_INVALID_PAY_AMOUNT;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize() adj Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() adj Invalid\n");
+                }
+                else {
+                        dTmp = myctod((const unsigned char *)csPtr,strlen(csPtr) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+                        PutField_Double(hContext,"adjustment",dTmp);
+DEBUGLOG(("Authorize() adjustment = [%f]\n",dTmp));
+                }
+        }
+
+/* bank_charger_refund */
+        if(GetField_CString(hRequest,"refund", &csPtr) && iRet == PD_OK){
+                int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize() refund from request[%s]\n",csPtr));
+                iCheck = is_numeric(csPtr);
+                if(iCheck==PD_FALSE){
+                        iRet =  INT_INVALID_PAY_AMOUNT;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize() refund Invalid[%s]\n",csPtr));
+ERRLOG("TxnMmsByUsCOM::Authorize() refund Invalid\n");
+                }
+                else {
+                        dTmp = myctod((const unsigned char *)csPtr,strlen(csPtr) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+                        PutField_Double(hContext,"bank_charge_refund",dTmp);
+DEBUGLOG(("Authorize() bank_charge_refund = [%f]\n",dTmp));
+                }
+        }
+
+
+
+
+DEBUGLOG(("Authorize() iRet = [%d]\n",iRet));
+	return iRet;
+}

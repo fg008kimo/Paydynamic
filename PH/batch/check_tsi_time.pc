@@ -1,0 +1,225 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/26              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cs_date[PD_DATE_LEN + 1];
+char    cs_second[PD_DATE_LEN + 1];
+char    cDebug;
+
+int parse_arg(int argc,char **argv);
+int process_txn(unsigned char* csDate, unsigned char* csSecond);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 3) {
+        printf("usage:-d date -s second\n");
+        //return FAILURE;
+    }
+    //else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+        	printf("usage:-d date -s second\n");
+                return SUCCESS;
+        }
+	
+
+	if(iRet == SUCCESS){
+        	iRet = process_txn((unsigned char*)cs_date, (unsigned char*)cs_second);
+	}
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int process_txn(unsigned char* csDate, unsigned char* csSecond)
+{               
+ 
+        int     iRet = SUCCESS;
+        int     iChk = 0;
+	int	iSecond = atoi((char*)csSecond);
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_date[PD_DATE_LEN+1];
+		int	hv_second;
+
+		varchar	v_from_time[PD_TMP_BUF_LEN+1];
+		varchar	v_to_time[PD_TMP_BUF_LEN+1];
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		int	v_diff_hour;
+		int	v_diff_min;
+		int	v_diff_sec;
+
+		short	ind_from_time = -1;
+		short	ind_to_time = -1;
+		short	ind_txn_id = -1;
+		short	ind_diff_hour = -1;
+		short	ind_diff_min = -1;
+		short	ind_diff_sec = -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_date.len = strlen((char*)csDate);
+        memcpy(hv_date.arr,csDate,hv_date.len);
+
+	hv_second=iSecond;
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select th_txn_id,
+		       to_char(th_create_timestamp,'YYYY-MM-DD HH24:MI:SS'),
+		       to_char(th_update_timestamp,'YYYY-MM-DD HH24:MI:SS'),
+		       diff_hour,
+		       diff_min,
+		       diff_sec
+		from(
+			select	th_txn_id,
+				th_create_timestamp,
+				th_update_timestamp,
+				floor(((th_update_timestamp-th_create_timestamp)*24*60*60)/3600) diff_hour,
+				floor((((th_update_timestamp-th_create_timestamp)*24*60*60) -
+					floor(((th_update_timestamp-th_create_timestamp)*24*60*60)/3600)*3600)/60)diff_min,
+				round((((th_update_timestamp-th_create_timestamp)*24*60*60) -
+					floor(((th_update_timestamp-th_create_timestamp)*24*60*60)/3600)*3600 -
+					(floor((((th_update_timestamp-th_create_timestamp)*24*60*60) - 
+					 floor(((th_update_timestamp-th_create_timestamp)*24*60*60)/3600)*3600)/60)*60) ))diff_sec
+			from txn_header
+			where th_txn_code = 'TSI'
+			and th_host_posting_date = :hv_date
+			and th_create_timestamp between sysdate-(65/1440) and sysdate-(5/1440)
+			order by th_create_timestamp desc)
+		where (diff_sec>:hv_second or diff_min>0);
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO
+		 	:v_txn_id:ind_txn_id,
+         		:v_from_time:ind_from_time,
+         		:v_to_time:ind_to_time,
+		 	:v_diff_hour:ind_diff_hour,
+		 	:v_diff_min:ind_diff_min,
+		 	:v_diff_sec:ind_diff_sec;
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		iChk ++;
+
+		
+		if(ind_txn_id<0){
+			v_txn_id.len=0;
+		}
+		v_txn_id.arr[v_txn_id.len]='\0';
+
+		if(ind_from_time<0){
+			v_from_time.len=0;
+		}
+		v_from_time.arr[v_from_time.len]='\0';
+
+		if(ind_to_time<0){
+			v_to_time.len=0;
+		}
+		v_to_time.arr[v_to_time.len]='\0';
+
+		if(ind_diff_hour<0)
+			v_diff_hour = 0;
+		if(ind_diff_min<0)
+			v_diff_min= 0;
+		if(ind_diff_sec<0)
+			v_diff_sec = 0;
+
+		printf("<tr><td>%s</td><td>%s to %s</td><td>%d Hour %d Minutes %d Second</td></tr>",v_txn_id.arr,v_from_time.arr,v_to_time.arr,v_diff_hour,v_diff_min,v_diff_sec);
+
+ 	}
+        while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_gettxn;
+
+	if(iChk>0){
+		iRet = FAILURE;
+	}
+
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+	strcpy(cs_date,"");
+	strcpy(cs_second,"");
+
+        while ((c = getopt(argc,argv,"d:s:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        case 's':
+                                strcpy(cs_second, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if ((!strcmp(cs_date,"")) || (!strcmp(cs_second,"")))
+                return FAILURE;
+
+        return SUCCESS;
+}

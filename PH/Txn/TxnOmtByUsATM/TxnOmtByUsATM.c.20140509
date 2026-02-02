@@ -1,0 +1,119 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/04/28              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsATM.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+void TxnOmtByUsATM(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+OBJPTR(Msg);
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Txn);
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+
+	char *csTxnSeq;
+	long lKey, lRspKey;
+	hex_t *h_msg;
+	struct msg_t *msg;
+	int iSendLen, iRecvLen;
+
+DEBUGLOG(("Authorize\n"));
+
+	if (GetField_CString(hContext, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("Authorize: txn_seq = [%s]\n", csTxnSeq));
+	} else {
+DEBUGLOG(("Authorize: txn_seq not found\n"));
+ERRLOG("TxnOmtByUsATM: Authorize: txn_seq not found\n");
+		iRet = INT_ERR;
+		PutField_Int(hContext, "internal_error", iRet);
+	}
+
+	if (iRet == PD_OK) {
+		hash_t *hReq;
+		hReq = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hReq, 0);
+
+/* statement transaction id */
+		PutField_CString(hReq, "stmt_txn_id", csTxnSeq);
+
+/* Request Host Queue */
+		lKey = GetMQKey((const unsigned char *)"ATMREQQ");
+
+/* Client Response Queue */
+		lRspKey = GetMQKey((const unsigned char *)"ATMRSPQ");
+
+		h_msg = (hex_t*) malloc (sizeof(hex_t));
+		MsgObjPtr = CreateObj(MsgPtr, "AtmMsg", "FormatMsg");
+		if ((*MsgObjPtr)(hReq, h_msg->msg, &h_msg->len) == PD_OK) {
+DEBUGLOG(("Authorize: h_msg->msg = [%s] h_msg->len = [%d]\n", h_msg->msg, h_msg->len));
+			msg = (struct msg_t*) malloc (sizeof(struct msg_t) + MAX_MSG_SIZE);
+			msg->mtype = ctol((const unsigned char *)csTxnSeq, strlen(csTxnSeq));
+			memset(msg->mtext, 0, sizeof(msg->mtext));
+			MQ_build_header((unsigned char*)msg->mtext,
+				MQ_REQ,
+				"ATM",
+				0,
+				"ATMRSPQ",
+				0);
+DEBUGLOG(("Authorize: msg->mtext = [%s]\n", msg->mtext));
+			memcpy(&msg->mtext[MQ_HEADER_LEN], h_msg->msg, h_msg->len);
+			msg->mtext[MQ_HEADER_LEN + h_msg->len] = '\0';
+			iSendLen = MQ_HEADER_LEN + h_msg->len;
+DEBUGLOG(("Authorize: Request Queue = [ATMREQQ] Response Queue = [ATMRSPQ]\n"));
+DEBUGLOG(("Authorize: send msg = [%s] send len = [%d]\n", msg->mtext, iSendLen));
+DEBUGLOG(("Authorize: rspkey = [%ld][%ld]\n", lRspKey, msg->mtype));
+			if (MQSend(lKey, msg, iSendLen) != MQ_OK) {
+DEBUGLOG(("Authorize: Sent Error\n"));
+				iRet = PD_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			} else {
+				memset(msg->mtext, 0, sizeof(msg->mtext));
+				iTmpRet = MQRecv(lRspKey, msg, &iRecvLen, 2);
+DEBUGLOG(("Authorize: MQRecv = [%d]\n", iTmpRet));
+				if (iTmpRet != MQ_OK) {
+DEBUGLOG(("Authorize: Recv Error\n"));
+					iRet = PD_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				} else {
+					msg->mtext[iRecvLen] = '\0';
+DEBUGLOG(("Authorize: recv len = [%d]\n", iRecvLen));
+					memcpy(h_msg->msg, &msg->mtext[MQ_HEADER_LEN], iRecvLen - MQ_HEADER_LEN);
+				}
+			}
+			FREE_ME(msg);
+		}
+		FREE_ME(h_msg);
+	}
+
+DEBUGLOG(("Authorize: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+}

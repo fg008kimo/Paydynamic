@@ -1,0 +1,556 @@
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/08/21              [ZBL]
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include "OLBaidIntraLogGen.h"
+#include "common.h"
+#include "dbutility.h"
+#include "internal.h"
+#include "utilitys.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+static char cDebug;
+
+void OLBaidIntraLogGen(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int GetDetailByBatchId(const unsigned long lBatchId, recordset_t *rRec)
+{
+	int	iCnt = 0;
+	int	iRet = NOT_FOUND;
+	hash_t	*hRec;
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_detail_by_batchid_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		unsigned long	hv_batch_id;
+
+		varchar		v_stmt_txn_id[PD_TXN_SEQ_LEN + 1];
+		char		v_status;
+		varchar		v_gen_txn_id_fr[PD_TXN_SEQ_LEN + 1];
+		varchar		v_gen_txn_id_to[PD_TXN_SEQ_LEN + 1];
+		int		v_ret_code;
+
+		short		ind_stmt_txn_id		= -1;
+		short		ind_status		= -1;
+		short		ind_gen_txn_id_fr	= -1;
+		short		ind_gen_txn_id_to	= -1;
+		short		ind_ret_code		= -1;
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetDetailByBatchId: Begin\n"));
+
+	/* batch_id */
+	hv_batch_id = lBatchId;
+DEBUGLOG(("- batch_id = [%lu]\n", hv_batch_id));
+
+	EXEC SQL DECLARE c_cursor_getdetailbybatchid CURSOR FOR 
+		SELECT	oalg_stmt_txn_id, 
+			oalg_status, 
+			oalg_gen_txn_id_fr, 
+			oalg_gen_txn_id_to, 
+			oalg_ret_code
+		FROM	ol_baid_intra_log_gen 
+		WHERE	oalg_batch_id = :hv_batch_id;
+
+	EXEC SQL OPEN c_cursor_getdetailbybatchid;
+	do
+	{
+		EXEC SQL FETCH c_cursor_getdetailbybatchid 
+			INTO	:v_stmt_txn_id:ind_stmt_txn_id, 
+				:v_status:ind_status, 
+				:v_gen_txn_id_fr:ind_gen_txn_id_fr, 
+				:v_gen_txn_id_to:ind_gen_txn_id_to, 
+				:v_ret_code:ind_ret_code;
+
+		if (SQLCODE == SQL_NOT_FOUND)
+			break;
+
+		hRec = (hash_t*)malloc(sizeof(hash_t));
+		hash_init(hRec, 0);
+
+		/* stmt_txn_id */
+		if (ind_stmt_txn_id >= 0)
+		{
+			v_stmt_txn_id.arr[v_stmt_txn_id.len] = '\0';
+DEBUGLOG(("- stmt_txn_id = [%s]\n", v_stmt_txn_id.arr));
+			PutField_CString(hRec, "stmt_txn_id", (const char*)v_stmt_txn_id.arr);
+		}
+
+		/* status */
+		if (ind_status >= 0)
+		{
+DEBUGLOG(("- status = [%c]\n", v_status));
+			PutField_Char(hRec, "status", v_status);
+		}
+
+		/* gen_txn_id_fr */
+		if (ind_gen_txn_id_fr >= 0)
+		{
+			v_gen_txn_id_fr.arr[v_gen_txn_id_fr.len] = '\0';
+DEBUGLOG(("- gen_txn_id_fr = [%s]\n", v_gen_txn_id_fr.arr));
+			PutField_CString(hRec, "gen_txn_id_fr", (const char*)v_gen_txn_id_fr.arr);
+		}
+
+		/* gen_txn_id_to */
+		if (ind_gen_txn_id_to >= 0)
+		{
+			v_gen_txn_id_to.arr[v_gen_txn_id_to.len] = '\0';
+DEBUGLOG(("- gen_txn_id_to = [%s]\n", v_gen_txn_id_to.arr));
+			PutField_CString(hRec, "gen_txn_id_to", (const char*)v_gen_txn_id_to.arr);
+		}
+
+		/* ret_code */
+		if (ind_ret_code >= 0)
+		{
+DEBUGLOG(("- ret_code = [%d]\n", v_ret_code));
+			PutField_Int(hRec, "ret_code", v_ret_code);
+		}
+
+		iCnt++;
+		RecordSet_Add(rRec, hRec);
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getdetailbybatchid;
+
+	if (iCnt > 0)
+	{
+DEBUGLOG(("GetDetailByBatchId [%d] records found! Normal Exit\n", iCnt));
+		iRet = FOUND;
+	}
+	else
+	{
+DEBUGLOG(("GetDetailByBatchId no records found! Normal Exit\n"));
+	}
+
+	return iRet;
+
+get_detail_by_batchid_error:
+DEBUGLOG(("get_detail_by_batchid_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLBaidIntraLogGen_GetDetailByBatchId: SP_INTERNAL_ERR\n");
+DEBUGLOG(("GetDetailByBatchId: SP_INTERNAL_ERR\n"));
+	return PD_ERR;
+}
+
+int IsApprovedTxnIdExisted(const hash_t *hRec)
+{
+	char    *csTmp = NULL;
+
+        EXEC SQL WHENEVER SQLERROR GOTO isapprovedtxnidexisted_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_txn_id[PD_TXN_SEQ_LEN];
+
+		short           ind_txn_id = -1;
+
+		short           hv_return_value;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("IsApprovedTxnIdExisted: Begin\n"));
+
+/* txn_id */
+	if(GetField_CString(hRec,"txn_id",&csTmp))
+        {
+		hv_txn_id.len = strlen(csTmp);
+                strncpy((char *)hv_txn_id.arr, csTmp, hv_txn_id.len);
+		ind_txn_id = 0;
+DEBUGLOG(("IsApprovedTxnIdExisted: txn_id = [%.*s]\n",hv_txn_id.len,hv_txn_id.arr));
+        } else {
+DEBUGLOG(("IsApprovedTxnIdExisted: txn_id is missing\n"));
+ERRLOG("OLBaidIntraLogGen: IsApprovedTxnIdExisted: txn_id is missing\n");
+		return PD_ERR;
+       	}  
+
+        EXEC SQL EXECUTE
+                BEGIN
+                	:hv_return_value := sp_ol_intra_log_gen_chk_exists(:hv_txn_id:ind_txn_id);
+                END;
+        END-EXEC;
+
+DEBUGLOG(("IsApprovedTxnIdExisted: Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("IsApprovedTxnIdExisted: True\n"));
+                return PD_TRUE;
+        }
+	else if (hv_return_value == SP_NOT_FOUND)
+        {
+DEBUGLOG(("IsApprovedTxnIdExisted: False\n"));
+                return PD_FALSE;
+        }
+        else if (hv_return_value == SP_OTHER_ERR)  {
+DEBUGLOG(("IsApprovedTxnIdExisted: SP_OTHER_ERR TxnAbort\n"));
+ERRLOG("OLBaidIntraLogGen_IsApprovedTxnIdExisted: SP_OTHER_ERR TxnAbort\n");
+                return PD_OTHER_ERR;
+        }
+        else if (hv_return_value == SP_ERR)  {
+DEBUGLOG(("IsApprovedTxnIdExisted: SP_ERR TxnAbort\n"));
+ERRLOG("OLBaidIntraLogGen_IsApprovedTxnIdExisted: SP_ERR TxnAbort\n");
+                return PD_ERR;
+        }
+
+isapprovedtxnidexisted_error:
+DEBUGLOG(("isapprovedtxnidexisted_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLBaidIntraLogGen_IsApprovedTxnIdExisted: SP_INTERNAL_ERR TxnAbort\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+}
+
+int GetDetailByTxnId(hash_t *hRec)
+{
+	int	iRet = PD_NOT_FOUND;
+
+        char    *csTmp = NULL;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getdetailbytxnid_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_txn_id[PD_TXN_SEQ_LEN];
+
+                short           ind_txn_id = -1;
+
+		SQL_CURSOR      c_cursor_getdetailbytxnid;
+
+		varchar         v_gen_txn_id_fr[PD_TXN_SEQ_LEN];
+                varchar         v_gen_txn_id_to[PD_TXN_SEQ_LEN];
+
+                short           ind_gen_txn_id_fr = -1;
+                short           ind_gen_txn_id_to = -1;
+
+                short           hv_return_value;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetDetailByTxnId: Begin\n"));
+
+/* txn_id */
+        if(GetField_CString(hRec,"txn_id",&csTmp))
+        {
+                hv_txn_id.len = strlen(csTmp);
+                strncpy((char *)hv_txn_id.arr, csTmp, hv_txn_id.len);
+                ind_txn_id = 0;
+DEBUGLOG(("GetDetailByTxnId: txn_id = [%.*s]\n",hv_txn_id.len,hv_txn_id.arr));
+        } else {
+DEBUGLOG(("GetDetailByTxnId: txn_id is missing\n"));
+ERRLOG("OLBaidIntraLogGen: GetDetailByTxnId: txn_id is missing\n");
+                return PD_ERR;
+        }
+
+	EXEC SQL ALLOCATE       :c_cursor_getdetailbytxnid;
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_ol_intra_log_gen_get_detail(:hv_txn_id:ind_txn_id,
+								       	   :c_cursor_getdetailbytxnid);
+                END;
+        END-EXEC;
+
+DEBUGLOG(("GetDetailByTxnId: Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("GetDetailByTxnId: Found\n"));
+		for (;;) {
+
+                        ind_gen_txn_id_fr = -1;
+                        ind_gen_txn_id_to = -1;
+
+                        EXEC SQL WHENEVER NOTFOUND DO break;
+                        EXEC SQL FETCH :c_cursor_getdetailbytxnid
+			INTO
+                     		:v_gen_txn_id_fr:ind_gen_txn_id_fr,
+                     		:v_gen_txn_id_to:ind_gen_txn_id_to;
+
+                        if (SQLCODE == SQL_NOT_FOUND) {
+                                break;
+                        }
+
+/* gen_txn_id_fr */
+                        if (ind_gen_txn_id_fr >= 0) {
+                                v_gen_txn_id_fr.arr[v_gen_txn_id_fr.len]='\0';
+                                PutField_CString(hRec,"gen_txn_id_fr",(const char*)v_gen_txn_id_fr.arr);
+DEBUGLOG(("GetDetailByTxnId: gen_txn_id_fr = [%s]\n",v_gen_txn_id_fr.arr));
+                        }
+
+/* gen_txn_id_to */
+                        if (ind_gen_txn_id_to >= 0) {
+                                v_gen_txn_id_to.arr[v_gen_txn_id_to.len]='\0';
+                                PutField_CString(hRec,"gen_txn_id_to",(const char*)v_gen_txn_id_to.arr);
+DEBUGLOG(("GetDetailByTxnId: gen_txn_id_to = [%s]\n",v_gen_txn_id_to.arr));
+                        } 
+		}
+
+                iRet = PD_FOUND;
+        }
+        else if (hv_return_value == SP_NOT_FOUND)
+        {
+DEBUGLOG(("GetDetailByTxnId: Not Found\n"));
+                iRet = PD_NOT_FOUND;
+        }
+        else if (hv_return_value == SP_OTHER_ERR)  {
+DEBUGLOG(("GetDetailByTxnId: SP_OTHER_ERR TxnAbort\n"));
+ERRLOG("OLBaidIntraLogGen_GetDetailByTxnId: SP_OTHER_ERR TxnAbort\n");
+                iRet = PD_OTHER_ERR;
+        }
+        else if (hv_return_value == SP_ERR)  {
+DEBUGLOG(("GetDetailByTxnId: SP_ERR TxnAbort\n"));
+ERRLOG("OLBaidIntraLogGen_GetDetailByTxnId: SP_ERR TxnAbort\n");
+                iRet = PD_ERR;
+        }
+	
+	EXEC SQL CLOSE :c_cursor_getdetailbytxnid;
+        EXEC SQL FREE :c_cursor_getdetailbytxnid;
+
+	return iRet;
+
+getdetailbytxnid_error:
+DEBUGLOG(("getdetailbytxnid_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLBaidIntraLogGen_GetDetailByTxnId: SP_INTERNAL_ERR TxnAbort\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE :c_cursor_getdetailbytxnid;
+        EXEC SQL FREE :c_cursor_getdetailbytxnid;
+	return PD_ERR;
+}
+
+int UpdateByStmtTxnId(const hash_t *hIn)
+{
+	char	cTmp;
+	char	*csBuf;
+	char	*csBatchId = NULL;
+	char	*csStmtTxnId = NULL;
+	int	iTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO update_by_stmt_txn_id_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_dynstmt[PD_TMP_MSG_BUF_LEN];
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("UpdateByStmtTxnId: Begin\n"));
+
+	csBuf = (char*)malloc(PD_TMP_BUF_LEN);
+
+	strcpy((char*)hv_dynstmt.arr, "UPDATE ol_baid_intra_log_gen SET oalg_update_timestamp = SYSDATE");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+	/* batch_id */
+	if (GetField_CString(hIn, "batch_id", &csBatchId))
+	{
+DEBUGLOG(("- batch_id = [%s]\n", csBatchId));
+	}
+	else
+	{
+		FREE_ME(csBuf);
+DEBUGLOG(("UpdateByStmtTxnId: batch_id not found\n"));
+
+		return PD_ERR;
+	}
+
+	/* stmt_txn_id */
+	if (GetField_CString(hIn, "stmt_txn_id", &csStmtTxnId))
+	{
+DEBUGLOG(("- stmt_txn_id = [%s]\n", csStmtTxnId));
+	}
+	else
+	{
+		FREE_ME(csBuf);
+DEBUGLOG(("UpdateByStmtTxnId: stmt_txn_id not found\n"));
+
+		return PD_ERR;
+	}
+
+	/* status */
+	if (GetField_Char(hIn, "status", &cTmp))
+	{
+		sprintf(csBuf, "%c", cTmp);
+		strcat((char*)hv_dynstmt.arr, ", oalg_status = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- status = [%c]\n", cTmp));
+	}
+
+	/* gen_txn_id_fr */
+	if (GetField_CString(hIn, "gen_txn_id_fr", &csBuf))
+	{
+		strcat((char*)hv_dynstmt.arr, ", oalg_gen_txn_id_fr = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- gen_txn_id_fr = [%s]\n", csBuf));
+	}
+
+	/* gen_txn_id_to */
+	if (GetField_CString(hIn, "gen_txn_id_to", &csBuf))
+	{
+		strcat((char*)hv_dynstmt.arr, ", oalg_gen_txn_id_to = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- gen_txn_id_to = [%s]\n", csBuf));
+	}
+
+	/* ret_code */
+	if (GetField_Int(hIn, "ret_code", &iTmp))
+	{
+		sprintf(csBuf, "%d", iTmp);
+		strcat((char*)hv_dynstmt.arr, ", oalg_ret_code = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- ret_code = [%d]\n", iTmp));
+	}
+
+	/* update_user */
+	if (GetField_CString(hIn, "update_user", &csBuf))
+	{
+		strcat((char*)hv_dynstmt.arr, ", oalg_update_user = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- update_user = [%s]\n", csBuf));
+	}
+
+	/* batch_id / stmt_txn_id */
+	strcat((char*)hv_dynstmt.arr, " WHERE oalg_batch_id = ");
+	strcat((char*)hv_dynstmt.arr, csBatchId);
+	strcat((char*)hv_dynstmt.arr, " AND oalg_stmt_txn_id = '");
+	strcat((char*)hv_dynstmt.arr, csStmtTxnId);
+	strcat((char*)hv_dynstmt.arr, "'");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+	EXEC SQL EXECUTE PS;
+
+	FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateByStmtTxnId: Normal Exit\n"));
+	return PD_OK;
+
+update_by_stmt_txn_id_error:
+DEBUGLOG(("update_by_stmt_txn_id_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLBaidIntraLogGen_UpdateByStmtTxnId: SP_INTERNAL_ERR\n");
+DEBUGLOG(("UpdateByStmtTxnId: SP_INTERNAL_ERR\n"));
+	return PD_ERR;
+}
+
+int UpdateByTxnId(const hash_t *hIn)
+{
+	int     iRet = PD_OK;
+
+	int	iTmp;
+	char	cTmp;	
+	char	*csTxnSeq = NULL;
+        char    *csBuf;
+
+        EXEC SQL WHENEVER SQLERROR GOTO updatebytxnid_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_dynstmt[1024];
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("UpdateByTxnId: Begin\n"));
+
+	csBuf = (char *)malloc(PD_TMP_BUF_LEN);
+
+	strcpy((char *)hv_dynstmt.arr, "UPDATE ol_baid_intra_log_gen SET oalg_update_timestamp = SYSDATE");
+        hv_dynstmt.len = strlen((const char *)hv_dynstmt.arr);
+
+/* txn_id */
+        if (GetField_CString(hIn,"txn_id", &csTxnSeq))
+        {
+DEBUGLOG(("UpdateByTxnId: txn_id = [%s]\n", csTxnSeq));
+        } else {
+DEBUGLOG(("UpdateByTxnId: txn_id is missing\n"));
+ERRLOG("OLBaidIntraLogGen: UpdateByTxnId: txn_id is missing\n");
+		FREE_ME(csBuf);
+                return PD_ERR;
+        }
+
+/* status */
+        if (GetField_Char(hIn,"status", &cTmp))
+        {
+DEBUGLOG(("UpdateByTxnId: status = [%c]\n", cTmp));
+		sprintf(csBuf, "%c", cTmp);
+                strcat((char*)hv_dynstmt.arr, ", oalg_status = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+/* ret_code */
+        if (GetField_Int(hIn, "ret_code", &iTmp))
+        {
+DEBUGLOG(("UpdateByTxnId: ret_code = [%d]\n", iTmp));
+                sprintf(csBuf, "%d", iTmp);
+                strcat((char*)hv_dynstmt.arr, ", oalg_ret_code = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+/* update_user */
+        if (GetField_CString(hIn,"update_user", &csBuf))
+        {
+DEBUGLOG(("UpdateByTxnId: update_user = [%s]\n", csBuf));
+                strcat((char*)hv_dynstmt.arr, ", oalg_update_user = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+        /* txn_id */
+        strcat((char *)hv_dynstmt.arr, " WHERE (oalg_gen_txn_id_fr = '");
+        strcat((char *)hv_dynstmt.arr, csTxnSeq);
+        strcat((char *)hv_dynstmt.arr, "'");
+        strcat((char *)hv_dynstmt.arr, " OR oalg_gen_txn_id_to = '");
+	strcat((char *)hv_dynstmt.arr, csTxnSeq);
+        strcat((char *)hv_dynstmt.arr, "')");
+	strcat((char *)hv_dynstmt.arr, " AND oalg_status = 'A' AND oalg_ret_code = 0");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+        FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateByTxnId: Normal Exit\n"));
+        return iRet;
+
+updatebytxnid_error:
+DEBUGLOG(("updatebytxnid_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLBaidIntraLogGen_UpdateByTxnId: SP_INTERNAL_ERR\n");
+DEBUGLOG(("UpdateByTxnId: SP_INTERNAL_ERR\n"));
+        return PD_ERR;
+}

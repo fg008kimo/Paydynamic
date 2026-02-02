@@ -1,0 +1,442 @@
+/*
+PDProTech (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/21              [GOD]
+Handle manual approval date                        2012/03/28              [SWK]
+Add psp_tid					   2013/01/14		   [MSN]
+Revised for PRD255				   2020/03/30		   [MSN]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsTMA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+OBJPTR(Txn);
+
+
+void TxnMgtByUsTMA(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	*csOrgTxnSeq = NULL;
+	char	*csMgtTxnSeq = NULL;
+	char	*csMgtTxnCode = NULL;
+	char	*csPtr = NULL;
+	double	dPtr = 0.0;
+	char    csDateTime[PD_DATETIME_LEN + 1];
+	int	iSendToQueue = PD_FALSE;
+	char	csTag[PD_TAG_LEN + 1];
+
+	hash_t	*hLog;
+	hLog = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hLog,0);
+	
+DEBUGLOG(("Authorize()\n"));
+
+/* backup txn_seq*/
+	if (GetField_CString(hContext, "txn_seq", &csMgtTxnSeq)) {
+DEBUGLOG((" MGT txn_seq = [%s]\n", csMgtTxnSeq));
+	}
+
+/* backup txn_code*/
+	if (GetField_CString(hContext, "txn_code", &csMgtTxnCode)) {
+DEBUGLOG((" MGT txn_code = [%s]\n", csMgtTxnCode));
+	}
+
+/* txn_seq */
+	if (GetField_CString(hRequest, "org_txn_seq", &csOrgTxnSeq)) {
+DEBUGLOG((" org txn seq = [%s]\n", csOrgTxnSeq));
+
+		PutField_CString(hContext, "org_txn_seq", csOrgTxnSeq);
+		PutField_CString(hRequest, "txn_seq", csOrgTxnSeq);
+		PutField_CString(hLog, "txn_seq", csOrgTxnSeq);
+	}
+	else {
+		iRet = INT_TXN_ID_MISSING;
+		PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG((" org txn seq is missing!!\n"));
+ERRLOG("TxnMgtByUsTMA::Authorize() org txn seq is missing!!\n");
+	}
+
+/* psp_txn_date */
+	if (GetField_CString(hRequest, "psp_txn_date", &csPtr)) {
+DEBUGLOG((" psp_txn_date = [%s]\n", csPtr));
+		PutField_CString(hRequest, "txn_date", csPtr);
+	}
+	else {
+		if (GetField_CString(hContext, "PHDATE", &csPtr)) {
+DEBUGLOG((" psp_txn_date (default) = [%s]\n",csPtr));
+			PutField_CString(hRequest,"txn_date",csPtr);
+		}
+	}
+
+/* psp tid */
+	if (GetField_CString(hRequest, "tid", &csPtr)) {
+DEBUGLOG((" tid = [%s]\n",csPtr));
+	}
+	else{
+		PutField_CString(hRequest, "tid", csOrgTxnSeq);
+DEBUGLOG((" set PH txn_id as tid = [%s]\n", csOrgTxnSeq));
+	}
+
+/* fundin_date */
+	strcpy(csDateTime, getdatetime());
+	PutField_CString(hRequest, "fundin_date", csDateTime);
+DEBUGLOG((" fundin_date (current datetime) = [%s]\n", csDateTime));
+
+
+/* user */
+	if (GetField_CString(hRequest, "add_user", &csPtr)) {
+DEBUGLOG((" user = [%s]\n", csPtr));
+		PutField_CString(hLog, "add_user", csPtr);
+	}
+
+/* ip_addr  */
+	if (GetField_CString(hRequest, "ip_addr", &csPtr)) {
+		PutField_CString(hLog, "ip_addr", csPtr);
+	}
+
+
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBTransaction", "MatchRespTxn");
+        	if ((unsigned long)(DBObjPtr)(csOrgTxnSeq, PD_TO_PSP) != PD_FOUND) {
+DEBUGLOG(("Transaction [%s] is NOT pending for approval\n", csOrgTxnSeq));
+ERRLOG("TxnMgtByUsTMA::Authorize() Transaction [%s] is NOT pending for approval\n", csOrgTxnSeq);
+			iRet = INT_INVALID_TXN;
+                	PutField_Int(hContext, "internal_error", iRet);
+		}
+		else{
+DEBUGLOG(("Transaction [%s] is pending for approval\n", csOrgTxnSeq));
+		}
+	}
+
+
+
+/* get details in txn_header, txn_detail & txn_psp_detail */
+	if (iRet == PD_OK) {
+		hash_t *hIn;
+		hIn = (hash_t*)  malloc (sizeof(hash_t));
+		hash_init(hIn,0);
+
+		hash_t *hOut;
+		hOut = (hash_t*)  malloc (sizeof(hash_t));
+		hash_init(hOut,0);
+
+		PutField_Int(hIn, "get_txn_header", PD_TRUE);
+		PutField_Int(hIn, "get_txn_detail", PD_TRUE);
+		PutField_Int(hIn, "get_txn_psp_detail", PD_TRUE);
+		PutField_CString(hIn, "txn_seq", csOrgTxnSeq);
+
+DEBUGLOG(("Call BOTransaction::GetTxnInfo()\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOTransaction", "GetTxnInfo");
+		if((*BOObjPtr)(hIn, hOut) == PD_OK){
+
+			sprintf(csTag, "host_posting_date");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "txn_code");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "channel_code");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_channel_code", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "client_id");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_client_id", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "merchant_id");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_merchant_id", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "service_code");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_service_code", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "txn_country");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_txn_country", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "txn_ccy");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_txn_ccy", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "txn_amt");
+			if (GetField_Double(hOut, csTag, &dPtr)) {
+				PutField_Double(hContext, "org_txn_amt", dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+
+			sprintf(csTag, "selected_pay_method");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_pay_method", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "customer_tag");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_customer_tag", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "customer_group");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_customer_group", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "psp_id");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_psp_id", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "psp_txn_ccy");
+			if (GetField_CString(hOut, csTag, &csPtr)) {
+				PutField_CString(hContext, "org_dst_txn_ccy", csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+			}
+
+			sprintf(csTag, "psp_txn_amt");
+			if (GetField_Double(hOut, csTag, &dPtr)) {
+				PutField_Double(hContext, "org_dst_txn_amt", dPtr);
+				PutField_Double(hContext, "org_dst_net_amt", dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG((" GetTxnInfo for [%s] failed, csTxnSeq\n"));
+		}
+		hash_destroy(hIn);
+		hash_destroy(hOut);
+		FREE_ME(hIn);
+		FREE_ME(hOut);
+
+	}
+
+/* run the common flow of psp callback*/
+	if (iRet == PD_OK) {
+		PutField_CString(hRequest, "status", PD_CN_PSP_SUCCESS);
+		PutField_CString(hContext, "return_psp_channel", "internal");
+
+DEBUGLOG(("Call WEBChannel::UpdateRespTxnLog()\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr, "WEBChannel", "UpdateRespTxnLog");
+		iRet = (unsigned long)(*ChannelObjPtr)(hContext, hRequest, hResponse);
+	}
+
+/* add record to manual approval log table */
+	if (iRet == PD_OK) {
+DEBUGLOG(("Call DBTmaLog::Add()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBTmaLog", "Add");
+		iRet = (unsigned long)(*DBObjPtr)(hLog);
+	}
+
+/* commit point */
+/* the result of TMA would not be affected anymore after the commit point!! */
+	if (iRet == PD_OK)
+		TxnCommit();
+	else
+		TxnAbort();
+
+
+
+/* send callback to merchant */
+	if (iRet == PD_OK) {
+DEBUGLOG(("Call TxnWebOnUsACK::Authorize()\n"));
+		TxnObjPtr = CreateObj(TxnPtr, "TxnWebOnUsACK", "Authorize");
+		if((unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse) != PD_OK){
+DEBUGLOG(("Send callback to merchant failed!\n"));
+		}
+	}
+
+
+/* -----------------------------------------------------------
+Default flow:
+ (1) calculate the merchant open balance by the existing information
+	- If OK, go to (2)
+	- otherwise, end of TMA
+ (2) update txn_detail
+	- If OK, go to (3)
+	- otherwise, go to (X)
+ (3) update txn_psp_detail
+	- If OK, end of TMA
+	- otherwise, go to (X)
+
+ (X) send to new channel
+	>> write log file
+	>> insert record to table 'txn_balance_detail'
+	>> send to queue
+     - end of TMA
+----------------------------------------------------------- */
+
+	if (iRet == PD_OK) {
+
+		int	iTmpRet = PD_OK;
+		double	dNetAmt = 0.0;
+		double	dResAmt = 0.0;
+		double	dCurrBal = 0.0;
+		double	dCurrBalSett = 0.0;
+		double	dOpenBal = 0.0;
+		double	dOpenBalSett = 0.0;
+		double	dPspBal = 0.0;
+		double	dPspFloat = 0.0;
+		double	dPspHold = 0.0;
+
+/* calculate merchant open balance */
+		if(!GetField_Double(hContext, "current_bal", &dCurrBal)){
+			iTmpRet = PD_ERR;
+DEBUGLOG((" missing current_bal for calculating open balance!!\n"));
+		}
+		if(!GetField_Double(hContext, "current_bal_settlement", &dCurrBalSett)){
+			iTmpRet = PD_ERR;
+DEBUGLOG((" missing current_bal_settlement for calculating open balance!!\n"));
+		}
+		if(!GetField_Double(hContext, "net_amt", &dNetAmt)){
+			iTmpRet = PD_ERR;
+DEBUGLOG((" missing net_amt for calculating open balance!!\n"));
+		}
+		if(!GetField_Double(hContext, "reserve_amt", &dResAmt)){
+DEBUGLOG((" missing reserve_amt for calculating open balance (optional)\n"));
+		}
+
+		if(iTmpRet == PD_OK){
+			dOpenBal = newround(dCurrBal - (dNetAmt - dResAmt), PD_DECIMAL_LEN);
+			dOpenBalSett = newround(dCurrBalSett - dResAmt, PD_DECIMAL_LEN);
+			PutField_Double(hContext, "open_bal", dOpenBal);
+			PutField_Double(hContext, "open_bal_settlement", dOpenBalSett);
+DEBUGLOG((" Merchant open balance = [%.2f]\n", dOpenBal));
+DEBUGLOG((" Merchant open balance settlement = [%.2f]\n", dOpenBalSett));
+		}
+
+/* check system_parameter "UPD_BAL_INFO_BY_NEW_CHANNEL" */
+/* If "Y", bypass the fields update of txn_detail & txn_psp_detail, send to BAL Channel directly */
+/* If "N" or parameter not found, send to BAL Channel only when txn_detail or txn_psp_detail failed to update */
+		if(iTmpRet == PD_OK){
+			char*   csValueTmp;
+			csValueTmp = (char*) malloc (PD_TMP_BUF_LEN);
+			DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+			if ((unsigned long)(*DBObjPtr)("UPD_BAL_INFO_BY_NEW_CHANNEL", csValueTmp) == FOUND) {
+DEBUGLOG(("system_paramter:[UPD_BAL_INFO_BY_NEW_CHANNEL] = [%s]\n", csValueTmp));
+				if(!strcmp(csValueTmp, "Y")){
+					iSendToQueue = PD_TRUE;
+DEBUGLOG(("**bypass the default flow**\n"));
+				}
+				else{
+DEBUGLOG(("**run the default flow**\n"));
+				}
+			}
+			FREE_ME(csValueTmp);
+		}
+
+/* update txn_detail */
+		if (iTmpRet == PD_OK && iSendToQueue == PD_FALSE) {
+DEBUGLOG(("Call DBTransaction::UpdateDetail()\n"));
+			PutField_CString(hContext, "txn_seq", csOrgTxnSeq);
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+			if((unsigned long)(*DBObjPtr)(hContext) != PD_OK){
+				iSendToQueue = PD_TRUE;
+DEBUGLOG(("UpdateDetail failed!!\n"));
+			}
+			else{
+/* update txn_psp_detail */
+				
+				if( GetField_Double(hContext, "psp_balance", &dPspBal)
+				 && GetField_Double(hContext, "psp_total_float", &dPspFloat)
+				 && GetField_Double(hContext, "psp_total_hold", &dPspHold)){
+
+DEBUGLOG(("Call DBTxnPspDetail::Update()\n"));
+					PutField_Double(hContext, "bal", dPspBal);
+					PutField_Double(hContext, "total_float", dPspFloat);
+					PutField_Double(hContext, "total_hold", dPspHold);
+
+					DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+					if((unsigned long)(*DBObjPtr)(hContext) != PD_OK){
+						iSendToQueue = PD_TRUE;
+DEBUGLOG(("Update failed!!\n"));
+					}
+				}
+				else{
+DEBUGLOG((" missing psp balance information to update txn_psp_detail!!\n"));
+				}
+			}
+		}
+	}
+
+
+	if (iSendToQueue) {
+
+/* do file and db logging */
+DEBUGLOG(("Call TxnBalOnUsCOM::DoLogging()\n"));
+		TxnObjPtr = CreateObj(TxnPtr, "TxnBalOnUsCOM", "DoLogging");
+		if((unsigned long)(*TxnObjPtr)(hContext) != PD_OK){
+DEBUGLOG(("DoLogging failed!\n"));
+		}
+
+
+
+/* send message to new process for balance update*/
+DEBUGLOG(("Call TxnBalOnUsCOM::SendToQueue()\n"));
+		PutField_CString(hContext, "balcode", PD_CODE_UPDATEBAL);
+		TxnObjPtr = CreateObj(TxnPtr, "TxnBalOnUsCOM", "SendToQueue");
+		if((unsigned long)(*TxnObjPtr)(hContext) != PD_OK){
+DEBUGLOG(("SendToQueue failed!\n"));
+		}
+
+	}
+
+	hash_destroy(hLog);
+        FREE_ME(hLog);
+
+
+/* restore original value */
+	PutField_CString(hContext, "txn_code", csMgtTxnCode);
+	PutField_CString(hContext, "txn_seq", csMgtTxnSeq);
+
+DEBUGLOG(("Authorize() iRet = [%d]\n",iRet));
+	return iRet;
+}

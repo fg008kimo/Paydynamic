@@ -1,0 +1,345 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/08              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsSTP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsSTP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csTxnSeq;
+	char	*csTxnCcy;
+	char	*csToCcy;
+	char	*csTxnCountry;
+	char	*csServiceCode;
+	char	*csMerchantId;
+	char	*csTmp;
+	char	cTmp;
+	double	dAmt;
+	double	dTmp;
+	double	dSrcAmt;
+	double	dNetAmt;
+	double	dFee;
+	//double	dSrcMarkup=0;
+	//double	dTotalFee=0;
+	double dExRate, dOrgDestAmt;
+	double  dSettlementBal=0;
+
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+	hash_t  *hReq;
+	hReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hReq,0);
+
+	if(GetField_CString(hRequest,"org_txn_seq",&csTxnSeq)){
+DEBUGLOG(("Authorize::txn_seq= [%s]\n",csTxnSeq));
+		PutField_CString(hReq,"txn_seq",csTxnSeq);
+		PutField_CString(hContext,"txn_seq",csTxnSeq);
+		PutField_CString(hContext,"from_txn_seq",csTxnSeq);
+	}
+	else{
+DEBUGLOG(("Authorize::txnid not found!!\n"));
+ERRLOG("TxnMgtByUsSTP:Authorize::txnid not found!!\n");
+		iRet=INT_INVALID_TXN;
+	}
+
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		PutField_CString(hContext,"update_user",csTmp);
+		PutField_CString(hReq,"update_user",csTmp);
+	}
+
+/*
+	if(GetField_CString(hRequest,"to_ccy",&csToCcy)){
+DEBUGLOG(("Authorize::to_ccy= [%s]\n",csToCcy));
+		PutField_CString(hReq,"deliver_ccy",csToCcy);
+		//PutField_CString(hContext,"txn_ccy",csToCcy);
+	}
+	else{
+DEBUGLOG(("Authorize::to_ccy not found!!\n"));
+ERRLOG("TxnMgtByUsSTP:Authorize::to_ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+	}
+*/
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBTransaction:GetTxnHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnHeader::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"merchant_id",&csMerchantId)) {
+        	        		PutField_CString(hContext,"merchant_id",csMerchantId);
+        	        		PutField_CString(hRequest,"merchant_id",csMerchantId);
+DEBUGLOG(("GetTxnHeader::merchant_id = [%s]\n",csMerchantId));
+				}
+				if (GetField_CString(hRec,"service_code",&csServiceCode)) {
+        	        		PutField_CString(hRequest,"service_code",csServiceCode);
+        	        		PutField_CString(hContext,"service_code",csServiceCode);
+DEBUGLOG(("GetTxnHeader::service_code= [%s]\n",csServiceCode));
+				}
+				if (GetField_Double(hRec,"txn_amt",&dAmt)) {
+					PutField_Double(hContext,"txn_amt",dAmt);
+DEBUGLOG(("GetTxnHeader::txn_amt = [%lf]\n",dAmt));
+				}
+				if (GetField_Double(hRec,"net_amt",&dNetAmt)) {
+					PutField_Double(hContext,"net_amt",dNetAmt);
+DEBUGLOG(("GetTxnHeader::net_amt = [%lf]\n",dNetAmt));
+				}
+				if (GetField_Char(hRec,"status",&cTmp)) {
+DEBUGLOG(("GetTxnHeader::status = [%c]\n",cTmp));
+					if(cTmp!=PD_PROCESSING){
+						iRet=INT_INVALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid status\n"));
+ERRLOG("TxnMgtByUsSTP:GetTxnHeader::Invalid status!!\n");
+					}
+
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetTxnHeader:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnMgtByUsSTP:Authorize::GetTxnHeader::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+
+	}
+	RecordSet_Destroy(rRecordSet);
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBTransaction:GetTxnDetail\n"));
+        	recordset_init(rRecordSet,0);
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+        	if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnDetail::found record = [%s]\n",csTxnSeq));
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                        	if (GetField_CString(hRec,"txn_ccy",&csToCcy)) {
+        	        		PutField_CString(hContext,"to_txn_ccy",csToCcy);
+DEBUGLOG(("GetTxnDetail::deliver_ccy = [%s]\n",csToCcy));
+                        	}
+                        	if (GetField_CString(hRec,"txn_country",&csTxnCountry)) {
+        	        		PutField_CString(hRequest,"txn_country",csTxnCountry);
+        	        		PutField_CString(hContext,"txn_country",csTxnCountry);
+DEBUGLOG(("GetTxnDetail::txn_country = [%s]\n",csTxnCountry));
+                        	}
+                        	hRec = RecordSet_GetNext(rRecordSet);
+                	}
+        	}
+        	else {
+DEBUGLOG(("GetTxnDetail:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnMgtByUsSTP:Authorize::GetTxnDetail:: not found record!!\n");
+               		iRet = INT_NOT_RECORD;
+        	}
+        	RecordSet_Destroy(rRecordSet);
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantSettlementDetail:GetSettlementDetail\n"));
+        	recordset_init(rRecordSet,0);
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","GetSettlementDetail");
+		if((unsigned long)(*DBObjPtr)(csTxnSeq,rRecordSet)==PD_OK){
+DEBUGLOG(("GetSettlementDetail::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+				if(GetField_CString(hRec,"request_ccy",&csTxnCcy)){
+        	        		PutField_CString(hRequest,"txn_ccy",csTxnCcy);
+					PutField_CString(hContext,"txn_ccy",csTxnCcy);
+					PutField_CString(hContext,"org_txn_ccy",csTxnCcy);
+DEBUGLOG(("GetSettlementDetail::request_ccy = [%s]\n",csTxnCcy));
+				}
+				if(GetField_CString(hRec,"deliver_ccy",&csTmp)){
+					PutField_CString(hContext,"dst_txn_ccy",csTmp);
+DEBUGLOG(("GetSettlementDetail::deliver_ccy = [%s]\n",csTmp));
+				}
+				if (GetField_Char(hRec,"status",&cTmp)) {
+DEBUGLOG(("GetSettlementDetail::status = [%c]\n",cTmp));
+					if(cTmp!=PD_PROCESSING){
+						iRet=INT_INVALID_TXN;
+DEBUGLOG(("GetSettlementDetail::Invalid status\n"));
+ERRLOG("TxnMgtByUsSTP:Authorize::GetSettlementDetail::Invalid status!!\n");
+					}
+				}
+                        	hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetSettlementDetail:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnMgtByUsSTP:Authorize::GetSettlementDetail::not found record!!\n");
+                        iRet = INT_NOT_RECORD;
+		}
+        	RecordSet_Destroy(rRecordSet);
+	}
+
+
+	if(iRet==PD_OK){
+//////get merchant_client_id
+DEBUGLOG(("Authorize::Call BOMerchant:GetMerchantDetail\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+		if((unsigned long)(*BOObjPtr)(hContext,hRequest)!=PD_OK)
+			iRet = INT_ERR;
+	}
+
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOExchange:GetExchangeInfo\n"));
+//////////////////calculate fx and markup
+		///use [STR] to find fx markup fee///
+		PutField_CString(hContext,"txn_code",PD_SETTLEMENT_REQUEST);
+
+		BOObjPtr = CreateObj(DBPtr,"BOExchange","GetExchangeInfo");
+		if ((*BOObjPtr)(hContext,hRequest) == PD_OK) {
+DEBUGLOG(("GetExternalExchangeInfo Success\n"));
+			if(GetField_Double(hContext,"dst_txn_amt",&dOrgDestAmt)){
+                                //PutField_Double(hReq,"deliver_amt",dOrgDestAmt);
+DEBUGLOG(("Destination Amount=[%lf]\n",dOrgDestAmt));
+			}
+			if(GetField_Double(hContext,"markup_amt",&dTmp)){
+DEBUGLOG(("Markup Amount=[%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"markup_rate",&dTmp)){
+DEBUGLOG(("Markup rate=[%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"ex_rate",&dExRate)){
+DEBUGLOG(("Exchange rate=[%lf]\n",dExRate));
+			}
+			if(GetField_Char(hContext,"ex_party",&cTmp)){
+                                PutField_Char(hContext,"ex_supplier",cTmp);
+DEBUGLOG(("Exchange Party=[%c]\n",cTmp));
+			}
+
+		}
+		else{
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize::GetExchangeInfo Error\n"));
+ERRLOG("TxnMgtByUsSTP:Authorize::GetExchangeInfo Error\n");
+		}
+
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOFee:GetTxnFee\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+                if((unsigned long)(*BOObjPtr)(hContext,hRequest)==PD_OK){
+                        if(GetField_Double(hContext,"src_txn_fee",&dFee)){
+DEBUGLOG(("Authorize::settlement txn fee=[%f]\n",dFee));
+                        }
+                        if(GetField_Double(hContext,"net_amt",&dSrcAmt)){
+DEBUGLOG(("Authorize::settlement net amt=[%f]\n",dSrcAmt));
+                        }
+                        if(GetField_Double(hContext,"dst_txn_amt",&dTmp)){
+				PutField_Double(hReq,"deliver_amt",dTmp);
+DEBUGLOG(("Authorize::settlement dest net amt=[%f]\n",dTmp));
+                        }
+		}
+		else{
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize::BOSettlementFee Error\n"));
+ERRLOG("TxnMgtByUsSTP:Authorize::BOSettlementFee Error\n");
+                }
+		
+		
+		PutField_CString(hContext,"txn_code",PD_SETTLEMENT_PROCESS);
+	}
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOBalance:GetAvalBalanceForUpdate\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOBalance","GetAvalBalanceForUpdate");
+                if((unsigned long)(*BOObjPtr)(csTxnCountry,
+						csTxnCcy,
+						csServiceCode,
+						csMerchantId,
+						&dSettlementBal)==PD_OK){
+DEBUGLOG(("GetAvalBalance for settlement=[%f]\n",dSettlementBal));
+                        if(dSettlementBal<dSrcAmt+dFee){
+                                iRet=INT_INSUFFICIENT_FUND;
+DEBUGLOG(("Settlement Bal[%f] < Request Net Amt=[%f]\n",dSettlementBal,dSrcAmt+dFee));
+ERRLOG("TxnMgtByUsSTP::Authorize::insufficient aval settlement balance!!\n");
+                        }
+                }
+                else{
+DEBUGLOG(("GetAvalBalanceForUpdate Error\n"));
+ERRLOG("TxnMgtByUsSTP::Authorize::GetAvalBalanceForUpdate Error!!\n");
+                        iRet = INT_ERR;
+                }
+        }
+
+	if(iRet==PD_OK){
+		ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnFeeChgLog");
+               	iRet = (unsigned long)((*ChannelObjPtr)(hContext));
+	}
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantSettlementDetail:Update\n"));
+                PutField_Char(hReq,"status",PD_TO_PSP);
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Update");
+                if((unsigned long) ((*DBObjPtr)(hReq))!=PD_OK)
+			iRet = INT_ERR;
+        }
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOBalance:UpdateSettlementAmount\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateSettlementAmount");
+                if((unsigned long) ((*BOObjPtr)(hContext))!=PD_OK)
+                        iRet = INT_ERR;
+        }
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBTransaction:UpdateDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+			iRet = INT_ERR;
+	}
+
+	if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(hReq);
+DEBUGLOG(("TxnMgtByUsSTP Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

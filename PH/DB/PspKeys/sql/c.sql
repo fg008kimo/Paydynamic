@@ -1,0 +1,13 @@
+CREATE TABLE PHUSER.NEW_PSP_KEYS
+(
+  PSP_ID            VARCHAR2(10 BYTE),
+  KEY               VARCHAR2(3 BYTE),
+  KEY_NAME          VARCHAR2(50 BYTE),
+  KEY_VALUE         VARCHAR2(128 BYTE),
+  EFFECT_DATE       DATE,
+  CREATE_TIMESTAMP  DATE                        DEFAULT sysdate,
+  UPDATE_TIMESTAMP  DATE                        DEFAULT sysdate,
+  CREATE_USER       VARCHAR2(20 BYTE),
+  UPDATE_USER       VARCHAR2(20 BYTE)
+)
+/

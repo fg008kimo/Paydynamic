@@ -1,0 +1,607 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[33];
+};
+static struct sqlcxp sqlfpn =
+{
+    32,
+    "par_payout_reversal_handler_2.pc"
+};
+
+
+static unsigned int sqlctx = 1244241563;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/12/27              Virginia Yun
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sqlca.h>
+#include <sqlcpr.h>
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "../batchcommon.h"
+#include "par_payout_reversal_handler_2.h"
+#include "pr_bo_funct.h"
+#include "pr_par_funct.h"
+#include "pr_par_funct_2.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+
+char	cDebug;
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+int	CreateNewPayoutReversalTxn(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int	process_po_reversal_approve(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+
+int payout_reversal_handler_2(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+	//int iTmpRet;
+
+	hash_t          *hTxnHeader;
+
+	recordset_t     *rRecordSet;
+	hash_t          *hRec;
+
+	//char    *csTmp = NULL;
+	//double  dReqAmt = 0.0;
+	//double  dMerchantFee = 0.0;
+	//double  dMarkup = 0.0;
+	//int     iTmp = 0;
+	//int     iStatus = 0;
+
+	//char    *csMerchNmb = NULL;
+	char    *csVNCRefNum = NULL;
+	char    *csUploadTxnId = NULL;
+	//char    *csOrgTxnId= NULL;
+
+	int     iRecExists = PD_FALSE;
+	//char    csTxnSeq[PD_TXN_SEQ_LEN+1];
+
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+	//recordset_init(rRecordSet, 0);
+
+	hash_t  *hContext, *hRequest, *hResponse;
+
+	hTxnHeader = (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxnHeader, 0);
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+        hash_init (hContext, 0);
+        hash_init (hRequest, 0);
+        hash_init (hResponse, 0);
+
+
+	iRet = AssignTxnRecordDetail(hMyHash);
+DEBUGLOG(("payout_reversal_handler_2::AssignTxnRecordDetail Ret [%d]\n", iRet));
+
+	// Chk if exists in txn_header
+	if (iRet == SUCCESS) {
+		GetField_Int(hMyHash, "record_exists", &iRecExists);
+
+		if (iRecExists == PD_TRUE) {
+DEBUGLOG(("payout_reversal_handler_2: unexpected record exists!\n"));
+			iRet = FAILURE;	
+		}
+	}
+
+////////if txn exist before, do nothing and return iRet
+////////else add new txn
+
+	if (iRet == SUCCESS) {
+		iRet = CreateNewPayoutReversalTxn(hMyHash, hContext, hRequest, hResponse);
+	}
+
+
+	if(iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+DEBUGLOG(("payout_reversal_handle_2:: vnc_ref_num [%s]\n", csVNCRefNum));
+		}
+
+		recordset_init(rRecordSet, 0);
+
+		if(GetPayoutDetailByAuxVncRefNum(csVNCRefNum,rRecordSet)==PD_OK){
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"txn_id",&csUploadTxnId)){
+					PutField_CString(hMyHash, "upload_txn_id", csUploadTxnId);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum txn_id = [%s]\n",csUploadTxnId));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("payout_reversal_handler_2:GetPayoutDetailByAuxVncRefNum FAIL!\n"));
+			iRet = FAILURE;
+		}
+
+		RecordSet_Destroy(rRecordSet);
+
+		iRet = process_po_reversal_approve(hMyHash, hContext, hRequest, hResponse);
+	}	
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("payout_reversal_handler_2:UpdateProcessResult\n"));
+		if(iRecExists == PD_TRUE)
+			iRet = UpdateProcessResult(hMyHash, "SKIP");
+		else
+			iRet = UpdateProcessResult(hMyHash, "COMPLETE");
+	}
+
+	hash_destroy(hTxnHeader);
+        FREE_ME(hTxnHeader);
+
+        hash_destroy(hContext);
+        hash_destroy(hRequest);
+        hash_destroy(hResponse);
+
+        FREE_ME(hContext);
+        FREE_ME(hRequest);
+        FREE_ME(hResponse);
+
+        FREE_ME(rRecordSet);
+
+DEBUGLOG(("payout_reversal_handler_2: iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int	CreateNewPayoutReversalTxn(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char    csTxnSeq[PD_TXN_SEQ_LEN+1];
+
+	char    *csVNCRefNum = NULL;
+	char	*csTmp;
+	char	*csTxnDateTime;
+
+	char	csDate[PD_DATE_LEN + 1];
+	char	csTime[PD_TIME_LEN + 1];
+
+
+	//strcpy(csTxnSeq,GetNextMgtTxnSeq());
+
+	PutField_Int(hContext, "db_commit", PD_FALSE);
+
+	DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+	strcpy(csTxnSeq, (*DBObjPtr)());
+
+	PutField_CString(hMyHash,"txn_seq",csTxnSeq);
+DEBUGLOG(("payout_reversal_handler_2: Generate (MGT) Txn Seq [%s]\n", csTxnSeq));
+
+	PutField_CString(hContext, "txn_seq", csTxnSeq);
+	PutField_CString(hMyHash, "voa_txn_seq", csTxnSeq);
+
+	PutField_CString(hContext, "channel_code", PD_CHANNEL_MGT);
+	PutField_Char(hContext, "party_type", PD_TYPE_MERCHANT);
+
+
+	if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+		PutField_CString(hContext, "txn_code", csTmp);
+	}
+
+	//if (GetField_CString(hMyHash, "post_date", &csTmp)) 
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+
+		strncpy(csDate, csTmp, PD_DATE_LEN);
+		strncpy(csTime, csTmp+ PD_DATE_LEN, PD_TIME_LEN);
+
+		csDate[PD_DATE_LEN] = '\0';
+		csTime[PD_TIME_LEN] = '\0';
+
+		PutField_CString(hContext, "PHDATE", csDate);
+	}
+
+	if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+		PutField_CString(hContext, "local_tm_date", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+		PutField_CString(hContext, "local_tm_time", csTmp);
+	}
+	
+	if (GetField_CString(hMyHash, "remark", &csTmp)) {
+		PutField_CString(hRequest, "remark", csTmp);
+	}
+
+
+	PutField_CString(hContext, "process_type", PD_PROCESS_TYPE_DEF);
+	PutField_CString(hContext, "process_code", PD_PROCESS_CODE_DEF);
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+		PutField_CString(hRequest, "merchant_id", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "merch_ref", &csTmp)) {
+		PutField_CString(hRequest, "merchant_ref", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "post_datetime", &csTxnDateTime)) {
+		PutField_CString(hRequest, "transmission_datetime", csTxnDateTime);
+
+                csDate[0] = '\0';
+                csTime[0] = '\0';
+
+                strncpy(csDate, csTxnDateTime, PD_DATE_LEN);
+                csDate[PD_DATE_LEN]='\0';
+                strncpy(csTime, csTxnDateTime + PD_DATE_LEN, PD_TIME_LEN);
+
+DEBUGLOG(("par_payout_reversal_handler_2::CreateNewPayoutReversalTxn tm_date[%s] tm_time[%s]\n", csDate, csTime));
+
+                PutField_CString(hRequest, "tm_date", csDate);
+                PutField_CString(hRequest, "tm_time", csTime);
+	}
+
+        if (GetField_CString(hMyHash, "service", &csTmp)) {
+                PutField_CString(hRequest, "service_code", csTmp);
+                PutField_CString(hContext, "service_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+                PutField_CString(hRequest, "ip_addr", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+                PutField_CString(hRequest, "txn_ccy", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "country", &csTmp)) {
+                PutField_CString(hRequest, "txn_country", csTmp);
+        }
+
+
+	if (iRet == SUCCESS) {
+		ChannelObjPtr = CreateObj(ChannelPtr, "WEBChannel","AddTxnLog");
+
+		if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest)) == PD_OK) {
+DEBUGLOG(("par_payout_reversal_handler_2::CreateNewPayoutReversalTxn: call WEBChannel.AddTxnLog  SUCC!\n"));
+		}
+		else {
+			iRet = FAILURE;
+DEBUGLOG(("par_payout_reversal_handler_2::CreateNewPayoutReversalTxn: call WEBChannel.AddTxnLog FAILED!\n"));
+		}
+	}
+
+	if (iRet == SUCCESS) {
+
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+			PutField_CString(hContext, "vnc_ref_num", csVNCRefNum);
+
+			if (UpdateHeaderVNCRef(hContext) == PD_OK) {
+DEBUGLOG(("par_deposit_handler_2::CreateNewDepositTxn: updated vnc_ref_num succ!\n"));
+			}
+		}
+		else {
+DEBUGLOG(("par_deposit_handler_2::CreateNewDepositTxn: updated vnc_ref_num fail!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	return iRet;
+}
+
+
+int	process_po_reversal_approve(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp;
+	char	*csTxnSeq;
+	char	*csPostDate;
+	char    *csOrgPostDate;
+
+	int	iSameDate = PD_FALSE;
+
+	recordset_t	*rRecordSet;
+	rRecordSet = (recordset_t *) malloc(sizeof(recordset_t));
+	hash_t		*hRec;
+
+	hash_t	*hTxnSeqMap;
+	hTxnSeqMap = (hash_t *)malloc(sizeof(hash_t));
+        hash_init (hTxnSeqMap, 0);
+
+
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+DEBUGLOG(("process_po_reversal_approve:: txn_seq [%s]\n", csTmp));
+		PutField_CString(hContext, "from_txn_seq", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "upload_txn_id", &csTxnSeq)) {
+DEBUGLOG(("process_po_reversal_approve:: upload_txn_id [%s]\n", csTxnSeq));
+		PutField_CString(hRequest, "org_txn_seq", csTxnSeq);
+		PutField_CString(hContext, "org_txn_seq", csTxnSeq);
+	}
+
+	if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("process_po_reversal_approve:: merchant_client_id [%s]\n", csTmp));
+		PutField_CString(hRequest, "client_id", csTmp);
+	}
+
+	PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+        PutField_Int(hRequest,"return_mfee",PD_TRUE);
+	PutField_Int(hRequest,"return_pspfee",PD_TRUE);
+
+	GetField_CString(hContext, "PHDATE", &csPostDate);
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("porcess_po_reversal_approve::call TxnMgtByUsVOT.GetTxnInfo\n"));
+
+		TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsVOT","GetTxnInfo");
+		iRet = (unsigned long)(*TxnObjPtr)((const unsigned char *)csTxnSeq, hContext, hRequest);
+
+DEBUGLOG(("process_po_reversal_approve::TxnWebOnUsVOT.GetTxnInfo return [%d]\n",iRet));
+
+		if (iRet == SUCCESS) {
+			// Check if same_date
+			recordset_init(rRecordSet, 0);
+			DBObjPtr = CreateObj(DBPtr, "DBTransaction", "GetTxnHeader");
+                        if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnHeader::found record = [%s]\n",csTmp));
+                                hRec = RecordSet_GetFirst(rRecordSet);
+                                while (hRec) {
+					if (GetField_CString(hRec,"host_posting_date",&csOrgPostDate)){
+                                                if(!strcmp(csPostDate,csOrgPostDate)){
+                                                        iSameDate = PD_TRUE;
+                                                }
+                                        }
+                                        hRec = RecordSet_GetNext(rRecordSet);
+                                }
+                        }
+			RecordSet_Destroy(rRecordSet);
+
+DEBUGLOG(("process_po_reversal_approve::call BOTxnElements.VoidOrgTxnElements\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","VoidOrgTxnElements");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("process_po_reversal_approve:: BOTxnElements:VoidOrgTxnElements iRet = [%d]\n",iRet));
+
+		} else {
+			if (iRet == INT_NOT_RECORD) {
+				PutField_Int(hContext, "exists_poa", PD_FALSE);
+
+DEBUGLOG(("Cannot find org POA record, use org_txn_code as [%s]!\n", PD_PAYOUT_APPROVE));
+				iRet = SUCCESS;
+
+				PutField_CString(hRequest, "org_txn_code", PD_PAYOUT_APPROVE);
+				iSameDate = PD_FALSE;
+
+				// AddTxnAmtElement
+				double	dTmp = 0.0;
+				hash_t	*hTempElement;
+				hTempElement = (hash_t *)malloc(sizeof(hash_t));
+
+				hash_init (hTempElement, 0);
+			
+				if (GetField_CString(hContext, "from_txn_seq", &csTmp)) {
+					PutField_CString(hTempElement, "from_txn_seq", csTmp);
+				}
+
+				if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+					PutField_CString(hTempElement, "org_txn_ccy", csTmp);
+				}
+				if (GetField_Double(hMyHash, "amount", &dTmp)) {
+					PutField_Double(hTempElement, "org_txn_amt", dTmp);
+				}
+				PutField_Char(hTempElement, "party_type", PD_TYPE_MERCHANT);
+				PutField_CString(hTempElement, "amount_type", PD_CR);
+
+DEBUGLOG(("process_po_reversal_approve::call BOTxnElements.AddTxnAmtElement\n"));
+				BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+				iRet = (unsigned long)(*BOObjPtr)(hTempElement);
+DEBUGLOG(("process_po_reversal_approve:: BOTxnElements:AddTxnAmtElementiRet = [%d]\n",iRet));
+
+	
+				hash_destroy(hTempElement);	
+				FREE_ME(hTempElement);		
+			}
+		}
+
+		if (iRet == SUCCESS) {
+			PutField_Int(hContext, "same_date_cancel", iSameDate);
+		}
+	}	
+
+	if (iRet == SUCCESS) {
+	 	//PutField_CString(hContext, "txn_code", PD_PAYOUT_VOID_MERCHANT);
+	 	PutField_CString(hContext, "txn_code", PD_PAYOUT_VOID_MERCHANT_WITH_FEE);
+		PutField_Int(hContext, "do_logging", PD_NO_LOG);
+	}
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("porcess_po_reversal_approve::call TxnParByUsVOA.Authorize\n"));
+		PutField_Char(hContext, "party_type", PD_TYPE_MERCHANT);
+
+		TxnObjPtr = CreateObj(TxnPtr,"TxnParByUsVOA","Authorize");
+		iRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+
+DEBUGLOG(("process_po_reversal_approve::TxnParByUsVOA.Authorize return [%d]\n",iRet));
+
+	}
+
+
+	///////////////////////
+	// hContext, "approval_date"
+	// hContext, "sub_status", PD_APPROVED
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("prepare call AddPORevTxnSeqMap...\n"));
+		if (GetField_CString(hMyHash, "txn_nmb", &csTmp)) {
+			PutField_CString(hTxnSeqMap, "vnc_ref_num", csTmp);
+		}
+
+		if (GetField_CString(hMyHash, "voa_txn_seq", &csTmp)) {
+			PutField_CString(hTxnSeqMap, "voa_txn_seq", csTmp);
+		}
+		PutField_CString(hTxnSeqMap, "add_user", PD_UPDATE_USER);
+
+		iRet = AddPORevTxnSeqMap(hTxnSeqMap);
+	}
+	
+
+
+
+	if (iRet == SUCCESS) {
+		iRet = UpdateApprovalTimestamp(hContext);
+	}
+
+        hash_destroy(hTxnSeqMap); 
+	FREE_ME(hTxnSeqMap);
+
+
+	FREE_ME(rRecordSet);
+
+	return iRet;
+}
+

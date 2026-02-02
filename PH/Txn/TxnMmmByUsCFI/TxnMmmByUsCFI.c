@@ -1,0 +1,390 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/07/16              Cody Chan
+Add Support CreateOverPaid			   2015/07/24		   Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmmByUsCFI.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+
+int UpdateRecvIntransitContext(hash_t* hContext,hash_t* hRecvContext);
+
+void TxnMmmByUsCFI(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+        int     iBalCnt = 0,i;
+        double  dTmp;
+	double	dFxRate = 0.0;
+        char    csTag[PD_TAG_LEN +1];
+        char    *csPtr;
+        hash_t  *hRecvContext;
+        hash_t  *hData;
+	char	cCostCal = ' ';
+	char	cFxTxn = ' ';
+
+DEBUGLOG(("Authorize()\n"));
+	if (GetField_Char(hContext,"fx_txn",&cFxTxn)) {
+DEBUGLOG(("Authorize() fx_txn = [%c]\n",cFxTxn));
+	}
+
+        hRecvContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRecvContext,0);
+        hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	GetField_Char(hContext,"cost_cal",&cCostCal);
+
+        iRet = UpdateRecvIntransitContext(hContext,hRecvContext);
+DEBUGLOG(("Authorize iRet = [%d] from UpdateRecvIntransitContext\n",iRet));
+
+	if (iRet == PD_OK) {
+		if (cFxTxn == PD_YES) {
+			if (GetField_Double(hContext,"fx_rate",&dFxRate)) {
+DEBUGLOG(("Authorize() fx_rate = [%lf]\n",dFxRate));
+                	}	
+			else {
+DEBUGLOG(("Authorize() fx_rate not found\n"));
+ERRLOG("TxnMmmByUsAFX:Authorize() fx_rate not found\n");
+				iRet = PD_ERR;
+			}
+		}
+	}
+
+        if (iRet == PD_OK) {
+
+/* relate txn id */
+                if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+                        PutField_CString(hRecvContext,"related_txn_id",csPtr);
+                }
+/* txn seq */
+                if (GetField_CString(hRecvContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("Authorize txn_seq = [%s]\n",csPtr));
+                        PutField_CString(hData,"txn_seq",csPtr);
+                }
+/* entity_id */
+                if (GetField_CString(hRecvContext,"entity_id",&csPtr)) {
+DEBUGLOG(("Authorize entity_id = [%s]\n",csPtr));
+                        PutField_CString(hData,"entity_id",csPtr);
+                }
+/* entity_type */
+                if (GetField_CString(hRecvContext,"entity_type",&csPtr)) {
+DEBUGLOG(("Authorize entity_type = [%s]\n",csPtr));
+                        PutField_CString(hData,"entity_id",csPtr);
+                }
+
+
+/* txn_ccy */
+                if (GetField_CString(hContext,"overrided_txn_ccy",&csPtr)) {
+DEBUGLOG(("Authorize overrided_txn_ccy = [%s]\n",csPtr));
+                        PutField_CString(hData,"ccy",csPtr);
+                        PutField_CString(hRecvContext,"net_ccy",csPtr);
+                }
+                else if (GetField_CString(hContext,"txn_ccy",&csPtr)) {
+DEBUGLOG(("Authorize txn_ccy = [%s]\n",csPtr));
+                        PutField_CString(hData,"ccy",csPtr);
+                        PutField_CString(hRecvContext,"net_ccy",csPtr);
+                }
+
+		if (GetField_CString(hContext,"override_txn_code",&csPtr))
+                	PutField_CString(hRecvContext,"txn_code",csPtr);
+		else
+                	PutField_CString(hRecvContext,"txn_code",PD_TXN_CODE_MMS_RECV_INTRANSIT);
+                PutField_CString(hRecvContext,"process_code",PD_PROCESS_CODE_DEF);
+                PutField_CString(hRecvContext,"process_type",PD_PROCESS_TYPE_DEF);
+
+/* set db commit to false */
+                PutField_Int(hRecvContext,"db_commit",PD_FALSE);
+DEBUGLOG(("Authorizeset db_commit to [%d]\n",PD_FALSE));
+
+                BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","AddTxnLog");
+                iRet = (unsigned long)(BOObjPtr)(hRecvContext,hRequest);
+        }
+
+
+        if (iRet == PD_OK) {
+
+                if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+                        PutField_Int(hRecvContext,"bal_cnt",iBalCnt);
+DEBUGLOG(("Authorize() bal_cnt = [%d]\n",iBalCnt));
+                }
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("Authorize() bal_cnt not found\n"));
+ERRLOG("Authorize() bal_cnt not found\n");
+		}
+		if  (iRet == PD_OK) {
+                	for (i = 0 ; i < iBalCnt; i++) {
+                        	sprintf(csTag,"bal.%d.nature_id",i+1);
+                        	if (GetField_CString(hContext,csTag,&csPtr)) {
+                                	PutField_CString(hRecvContext,csTag,csPtr);
+DEBUGLOG(("Authorize() [%s] = [%s]\n",csTag,csPtr));
+                        	}
+
+				sprintf(csTag,"bal.%d.override_amt",i+1);
+                                if (GetField_Double(hContext,csTag,&dTmp) && cCostCal == PD_MMS_COST_CAL_NET) {
+                                        sprintf(csTag,"bal.%d.amt",i+1);
+                                        PutField_Double(hRecvContext,csTag,dTmp);
+DEBUGLOG(("Authorize() [%s] = [%lf]\n",csTag,dTmp));
+                                }
+                                else {
+                                        sprintf(csTag,"bal.%d.amt",i+1);
+                                        if (GetField_Double(hContext,csTag,&dTmp)) {
+						if (cFxTxn == PD_YES) {
+DEBUGLOG(("Authorize() [%s] = [%lf]\n",csTag,dTmp));
+							dTmp = newround(dTmp * dFxRate,PD_DECIMAL_LEN);
+DEBUGLOG(("Authorize() [%s] = [%lf]\n",csTag,dTmp));
+						}
+                                                PutField_Double(hRecvContext,csTag,dTmp);
+                                        	sprintf(csTag,"bal.%d.fx_amt",i+1);
+                                                PutField_Double(hContext,csTag,dTmp);
+DEBUGLOG(("Authorize() [%s] = [%lf]\n",csTag,dTmp));
+                                        }
+                                }
+                	}
+
+			if (GetField_CString(hContext,"balance_action",&csPtr)) {
+DEBUGLOG(("Authorize() balance_action = [%s]\n",csPtr));
+                		BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalance",csPtr);
+                		iRet = (unsigned long)((BOObjPtr)(hRecvContext,hData));
+			}
+			else {
+DEBUGLOG(("Authorize() balance_action not found\n"));
+ERRLOG("Authorize() balance_action not found\n");
+				iRet = PD_ERR;
+			}
+		}
+
+                if (iRet == PD_OK) {
+                        int     iInternalErr = 0;
+                        char    *csBuf;
+                        csBuf = (char*) malloc (PD_TMP_BUF_LEN +1);
+
+                        hash_t  *hRsp;
+                        hRsp = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(hRsp,0);
+
+                        sprintf(csBuf,"%d",iInternalErr);
+                        PutField_CString(hRsp,"response_code",csBuf);
+                        PutField_Int(hRecvContext,"internal_error",iInternalErr);
+
+
+                        PutField_Char(hRecvContext,"ar_ind",PD_ACCEPT);
+                        PutField_Char(hRecvContext,"status",PD_COMPLETE);
+                        PutField_CString(hRecvContext,"sub_status",PD_PENDING);
+                        BOObjPtr = CreateObj(BOPtr,"BOMMSTransaction","UpdateTxnLog");
+                        iRet = (unsigned long)(BOObjPtr)(hRecvContext,hRequest,hRsp);
+                        FREE_ME(csBuf);
+                }
+        }
+
+        FREE_ME(hRecvContext);
+        FREE_ME(hData);
+
+
+DEBUGLOG(("TxnMmmByUsCFI Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int UpdateRecvIntransitContext(hash_t* hContext,hash_t* hRecvContext)
+{
+        int     iRet = PD_OK;
+        char    *csPtr;
+	char	*csTxnCcy;
+        double  dTmp;
+        char    csTxnSeq[PD_TXN_SEQ_LEN +1];
+	char	cTmp;
+
+DEBUGLOG(("UpdateRecvIntransitContext()\n"));
+
+        DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMmmTxnSeq");
+        strcpy(csTxnSeq,(*DBObjPtr)());
+        PutField_CString(hRecvContext,"txn_seq",csTxnSeq);
+DEBUGLOG(("UpdateRecvIntransitContext() txn_seq = [%s]\n",csTxnSeq));
+/* action_txn_seq */
+        if (GetField_CString(hContext,"action_txn_seq",&csPtr)) {
+                PutField_CString(hRecvContext,"action_txn_seq",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() action_txn_seq = [%s]\n",csPtr));
+        }
+
+/* entity_id */
+        if (GetField_CString(hContext,"dst.entity_id",&csPtr)) {
+                PutField_CString(hRecvContext,"entity_id",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() entity_id = [%s]\n",csPtr));
+        }
+
+/* entity_type */
+        if (GetField_CString(hContext,"dst.entity_type",&csPtr)) {
+                PutField_CString(hRecvContext,"entity_type",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() entity_type = [%s]\n",csPtr));
+        }
+
+/* channel_code */
+        if (GetField_CString(hContext,"channel_code",&csPtr)) {
+                PutField_CString(hRecvContext,"channel_code",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() channel_code = [%s]\n",csPtr));
+        }
+
+/* PHDATE */
+        if (GetField_CString(hContext,"PHDATE",&csPtr)) {
+                PutField_CString(hRecvContext,"PHDATE",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() PHDATE = [%s]\n",csPtr));
+        }
+
+/* local_tm_date */
+        if (GetField_CString(hContext,"local_tm_date",&csPtr)) {
+                PutField_CString(hRecvContext,"local_tm_date",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() local_tm_date = [%s]\n",csPtr));
+        }
+
+/* local_tm_time */
+        if (GetField_CString(hContext,"local_tm_time",&csPtr)) {
+                PutField_CString(hRecvContext,"local_tm_time",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() local_tm_time = [%s]\n",csPtr));
+        }
+
+/* req_node_id */
+        if (GetField_CString(hContext,"req_node_id",&csPtr)) {
+                PutField_CString(hRecvContext,"req_node_id",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() req_node_id = [%s]\n",csPtr));
+        }
+
+/* node_ref */
+        if (GetField_CString(hContext,"node_ref",&csPtr)) {
+                PutField_CString(hRecvContext,"node_ref",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() node_ref = [%s]\n",csPtr));
+        }
+
+/* transmission_datetime */
+        if (GetField_CString(hContext,"transmission_datetime",&csPtr)) {
+                PutField_CString(hRecvContext,"transmission_datetime",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() transmission_datetime = [%s]\n",csPtr));
+        }
+
+/* tm_date */
+        if (GetField_CString(hContext,"tm_date",&csPtr)) {
+                PutField_CString(hRecvContext,"tm_date",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() tm_date = [%s]\n",csPtr));
+        }
+
+/* tm_time */
+        if (GetField_CString(hContext,"tm_time",&csPtr)) {
+                PutField_CString(hRecvContext,"tm_time",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() tm_time = [%s]\n",csPtr));
+        }
+
+/* txn_amt */
+        if (GetField_Double(hContext,"override_txn_amt",&dTmp)) {
+                PutField_Double(hRecvContext,"txn_amt",dTmp);
+                PutField_Double(hRecvContext,"net_amt",dTmp);
+                PutField_Double(hRecvContext,"remaining_amt",dTmp);
+DEBUGLOG(("UpdateRecvIntransitContext() txn_amt = [%lf]\n",dTmp));
+	}
+        else if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+                PutField_Double(hRecvContext,"net_amt",dTmp);
+                PutField_Double(hRecvContext,"remaining_amt",dTmp);
+                PutField_Double(hRecvContext,"txn_amt",dTmp);
+DEBUGLOG(("UpdateRecvIntransitContext() txn_amt = [%lf]\n",dTmp));
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hContext,"overrided_txn_ccy",&csTxnCcy)) {
+                PutField_CString(hRecvContext,"txn_ccy",csTxnCcy);
+                PutField_CString(hRecvContext,"net_ccy",csTxnCcy);
+DEBUGLOG(("UpdateRecvIntransitContext() overrided_ccy = [%s]\n",csTxnCcy));
+        }
+        else if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {
+                PutField_CString(hRecvContext,"txn_ccy",csTxnCcy);
+                PutField_CString(hRecvContext,"net_ccy",csTxnCcy);
+DEBUGLOG(("UpdateRecvIntransitContext() txn_ccy = [%s]\n",csTxnCcy));
+        }
+	else {
+DEBUGLOG(("UpdateRecvIntransitContext() txn_ccy is missing\n"));
+ERRLOG("TxnMmmByUsCFI:UpdateRecvIntransitContext() txn_ccy is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_country */
+        if (GetField_CString(hContext,"txn_country",&csPtr)) {
+                PutField_CString(hRecvContext,"txn_country",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() txn_country = [%s]\n",csPtr));
+        }
+
+/* provided_fx_rate */
+        if (GetField_Double(hContext,"provided_fx_rate",&dTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() provided_fx_rate = [%lf]\n",dTmp));
+                PutField_Double(hRecvContext,"provided_fx_rate",dTmp);
+        }
+/* fx_rate */
+        if (GetField_Double(hContext,"fx_rate",&dTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() fx_rate = [%lf]\n",dTmp));
+                PutField_Double(hRecvContext,"fx_rate",dTmp);
+        }
+/* cost_rate */
+        if (GetField_Double(hContext,"dst.provided_cost_rate",&dTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() dst.provided_cost_rate = [%lf]\n",dTmp));
+                PutField_Double(hRecvContext,"provided_cost_rate",dTmp);
+        }
+
+/* cost_flat_rate */
+        if (GetField_Double(hContext,"dst.provided_cost_flat_rate",&dTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() dst.provided_cost_flat_rate = [%lf]\n",dTmp));
+                PutField_Double(hRecvContext,"provided_cost_flat_rate",dTmp);
+        }
+
+/* cost_amt */
+        if (GetField_Double(hContext,"dst.provided_cost_amt",&dTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() dst.provided_cost_amt = [%lf]\n",dTmp));
+                PutField_Double(hRecvContext,"provided_cost_amt",dTmp);
+        }
+
+/* allow_prepaid */
+	if (GetField_Char(hContext,"dst.allow_prepaid",&cTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() dst.allow_prepaid = [%c]\n",cTmp));
+		PutField_Char(hRecvContext,"allow_prepaid",cTmp);
+	}
+
+/* next_action_txn_ccy */
+	if (GetField_CString(hContext,"dst.txn_ccy",&csPtr)) {
+DEBUGLOG(("UpdateRecvIntransitContext() dst.txn_ccy = [%s]\n",csPtr));
+		if (strcmp(csTxnCcy,csPtr)) {
+			PutField_CString(hRecvContext,"next_action_ccy",csPtr);
+DEBUGLOG(("UpdateRecvIntransitContext() next_txn_ccy = [%s]\n",csPtr));
+		}
+	}
+
+/* fx txn */
+	if (GetField_Char(hContext,"fx_txn",&cTmp)) {
+DEBUGLOG(("UpdateRecvIntransitContext() tx_txn = [%c]\n",cTmp));
+		PutField_Char(hRecvContext,"fx_txn",cTmp);
+	}
+
+DEBUGLOG(("UpdateRecvIntransitContext() Normal Exit iRet = [%d]\n",iRet));
+        return iRet;
+}

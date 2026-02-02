@@ -1,0 +1,370 @@
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission 
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/03/06              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <sqlca.h>
+#include "common.h"
+#include "utilitys.h"
+#include "internal.h"
+#include "MobBankMap.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+char    cDebug;
+
+void MobBankMap(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+int GetMobileSegment(const char* csMerchantId,
+                     const char* csBankCode,
+                     hash_t * hTxn)
+{
+	int iRet = PD_NOT_FOUND;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getgrp_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar hv_bank_code[PD_BANK_CODE_LEN];
+
+		varchar	v_group[PD_CUSTOMER_GROUP_CODE_LEN+1];
+
+		short	hv_return_value;
+
+		short	ind_merchant_id = -1;
+		short	ind_bank_code  = -1;
+
+		short	ind_group = -1;
+
+		SQL_CURSOR      c_cursor_id;
+        EXEC SQL END DECLARE SECTION;
+
+/* merchant_id */
+	hv_merchant_id.len = strlen(csMerchantId);
+	memcpy(hv_merchant_id.arr,csMerchantId,hv_merchant_id.len);
+	ind_merchant_id = 0;
+DEBUGLOG(("GetMobileSegment: merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+
+/* bank_code */
+	hv_bank_code.len = strlen(csBankCode);
+	memcpy(hv_bank_code.arr,csBankCode,hv_bank_code.len);
+	ind_bank_code = 0;
+DEBUGLOG(("GetMobileSegment: bank_code = [%.*s]\n",hv_bank_code.len,hv_bank_code.arr));
+
+
+	EXEC SQL ALLOCATE       :c_cursor_id;
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_mob_bank_get_grp(:hv_merchant_id:ind_merchant_id,
+								  :hv_bank_code:ind_bank_code,
+								  :c_cursor_id);
+                END;
+        END-EXEC;
+
+	if (hv_return_value == 0 ) {
+		for (;;) {
+			ind_group = -1;
+
+			EXEC SQL WHENEVER NOTFOUND DO break;
+			EXEC SQL FETCH :c_cursor_id
+			INTO	
+				:v_group:ind_group;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			if (ind_group>= 0) {
+				v_group.arr[v_group.len] = '\0';
+DEBUGLOG(("GetMobileSegment: group = [%s]\n",v_group.arr));
+				PutField_CString(hTxn,"mob_segment",(const char*)v_group.arr);
+				iRet = PD_FOUND;
+			}
+		}
+	}
+	else{
+		iRet = PD_ERR;
+DEBUGLOG(("GetMobileSegment  Failed!!!\n"));
+	}
+
+DEBUGLOG(("GetMobileSegment: Finished iRet = [%d]\n",iRet));
+	return iRet;
+
+getgrp_error:
+DEBUGLOG(("getgrp_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;
+}
+
+
+int GetMobileBankByPsp(const char* csChannelId,
+		       hash_t* myHash)
+{
+	EXEC SQL WHENEVER SQLERROR GOTO mobbank_bypsp_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_channel_id[PD_PSP_ID_LEN];
+
+                varchar v_bank_code[PD_BANK_CODE_LEN+1];
+
+                short   ind_bank_code = -1;
+        EXEC SQL END DECLARE SECTION;
+
+        hv_channel_id.len = strlen((const char *)csChannelId);
+        memcpy(hv_channel_id.arr,csChannelId,hv_channel_id.len);
+DEBUGLOG(("GetMobileBankByPsp: Channel Id= [%.*s]\n",hv_channel_id.len,hv_channel_id.arr));
+
+        EXEC SQL DECLARE c_cursor_mobbank_bypsp CURSOR FOR
+                select	mbm_bank_code
+		from	mob_bank_map, 
+			bank_mapping
+		where	mbm_bank_code = bm_int_bank_code
+		and	bm_psp_channel_id = :hv_channel_id
+		and	mbm_disabled = 0
+		and	mbm_is_default = 1
+		and	bm_disabled = 0;
+
+        EXEC SQL OPEN c_cursor_mobbank_bypsp;
+        do{    
+                EXEC SQL FETCH c_cursor_mobbank_bypsp
+                INTO
+                        :v_bank_code:ind_bank_code;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                if (ind_bank_code >= 0) {
+                        v_bank_code.arr[v_bank_code.len] ='\0';
+                        PutField_CString(myHash,"bank_code",(const char*)v_bank_code.arr);
+DEBUGLOG(("GetMobileBankByPsp bank_code = [%s]\n",v_bank_code.arr));
+                }
+
+        }while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_mobbank_bypsp;
+
+        return PD_OK;
+
+mobbank_bypsp_error:
+DEBUGLOG(("mobbank_bypsp_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("MobBankMap::mobbank_bypsp_error code %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_mobbank_bypsp;
+    return PD_ERR;
+}
+
+int GetOutage(const char* csCustomerGroup,
+		recordset_t* myRec)
+{
+        int iRet = PD_OK;
+        int     iCnt = 0;
+
+        hash_t  *myHash;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getoutage_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar hv_customer_group[PD_CUSTOMER_GROUP_CODE_LEN];
+
+                varchar v_bank[PD_BANK_CODE_LEN+1];
+                int     v_scheduler_id;
+                int     v_note_id;
+
+                short   hv_return_value;
+
+                short   ind_bank= -1;
+                short   ind_scheduler_id = -1;
+                short   ind_note_id = -1;
+
+                short   ind_customer_group = -1;
+
+                SQL_CURSOR      c_cursor_id;
+
+        EXEC SQL END DECLARE SECTION;
+
+/* customer_group */
+        if(csCustomerGroup!=NULL){
+                hv_customer_group.len = strlen(csCustomerGroup);
+                memcpy(hv_customer_group.arr,csCustomerGroup,hv_customer_group.len);
+                ind_customer_group = 0;
+DEBUGLOG(("GetOutage: customer_group = [%.*s]\n",hv_customer_group.len,hv_customer_group.arr));
+        }
+	else{
+DEBUGLOG(("GetOutage: customer_group is missing\n"));
+		return INT_ERR;
+	}
+
+        EXEC SQL ALLOCATE       :c_cursor_id;
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_mob_bank_get_outage(:hv_customer_group:ind_customer_group,
+								   :c_cursor_id);
+                END;
+        END-EXEC;
+
+        if (hv_return_value == 0 ) {
+                for (;;) {
+                        myHash = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(myHash,0);
+
+                        ind_bank = -1;
+                        ind_scheduler_id = -1;
+                        ind_note_id = -1;
+
+                        EXEC SQL WHENEVER NOTFOUND DO break;
+                        EXEC SQL FETCH :c_cursor_id
+                        INTO    :v_bank:ind_bank,
+                                :v_scheduler_id:ind_scheduler_id,
+                                :v_note_id:ind_note_id;
+
+                        if (SQLCODE == SQL_NOT_FOUND) {
+                                break;
+                        }
+
+                        if (ind_bank >= 0) {
+                                v_bank.arr[v_bank.len] = '\0';
+DEBUGLOG(("GetOutage: [%03d]bank = [%s]\n",iCnt,v_bank.arr));
+                                PutField_CString(myHash,"bank_code",(const char*)v_bank.arr);
+                        }
+
+                        if (ind_scheduler_id>= 0) {
+DEBUGLOG(("GetOutage: [%03d]scheduler_id = [%d]\n",iCnt,v_scheduler_id));
+                                PutField_Int(myHash,"scheduler_id",v_scheduler_id);
+                        }
+
+                        if (ind_note_id>= 0) {
+DEBUGLOG(("GetOutage: [%03d]note_id = [%d]\n",iCnt,v_note_id));
+                                PutField_Int(myHash,"note_id",v_note_id);
+                        }
+
+                        RecordSet_Add(myRec,myHash);
+                        iCnt++;
+                }
+        }
+
+        EXEC SQL CLOSE :c_cursor_id;
+        EXEC SQL FREE :c_cursor_id;
+DEBUGLOG(("GetOutage: Finished\n"));
+
+        return iRet;
+
+getoutage_error:
+DEBUGLOG(("getoutage_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE :c_cursor_id;
+    EXEC SQL FREE :c_cursor_id;
+    return PD_ERR;
+}
+
+
+int FindGroupByPID(const char* csPspId,
+		recordset_t* myRec)
+{
+        int iRet = PD_OK;
+        int     iCnt = 0;
+
+        hash_t  *myHash;
+
+        EXEC SQL WHENEVER SQLERROR GOTO findgrp_bypsp_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar hv_psp_id[PD_PSP_ID_LEN];
+
+                varchar v_group[PD_CUSTOMER_GROUP_CODE_LEN+1];
+
+                short   hv_return_value;
+
+                short   ind_group = -1;
+
+                short   ind_psp_id = -1;
+
+                SQL_CURSOR      c_cursor_id;
+
+        EXEC SQL END DECLARE SECTION;
+
+/* psp_id*/
+        if(csPspId!=NULL){
+                hv_psp_id.len = strlen(csPspId);
+                memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+                ind_psp_id = 0;
+DEBUGLOG(("FindGroupByPID: psp_id = [%.*s]\n",hv_psp_id.len,hv_psp_id.arr));
+        }
+	else{
+DEBUGLOG(("FindGroupByPID: psp_id is missing\n"));
+		return INT_ERR;
+	}
+
+        EXEC SQL ALLOCATE       :c_cursor_id;
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_mob_bank_get_grp_by_pid(:hv_psp_id:ind_psp_id,
+								   :c_cursor_id);
+                END;
+        END-EXEC;
+
+        if (hv_return_value == 0 ) {
+                for (;;) {
+                        myHash = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(myHash,0);
+
+                        ind_group= -1;
+
+                        EXEC SQL WHENEVER NOTFOUND DO break;
+                        EXEC SQL FETCH :c_cursor_id
+                        INTO    
+                                :v_group:ind_group;
+
+                        if (SQLCODE == SQL_NOT_FOUND) {
+                                break;
+                        }
+
+			if (ind_group>= 0) {
+				v_group.arr[v_group.len] = '\0';
+DEBUGLOG(("FindGroupByPID: [%03d]group = [%s]\n",iCnt,v_group.arr));
+                                PutField_CString(myHash,"pid_group",(const char*)v_group.arr);
+                        }
+
+                        RecordSet_Add(myRec,myHash);
+                        iCnt++;
+                }
+        }
+
+        EXEC SQL CLOSE :c_cursor_id;
+        EXEC SQL FREE :c_cursor_id;
+DEBUGLOG(("FindGroupByPID: Finished\n"));
+
+        return iRet;
+
+findgrp_bypsp_error:
+DEBUGLOG(("findgrp_bypsp_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE :c_cursor_id;
+    EXEC SQL FREE :c_cursor_id;
+    return PD_ERR;
+}
+

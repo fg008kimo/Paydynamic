@@ -1,0 +1,2613 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/07/17	             Samson Fung
+
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONPV
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONPAV
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONPA
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONP
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONMSV
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONMS
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONMTF
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONDV
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONDH
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONDF
+eod_crr_glpost.exec -d 20120718 -c CN -p HBD -t ONDA
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "eod_crr_glpost.h"
+#include "mymd5.h"
+#include "eod_glutility.h"
+#include "ObjPtr.h"
+
+OBJPTR(BO);
+OBJPTR(DB);
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	","
+#define	PD_FILE_DELIMITOR "	"
+#define	PD_HASHKEY_DELIMITOR ":"
+
+#define	PD_CHAR		0x0D
+#define	PD_SPACE	0x20
+
+char    cDebug = 'Y';
+char    cs_date[PD_DATE_LEN + 1];
+char    cs_country[PD_COUNTRY_CODE_LEN + 1];
+char    cs_product[PD_PRODUCT_CODE_LEN + 1];
+char    cs_jnl_type[PD_JNL_TYPE_PREFIX_LEN + 1];
+
+short is_float(char* str);
+int parse_arg(int argc,char **argv);
+int getFXConvertAmt(char *csFxDate, char *csFromCcy, char *csToCcy, double dReqAmt, double* dConvertAmt);
+int getPostTxn();
+int postSingleJournal(char* csType, recordset_t* rsJnl);
+int postMultipleJournal(char* csType, recordset_t* rsJnl);
+int clearJournal(char* csType, recordset_t* rsJnl);
+int GetPostJnl(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct, char* csJnlType);
+int GetAllPostJnl(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+
+int GetApprovedDeposit(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetVoidDeposit(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetReconDeposit(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetApprovedPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetGeneratedPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetVoidApprovedPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetVoidGenPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetDeliveredMst(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetVoidMst(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+int GetApprovedMbt(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct);
+
+short is_float(char* str)
+{
+	int i_len = strlen(str);
+	int i;
+	
+	for (i = 0; i < i_len; i++)
+		if ((!isdigit(str[i])) && (str[i]!='.'))
+			return PD_FALSE;
+	
+	return PD_TRUE;
+}
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 4) {
+		printf("usage: -d Date -c Country -p Product -t Type\n");
+	    return FAILURE;
+	}
+	else
+	    return SUCCESS;
+}
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet;
+	
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+    	printf("*usage: -d Date -c Country -p Product -t Type\n");
+		return (iRet);
+	}
+			
+	if (iRet == SUCCESS) {
+		DEBUGLOG(("Txn Date = [%s]\n",cs_date));
+		DEBUGLOG(("Country = [%s]\n",cs_country));
+		DEBUGLOG(("Product = [%s]\n",cs_product));
+		DEBUGLOG(("Type = [%s]\n",cs_jnl_type));
+		
+		iRet = getPostTxn();
+	}
+	
+	DEBUGLOG(("End = [%d]\n",iRet));
+	return iRet;
+
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+                     
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+	          
+	while ((c = getopt(argc,argv,"d:c:p:t:")) != EOF) {
+	  switch (c) {
+		  case 'd':
+				  strcpy(cs_date, optarg);
+				  break;
+		  case 'c':
+				  strcpy(cs_country, optarg);
+				  break;
+		  case 'p':
+				  strcpy(cs_product, optarg);
+				  break;
+		  case 't':
+				  strcpy(cs_jnl_type, optarg);
+				  break;				  
+		  default:
+				  return FAILURE;
+	  }
+	}       
+	
+	//DEBUGLOG(("[%s]\n",cs_date));
+	//DEBUGLOG(("[%s]\n",cs_country));
+	//DEBUGLOG(("[%s]\n",cs_product));
+	
+	if ((!strcmp(cs_date,"")) || (!strcmp(cs_country,"")) || (!strcmp(cs_product,""))  || (!strcmp(cs_jnl_type,"")))
+	  return FAILURE;
+	  
+	return SUCCESS; 
+}               
+
+int getFXConvertAmt(char *csTxnDate, char *csFromCcy, char *csToCcy, double dReqAmt, double* dConvertAmt)
+{
+	//char csFxGainLossCcy[PD_CCY_ID_LEN] = "HKD";
+	char csFxDate[PD_DATE_LEN] = "";
+	char csReqCcy[PD_CCY_ID_LEN];
+	double dFxRate = 0.0;
+	int	iRet = PD_OK;
+	
+	*dConvertAmt = 0.0;
+	strcpy(csFxDate, csTxnDate);
+	
+	// Skip conversion when same currency
+	if (!strcmp(csFromCcy,csToCcy)) {		
+		*dConvertAmt = dReqAmt;
+		//DEBUGLOG(("Skip converted amount for same from/to currency\n"));
+		return iRet;
+	}
+
+	/* ccy, convert RMB to CNY if needed */
+	if (!strcmp(csFromCcy,PD_CCY_ISO_RMB)) {
+		strcpy(csReqCcy, PD_CCY_ISO_CNY);
+	} else {
+		strcpy(csReqCcy, csFromCcy);
+	}
+	
+	// Convert to HKD and Get FX rate to HKD
+	BOObjPtr = CreateObj(BOPtr,"BOExchange","GetExternalExchangeRateByDate");
+
+	if ((*BOObjPtr)(csFxDate,csReqCcy,csToCcy,dReqAmt,&dFxRate,dConvertAmt) == PD_OK) {
+		//DEBUGLOG(("Converted request amount: ex rate = [%lf], ori amt = [%lf], ex amt = [%lf]\n",dFxRate,dReqAmt, *dConvertAmt));
+		
+	} else {
+		DEBUGLOG(("Fail to get FX rate at converted request amount\n"));
+		DEBUGLOG(("csFxDate [%s]\n",csFxDate));
+		DEBUGLOG(("csReqCcy [%s]\n",csReqCcy));
+		DEBUGLOG(("dReqAmt [%lf]\n",dReqAmt));
+		DEBUGLOG(("dFxRate [%lf]\n",dFxRate));
+		DEBUGLOG(("dConvertAmt [%lf]\n",dConvertAmt));
+		DEBUGLOG(("csToCcy [%s]\n",csToCcy));
+		
+		return FAILURE;
+	}
+	
+	//DEBUGLOG(("csFxDate [%s]\n",csFxDate));
+	//DEBUGLOG(("csReqCcy [%s]\n",csReqCcy));
+	//DEBUGLOG(("dReqAmt [%lf]\n",dReqAmt));
+	//DEBUGLOG(("dFxRate [%lf]\n",dFxRate));
+	//DEBUGLOG(("dConvertAmt [%lf]\n",dConvertAmt));
+	//DEBUGLOG(("csToCcy [%s]\n",csToCcy));
+
+	//DEBUGLOG(("End getFXGainLossAmt and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int getPostTxn() {
+	int	iRet = PD_OK;
+	//char	*csPtr;
+	//hash_t	*hRec;
+	recordset_t  *rRec;
+	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+	
+	/* Get Clear Journals */
+	DEBUGLOG(("Cleanup Journal Begin\n"));
+	recordset_init(rRec,0);
+	if (!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) {
+		iRet = GetAllPostJnl(rRec, cs_date, cs_country, cs_product);
+	} else {
+		iRet = GetPostJnl(rRec, cs_date, cs_country, cs_product, cs_jnl_type);
+	}
+	if (iRet == PD_OK) {
+		iRet = clearJournal("Cleanup Journal", rRec); 
+	} else {
+		iRet = FAILURE;
+	}
+	DEBUGLOG(("Cleanup Journal End. Return:[%d]\n",iRet));	
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONDF))) {
+		// GetApprovedDeposit
+		DEBUGLOG(("GetApprovedDeposit Begin\n"));
+		recordset_init(rRec,0);
+		if (GetApprovedDeposit(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Approved Deposit", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetApprovedDeposit End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONDV))) {
+		// GetVoidDeposit
+		DEBUGLOG(("GetVoidDeposit Begin\n"));
+		recordset_init(rRec,0);
+		if (GetVoidDeposit(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Void Deposit", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetVoidDeposit End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONDA))) {
+		// GetReconDeposit
+		DEBUGLOG(("GetReconDeposit Begin\n"));
+		recordset_init(rRec,0);
+		if (GetReconDeposit(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Reconciled Deposit", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetReconDeposit End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONP))) {
+		// GetApprovedPayout
+		DEBUGLOG(("GetApprovedPayout Begin\n"));
+		recordset_init(rRec,0);
+		if (GetApprovedPayout(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Approved Payout", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetApprovedPayout End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONPA))) {
+		// GetGeneratedPayout
+		DEBUGLOG(("GetGeneratedPayout Begin\n"));
+		recordset_init(rRec,0);
+		if (GetGeneratedPayout(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Generated Payout", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetGeneratedPayout End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONPV))) {
+		// GetVoidApprovedPayout
+		DEBUGLOG(("GetVoidApprovedPayout Begin\n"));
+		recordset_init(rRec,0);
+		if (GetVoidApprovedPayout(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Void Approved Payout", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetVoidApprovedPayout End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONPAV))) {
+		// GetVoidGenPayout
+		DEBUGLOG(("GetVoidGenPayout Begin\n"));
+		recordset_init(rRec,0);
+		if (GetVoidGenPayout(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postSingleJournal("Void Generated Payout", rRec); 
+		} else {
+			iRet = FAILURE;
+		}
+		DEBUGLOG(("GetVoidGenPayout End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONMS))) {
+		// GetDeliveredMst
+		DEBUGLOG(("GetDeliveredMst Begin\n"));
+		recordset_init(rRec,0);
+		if (GetDeliveredMst(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postMultipleJournal("Delivered Merchant Settlement", rRec); 
+		} else {
+			iRet = FAILURE;
+		}	
+		DEBUGLOG(("GetDeliveredMst End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONMSV))) {
+		// GetVoidMst
+		DEBUGLOG(("GetVoidMst Begin\n"));
+		recordset_init(rRec,0);
+		if (GetVoidMst(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postMultipleJournal("Void Merchant Settlement", rRec); 
+		} else {
+			iRet = FAILURE;
+		}	
+		DEBUGLOG(("GetVoidMst End. Return:[%d]\n",iRet));
+	}
+	
+	if ((!strcmp(cs_jnl_type,PD_JLT_PX_ALL)) || (!strcmp(cs_jnl_type,PD_JLT_PX_ONMTF))) {
+		// GetApprovedMbt
+		DEBUGLOG(("GetApprovedMbt Begin\n"));
+		recordset_init(rRec,0);
+		if (GetApprovedMbt(rRec, cs_date, cs_country, cs_product) == PD_OK) {
+			iRet = postMultipleJournal("Approved Merchant Balance Transfer", rRec); 
+		} else {
+			iRet = FAILURE;
+		}	
+		DEBUGLOG(("GetApprovedMbt End. Return:[%d]\n",iRet));
+	}
+	
+	RecordSet_Destroy(rRec);
+	
+	DEBUGLOG(("End getPostTxn and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int clearJournal(char* csType, recordset_t* rsJnl) 
+{
+	int		iRet = PD_OK;
+	hash_t	*hJnl;
+	char*	csTmp = NULL;
+	
+	hash_t  *hJnlHdr;
+	
+	hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+	hJnl = RecordSet_GetFirst(rsJnl);
+	while (hJnl) {
+
+		// jnl_id //
+		if (GetField_CString(hJnl,"v_jnl_id",&csTmp)) {
+			DEBUGLOG(("clearJournal: v_jnl_id = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"jnl_id",csTmp);
+		}
+		
+		// update_user //
+		DEBUGLOG(("clearJournal: update_user = [%s]\n",PD_UPDATE_USER));
+		PutField_CString(hJnlHdr,"update_user",PD_UPDATE_USER);
+
+		// Delete Journal
+		BOObjPtr = CreateObj(BOPtr,"BOCrrJnl","Delete");
+		iRet = (unsigned long) ((*BOObjPtr)(hJnlHdr));				
+		
+		if(iRet==PD_OK) {
+			DEBUGLOG(("clearJournal::CrrJnlHeader->Delete Success\n"));
+
+		} else {
+			DEBUGLOG(("clearJournal::CrrJnlHeader->Delete Failed\n"));	
+		}
+
+		hJnl = RecordSet_GetNext(rsJnl);
+	}
+		
+	DEBUGLOG(("End clearJournal and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int postSingleJournal(char* csType, recordset_t* rsJnl) 
+{
+	int		iRet = PD_OK;
+	//char	*csPtr;
+	hash_t	*hJnl;
+	int 	i = 1;
+	int 	iFound = 0;
+	char*	csTmp = NULL;
+	int		iTmp;
+	char	cTmp;	
+	double	dTmp;
+	int		iJnlTypeID;
+	//int		iMnlApproval;
+	//char	cStatus = PD_JNL_APPROVED;
+	
+	hash_t  *hJnlHdr;
+	hash_t	*hJnlDtl;
+	
+	hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+
+	// RS for holding jnl details
+	recordset_t *rsJnlDtl;
+	rsJnlDtl = (recordset_t*) malloc (sizeof(recordset_t));	
+	recordset_init(rsJnlDtl,0);
+
+	hJnl = RecordSet_GetFirst(rsJnl);
+	while (hJnl) {
+		if (i == 1) {
+			// Journal Header
+			iFound = 1;
+
+			// Generate jnl_id
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+			csTmp  = strdup((*DBObjPtr)());
+			DEBUGLOG(("postSingleJournal: jnl_id = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"jnl_id",csTmp);				
+
+			// jnl_type_id //
+			if (GetField_Int(hJnl,"v_jnl_type_id",&iJnlTypeID)) {
+				DEBUGLOG(("postSingleJournal: jnl_type_id = [%d]\n",iJnlTypeID));
+				PutField_Int(hJnlHdr,"jnl_type_id",iJnlTypeID);
+			}
+
+			// txn_date //
+			if (GetField_CString(hJnl,"v_cr_txn_date",&csTmp)) {
+				DEBUGLOG(("postSingleJournal: txn_date = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"txn_date",csTmp);			
+			}
+
+			// country_code //
+			if (GetField_CString(hJnl,"v_country",&csTmp)) {
+				DEBUGLOG(("postSingleJournal: country_code = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"country_code",csTmp);
+			}
+			
+			// product_code //
+			if (GetField_CString(hJnl,"v_product",&csTmp)) {
+				DEBUGLOG(("postSingleJournal: product_code = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"product_code",csTmp);
+			}
+			
+			// description //
+			DEBUGLOG(("postSingleJournal: description = [%s]\n",csType));
+			PutField_CString(hJnlHdr,"description",csType);
+
+			// status
+			//DEBUGLOG(("postSingleJournal: status = [%c]\n",cStatus));
+			//PutField_Char(hJnlHdr,"status",cStatus);
+			
+			// create_user //
+			DEBUGLOG(("postSingleJournal: create_user = [%s]\n",PD_UPDATE_USER));
+			PutField_CString(hJnlHdr,"create_user",PD_UPDATE_USER);			
+			
+
+		}
+		
+		// Journal Detail
+		hJnlDtl = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hJnlDtl,0);
+
+		// GL ID
+		if (GetField_Int(hJnl,"v_gl_id",&iTmp)) {
+			DEBUGLOG(("postSingleJournal: v_gl_id = [%d]\n", iTmp));
+			PutField_Int(hJnlDtl,"gl_id",iTmp);
+		}
+		
+		// Currency
+		if (GetField_CString(hJnl,"v_currency",&csTmp)) {
+			DEBUGLOG(("postSingleJournal: v_currency = [%s]\n", csTmp));
+			PutField_CString(hJnlDtl,"currency_id",csTmp);
+		}		
+
+		// Txn amt
+		if (GetField_Double(hJnl,"v_txn_amt",&dTmp)) {
+			DEBUGLOG(("postSingleJournal: v_txn_amt = [%f]\n", dTmp));
+			PutField_Double(hJnlDtl,"txn_amt",dTmp);
+		}
+
+		// CR ind
+		if (GetField_CString(hJnl,"v_cr_ind",&csTmp)) {
+			cTmp = csTmp[0];
+			DEBUGLOG(("postSingleJournal: v_cr_ind = [%c]\n", cTmp));
+			PutField_Char(hJnlDtl,"cr_ind",cTmp);
+		}
+
+		RecordSet_Add(rsJnlDtl,hJnlDtl);
+		
+		hJnl = RecordSet_GetNext(rsJnl);
+	}
+	
+	if (iFound) {
+		// Add Journal
+		BOObjPtr = CreateObj(BOPtr,"BOCrrJnl","Add");
+		iRet = (unsigned long) ((*BOObjPtr)(hJnlHdr, rsJnlDtl));				
+		
+		if(iRet==PD_OK) {
+			DEBUGLOG(("postSingleJournal::CrrJnlHeader->Add Success\n"));
+
+		} else {
+			DEBUGLOG(("postSingleJournal::CrrJnlHeader->Add Failed\n"));	
+		}
+	}
+	
+	DEBUGLOG(("End postSingleJournal and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int postMultipleJournal(char* csType, recordset_t* rsJnl) 
+{
+	int		iRet = PD_OK;
+	//char	*csPtr;
+	hash_t	*hJnl;
+	//int 	i = 1;
+	int 	iFound = 0;
+	char*	csTmp = NULL;
+	char*	csTxnID = "";
+	char*	csCurrTxnID = "";
+	int		iTmp;
+	char	cTmp;	
+	double	dTmp;
+	int		iJnlTypeID;
+	//int		iMnlApproval;
+	//char	cStatus = PD_JNL_APPROVED;
+	
+	hash_t  *hJnlHdr;
+	hash_t	*hJnlDtl;
+
+	hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+
+	hJnlDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnlHdr,0);
+	
+	// RS for holding jnl details
+	recordset_t *rsJnlDtl;
+	rsJnlDtl = (recordset_t*) malloc (sizeof(recordset_t));	
+	recordset_init(rsJnlDtl,0);
+
+	hJnl = RecordSet_GetFirst(rsJnl);
+	if (hJnl) {
+		// Journal Header
+		iFound = 1;
+
+		// ref_no //
+		if (GetField_CString(hJnl,"v_th_txn_id",&csTxnID)) {
+			DEBUGLOG(("postMultipleJournal: ref_no = [%s]\n",csTxnID));
+			PutField_CString(hJnlHdr,"ref_no",csTxnID);
+			
+		}
+		
+		csCurrTxnID = strdup(csTxnID);
+		DEBUGLOG(("postMultipleJournal: csCurrTxnID = [%s]\n",csCurrTxnID));
+		
+		// Generate jnl_id
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+		csTmp  = strdup((*DBObjPtr)());
+		DEBUGLOG(("postMultipleJournal: jnl_id = [%s]\n",csTmp));
+		PutField_CString(hJnlHdr,"jnl_id",csTmp);				
+
+		// jnl_type_id //
+		if (GetField_Int(hJnl,"v_jnl_type_id",&iJnlTypeID)) {
+			DEBUGLOG(("postMultipleJournal: jnl_type_id = [%d]\n",iJnlTypeID));
+			PutField_Int(hJnlHdr,"jnl_type_id",iJnlTypeID);
+		}
+
+		// txn_date //
+		if (GetField_CString(hJnl,"v_cr_txn_date",&csTmp)) {
+			DEBUGLOG(("postMultipleJournal: txn_date = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"txn_date",csTmp);			
+		}
+
+		// country_code //
+		if (GetField_CString(hJnl,"v_country",&csTmp)) {
+			DEBUGLOG(("postMultipleJournal: country_code = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"country_code",csTmp);
+		}
+		
+		// product_code //
+		if (GetField_CString(hJnl,"v_product",&csTmp)) {
+			DEBUGLOG(("postMultipleJournal: product_code = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"product_code",csTmp);
+		}
+		
+		// description //
+		DEBUGLOG(("postMultipleJournal: description = [%s]\n",csType));
+		PutField_CString(hJnlHdr,"description",csType);
+		
+		// create_user //
+		DEBUGLOG(("postMultipleJournal: create_user = [%s]\n",PD_UPDATE_USER));
+		PutField_CString(hJnlHdr,"create_user",PD_UPDATE_USER);
+		
+		// Journal Detail
+		
+		hash_init(hJnlDtl,0);
+
+		// GL ID
+		if (GetField_Int(hJnl,"v_gl_id",&iTmp)) {
+			DEBUGLOG(("postMultipleJournal: v_gl_id = [%d]\n", iTmp));
+			PutField_Int(hJnlDtl,"gl_id",iTmp);
+		}
+		
+		// Currency
+		if (GetField_CString(hJnl,"v_currency",&csTmp)) {
+			DEBUGLOG(("postMultipleJournal: v_currency = [%s]\n", csTmp));
+			PutField_CString(hJnlDtl,"currency_id",csTmp);
+		}		
+
+		// Txn amt
+		if (GetField_Double(hJnl,"v_txn_amt",&dTmp)) {
+			DEBUGLOG(("postMultipleJournal: v_txn_amt = [%f]\n", dTmp));
+			PutField_Double(hJnlDtl,"txn_amt",dTmp);
+		}
+
+		// CR ind
+		if (GetField_CString(hJnl,"v_cr_ind",&csTmp)) {
+			cTmp = csTmp[0];
+			DEBUGLOG(("postMultipleJournal: v_cr_ind = [%c]\n", cTmp));
+			PutField_Char(hJnlDtl,"cr_ind",cTmp);
+		}
+
+		RecordSet_Add(rsJnlDtl,hJnlDtl);		
+	}
+	
+	hJnl = RecordSet_GetNext(rsJnl);
+	while (hJnl) {
+
+		if (strcmp(csCurrTxnID, csTxnID)) {
+			// Add Journal
+			BOObjPtr = CreateObj(BOPtr,"BOCrrJnl","Add");
+			iRet = (unsigned long) ((*BOObjPtr)(hJnlHdr, rsJnlDtl));				
+			
+			if(iRet==PD_OK) {
+				DEBUGLOG(("postMultipleJournal::CrrJnlHeader->Add Success\n"));
+
+			} else {
+				DEBUGLOG(("postMultipleJournal::CrrJnlHeader->Add Failed\n"));	
+			}		
+			
+			// Reset Header & Detail
+			//hJnlHdr = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hJnlHdr,0);
+			recordset_init(rsJnlDtl,0);
+			
+			// ref_no //
+			if (GetField_CString(hJnl,"v_th_txn_id",&csTxnID)) {
+				DEBUGLOG(("postMultipleJournal: ref_no = [%s]\n",csTxnID));
+				PutField_CString(hJnlHdr,"ref_no",csTxnID);
+				
+			}
+			
+			csCurrTxnID = strdup(csTxnID);
+			DEBUGLOG(("postMultipleJournal: csCurrTxnID = [%s]\n",csCurrTxnID));
+
+			// Generate jnl_id
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+			csTmp  = strdup((*DBObjPtr)());
+			DEBUGLOG(("postMultipleJournal: jnl_id = [%s]\n",csTmp));
+			PutField_CString(hJnlHdr,"jnl_id",csTmp);				
+
+			// jnl_type_id //
+			if (GetField_Int(hJnl,"v_jnl_type_id",&iJnlTypeID)) {
+				DEBUGLOG(("postMultipleJournal: jnl_type_id = [%d]\n",iJnlTypeID));
+				PutField_Int(hJnlHdr,"jnl_type_id",iJnlTypeID);
+			}
+
+			// txn_date //
+			if (GetField_CString(hJnl,"v_cr_txn_date",&csTmp)) {
+				DEBUGLOG(("postMultipleJournal: txn_date = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"txn_date",csTmp);			
+			}
+
+			// country_code //
+			if (GetField_CString(hJnl,"v_country",&csTmp)) {
+				DEBUGLOG(("postMultipleJournal: country_code = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"country_code",csTmp);
+			}
+			
+			// product_code //
+			if (GetField_CString(hJnl,"v_product",&csTmp)) {
+				DEBUGLOG(("postMultipleJournal: product_code = [%s]\n",csTmp));
+				PutField_CString(hJnlHdr,"product_code",csTmp);
+			}
+			
+			// description //
+			DEBUGLOG(("postMultipleJournal: description = [%s]\n",csType));
+			PutField_CString(hJnlHdr,"description",csType);
+			
+			// create_user //
+			DEBUGLOG(("postMultipleJournal: create_user = [%s]\n",PD_UPDATE_USER));
+			PutField_CString(hJnlHdr,"create_user",PD_UPDATE_USER);			
+		
+		}
+
+		// Journal Detail 
+		hJnlDtl = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hJnlDtl,0);
+
+		// GL ID
+		if (GetField_Int(hJnl,"v_gl_id",&iTmp)) {
+			DEBUGLOG(("postMultipleJournal: v_gl_id = [%d]\n", iTmp));
+			PutField_Int(hJnlDtl,"gl_id",iTmp);
+		}
+		
+		// Currency
+		if (GetField_CString(hJnl,"v_currency",&csTmp)) {
+			DEBUGLOG(("postMultipleJournal: v_currency = [%s]\n", csTmp));
+			PutField_CString(hJnlDtl,"currency_id",csTmp);
+		}		
+
+		// Txn amt
+		if (GetField_Double(hJnl,"v_txn_amt",&dTmp)) {
+			DEBUGLOG(("postMultipleJournal: v_txn_amt = [%f]\n", dTmp));
+			PutField_Double(hJnlDtl,"txn_amt",dTmp);
+		}
+
+		// CR ind
+		if (GetField_CString(hJnl,"v_cr_ind",&csTmp)) {
+			cTmp = csTmp[0];
+			DEBUGLOG(("postMultipleJournal: v_cr_ind = [%c]\n", cTmp));
+			PutField_Char(hJnlDtl,"cr_ind",cTmp);
+		}
+
+		RecordSet_Add(rsJnlDtl,hJnlDtl);
+		
+		hJnl = RecordSet_GetNext(rsJnl);
+	}
+	
+	if (iFound) {
+		// Add Journal
+		BOObjPtr = CreateObj(BOPtr,"BOCrrJnl","Add");
+		iRet = (unsigned long) ((*BOObjPtr)(hJnlHdr, rsJnlDtl));				
+		
+		if(iRet==PD_OK) {
+			DEBUGLOG(("postMultipleJournal::CrrJnlHeader->Add Success\n"));
+
+		} else {
+			DEBUGLOG(("postMultipleJournal::CrrJnlHeader->Add Failed\n"));	
+		}
+	}
+	
+	DEBUGLOG(("End postMultipleJournal and return:[%d]\n",iRet));
+	return iRet;
+}
+
+int GetApprovedDeposit(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetApprovedDeposit_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetApprovedDeposit csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetApprovedDeposit csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetApprovedDeposit csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetApprovedDeposit CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from crr_apl_deposit_view
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetApprovedDeposit;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetApprovedDeposit
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetApprovedDeposit v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetApprovedDeposit v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetApprovedDeposit v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetApprovedDeposit v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetApprovedDeposit v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetApprovedDeposit v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetApprovedDeposit v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetApprovedDeposit v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetApprovedDeposit v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetApprovedDeposit v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetApprovedDeposit v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetApprovedDeposit v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetApprovedDeposit;
+
+	DEBUGLOG(("GetApprovedDeposit Normal Exit\n")); 
+	return  PD_OK;
+
+GetApprovedDeposit_error:
+	DEBUGLOG(("GetApprovedDeposit_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetApprovedDeposit;
+	return PD_ERR;
+}
+
+int GetVoidDeposit(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetVoidDeposit_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetVoidDeposit csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetVoidDeposit csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetVoidDeposit csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetVoidDeposit CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_VOD_DEPOSIT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetVoidDeposit;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetVoidDeposit
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetVoidDeposit v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetVoidDeposit v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetVoidDeposit v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetVoidDeposit v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetVoidDeposit v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetVoidDeposit v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetVoidDeposit v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetVoidDeposit v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetVoidDeposit v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetVoidDeposit v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetVoidDeposit v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetVoidDeposit v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetVoidDeposit;
+
+	DEBUGLOG(("GetVoidDeposit Normal Exit\n")); 
+	return  PD_OK;
+
+GetVoidDeposit_error:
+	DEBUGLOG(("GetVoidDeposit_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetVoidDeposit;
+	return PD_ERR;
+}
+
+int GetReconDeposit(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetReconDeposit_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetReconDeposit csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetReconDeposit csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetReconDeposit csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetReconDeposit CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_REC_DEPOSIT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetReconDeposit;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetReconDeposit
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetReconDeposit v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetReconDeposit v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetReconDeposit v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetReconDeposit v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetReconDeposit v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetReconDeposit v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetReconDeposit v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetReconDeposit v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetReconDeposit v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetReconDeposit v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetReconDeposit v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetReconDeposit v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetReconDeposit;
+
+	DEBUGLOG(("GetReconDeposit Normal Exit\n")); 
+	return  PD_OK;
+
+GetReconDeposit_error:
+	DEBUGLOG(("GetReconDeposit_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetReconDeposit;
+	return PD_ERR;
+}
+
+int GetApprovedPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetApprovedPayout_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetApprovedPayout csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetApprovedPayout csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetApprovedPayout csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetApprovedPayout CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_APL_PAYOUT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetApprovedPayout;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetApprovedPayout
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetApprovedPayout v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetApprovedPayout v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetApprovedPayout v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetApprovedPayout v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetApprovedPayout v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetApprovedPayout v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetApprovedPayout v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetApprovedPayout v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetApprovedPayout v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetApprovedPayout v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetApprovedPayout v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetApprovedPayout v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetApprovedPayout;
+
+	DEBUGLOG(("GetApprovedPayout Normal Exit\n")); 
+	return  PD_OK;
+
+GetApprovedPayout_error:
+	DEBUGLOG(("GetApprovedPayout_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetApprovedPayout;
+	return PD_ERR;
+}
+
+int GetGeneratedPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetGeneratedPayout_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetGeneratedPayout csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetGeneratedPayout csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetGeneratedPayout csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetGeneratedPayout CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_GEN_PAYOUT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetGeneratedPayout;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetGeneratedPayout
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetGeneratedPayout v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetGeneratedPayout v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetGeneratedPayout v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetGeneratedPayout v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetGeneratedPayout v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetGeneratedPayout v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetGeneratedPayout v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetGeneratedPayout v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetGeneratedPayout v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetGeneratedPayout v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetGeneratedPayout v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetGeneratedPayout v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetGeneratedPayout;
+
+	DEBUGLOG(("GetGeneratedPayout Normal Exit\n")); 
+	return  PD_OK;
+
+GetGeneratedPayout_error:
+	DEBUGLOG(("GetGeneratedPayout_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetGeneratedPayout;
+	return PD_ERR;
+}
+
+int GetVoidApprovedPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetVoidApprovedPayout_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetVoidApprovedPayout csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetVoidApprovedPayout csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetVoidApprovedPayout csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetVoidApprovedPayout CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_VOD_APL_PAYOUT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetVoidApprovedPayout;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetVoidApprovedPayout
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetVoidApprovedPayout v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetVoidApprovedPayout v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetVoidApprovedPayout v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetVoidApprovedPayout v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetVoidApprovedPayout v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetVoidApprovedPayout;
+
+	DEBUGLOG(("GetVoidApprovedPayout Normal Exit\n")); 
+	return  PD_OK;
+
+GetVoidApprovedPayout_error:
+	DEBUGLOG(("GetVoidApprovedPayout_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetVoidApprovedPayout;
+	return PD_ERR;
+}
+
+int GetVoidGenPayout(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetVoidGenPayout_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;		
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetVoidGenPayout csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetVoidGenPayout csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetVoidGenPayout csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetVoidGenPayout CURSOR FOR
+		select cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_VOD_GEN_PAYOUT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetVoidGenPayout;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetVoidGenPayout
+              	INTO
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetVoidGenPayout v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetVoidGenPayout v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetVoidGenPayout v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetVoidGenPayout v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetVoidGenPayout v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetVoidGenPayout v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetVoidGenPayout v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetVoidGenPayout v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetVoidGenPayout v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetVoidGenPayout v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetVoidGenPayout v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetVoidGenPayout v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetVoidGenPayout;
+
+	DEBUGLOG(("GetVoidGenPayout Normal Exit\n")); 
+	return  PD_OK;
+
+GetVoidGenPayout_error:
+	DEBUGLOG(("GetVoidGenPayout_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetVoidGenPayout;
+	return PD_ERR;
+}
+
+int GetDeliveredMst(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetDeliveredMst_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		varchar	v_th_txn_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_th_txn_id = -1;
+
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetDeliveredMst csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetDeliveredMst csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetDeliveredMst csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetDeliveredMst CURSOR FOR
+		select th_txn_id, cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_DEL_SETTLE_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetDeliveredMst;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetDeliveredMst
+              	INTO			
+			:v_th_txn_id:ind_th_txn_id,
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_th_txn_id >= 0) {
+				v_th_txn_id.arr[v_th_txn_id.len] ='\0';
+				PutField_CString(myHash,"v_th_txn_id",(const char*)v_th_txn_id.arr);
+				DEBUGLOG(("GetDeliveredMst v_th_txn_id = [%s]\n",v_th_txn_id.arr)); 
+			}
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetDeliveredMst v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetDeliveredMst v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetDeliveredMst v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetDeliveredMst v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetDeliveredMst v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetDeliveredMst v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetDeliveredMst v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetDeliveredMst v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetDeliveredMst v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetDeliveredMst v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetDeliveredMst v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetDeliveredMst v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetDeliveredMst;
+
+	DEBUGLOG(("GetDeliveredMst Normal Exit\n")); 
+	return  PD_OK;
+
+GetDeliveredMst_error:
+	DEBUGLOG(("GetDeliveredMst_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetDeliveredMst;
+	return PD_ERR;
+}
+
+int GetVoidMst(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetVoidMst_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		varchar	v_th_txn_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_th_txn_id = -1;
+
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetVoidMst csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetVoidMst csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetVoidMst csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetVoidMst CURSOR FOR
+		select th_txn_id, cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_VOD_SETTLE_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetVoidMst;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetVoidMst
+              	INTO			
+			:v_th_txn_id:ind_th_txn_id,
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_th_txn_id >= 0) {
+				v_th_txn_id.arr[v_th_txn_id.len] ='\0';
+				PutField_CString(myHash,"v_th_txn_id",(const char*)v_th_txn_id.arr);
+				DEBUGLOG(("GetVoidMst v_th_txn_id = [%s]\n",v_th_txn_id.arr)); 
+			}
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetVoidMst v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetVoidMst v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetVoidMst v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetVoidMst v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetVoidMst v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetVoidMst v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetVoidMst v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetVoidMst v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetVoidMst v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetVoidMst v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetVoidMst v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetVoidMst v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetVoidMst;
+
+	DEBUGLOG(("GetVoidMst Normal Exit\n")); 
+	return  PD_OK;
+
+GetVoidMst_error:
+	DEBUGLOG(("GetVoidMst_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetVoidMst;
+	return PD_ERR;
+}
+
+int GetApprovedMbt(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetApprovedMbt_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		varchar	v_th_txn_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_th_txn_id = -1;
+
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+		
+		varchar	v_party_type[PD_PARTY_TYPE_LEN + 1];
+		short	ind_party_type = -1;
+		
+		varchar	v_party_id[PD_PARTY_ID_LEN + 1];
+		short	ind_party_id = -1;	
+		
+		varchar	v_currency[PD_CURRENCY_ID_LEN + 1];
+		short	ind_currency = -1;	
+		
+		int		v_jnl_type_id;
+		short	ind_jnl_type_id = -1;	
+		
+		varchar	v_jnl_entry_type_id[PD_JNL_ENTRY_TYPE_LEN + 1];
+		short	ind_jnl_entry_type_id = -1;	
+		
+		varchar	v_cr_ind[PD_CR_IND_LEN + 1];
+		short	ind_cr_ind = -1;	
+		
+		int		v_gl_id;
+		short	ind_gl_id = -1;
+		
+		int		v_txn_cnt;
+		short	ind_txn_cnt = -1;	
+		
+		double	v_txn_amt;
+		short	ind_txn_amt = -1;			
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+
+	DEBUGLOG(("GetApprovedMbt csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetApprovedMbt csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetApprovedMbt csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetApprovedMbt CURSOR FOR
+		select th_txn_id, cr_txn_date, cr_country, cr_product, te_party_type, party_id, cr_currency, cr_jnl_type_id,
+		cr_jnl_entry_type_id, cr_ind, cr_gl_id, txn_count, cr_amount
+		from CRR_APL_MBT_VIEW
+		where cr_txn_date = :v_cr_txn_date:ind_cr_txn_date and cr_country = :v_country:ind_country and cr_product = :v_product:ind_product;
+
+	EXEC SQL OPEN c_cursor_GetApprovedMbt;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetApprovedMbt
+              	INTO			
+			:v_th_txn_id:ind_th_txn_id,
+			:v_cr_txn_date:ind_cr_txn_date,
+			:v_country:ind_country,
+			:v_product:ind_product,
+			:v_party_type:ind_party_type,
+			:v_party_id:ind_party_id,
+			:v_currency:ind_currency,
+			:v_jnl_type_id:ind_jnl_type_id,
+			:v_jnl_entry_type_id:ind_jnl_entry_type_id,
+			:v_cr_ind:ind_cr_ind,
+			:v_gl_id:ind_gl_id,
+			:v_txn_cnt:ind_txn_cnt,
+			:v_txn_amt:ind_txn_amt;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_th_txn_id >= 0) {
+				v_th_txn_id.arr[v_th_txn_id.len] ='\0';
+				PutField_CString(myHash,"v_th_txn_id",(const char*)v_th_txn_id.arr);
+				DEBUGLOG(("GetApprovedMbt v_th_txn_id = [%s]\n",v_th_txn_id.arr)); 
+			}
+			if (ind_cr_txn_date >= 0) {
+				v_cr_txn_date.arr[v_cr_txn_date.len] ='\0';
+				PutField_CString(myHash,"v_cr_txn_date",(const char*)v_cr_txn_date.arr);
+				DEBUGLOG(("GetApprovedMbt v_cr_txn_date = [%s]\n",v_cr_txn_date.arr)); 
+			}
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] ='\0';
+				PutField_CString(myHash,"v_country",(const char*)v_country.arr);
+				DEBUGLOG(("GetApprovedMbt v_country = [%s]\n",v_country.arr)); 
+			}
+			if (ind_product >= 0) {
+				v_product.arr[v_product.len] ='\0';
+				PutField_CString(myHash,"v_product",(const char*)v_product.arr);
+				DEBUGLOG(("GetApprovedMbt v_product = [%s]\n",v_product.arr)); 
+			}
+			if (ind_party_type >= 0) {
+				v_party_type.arr[v_party_type.len] ='\0';
+				PutField_CString(myHash,"v_party_type",(const char*)v_party_type.arr);
+				DEBUGLOG(("GetApprovedMbt v_party_type = [%s]\n",v_party_type.arr)); 
+			}
+			if (ind_party_id >= 0) {
+				v_party_id.arr[v_party_id.len] ='\0';
+				PutField_CString(myHash,"v_party_id",(const char*)v_party_id.arr);
+				DEBUGLOG(("GetApprovedMbt v_party_id = [%s]\n",v_party_id.arr)); 
+			}		
+			if (ind_currency >= 0) {
+				v_currency.arr[v_currency.len] ='\0';
+				PutField_CString(myHash,"v_currency",(const char*)v_currency.arr);
+				DEBUGLOG(("GetApprovedMbt v_currency = [%s]\n",v_currency.arr)); 
+			}
+			if (ind_jnl_type_id >= 0) {
+				PutField_Int(myHash,"v_jnl_type_id",(int)v_jnl_type_id);
+				DEBUGLOG(("GetApprovedMbt v_jnl_type_id = [%d]\n",v_jnl_type_id)); 
+			}
+			if (ind_jnl_entry_type_id >= 0) {
+				v_jnl_entry_type_id.arr[v_jnl_entry_type_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_entry_type_id",(const char*)v_jnl_entry_type_id.arr);
+				DEBUGLOG(("GetApprovedMbt v_jnl_entry_type_id = [%s]\n",v_jnl_entry_type_id.arr)); 
+			}	
+			if (ind_cr_ind >= 0) {
+				v_cr_ind.arr[v_cr_ind.len] ='\0';
+				PutField_CString(myHash,"v_cr_ind",(const char*)v_cr_ind.arr);
+				DEBUGLOG(("GetApprovedMbt v_cr_ind = [%s]\n",v_cr_ind.arr)); 
+			}
+			if (ind_gl_id >= 0) {
+				PutField_Int(myHash,"v_gl_id",(int)v_gl_id);
+				DEBUGLOG(("GetApprovedMbt v_gl_id = [%d]\n",v_gl_id)); 
+			}
+			if (ind_txn_cnt >= 0) {
+				PutField_Int(myHash,"v_txn_cnt",(int)v_txn_cnt);
+				DEBUGLOG(("GetApprovedMbt v_txn_cnt = [%d]\n",v_txn_cnt)); 
+			}
+			if (ind_txn_amt >= 0) {
+				PutField_Double(myHash,"v_txn_amt",(double)v_txn_amt);
+				DEBUGLOG(("GetApprovedMbt v_txn_amt = [%f]\n",v_txn_amt)); 
+			}			
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetApprovedMbt;
+
+	DEBUGLOG(("GetApprovedMbt Normal Exit\n")); 
+	return  PD_OK;
+
+GetApprovedMbt_error:
+	DEBUGLOG(("GetApprovedMbt_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetApprovedMbt;
+	return PD_ERR;
+}
+
+int GetPostJnl(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct, char* csJnlType)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetPostJnl_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		varchar	v_jnl_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_jnl_id = -1;
+
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+
+		varchar	v_jnl_type[PD_JNL_TYPE_PREFIX_LEN + 1];
+		short	ind_jnl_type = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+	
+	v_jnl_type.len = strlen(csJnlType);
+	memcpy(v_jnl_type.arr,csJnlType,v_jnl_type.len);
+	ind_jnl_type = 0;	
+	
+	DEBUGLOG(("GetPostJnl csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetPostJnl csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetPostJnl csProduct = [%s]\n",csProduct));
+	DEBUGLOG(("GetPostJnl csJnlType = [%s]\n",csJnlType));
+	
+	EXEC SQL DECLARE c_cursor_GetPostJnl CURSOR FOR
+		select cjh.jnl_id
+		from crr_jnl_header cjh, crr_jnl_type cjt
+		where cjh.disabled = 0
+		and cjt.disabled = 0
+		and cjt.post_type = 'A'
+		and cjh.txn_date = :v_cr_txn_date:ind_cr_txn_date 
+		and cjh.country_code = :v_country:ind_country 
+		and cjh.product_code = :v_product:ind_product
+		and cjt.prefix = :v_jnl_type:ind_jnl_type
+		and cjh.jnl_type_id = cjt.jnl_type_id;	
+	
+	
+	EXEC SQL OPEN c_cursor_GetPostJnl;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetPostJnl
+              	INTO			
+			:v_jnl_id:ind_jnl_id;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_jnl_id >= 0) {
+				v_jnl_id.arr[v_jnl_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_id",(const char*)v_jnl_id.arr);
+				DEBUGLOG(("GetPostJnl v_jnl_id = [%s]\n",v_jnl_id.arr)); 
+			}
+		
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetPostJnl;
+
+	DEBUGLOG(("GetPostJnl Normal Exit\n")); 
+	return  PD_OK;
+
+GetPostJnl_error:
+	DEBUGLOG(("GetPostJnl_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetPostJnl;
+	return PD_ERR;
+}
+
+int GetAllPostJnl(recordset_t* myRec, char* csTxnDate, char* csCountry, char* csProduct)
+{
+	hash_t *myHash;
+	EXEC SQL WHENEVER SQLERROR GOTO GetAllPostJnl_error;
+    EXEC SQL WHENEVER NOTFOUND CONTINUE;		
+	
+	EXEC SQL BEGIN DECLARE SECTION;	
+		varchar	v_jnl_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_jnl_id = -1;
+
+		varchar	v_cr_txn_date[PD_DATE_LEN + 1];
+		short	ind_cr_txn_date = -1;
+		
+		varchar	v_country[PD_COUNTRY_CODE_LEN + 1];
+		short	ind_country = -1;
+		
+		varchar	v_product[PD_PRODUCT_CODE_LEN + 1];
+		short	ind_product = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	v_cr_txn_date.len = strlen(csTxnDate);
+	memcpy(v_cr_txn_date.arr,csTxnDate,v_cr_txn_date.len);
+	ind_cr_txn_date = 0;
+
+	v_country.len = strlen(csCountry);
+	memcpy(v_country.arr,csCountry,v_country.len);
+	ind_country = 0;
+	
+	v_product.len = strlen(csProduct);
+	memcpy(v_product.arr,csProduct,v_product.len);
+	ind_product = 0;	
+	
+	DEBUGLOG(("GetAllPostJnl csTxnDate = [%s]\n",csTxnDate));
+	DEBUGLOG(("GetAllPostJnl csCountry = [%s]\n",csCountry));
+	DEBUGLOG(("GetAllPostJnl csProduct = [%s]\n",csProduct));
+	
+	EXEC SQL DECLARE c_cursor_GetAllPostJnl CURSOR FOR
+		select cjh.jnl_id
+		from crr_jnl_header cjh, crr_jnl_type cjt
+		where cjh.disabled = 0
+		and cjt.disabled = 0
+		and cjt.post_type = 'A'
+		and cjh.txn_date = :v_cr_txn_date:ind_cr_txn_date 
+		and cjh.country_code = :v_country:ind_country 
+		and cjh.product_code = :v_product:ind_product
+		and cjh.jnl_type_id = cjt.jnl_type_id;	
+	
+	
+	EXEC SQL OPEN c_cursor_GetAllPostJnl;
+        do {    
+        	EXEC SQL FETCH c_cursor_GetAllPostJnl
+              	INTO			
+			:v_jnl_id:ind_jnl_id;
+
+			if (SQLCODE == SQL_NOT_FOUND) { 
+				break;
+			}
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+			if (ind_jnl_id >= 0) {
+				v_jnl_id.arr[v_jnl_id.len] ='\0';
+				PutField_CString(myHash,"v_jnl_id",(const char*)v_jnl_id.arr);
+				DEBUGLOG(("GetAllPostJnl v_jnl_id = [%s]\n",v_jnl_id.arr)); 
+			}
+		
+			RecordSet_Add(myRec,myHash);
+		}
+		while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_GetAllPostJnl;
+
+	DEBUGLOG(("GetAllPostJnl Normal Exit\n")); 
+	return  PD_OK;
+
+GetAllPostJnl_error:
+	DEBUGLOG(("GetAllPostJnl_error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_GetAllPostJnl;
+	return PD_ERR;
+}

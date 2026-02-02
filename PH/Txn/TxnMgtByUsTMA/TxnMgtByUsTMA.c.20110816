@@ -1,0 +1,215 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/21              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtOnUsTMA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(Channel);
+OBJPTR(Txn);
+
+void TxnMgtOnUsTMA(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	*csOrgTxnSeq;
+	char	*csPtr;
+	char	*csTxnCode;
+	char	*csOrgPostingDate;
+	double	dTmp;
+	recordset_t     *rRecordSet;
+	hash_t	*hRec,*hLog;
+
+	hLog = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hLog,0);
+	
+	if (GetField_CString(hRequest,"org_txn_seq",&csOrgTxnSeq)) {
+DEBUGLOG(("Authorize::org txn seq = [%s]\n",csOrgTxnSeq));
+
+		PutField_CString(hContext,"org_txn_seq",csOrgTxnSeq);
+		PutField_CString((hash_t*)hRequest,"txn_seq",csOrgTxnSeq);
+		PutField_CString(hLog,"txn_seq",csOrgTxnSeq);
+	}
+	else {
+		iRet = INT_TXN_ID_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if (GetField_CString(hRequest,"user",&csPtr)) {
+		PutField_CString(hLog,"add_user",csPtr);
+	}
+	if (GetField_CString(hRequest,"ip_addr",&csPtr)) {
+		PutField_CString(hLog,"ip_addr",csPtr);
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchRespTxn");
+        	if ((unsigned long)(DBObjPtr)(csOrgTxnSeq,PD_TO_PSP) != PD_FOUND) {
+DEBUGLOG(("Authorize::org txn seq not found\n"));
+			iRet = INT_ORG_TXN_NOT_FOUND;
+                	PutField_Int(hContext,"internal_error",iRet);
+		}
+		else {
+			rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        		recordset_init(rRecordSet,0);
+
+/* status */
+			PutField_CString((hash_t*)hRequest,"status",PD_CN_PSP_SUCCESS);
+/* return_psp_channel */
+			PutField_CString(hContext,"return_psp_channel","internal");
+DEBUGLOG(("Authorize::org txn seq found for Manuall Approval\n"));
+
+DEBUGLOG(("Authorize::org_txn_seq = [%s]\n",csOrgTxnSeq));
+               	 	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+                	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::found record = [%s]\n",csOrgTxnSeq));
+               			hRec = RecordSet_GetFirst(rRecordSet);
+                        	while (hRec) {
+                        		if (GetField_CString(hRec,"txn_code",&csTxnCode)) {
+DEBUGLOG(("Authorize::TXN CODE= [%s]\n",csTxnCode));
+                       				PutField_CString(hContext,"txn_code",csTxnCode);
+                        		}
+
+                        		if (GetField_CString(hRec,"host_posting_date",&csOrgPostingDate)) {
+DEBUGLOG(("Authorize::Org Posting Date = [%s]\n",csOrgPostingDate));
+                        		}
+                        		if (GetField_CString(hRec,"merchant_id",&csPtr)) {
+DEBUGLOG(("Authorize::Org merchant id = [%s]\n",csPtr));
+                       				PutField_CString(hContext,"org_merchant_id",csPtr);
+                        		}
+                        		if (GetField_CString(hRec,"client_id",&csPtr)) {
+DEBUGLOG(("Authorize::Org client_id = [%s]\n",csPtr));
+                       				PutField_CString(hContext,"org_client_id",csPtr);
+                        		}
+                        		if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("Authorize::Org txn amt = [%lf]\n",dTmp));
+                        			PutField_Double(hContext,"org_txn_amt",dTmp);
+                        		}
+/********* tmp *********** net amount ****/
+                        		if (GetField_Double(hRec,"net_amt",&dTmp)) {
+DEBUGLOG(("Authorize::Org net amt = [%lf]\n",dTmp));
+                       				PutField_Double(hContext,"org_net_amt",dTmp);
+                                		PutField_Double(hContext,"org_merchant_txn_amt",dTmp);
+                        		}
+/* channel code */
+                        		if (GetField_CString(hRec,"channel_code",&csPtr)) {
+DEBUGLOG(("Authorize::Org Channel Code = [%s]\n",csPtr));
+                        			PutField_CString(hContext,"org_channel_code",csPtr);
+                        		}
+/* service code */
+                        		if (GetField_CString(hRec,"service_code",&csPtr)) {
+DEBUGLOG(("Authorize::Org service code = [%s]\n",csPtr));
+                        			PutField_CString(hContext,"org_service_code",csPtr);
+                        		}
+
+                        		hRec = RecordSet_GetNext(rRecordSet);
+                		}
+                 	}
+                 	else {
+DEBUGLOG(("Authorize:: not found record for [%s]\n",csOrgTxnSeq));
+                 	}
+
+
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+                	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::found record = [%s]\n",csOrgTxnSeq));
+				hRec = RecordSet_GetFirst(rRecordSet);
+                        	while (hRec) {
+/*org txn country */
+                    			if (GetField_CString(hRec,"txn_country",&csPtr)) {
+DEBUGLOG(("Authorize::Org txn country = [%s]\n",csPtr));
+                                		PutField_CString(hContext,"org_txn_country",csPtr);
+                                	}
+/*org txn ccy */
+                                	if (GetField_CString(hRec,"txn_ccy",&csPtr)) {
+DEBUGLOG(("Authorize::Org txn ccy = [%s]\n",csPtr));
+                            			PutField_CString(hContext,"org_txn_ccy",csPtr);
+                                	}
+/* pay_method */
+                                	if (GetField_CString(hRec,"pay_method",&csPtr)) {
+DEBUGLOG(("Authorize::Org pay_method = [%s]\n",csPtr));
+                             			PutField_CString(hContext,"org_pay_method",csPtr);
+                                	}
+
+                                	hRec = RecordSet_GetNext(rRecordSet);
+                      		}
+                	}
+		
+        		RecordSet_Destroy(rRecordSet);
+			DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","GetTxnPspDetail");
+                	if (!(*DBObjPtr)(csOrgTxnSeq,rRecordSet)) {
+                		hRec = RecordSet_GetFirst(rRecordSet);
+                        	while(hRec){
+                        		if (GetField_CString(hRec,"psp_id",&csPtr)) {
+DEBUGLOG(("Authorize::GetTxnPsp - psp_id = [%s]\n",csPtr));
+                        			PutField_CString(hContext,"org_psp_id",csPtr);
+                        		}       
+                                                
+                       			if (GetField_CString(hRec,"txn_ccy",&csPtr)) {
+DEBUGLOG(("Authorize::GetTxnPsp - psp_txn_ccy = [%s]\n",csPtr));
+                        			PutField_CString(hContext,"org_dst_txn_ccy",csPtr);
+                        		}
+
+                        		if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("Authorize::GetTxnPsp - txn amt = [%lf]\n",dTmp));
+            					PutField_Double(hContext,"org_dst_net_amt",dTmp);
+                        		}
+
+                       	 		hRec = RecordSet_GetNext(rRecordSet);
+                		}
+                	}
+                	else{
+ERRLOG("Authorize:: PSP NOT FOUND\n");
+DEBUGLOG(("hannel Authorize:: PSP NOT FOUND\n"));
+                	}
+        		RecordSet_Destroy(rRecordSet);
+        		FREE_ME(rRecordSet);
+	
+DEBUGLOG(("Authorize::UpdateRespTxnLog\n"));
+			ChannelObjPtr = CreateObj(ChannelPtr,"WEBChannel","UpdateRespTxnLog");
+			iRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest,hResponse);
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize: call DBTmaLog::add\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTmaLog","Add");
+				iRet = (unsigned long)(*DBObjPtr)(hLog);
+			}
+			TxnCommit();
+
+DEBUGLOG(("Authorize:: iRet = [%d] updateresptxnlog\n",iRet));
+			if (iRet == PD_OK) {
+				TxnObjPtr = CreateObj(TxnPtr,"TxnWebOnUsACK","Authorize");
+                        	iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+			}
+		}
+	}
+
+	hash_destroy(hLog);
+        FREE_ME(hLog);
+DEBUGLOG(("TxnMgtOnUsTMA Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

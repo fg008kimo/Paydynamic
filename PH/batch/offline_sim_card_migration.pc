@@ -1,0 +1,1088 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/03/25              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define FILE_TITLE_ROW			1
+#define FILE_START_ROW			1
+#define FILE_END_ROW			1
+#define REC_FIELD_DELIMITER   		"|"
+#define PD_DEFAULT_TIME_FORMAT      	"%H%M%S"
+
+int 	INT_INVALID_RECORD[1024];
+int 	INT_INVALID_FIELD[1024][14];
+
+int     i_action;
+int	i_total_field;
+
+char    cs_in_file_name[100 + 1];
+char    cs_converted_file_name[100 + 1];
+
+char    cDebug = 'Y';
+
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+int parse_arg(int argc,char **argv);
+int process_convert_file(hash_t* hRec);
+int process_match_keyword(hash_t* hRec);
+int check_title(const char *csLine, hash_t *hRls);
+int check_detail(const char *csLine, hash_t *hRls);
+int add_sim_card(hash_t *hRls);
+int GetTitleName(int iField, char *csTitleName);
+int strlen_content(char *s);
+char *mystrtok_r(char *string, const char *seps, char **context);
+char *_deleteCharacters(char *str, char *charSet);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+
+	hash_t *hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec, 0);
+
+	iRet = parse_arg(argc,argv);
+               
+	if (iRet != SUCCESS) {
+		printf("usage: -i in_file_name -c converted_file_name -t total_field\n");
+                return (iRet);
+        } 
+
+	if(iRet == PD_OK){
+			
+		//sprintf(cs_in_file_name, "%s", "/home/php3dev/offline_sim_card_migration/sim_card_file.xls");
+		PutField_CString(hRec,"in_file_name",cs_in_file_name);			
+DEBUGLOG(("batch_proc:: in_file_name = [%s]\n", cs_in_file_name));
+
+		//sprintf(cs_converted_file_name, "%s", "/home/php3dev/offline_sim_card_migration/sim_card_file_converted.txt");	
+		PutField_CString(hRec,"converted_file_name",cs_converted_file_name);	
+DEBUGLOG(("batch_proc:: converted_file_name = [%s]\n", cs_converted_file_name));
+
+		//i_total_field = 14;
+		PutField_Int(hRec,"total_field",i_total_field);
+DEBUGLOG(("batch_proc:: total_field = [%d]\n", i_total_field));
+
+		PutField_Int(hRec,"action",i_action);
+DEBUGLOG(("batch_proc:: action = [%d]\n", i_action));
+
+                iRet = process_convert_file(hRec);
+        }
+
+        if(iRet == PD_OK){
+                iRet = process_match_keyword(hRec);
+        }
+
+	if (iRet != PD_OK) {
+		iRet = FAILURE;
+	}
+
+        hash_destroy(hRec);
+        FREE_ME(hRec);
+
+DEBUGLOG(("batch_proc:: iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+
+	i_action = 0;
+	i_total_field = 0;
+	strcpy(cs_in_file_name,"");
+        strcpy(cs_converted_file_name,"");
+
+	while ((c = getopt(argc,argv,"i:c:t:a:")) != EOF) {
+                switch (c) {
+                        case 'i':
+                                strcpy(cs_in_file_name, optarg);
+				break;
+                        case 'c':
+                                strcpy(cs_converted_file_name, optarg);
+                                break;
+			case 't':
+				i_total_field = atoi(optarg);
+				break;
+			case 'a':
+                                i_action = atoi(optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_in_file_name, "") || !strcmp(cs_converted_file_name,"") || i_total_field == 0)
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+int process_convert_file(hash_t* hRec)
+{
+	int iRet = PD_OK;
+
+	int iStatus = 0;
+
+	char *csInFileName = NULL;
+	char *csConvertedFileName = NULL;
+
+	char csSysCmd[PD_TMP_BUF_LEN*3] = "";
+
+/* in_file_name */
+        if (GetField_CString(hRec, "in_file_name", &csInFileName)) {
+DEBUGLOG(("process_convert_file:: in_file_name = [%s]\n", csInFileName));
+        }
+
+/* converted_file_name */
+        if (GetField_CString(hRec, "converted_file_name", &csConvertedFileName)) {
+DEBUGLOG(("process_convert_file:: converted_file_name = [%s]\n", csConvertedFileName));
+        }
+
+/* do the conversion
+example: ol_sc_mr_convert.sh "UTF-8" "UTF-8" "csInFileName" "csConvertedFileName"
+*/
+
+	snprintf(csSysCmd, sizeof(csSysCmd), "%s \"%s\" \"%s\" \"%s\" \"%s\"", "ol_sc_mr_convert.sh", "UTF-8", "UTF-8", csInFileName, csConvertedFileName);
+DEBUGLOG(("process_convert_file:: call system command [%s][%d]\n", csSysCmd, strlen(csSysCmd)));
+
+        iStatus = system(csSysCmd);
+DEBUGLOG(("process_convert_file:: iStatus = [%d]\n", iStatus));
+
+	iRet = WEXITSTATUS(iStatus);
+
+        if (iRet != PD_OK) {
+DEBUGLOG(("process_convert_file:: file conversion FAILURE!!!\n"));
+ERRLOG("offline_sim_card_migration::process_convert_file:: file conversion FAILURE!!!\n");
+       		iRet = PD_ERR;
+        }
+
+DEBUGLOG(("process_convert_file:: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int process_match_keyword(hash_t* hRec)
+{
+        int iRet = PD_OK;
+
+	int iAction = 0;
+	int iField = 0;
+	int iTotalField = 0;
+	int iTitleRow = 0;
+	int iStartRow = 0;	
+	int iEndRow = 0;
+	int iCurrLine = 0;
+	int iTotalLine = 0;
+	int iSBlankLine = 0;
+ 	int iEBlankLine = 0;
+	int iMatched = 0;	
+
+	int iDtlLine = 0;
+
+	char *csConvertedFileName = NULL;
+	char *csTmp = NULL;
+	
+	char csDelimiter[2] = "";	
+	char cs_input_buf[PD_TMP_MSG_BUF_LEN] = "";
+	char cs_tmp_input_buf[PD_TMP_MSG_BUF_LEN] = "";
+
+	char csTag[PD_TAG_LEN];
+
+	FILE *fin = NULL;
+
+	hash_t *hFileTitleRec = (hash_t*) malloc (sizeof(hash_t));
+       	hash_init(hFileTitleRec, 0);
+
+      	hash_t *hFileDetailRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hFileDetailRec, 0);
+
+/* action */
+        if (GetField_Int(hRec, "action", &iAction)) {
+DEBUGLOG(("process_match_keyword:: action = [%d]\n",iAction));
+                PutField_Int(hFileDetailRec,"action",iAction);
+        }
+
+/* converted_file_name */
+        if (GetField_CString(hRec, "converted_file_name", &csConvertedFileName)) {
+DEBUGLOG(("process_match_keyword:: converted_file_name = [%s]\n", csConvertedFileName));
+        }
+
+/*
+ * File Open
+ */
+        if (iRet == PD_OK) {
+DEBUGLOG(("process_match_keyword:: Start Opening File...\n"));
+                fin = fopen(csConvertedFileName, "r");
+                if (fin == NULL) {
+                        iRet = FAILURE;
+DEBUGLOG(("process_match_keyword:: cannot open file [%s]!!!\n", csConvertedFileName));
+ERRLOG("offline_sim_card_migration::process_match_keyword:: cannot open file [%s]!!!\n", csConvertedFileName);
+                } else {
+
+                        while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+                                if (strlen_content(cs_input_buf) == 0) {
+                                        iSBlankLine++;
+                                } else {
+                                        break;
+                                }
+                        }
+                        rewind(fin);
+                        while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+                                if (strlen_content(cs_input_buf) == 0) {
+                                        iEBlankLine++;
+                                } else {
+                                        iEBlankLine = 0;
+                                }
+                                iTotalLine++;
+                        }
+DEBUGLOG(("process_match_keyword:: total_line = [%d]\n",iTotalLine));
+DEBUGLOG(("process_match_keyword:: starting_blank_line = [%d]\n",iSBlankLine));
+DEBUGLOG(("process_match_keyword:: ending_blank_line = [%d]\n",iEBlankLine));
+                }
+        }
+
+/*
+ * File format
+ */
+        if (iRet == PD_OK) {
+DEBUGLOG(("process_match_keyword:: Start Checking Format...\n"));
+
+               	rewind(fin);
+		iCurrLine = 0;
+                iField = 0;
+
+/* delimiter */
+		sprintf(csDelimiter,"%s",REC_FIELD_DELIMITER);
+DEBUGLOG(("process_match_keyword:: delimiter = [%s]\n",csDelimiter));
+
+/* row_title */
+		iTitleRow = FILE_TITLE_ROW + iSBlankLine;
+DEBUGLOG(("process_match_keyword:: row_title = [%d]\n",iTitleRow));
+
+/* row_start */
+             	iStartRow = FILE_START_ROW + iSBlankLine;
+DEBUGLOG(("process_match_keyword:: row_start = [%d]\n",iStartRow));
+
+/* row_end */
+          	iEndRow = FILE_END_ROW + iEBlankLine;
+DEBUGLOG(("process_match_keyword:: row_end = [%d]\n",iEndRow));
+
+/* total_field */
+                if (GetField_Int(hRec, "total_field", &iTotalField)) {
+DEBUGLOG(("process_match_keyword:: total_field = [%d]\n", iTotalField));
+                }
+
+/* count_field */
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+                	iCurrLine++;
+                     	if (iCurrLine == iStartRow) {
+                        	if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0A) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+                              	if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0D) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+                             	strcpy(cs_tmp_input_buf,cs_input_buf);
+                               	csTmp = mystrtok(cs_tmp_input_buf, csDelimiter);
+                            	while (csTmp != NULL) {
+                                   	iField++;
+                                    	csTmp = mystrtok(NULL, csDelimiter);
+                            	}
+// DEBUGLOG(("process_match_keyword:: line %03d count[%d]/total_field[%d] [%s]\n",iCurrLine,iField,iTotalField,cs_input_buf));
+DEBUGLOG(("process_match_keyword:: count_field = [%d]\n",iField));
+                                /* Total Field Matched */
+                             	if (iField == iTotalField) {
+                                   	iMatched = 1;
+                               	}
+                             	break; 
+                     	}
+          	}		
+	}	
+	
+/*
+ * Read File
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("process_match_keyword:: Start Reading File...\n"));
+
+		rewind(fin);
+                iCurrLine = 0;
+
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+                        iCurrLine++;
+
+                        if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0A) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+                        if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0D) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+
+                	/* handle leading and trailing rows */
+                        if (iCurrLine < iStartRow || iCurrLine > iTotalLine - iEndRow + 1) {
+                                iDtlLine = 0;
+                        } else {
+                                iDtlLine++;
+                        }
+
+			/* ignore rows containing useless info */
+                        if (strlen_content(cs_input_buf) == 0) {
+                                if (iDtlLine == 0) {
+// DEBUGLOG(("process_match_keyword:: line %03d ignore [%s]\n",iCurrLine,cs_input_buf));
+                                } else {
+// DEBUGLOG(("process_match_keyword:: line %03d ignore [%s]\n",iCurrLine,cs_input_buf));
+                                }
+                                continue;
+                        }
+
+			/* Check Title/Detail */
+			if (iCurrLine == iTitleRow) {
+				iRet = check_title(cs_input_buf, hFileTitleRec);
+			} else if (iCurrLine > iTitleRow){
+/* detail_tag */
+				sprintf(csTag, "%d_detail", iCurrLine-iTitleRow);
+				PutField_CString(hFileDetailRec,"detail_tag",csTag);
+
+                        	iRet = check_detail(cs_input_buf, hFileDetailRec);
+			}
+		}
+
+/* detail_total_rec */
+		PutField_Int(hFileDetailRec,"detail_total_rec",iCurrLine-iTitleRow);
+// DEBUGLOG(("process_match_keyword:: detail_total_rec = [%d]\n",iCurrLine-iTitleRow));
+
+/* detail_total_field */
+                PutField_Int(hFileDetailRec,"detail_total_field",iTotalField);
+                PutField_Int(hFileTitleRec,"detail_total_field",iTotalField);
+// DEBUGLOG(("process_match_keyword:: detail_total_field = [%d]\n",iTotalField));
+
+	}
+
+/*
+ * File Close
+ */
+	
+        if (iRet == PD_OK) {
+DEBUGLOG(("process_match_keyword:: Start Closing File...\n"));
+
+		if (fin) {
+                	fclose(fin);
+                	fin = NULL;
+		}
+        }
+
+/*
+ * Migrate Data
+ */
+
+        if (iRet == PD_OK) {
+DEBUGLOG(("process_match_keyword:: Start Migrating Data...\n"));
+		
+		iRet = add_sim_card(hFileDetailRec);	
+        }
+
+	hash_destroy(hFileTitleRec);
+       	FREE_ME(hFileTitleRec);
+
+     	hash_destroy(hFileDetailRec);
+      	FREE_ME(hFileDetailRec);
+
+DEBUGLOG(("process_match_keyword:: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int check_title(const char *csLine, hash_t *hRls)
+{
+        int iRet = PD_OK;
+
+        char *csTag = (char*) malloc (64);
+        char *csLineField = NULL; 
+	char *csRemainField = NULL;
+
+        char csDelimiter[2] = "";
+        char csNewField[PD_TMP_MSG_BUF_LEN] = ""; 
+	char csNewLine[PD_TMP_MSG_BUF_LEN] = "";
+       
+	int iField = 0;
+
+DEBUGLOG(("check_title:: start!!!\n"));	
+
+/* delimiter */
+	sprintf(csDelimiter,"%s",REC_FIELD_DELIMITER);
+DEBUGLOG(("check_title:: delimiter = [%s]\n",csDelimiter));
+
+        strcpy(csNewLine, csLine);
+
+        csLineField = mystrtok_r(csNewLine, csDelimiter, &csRemainField);
+        while (csLineField != NULL && iRet == PD_OK) {
+                strcpy(csNewField, TrimAll((const unsigned char*)csLineField, strlen(csLineField)));
+
+                iField++;
+
+		sprintf(csTag, "title_%d", iField);
+
+                if (*csNewField == '\0') {
+                        csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+DEBUGLOG(("check_title:: [%s] = []\n",csTag));
+                        continue;
+                }
+
+		PutField_CString(hRls,csTag,csNewField);	
+DEBUGLOG(("check_title:: [%s] = [%s]\n",csTag,csNewField));
+
+		csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+        }
+
+        FREE_ME(csTag);
+
+DEBUGLOG(("check_title:: end!!!\n"));	
+    	return iRet;
+}
+
+int check_detail(const char *csLine, hash_t *hRls)
+{
+        int iRet = PD_OK;
+
+        char *csTag = (char*) malloc (64);
+	char *csDetailTag = NULL;
+        char *csLineField = NULL;
+        char *csRemainField = NULL;
+        
+	char csDelimiter[2] = "";
+        char csNewField[PD_TMP_MSG_BUF_LEN] = "";
+        char csNewLine[PD_TMP_MSG_BUF_LEN] = "";
+
+        int iField = 0;
+
+//DEBUGLOG(("check_detail:: start!!!\n"));	
+
+/* detail_tag */
+        if (GetField_CString(hRls, "detail_tag", &csDetailTag)) {
+//DEBUGLOG(("process_convert_file:: detail_tag = [%s]\n", csDetailTag));
+        }
+
+/* delimiter */
+        sprintf(csDelimiter,"%s",REC_FIELD_DELIMITER);
+//DEBUGLOG(("check_detail:: delimiter = [%s]\n",csDelimiter));
+
+        strcpy(csNewLine, csLine);
+
+        csLineField = mystrtok_r(csNewLine, csDelimiter, &csRemainField);
+        while (csLineField != NULL && iRet == PD_OK) {
+                strcpy(csNewField, TrimAll((const unsigned char*)csLineField, strlen(csLineField)));
+
+                iField++;
+
+		sprintf(csTag, "%s_%d", csDetailTag, iField);
+
+                if (*csNewField == '\0') {
+                        csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+//DEBUGLOG(("check_detail:: [%s] = []\n",csTag));
+                        continue;
+                }
+
+		PutField_CString(hRls,csTag,csNewField);	
+//DEBUGLOG(("check_detail:: [%s] = [%s]\n",csTag,csNewField));
+
+                csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+        }
+
+        FREE_ME(csTag);
+
+//DEBUGLOG(("check_detail:: end!!!\n"));	
+        return iRet;
+}
+
+int add_sim_card(hash_t *hRls)
+{
+	int iRet = PD_OK;
+	int iDtlRet = PD_OK;
+
+	int iAction = 0;	
+	int iTotalRec = 0;
+	int iTotalInvalidRec = 0;
+        int iTotalValidRec = 0;
+	int iTotalField = 0;
+	int i = 0, j = 0;
+
+	char *csMobileNum = NULL;
+	char *csRemainField = NULL;
+	char *csGetField = NULL;
+	char *csTmp;
+
+	char *csField = (char*) malloc (64);
+	char *csYear = (char*) malloc (64);
+	char *csMonth = (char*) malloc (64);
+	char *csDay = (char*) malloc (64);
+	char *csDate = (char*) malloc (64);
+	char *csTag = (char*) malloc (64);
+
+	char csTitleName[PD_TAG_LEN + 1] = "";
+	char csMobileNumTag[PD_MOBILE_NO_LEN + 1] = "";
+
+	hash_t *hSimCardRec;
+        hSimCardRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hSimCardRec, 0);
+
+	hash_t *hRequest;
+        hRequest = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRequest, 0);
+
+/* action */
+        if (GetField_Int(hRls, "action", &iAction)) {
+DEBUGLOG(("add_sim_card:: action = [%d]\n", iAction));
+        } else {
+                iRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: action Not Found!!!\n"));
+ERRLOG("add_sim_card::add_sim_card:: action Not Found!!!\n");
+        }
+
+/* detail_total_rec */
+        if (GetField_Int(hRls, "detail_total_rec", &iTotalRec)) {
+DEBUGLOG(("add_sim_card:: detail_total_rec = [%d]\n", iTotalRec));
+        } else {
+		iRet = PD_ERR;	
+DEBUGLOG(("add_sim_card:: detail_total_rec Not Found!!!\n"));
+ERRLOG("offline_sim_card_migration::add_sim_card:: detail_total_rec Not Found!!!\n");
+	}
+
+/* detail_total_field */
+        if (GetField_Int(hRls, "detail_total_field", &iTotalField)) {
+DEBUGLOG(("add_sim_card:: detail_total_field = [%d]\n", iTotalField));
+        } else {
+		iRet = PD_ERR;	
+DEBUGLOG(("add_sim_card:: detail_total_field Not Found!!!\n"));
+ERRLOG("offline_sim_card_migration::add_sim_card:: detail_total_field Not Found!!!\n");
+	}
+
+	// sim_card hRequest	
+	PutField_CString(hRequest,"action", "A"); 
+	PutField_CString(hRequest, "add_user", "SYSTEM");
+
+	if (iRet == PD_OK) {
+
+		// Breakdown Data
+		for (i=1; i<=iTotalRec; i++) {
+DEBUGLOG(("add_sim_card:: ++++++++++++++++++++++++++++++++++++++++ Record[%d]:: Start ++++++++++++++++++++++++++++++++++++\n", i));	
+		
+			iDtlRet = PD_OK;
+
+			INT_INVALID_RECORD[i] = 0;	
+
+			for (j=1; j<=iTotalField; j++) {
+				
+				INT_INVALID_FIELD[i][j] = 0;
+
+				sprintf(csTag, "%d_detail_%d", i, j);			
+				if (GetField_CString(hRls, csTag, &csTmp)) {
+DEBUGLOG(("add_sim_card:: [%s] = [%s]\n", csTag, csTmp));
+
+					if (j == 1) {
+						if (!strcmp(csTmp, "China")) {
+                                                        PutField_CString(hRequest,"sim_country","CN");
+                                                } else if (!strcmp(csTmp, "Taiwan")) {
+                                                        PutField_CString(hRequest,"sim_country","TW");
+						} else if (!strcmp(csTmp, "Japan")) {
+                                                        PutField_CString(hRequest,"sim_country","JP");
+						} else if (!strcmp(csTmp, "Malaysia")) {
+                                                        PutField_CString(hRequest,"sim_country","MY");
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = sim_country Invalid!!!\n", csTag));
+                                                }
+					} else if (j == 2) {
+						sprintf(csMobileNumTag, "%d_%s", i, "mob_num");
+                                                PutField_CString(hSimCardRec, csMobileNumTag, csTmp);
+
+						PutField_CString(hRequest,"reg_mob_num",csTmp);	
+					} else if (j == 3) {
+						if (!strcmp(csTmp, "China Netcom Corporation")) {
+                                                        PutField_CString(hRequest,"carriers","CNC");
+                                                } else if (!strcmp(csTmp, "China Unicom")) {
+                                                        PutField_CString(hRequest,"carriers","CUM");
+                                                } else if (!strcmp(csTmp, "China Telecom")) {
+                                                        PutField_CString(hRequest,"carriers","CTC");
+                                                } else if (!strcmp(csTmp, "China Mobile")) {
+                                                        PutField_CString(hRequest,"carriers","CMB");
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = sim_country Invalid!!!\n", csTag));
+                                                }
+					} else if (j == 4) {
+						PutField_CString(hRequest,"owner_name",csTmp);	
+                                	} else if (j == 5) {
+                                	        PutField_CString(hRequest,"sim_credit",csTmp);
+					} else if (j == 6) {
+                                        	PutField_CString(hRequest,"sim_ccy",csTmp);
+                               	 	} else if (j == 7) {
+						sprintf(csField, "%s", csTmp);
+						csGetField = mystrtok_r(csField, "-", &csRemainField);
+						sprintf(csYear, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: year = [%s]\n", csYear));
+					
+						if (csRemainField != NULL) {	
+							sprintf(csField, "%s", csRemainField);	
+							csGetField = mystrtok_r(csField, "-", &csRemainField);
+							sprintf(csMonth, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: month = [%s]\n", csMonth));
+						} else {
+							INT_INVALID_RECORD[i] = i;
+							INT_INVALID_FIELD[i][j] = j;
+							iDtlRet = PD_ERR;
+						}
+	
+						if (csRemainField != NULL) {					
+							sprintf(csField, "%s", csRemainField);     
+                                        		csGetField = mystrtok_r(csField, "-", &csRemainField);
+							sprintf(csDay, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: day = [%s]\n", csDay));	
+						} else {
+							INT_INVALID_RECORD[i] = i;
+							INT_INVALID_FIELD[i][j] = j;
+							iDtlRet = PD_ERR;
+						}				
+
+						sprintf(csDate, "%s%s%s", csYear, csMonth, csDay);
+DEBUGLOG(("add_sim_card:: [%s][date] = [%s]\n", csTag, csDate));					
+
+                                        	PutField_CString(hRequest,"last_topup_date",csDate);
+                                	} else if (j == 8) {
+						sprintf(csField, "%s", csTmp);
+                                                csGetField = mystrtok_r(csField, "-", &csRemainField);
+                                                sprintf(csYear, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: year = [%s]\n", csYear));
+
+                                                if (csRemainField != NULL) {
+                                                        sprintf(csField, "%s", csRemainField);
+                                                        csGetField = mystrtok_r(csField, "-", &csRemainField);
+                                                        sprintf(csMonth, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: month = [%s]\n", csMonth));
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+                                                } 
+                                                
+                                                if (csRemainField != NULL) {
+                                                        sprintf(csField, "%s", csRemainField); 
+                                                        csGetField = mystrtok_r(csField, "-", &csRemainField);
+                                                        sprintf(csDay, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: day = [%s]\n", csDay));      
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+                                                }                               
+                                                        
+                                                sprintf(csDate, "%s%s%s", csYear, csMonth, csDay);
+DEBUGLOG(("add_sim_card:: [%s][date] = [%s]\n", csTag, csDate)); 	
+
+                                        	PutField_CString(hRequest,"next_topup_date",csDate);
+                                	} else if (j == 9) {
+						sprintf(csField, "%s", csTmp);
+                                                csGetField = mystrtok_r(csField, "-", &csRemainField);
+                                                sprintf(csYear, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: year = [%s]\n", csYear));
+
+                                                if (csRemainField != NULL) {
+                                                        sprintf(csField, "%s", csRemainField);
+                                                        csGetField = mystrtok_r(csField, "-", &csRemainField);
+                                                        sprintf(csMonth, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: month = [%s]\n", csMonth));
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+                                                } 
+                                                
+                                                if (csRemainField != NULL) {
+                                                        sprintf(csField, "%s", csRemainField); 
+                                                        csGetField = mystrtok_r(csField, "-", &csRemainField);
+                                                        sprintf(csDay, "%s", csGetField);
+//DEBUGLOG(("add_sim_card:: day = [%s]\n", csDay));      
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+                                                }                               
+                                                        
+                                                sprintf(csDate, "%s%s%s", csYear, csMonth, csDay);
+DEBUGLOG(("add_sim_card:: [%s][date] = [%s]\n", csTag, csDate)); 
+
+                                        	PutField_CString(hRequest,"expired_date",csDate);
+                                	} else if (j == 10) {
+						if (!strcmp(csTmp, "Active")) {
+                                                        PutField_CString(hRequest,"status","A");
+                                                } else if (!strcmp(csTmp, "New")) {
+                                                        PutField_CString(hRequest,"status","N");
+                                                } else if (!strcmp(csTmp, "Disposed")) {
+                                                        PutField_CString(hRequest,"status","D");
+                                                } else {
+                                                        INT_INVALID_RECORD[i] = i;
+                                                        INT_INVALID_FIELD[i][j] = j;
+                                                        iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = status Invalid!!!\n", csTag));
+                                                }
+                                	} else if (j == 11) {
+                                	        PutField_CString(hRequest,"billed_date",csTmp);
+                                	} else if (j == 12) {
+                                	        PutField_CString(hRequest,"password",csTmp);
+                                	} else if (j == 13) {
+                                                PutField_CString(hRequest,"sim_package",csTmp);
+                                	} else if (j == 14) {
+						PutField_CString(hRequest,"remark",csTmp);
+					}
+                		} else {
+					if (j == 1) {
+                                                INT_INVALID_RECORD[i] = i;
+                                                INT_INVALID_FIELD[i][j] = j;
+                                                iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = sim_country Not Found!!!\n", csTag));
+					} else if (j == 2) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = reg_mob_num Not Found!!!\n", csTag));
+                                	} else if (j == 3) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;			
+DEBUGLOG(("add_sim_card:: [%s] = carriers Not Found!!!\n", csTag));
+					} else if (j == 4) {
+						// Do Nothing
+					} else if (j == 5) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;	
+DEBUGLOG(("add_sim_card:: [%s] = sim_credit Not Found!!!\n", csTag));
+					} else if (j == 6) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;	
+DEBUGLOG(("add_sim_card:: [%s] = sim_ccy Not Found!!!\n", csTag));
+					} else if (j == 7) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;	
+DEBUGLOG(("add_sim_card:: [%s] = last_topup_date Not Found!!!\n", csTag));
+					} else if (j == 8) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;	
+DEBUGLOG(("add_sim_card:: [%s] = next_topup_date Not Found!!!\n", csTag));
+					} else if (j == 9) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = expired_date Not Found!!!\n", csTag));
+					} else if (j == 10) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = status Not Found!!!\n", csTag));
+					} else if (j == 11) {
+						INT_INVALID_RECORD[i] = i;
+						INT_INVALID_FIELD[i][j] = j;
+						iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: [%s] = sim_package Not Found!!!\n", csTag));
+					}
+				}			
+			}
+
+			if (iAction > 0) {
+				if ((iRet == PD_OK) && (iDtlRet == PD_OK)) {
+DEBUGLOG(("add_sim_card:: call TxnOmtByUsSCU::Authorize()\n"));
+        				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsSCU", "Authorize");
+        				iDtlRet = (unsigned long)(*TxnObjPtr)(hRequest, hRequest, hRequest);
+        				//iRet = (unsigned long)(*TxnObjPtr)(hRequest, hRequest, hRequest);
+        				if(iDtlRet == PD_OK){
+        				//if(iRet == PD_OK){
+DEBUGLOG(("add_sim_card:: call TxnOmtByUsSCU::Authorize() Success!!!\n"));
+        				} else {
+						INT_INVALID_RECORD[i] = i;
+						iDtlRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: call TxnOmtByUsSCU::Authorize() Fail!!!\n"));
+/*					
+						iRet = PD_ERR;
+DEBUGLOG(("add_sim_card:: call TxnOmtByUsSCU::Authorize() Fail!!!\n"));
+ERRLOG("offline_sim_card_migration::add_sim_card::call TxnOmtByUsBKA::Authorize Fail!!!\n");
+*/ 
+  	     				}
+				}
+			}	
+
+                        // Remove Fields
+			RemoveField_CString(hRequest, "sim_country");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [1][sim_country]\n"));
+                        RemoveField_CString(hRequest, "reg_mob_num");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [2][reg_mob_num]\n"));
+                        RemoveField_CString(hRequest, "carriers");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [3][carriers]\n"));
+			RemoveField_CString(hRequest, "owner_name");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [4][owner_name]\n"));
+                        RemoveField_CString(hRequest, "sim_credit");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [5][sim_credit]\n"));
+                        RemoveField_CString(hRequest, "sim_ccy");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [6][sim_ccy]\n"));
+                        RemoveField_CString(hRequest, "last_topup_date");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [7][last_topup_date]\n"));
+                        RemoveField_CString(hRequest, "next_topup_date");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [8][next_topup_date]\n"));
+                        RemoveField_CString(hRequest, "expired_date");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [9][expired_date]\n"));
+                        RemoveField_CString(hRequest, "status");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [10][status]\n"));
+                        RemoveField_CString(hRequest, "billed_date");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [11][billed_date]\n"));
+                        RemoveField_CString(hRequest, "password");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [12][password]\n"));
+                        RemoveField_CString(hRequest, "sim_package");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [13][sim_package]\n"));
+                        RemoveField_CString(hRequest, "remark");
+// DEBUGLOG(("add_sim_card:: Remove hRequest Field [14][remarks]\n"));
+
+DEBUGLOG(("add_sim_card:: ---------------------------------------- Record[%d]:: End ------------------------------------\n", i));
+		}
+
+DEBUGLOG(("add_sim_card:: ======================================== Input Data Record Summary:: Start ========================================\n"));
+		// Total Number of Input Records
+DEBUGLOG(("add_sim_card:: Total Number of Input Records = [%d]\n", iTotalRec));
+
+		// Total Number of InValid Input Records
+                for (i=1; i<=iTotalRec; i++) {
+                        if (INT_INVALID_RECORD[i] != 0) {
+                                iTotalInvalidRec++;
+                        }
+                }
+DEBUGLOG(("add_sim_card:: Total Number of Invalid Input Records = [%d]\n", iTotalInvalidRec));
+
+		// Total Number of Valid Input Record
+                iTotalValidRec = iTotalRec - iTotalInvalidRec;
+DEBUGLOG(("add_sim_card:: Total Number of Valid Input Records = [%d]\n", iTotalValidRec));		
+
+		// Error Record Log
+		for (i=1; i<=iTotalRec; i++) {
+			if (INT_INVALID_RECORD[i] != 0) {
+DEBUGLOG(("add_sim_card:: Invalid Input Data Exists, rec = [%d]\n", i));
+				for (j=1; j<=iTotalField; j++) {
+					if (INT_INVALID_FIELD[i][j] != 0) {
+						if (GetTitleName(j, csTitleName) == PD_OK) {
+/* rec */
+DEBUGLOG(("add_sim_card:: Invalid Input Data Exists, rec = [%d], field = [%s]\n", i, csTitleName));
+
+/* mobile_num */
+                                			sprintf(csMobileNumTag, "%d_%s", i, "mob_num");
+                                			if (GetField_CString(hSimCardRec, csMobileNumTag, &csMobileNum)) {
+
+DEBUGLOG(("add_sim_card:: Invalid Input Data Exists, [%s] = [%s]\n", csMobileNumTag, csMobileNum));
+                                			}
+						}
+					}
+				}
+			}
+		}
+DEBUGLOG(("add_sim_card:: ======================================== Input Data Record Summary:: End ========================================\n"));
+
+DEBUGLOG(("add_sim_card:: ======================================== Sim Card Record File Duplicated Summary:: Start ========================================\n"));
+		// Total Number of Input Records
+DEBUGLOG(("add_sim_card:: Total Number of Input Records = [%d]\n", iTotalRec));
+		
+		for (i=1; i<=iTotalRec; i++) {
+
+                        sprintf(csTag, "%d_detail_%d", i, 2);
+                        if (GetField_CString(hRls, csTag, &csMobileNum)) {
+// DEBUGLOG(("add_sim_card:: [%s] = [%s]\n", csTag, csMobileNum));
+
+                                for (j=1; j<=iTotalRec; j++) {
+
+                                        sprintf(csTag, "%d_detail_%d", j, 2);
+                                        if (GetField_CString(hRls, csTag, &csTmp)) {
+// DEBUGLOG(("add_sim_card:: [%s] = [%s]\n", csTag, csTmp));
+
+                                                if ((i!=j)
+                                                    && (!strcmp(csMobileNum, csTmp))
+                                                )
+                                                {
+
+DEBUGLOG(("add_sim_card:: Duplicated Mobile Num Exists, rec[%d], rec[%d], mobile_num[%s]\n", i, j, csTmp));
+                                                }
+                                        }
+                                }
+                        }
+                }	
+DEBUGLOG(("add_sim_card:: ======================================== Sim Card Record File Duplicated Summary:: End ========================================\n"));
+
+	}
+
+	hash_destroy(hRequest);
+	FREE_ME(hRequest);
+
+	FREE_ME(csTag);
+	FREE_ME(csField);
+	FREE_ME(csYear);
+	FREE_ME(csMonth);
+	FREE_ME(csDay);
+	FREE_ME(csDate);
+
+DEBUGLOG(("add_sim_card:: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int GetTitleName(int iField, char *csTitleName)
+{
+        int     iRet = PD_OK;
+
+        if (iField == 1) { 
+		sprintf(csTitleName, "Country");
+	} else if (iField == 2) {
+                sprintf(csTitleName, "Tel. No");
+        } else if (iField == 3) {
+                sprintf(csTitleName, "carriers");
+        } else if (iField == 4) {
+                sprintf(csTitleName, "target");
+        } else if (iField == 5) {
+                sprintf(csTitleName, "Credit after top up");
+        } else if (iField == 6) {
+                sprintf(csTitleName, "currency");
+        } else if (iField == 7) {
+                sprintf(csTitleName, "last top up day");
+        } else if (iField == 8) {
+                sprintf(csTitleName, "suggest top up");
+        } else if (iField == 9) {
+                sprintf(csTitleName, "Expired date");
+        } else if (iField == 10) {
+                sprintf(csTitleName, "status");
+        } else if (iField == 11) {
+                sprintf(csTitleName, "bill date");
+        } else if (iField == 12) {
+                sprintf(csTitleName, "password");
+        } else if (iField == 13) {
+                sprintf(csTitleName, "package");
+        } else if (iField == 14) {
+		sprintf(csTitleName, "remarks");
+	} else {
+                sprintf(csTitleName, "%s", "\0");
+        }
+
+        return iRet;
+}
+
+int strlen_content(char *s)
+{
+        int j = 0;
+        while (*s) {
+                if ((*s & 0xc0) == 0x00 || (*s & 0xc0) == 0x40) {
+                        if ((*s >= '0' && *s <= '9') ||
+                            (*s >= 'A' && *s <= 'Z') ||
+                            (*s >= 'a' && *s <= 'z')) {
+                                j++;
+                        }
+                } else if ((*s & 0xc0) == 0xc0) {
+                        j++;
+                }
+                s++;
+        }
+        return j;
+}
+
+char *mystrtok_r(char *string, const char *seps, char **context)
+{
+        char *head; /* Start of word */
+        char *tail; /* End of word */
+
+        /* If we're starting up, initialize context */
+        if (string) {
+                *context = string;
+        }
+
+        /* Get potential start of this next word */
+        head = *context;
+        if (head == NULL) {
+                return NULL;
+        }
+
+        /* Skip any leading separators
+        while (*head && strchr(seps, *head)) {
+                head++;
+        }*/
+
+        /* Did we hit the end? */
+        if (*head == 0) {
+                /* Nothing left */
+                *context = NULL;
+                return NULL;
+        }
+
+        /* Skip over word */
+        tail = head;
+        while (*tail && !strchr(seps, *tail)) {
+                tail++;
+        }
+
+        /* Save head for next time in context */
+        if (*tail == 0) {
+                *context = NULL;
+        } else {
+                *tail = 0;
+                tail++;
+                *context = tail;
+        }
+
+        /* Return current word */
+        return head;
+}
+
+char *_deleteCharacters(char *str, char *charSet)
+{
+        int hash [256];
+        int i;
+        if(NULL == charSet)
+                return str;
+
+        for(i = 0; i < 256; i++) {
+                hash[i] = 0;
+        }
+
+        for(i = 0; i < strlen(charSet); i++)
+                hash[(unsigned char)charSet[i]] = 1;
+
+        int currentIndex = 0;
+        for(i = 0; i < strlen(str); i++)
+        {
+                if(!hash[(unsigned char)str[i]])
+                str[currentIndex++] = str[i];
+        }
+        str[currentIndex] = '\0';
+        return str;
+}

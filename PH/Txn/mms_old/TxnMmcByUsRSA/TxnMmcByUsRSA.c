@@ -1,0 +1,421 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/11/28              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmcByUsRSA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMmcByUsRSA(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  	hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+
+	char	cTmp;
+        char    *csTmp;
+	char    *csTxnSeq = NULL;
+	char	*csDtlTxnSeq = NULL;
+        char    *csFromType = NULL;
+        char    *csFromTypeID = NULL;
+        char    *csToType = NULL;
+        //char    *csToTypeID = NULL;
+
+	char	*csFromNode = NULL;
+	char	*csFromService = NULL;
+	char	*csToService = NULL;
+
+	char	csTag[PD_TAG_LEN+1];
+
+        double  dTmp = 0.0;
+
+	hash_t *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	hash_t *hChkRec;
+	hChkRec = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hChkRec, 0); 
+	
+
+        if(GetField_CString(hRequest,"txn_seq",&csTxnSeq)){
+DEBUGLOG(("Authorize::txn_seq= [%s]\n",csTxnSeq));
+                PutField_CString(hTxn,"txn_seq",csTxnSeq);
+		PutField_CString(hRequest, "host_ref", csTxnSeq);
+
+                PutField_CString(hChkRec,"txn_seq",csTxnSeq);
+        }
+        else{
+DEBUGLOG(("Authorize::txnid not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::txnid not found!!\n");
+                iRet=INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+        }         
+
+
+	/* previous dtl_txn_sesq */
+        if(GetField_CString(hRequest,"dtl_txn_seq",&csDtlTxnSeq)){
+DEBUGLOG(("Authorize::dtl_txn_seq= [%s]\n",csDtlTxnSeq));
+                PutField_CString(hTxn,"dtl_txn_seq",csDtlTxnSeq);
+
+                PutField_CString(hChkRec,"dtl_txn_seq",csDtlTxnSeq);
+        }
+        else{
+DEBUGLOG(("Authorize::dtl_txnid not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::dtl_txnid not found!!\n");
+                iRet=INT_INVALID_TXN;
+
+		PutField_Int(hContext,"internal_error",iRet);
+        }         
+
+	/* current dtl_txn_Seq */
+	if (GetField_CString(hContext, "dtl_txn_seq", &csTmp)) {
+DEBUGLOG(("Authorize::current dtl_txn_seq= [%s]\n",csTmp));
+		PutField_CString(hRequest, "host_dtl_ref", csTmp);
+
+                //PutField_CString(hTxn,"dtl_txn_seq",csTmp);
+	}
+        else{
+DEBUGLOG(("Authorize::current dtl_txnid not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::current dtl_txnid not found!!\n");
+                iRet=INT_INVALID_TXN;
+
+		PutField_Int(hContext,"internal_error",iRet);
+        }         
+
+
+
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"update_user",csTmp);
+
+        }
+
+        if(GetField_CString(hRequest,"transmission_datetime",&csTmp)){
+DEBUGLOG(("Authorize::transmission_datetime = [%s]\n",csTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::transmission_datetime not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::transmission_datetime not found!!\n");
+                iRet=INT_TRASMISSION_TIME_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+        }         
+
+ 
+/*********************/
+/* GET SOURCE DETAIL */
+/*********************/
+/* txn_amt */
+       if(GetField_Double(hContext,"txn_amt",&dTmp)){
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::txn_amt not found!!\n");
+                iRet=INT_PAY_AMOUNT_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* txn_ccy */
+	if(GetField_CString(hRequest,"txn_ccy",&csTmp)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTmp));
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* adjustment*/
+       if(GetField_Double(hContext,"adjustment",&dTmp)){
+DEBUGLOG(("Authorize::adjustment = [%f]\n",dTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::adjustment not found!!\n"));
+        }
+
+/* rate */
+       if(GetField_Double(hContext,"exchange_rate",&dTmp)){
+DEBUGLOG(("Authorize::exchange_rate = [%f]\n",dTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::exchange_rate not found!!\n"));
+        }
+
+/* processing_cost */
+       if(GetField_Double(hContext,"processing_cost",&dTmp)){
+DEBUGLOG(("Authorize::processing_cost = [%f]\n",dTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::processing_cost not found!!\n"));
+//ERRLOG("TxnMmcByUsRSA::Authorize::processing_cost not found!!\n");
+        }
+
+/* bank_charge */
+       if(GetField_Double(hContext,"bank_charge",&dTmp)){
+DEBUGLOG(("Authorize::bank_charge = [%f]\n",dTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::bank_charge not found!!\n"));
+//ERRLOG("TxnMmcByUsRSA::Authorize::bank_charge not found!!\n");
+        }
+
+/* bank_charge_refund */
+       if(GetField_Double(hContext,"bank_charge_refund",&dTmp)){
+DEBUGLOG(("Authorize::bank_charge_refund = [%f]\n",dTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::bank_charge_refund not found!!\n"));
+//ERRLOG("TxnMmcByUsRSA::Authorize::bank_charge_refund not found!!\n");
+        }
+
+
+/* filing Number */
+       if(GetField_Double(hRequest,"filing_number",&csTmp)){
+DEBUGLOG(("Authorize::filing_number = [%d]\n",csTmp));
+        }
+        else{
+DEBUGLOG(("Authorize::filing_number not found!!\n"));
+//ERRLOG("TxnMmcByUsRSA::Authorize::filing_number not found!!\n");
+        }
+
+
+
+/*****************************/
+/* GET SOURCE AND DEST PARTY */
+/*****************************/
+/* from_type */
+        if(GetField_CString(hRequest,"mms_from_type",&csFromType)){
+DEBUGLOG(("Authorize::from_type = [%s]\n",csFromType));
+        }
+        else{
+DEBUGLOG(("Authorize::from_type not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::from_type not found!!\n");
+		iRet=INT_ERR;
+
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* from_id */
+        if(GetField_CString(hRequest,"mms_from_id",&csFromTypeID)){
+DEBUGLOG(("Authorize::from_id = [%s]\n",csFromTypeID));
+        }
+        else{
+DEBUGLOG(("Authorize::from_id not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::from_id not found!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* from_node */
+	if (GetField_CString(hRequest, "mms_from_node", &csFromNode)) {
+DEBUGLOG(("Authorize::from_node = [%s]\n",csFromNode));
+	}
+	else {
+DEBUGLOG(("Authorize::from_node not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::from_node not found!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* from_service */
+	if (GetField_CString(hRequest, "mms_from_service", &csFromService)) {
+DEBUGLOG(("Authorize::from_service = [%s]\n",csFromService));
+		PutField_CString(hContext, "service_code", csFromService);
+	}
+	else {
+DEBUGLOG(("Authorize::from_service not found!!\n"));
+	}
+
+
+/* to_type */
+
+        if(GetField_CString(hRequest,"mms_to_type",&csToType)){
+DEBUGLOG(("Authorize::to_type = [%s]\n",csToType));
+        }
+        else{
+DEBUGLOG(("Authorize::to_type not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::to_type not found!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+
+
+/* to_id */
+/*
+        if(GetField_CString(hRequest,"mms_to_id",&csToTypeID)){
+DEBUGLOG(("Authorize::to_id = [%s]\n",csToTypeID));
+        }
+        else{
+DEBUGLOG(("Authorize::to_id not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::to_id not found!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+*/
+
+/* to_node */
+/*
+        if (GetField_CString(hRequest, "mms_to_node", &csToNode)) {
+DEBUGLOG(("Authorize::to_node = [%s]\n",csToNode));
+        }
+        else {
+DEBUGLOG(("Authorize::to_node not found!!\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::to_node not found!!\n");
+                iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+*/
+
+/* to_service */
+        if (GetField_CString(hRequest, "mms_to_service", &csToService)) {
+DEBUGLOG(("Authorize::to_service = [%s]\n",csToService));
+
+		if (csFromService != NULL) {
+			if (strcmp(csFromService, csToService)) {
+
+DEBUGLOG(("Authorize::not same service\n"));
+ERRLOG("TxnMmcByUsRSA::Authorize::not same service!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+		}
+
+        }
+        else {
+DEBUGLOG(("Authorize::to_service not found!!\n"));
+        }
+
+
+	if(iRet==PD_OK){
+/* check org txn status 'W' */
+
+DEBUGLOG(("Authorize::Call DBMmsTransaction:CheckTxnPending\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","CheckTxnPending");
+                if((unsigned long) ((*DBObjPtr)(csTxnSeq,csDtlTxnSeq)) != PD_OK){
+
+DEBUGLOG(("Authorize::Call DBMmsTransaction:CheckTxnPending Fail\n"));
+
+                        iRet = INT_INVALID_TXN;
+			PutField_Int(hContext, "internal_error", iRet);
+                }
+	}	
+
+
+	if(iRet==PD_OK){
+/* source */
+		PutField_Char(hContext, "isd_ind", PD_SOURCE);
+
+/* Assign Correct Source ID */
+		if (!strcmp(csFromType, PD_MMS_PARTY_MERCH)) {
+			sprintf(csTag,"merchant_id");
+		} else if (!strcmp(csFromType, PD_MMS_PARTY_PSP)) {
+			sprintf(csTag,"psp_id");
+		} else if (!strcmp(csFromType, PD_MMS_PARTY_MB)) {
+			sprintf(csTag,"mb_id");
+		} else if (!strcmp(csFromType, PD_MMS_PARTY_BANK)) {
+			sprintf(csTag,"bank_id");
+		} else{
+			sprintf(csTag,"from_id"); 
+		}
+		PutField_CString(hContext,csTag,csFromTypeID);
+DEBUGLOG(("Authorize::%s = [%s]\n",csTag,csFromTypeID));
+
+		PutField_CString(hContext, "from_node", csFromNode);
+		PutField_CString(hContext, "party_node_id", csFromNode);
+	}
+
+/* Chk First Rec */
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call BOMmsBalance:IsNotFirstRec\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMmsBalance","IsNotFirstRec");
+                if((unsigned long) ((*BOObjPtr)(hChkRec)) != PD_OK){
+                        iRet = INT_ERR;
+		} 
+		else {
+			if (GetField_Char(hChkRec, "first_record", &cTmp)) {
+				if (cTmp == PD_NO) {
+					PutField_Char(hRequest, "cal_amt_ind", PD_YES);
+				}
+		                else if (cTmp == PD_YES) {
+					PutField_Char(hRequest, "cal_amt_ind", PD_NO);
+				} 
+				else {
+					iRet = INT_ERR;
+				}
+			}
+		}
+	
+	}
+
+
+
+
+/* Get Txn Code */
+        if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call BOMmsTask:NewTask\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMmsTask","NewTask");
+                if((unsigned long) ((*BOObjPtr)(hContext, hRequest, hResponse)) != PD_OK){
+                        iRet = INT_ERR;
+		}
+	}
+
+ 
+       if (iRet == PD_OK) {
+
+		PutField_Char(hTxn, "status", PD_COMPLETE);
+		PutField_Char(hTxn, "ar_ind", PD_ACCEPT);
+
+DEBUGLOG(("Authorize::Call DBMmsTransaction:UpdateDetail\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","UpdateDetail");
+		if((unsigned long) ((*DBObjPtr)(hTxn)) != PD_OK){
+			iRet = INT_ERR;
+		}
+	}
+
+/*
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+*/
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+	hash_destroy(hChkRec);
+	FREE_ME(hChkRec);
+
+DEBUGLOG(("TxnMmcByUsRSA Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

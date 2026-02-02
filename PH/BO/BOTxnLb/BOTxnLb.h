@@ -1,0 +1,22 @@
+#ifndef _BOTXNLB_H_
+#define _BOTXNLB_H_
+#include "myhash.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int GetTxnPsp(hash_t *hContext,
+                const hash_t* hRequest);
+
+int CheckScheduler(int iId,const char* csTxnDateTime);
+int CheckEffectiveScheduler(int iId,const char* csTxnDateTime);
+
+int GetTxnPsp_Card(hash_t *hContext,
+                const hash_t* hRequest);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

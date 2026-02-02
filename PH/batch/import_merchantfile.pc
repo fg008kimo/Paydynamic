@@ -1,0 +1,611 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/10/26              LokMan Chow
+force branch name to length 25 before insert	   2010/11/24		   LokMan Chow
+Update Get Sha Key				   2011/01/07		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include <math.h>
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "batchcommon.h"
+#include "TxnSeq.h"
+#include "import_merchantfile.h"
+#include "internal.h"
+
+char    cDebug;
+char    cs_inputfile[PD_MAX_FILE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+char 	csKey[PD_SHA_KEY_LEN+1];
+char	csCharSet[NUM_OF_CHAR]={'A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'};
+char	csIntSet[NUM_OF_CHAR][3]={"10","11","12","13","14","15","16","17","34","18","19","20","21","22","35","23","24","25","26","27","28","29","32","30","31","33"};
+char	csAddSet[NUM_OF_CHAR][3]={"1","10","19","28","37","46","55","64","39","73","82","2","11","20","48","29","38","47","56","65","74","83","21","3","12","30"};
+char	csRecordErr[MAX_NUM_OF_RECORD][PD_ERROR_CODE_LEN+1];
+char	csBatchId[PD_TXN_SEQ_LEN+1];
+
+int 	parse_arg(int argc,char **argv);
+int	parse_file(FILE *fin, int iVerify);
+int	Verify_header(char (*s)[IMPORT_FIELD_LEN]);
+int	Verify_detail(char (*csList)[IMPORT_FIELD_LEN],const char *csMerchantId);
+int 	checkMerchId(const char* csMerchId);
+int 	VerifyMac(const char* csCheckSum,const char* csData, int iLen);
+int 	insertHeader(char (*csHdList)[IMPORT_FIELD_LEN]);
+int	verifyIdentityId(const char* csID);
+int	insertDetails(const int iRecord, char (*csDeList)[IMPORT_FIELD_LEN],const char * csMerchantId);
+int	checkAlienID(const char* csID);
+int	checkNationalID(const char* csID);
+
+OBJPTR(BO);
+OBJPTR(DB);
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 3) {
+        printf("usage:  -f inputfile -d Date\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        FILE    *fin;
+        int     iRet;
+        
+        iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS){
+		printf("usage:  -f inputfile -d Date\n");
+                return (iRet);
+	}
+
+        fin = fopen(cs_inputfile,"r");
+        
+        if (fin == NULL) {
+DEBUGLOG(("Error Opening file = [%s]\n",cs_inputfile));
+                return FAILURE;
+        }
+
+        iRet = parse_file(fin,PD_TRUE);
+        fclose(fin);
+
+	if (iRet != FAILURE)  {
+        	fin = fopen(cs_inputfile,"r");
+		
+        	iRet = parse_file(fin,PD_FALSE);
+        	fclose(fin);
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+        return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+/* step 1 */
+int	parse_file(FILE *fin,int iVerify) 
+{
+	char	csMerchId[PD_MERCHANT_ID_LEN+1]={0};
+	int	iRet = SUCCESS;
+	char	csList[IMPORT_MAX_FILE][IMPORT_FIELD_LEN];
+	char    cs_input_buf[PD_MAX_BUFFER +1];;
+	char* p;
+	//int	iCount = 0,i;
+	int	iCount = 0;
+	int	iRecord = 0, iTotalRecord = 0;
+
+
+/* Header */
+        iCount = 0;
+        fgets(cs_input_buf,PD_MAX_BUFFER,fin);
+        if ((cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) || (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D))
+                cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+        p = mystrtok(cs_input_buf,",");
+        if (p == NULL)
+                return FAILURE;
+
+	if(p[strlen(p) - 1] == 0x0D)
+		p[strlen(p) - 1] = '\0';
+        strcpy(csList[iCount],p);
+        iCount++;
+        
+        while ( (p = mystrtok(NULL,",")) != NULL) {
+		if(p[strlen(p) - 1] == 0x0D)
+			p[strlen(p) - 1] = '\0';
+                strcpy(csList[iCount],p);
+                iCount++;
+        }       
+//       	for (i=0; i < iCount; i++)
+//DEBUGLOG(("header [%d] = [%s]\n",i,csList[i]));
+
+	if (iVerify) {
+		iRet = (Verify_header(csList));
+		if (iRet == SUCCESS){
+			iTotalRecord = ctos((const unsigned char *)csList[IDX_HEADER_NUMBER_OF_RECORD],strlen(csList[IDX_HEADER_NUMBER_OF_RECORD])); 
+		}
+
+	}
+	else
+		iRet = insertHeader(csList);
+
+
+		strcpy(csMerchId,csList[IDX_HEADER_MERCHANT_ID]);
+                csMerchId[PD_MERCHANT_ID_LEN]='\0';
+
+	if ( iRet == SUCCESS) {
+		while( fgets(cs_input_buf, PD_MAX_BUFFER, fin) != NULL ){
+
+			if ((cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) || (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D))
+               	         	cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+			if(cs_input_buf[strlen(cs_input_buf) - 1] == 0x00)
+				continue;
+
+			iCount = 0;
+
+       			p = mystrtok(cs_input_buf,",");
+        		if (p == NULL) {
+                		return FAILURE;
+       			}
+			iRecord++;
+
+			if(p[strlen(p) - 1] == 0x0D)
+				p[strlen(p) - 1] = '\0';
+        		strcpy(csList[iCount],p);
+        		iCount++;
+
+        		while ( (p = mystrtok(NULL,",")) != NULL) {
+				if(p[strlen(p) - 1] == 0x0D)
+					p[strlen(p) - 1] = '\0';
+                		strcpy(csList[iCount],p);
+                		iCount++;
+        		}
+
+		if (iVerify){
+			iRet = (Verify_detail(csList,csMerchId));
+			if(iRet == SUCCESS)
+				sprintf(csRecordErr[iRecord],"%d",INT_NO_ERR);
+			else if(iRet == FAILURE)
+				return FAILURE;
+			else
+				sprintf(csRecordErr[iRecord],"%d",iRet);
+		}
+		else
+			iRet = insertDetails(iRecord,csList,csMerchId);
+
+//        	for (i=0; i < iCount; i++)
+//DEBUGLOG(("Record [%d][%d] = [%s]\n",iRecord,i,csList[i]));
+
+
+/*
+DEBUGLOG(("Record [%d] seq_num = [%s]\n",iRecord,csList[IDX_DETAIL_SEQ_NUM]));
+DEBUGLOG(("Record [%d] merchant_ref = [%s]\n",iRecord,csList[IDX_DETAIL_MERCHANT_REF]));
+DEBUGLOG(("Record [%d] country = [%s]\n",iRecord,csList[IDX_DETAIL_COUNTRY]));
+DEBUGLOG(("Record [%d] ID = [%s]\n",iRecord,csList[IDX_DETAIL_ID]));
+DEBUGLOG(("Record [%d] acc no = [%s]\n",iRecord,csList[IDX_DETAIL_ACC_NO]));
+DEBUGLOG(("Record [%d] acc name = [%s][%d]\n",iRecord,csList[IDX_DETAIL_ACC_NAME],strlen(csList[IDX_DETAIL_ACC_NAME])));
+DEBUGLOG(("Record [%d] bank code = [%s]\n",iRecord,csList[IDX_DETAIL_BANK_CODE]));
+DEBUGLOG(("Record [%d] bank name = [%s][%d]\n",iRecord,csList[IDX_DETAIL_BANK_NAME],strlen(csList[IDX_DETAIL_BANK_NAME])));
+DEBUGLOG(("Record [%d] branch name = [%s][%d]\n",iRecord,csList[IDX_DETAIL_BRANCH_NAME],strlen(csList[IDX_DETAIL_BRANCH_NAME])));
+DEBUGLOG(("Record [%d] phone no= [%s]\n",iRecord,csList[IDX_DETAIL_PHONE_NO]));
+DEBUGLOG(("Record [%d] Province = [%s]\n",iRecord,csList[IDX_DETAIL_PROVINCE]));
+DEBUGLOG(("Record [%d] city = [%s]\n",iRecord,csList[IDX_DETAIL_CITY]));
+DEBUGLOG(("Record [%d] amount = [%s]\n",iRecord,csList[IDX_DETAIL_AMOUNT]));
+DEBUGLOG(("Record [%d] PAYOUT_CCy = [%s]\n",iRecord,csList[IDX_DETAIL_PAYOUT_CCY]));
+DEBUGLOG(("Record [%d] DST_CCY = [%s]\n",iRecord,csList[IDX_DETAIL_DST_CCY]));
+DEBUGLOG(("Record [%d] MAC = [%s]\n",iRecord,csList[IDX_DETAIL_MAC]));
+*/
+
+	
+		}
+	}
+
+	if (iVerify) {
+		if (iRet == SUCCESS) {
+			if (iTotalRecord != iRecord ) 
+				iRet =  INT_RECORD_MISMATCH;
+		}
+	}
+	
+	return iRet;
+}
+
+/* step 1.1 */
+int	Verify_header(char (*csList)[IMPORT_FIELD_LEN])
+{
+	int	iRet = SUCCESS;
+	char	csBuf[PD_MAX_BUFFER +1];
+// get merchant key
+
+	iRet  = checkMerchId(csList[IDX_HEADER_MERCHANT_ID]);
+	if (iRet == SUCCESS)  {
+		sprintf(csBuf,"%s|%s",csList[IDX_HEADER_MERCHANT_ID],csList[IDX_HEADER_NUMBER_OF_RECORD]);
+		iRet =  VerifyMac(csList[IDX_HEADER_MAC],csBuf,strlen(csBuf));
+		if(iRet != SUCCESS){
+DEBUGLOG(("Verify_header: Invalid Mac[%s]\n",csList[IDX_HEADER_MAC]));
+ERRLOG("import_merchantfile::Verify_header: Invalid Mac[%s]\n",csList[IDX_HEADER_MAC]);
+			//iRet = FAILURE;
+			///TESTING
+			iRet = SUCCESS;
+		}
+	}
+
+	return iRet;
+}
+
+/* step 1.2 */
+int	Verify_detail(char (*csList)[IMPORT_FIELD_LEN],const char *csMerchantId)
+{
+	int iRet = SUCCESS;
+	char	csBuf[PD_MAX_BUFFER +1];
+
+//check mac
+	sprintf(csBuf,"%s|%s|%s|%s|%s",csList[IDX_DETAIL_SEQ_NUM],csList[IDX_DETAIL_MERCHANT_REF],csList[IDX_DETAIL_ID],csList[IDX_DETAIL_COUNTRY],csList[IDX_DETAIL_AMOUNT]);
+DEBUGLOG(("data = [%s]\n",csBuf));
+	iRet =  VerifyMac(csList[IDX_DETAIL_MAC],csBuf,strlen(csBuf));
+	if(iRet != SUCCESS){
+DEBUGLOG(("Verify_detail: Invalid Mac[%s]\n",csList[IDX_DETAIL_MAC]));
+ERRLOG("import_merchantfile::Verify_detail: Invalid Mac[%s]\n",csList[IDX_DETAIL_MAC]);
+		//TESTING
+		iRet=SUCCESS;
+	}
+
+
+//check duplicate merch ref
+	if(iRet == SUCCESS){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchMerchantRef");
+		if((unsigned long)(DBObjPtr)(csMerchantId,csList[IDX_DETAIL_MERCHANT_REF])==PD_FOUND){
+                        //iRet = INT_DUP_MERCHANT_REF;
+                        iRet = FAILURE;
+DEBUGLOG(("Verify_detail: MerchantId[%s] MerchantRef[%s]. Duplicate Merchant Ref\n",csMerchantId,csList[IDX_DETAIL_MERCHANT_REF]));
+ERRLOG("import_merchantfile::Verify_detail: MerchantId[%s] MerchantRef[%s]. Duplicate Merchant Ref\n",csMerchantId,csList[IDX_DETAIL_MERCHANT_REF]);
+		}
+	}
+
+
+//check ID no.
+	if(iRet == SUCCESS){
+		if(strncmp(csList[IDX_DETAIL_COUNTRY],"TW",2)==0){
+			iRet = verifyIdentityId(csList[IDX_DETAIL_ID]);
+			if(iRet != SUCCESS)
+DEBUGLOG(("Verify_detail: Invalid Id[%s]\n",csList[IDX_DETAIL_ID]));
+ERRLOG("import_merchantfile::Verify_detail: Invalid Id[%s]\n",csList[IDX_DETAIL_ID]);
+		}
+	}
+
+
+//check length of account num, 14 for TW
+	if(iRet == SUCCESS){
+		if(strncmp(csList[IDX_DETAIL_COUNTRY],"TW",2)==0){
+			if(strlen(csList[IDX_DETAIL_ACC_NO])>PD_TW_ACCOUNT_NUM_LEN)
+				iRet = INT_ERR;
+		}
+	}
+
+
+//check amount, no decimal value in TW
+	if(iRet == SUCCESS){
+		if(strncmp(csList[IDX_DETAIL_COUNTRY],"TW",2)==0){
+			double dAmt = myctod((const unsigned char *)csList[IDX_DETAIL_AMOUNT],strlen(csList[IDX_DETAIL_AMOUNT])-PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+			long lTmp = (long) dAmt;
+                        if (dAmt > lTmp){
+				iRet = INT_UNSUPPORTED_PAY_AMOUNT;
+DEBUGLOG(("Verify_detail: Unspported pay amount[%f], country:[%s]\n",dAmt,csList[IDX_DETAIL_COUNTRY]));
+ERRLOG("import_merchantfile::Verify_detail: Unspported pay amount[%f], country:[%s]\n",dAmt,csList[IDX_DETAIL_COUNTRY]);
+			}
+		}
+	}
+
+
+DEBUGLOG(("Verify_detail iRet[%d]\n",iRet));
+	return iRet;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_inputfile,"");
+        strcpy(cs_date,"");
+
+        //while ((c = getopt(argc,argv,"f:")) != EOF && c != 0xff) {
+        while ((c = getopt(argc,argv,"f:d:")) != EOF) {
+                switch (c) {
+                        case 'f':
+                                strcpy(cs_inputfile, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_inputfile,"") || !strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+
+int checkMerchId(const char* csMerchId)
+{
+	int iRet = FAILURE;
+        char *csTmp = NULL;
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+        DBObjPtr = CreateObj(DBPtr,"DBMerchKeys","GetMerchantKey");
+        if ((*DBObjPtr)(csMerchId,"POK",rRecordSet) != SUCCESS) {
+DEBUGLOG(("checkMerchId: Merchant Id[%s] not found\n",csMerchId));
+        }
+        else{
+                hash_t  *hRec;
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        if (GetField_CString(hRec,"key_value",&csTmp)){
+                                strncpy(csKey,csTmp,PD_SHA_KEY_LEN);
+                                csKey[PD_SHA_KEY_LEN]='\0';
+DEBUGLOG(("checkMerchId: Key found [%s]\n",csKey));
+				iRet = SUCCESS;
+                        }
+
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+        return iRet;
+}
+
+int VerifyMac(const char* csCheckSum,const char* csData, int iLen)
+{
+	int iRet = SUCCESS;
+
+	BOObjPtr = CreateObj(BOPtr,"BOSecurity","Verify3DESMac");
+
+	iRet = (unsigned long int)(*BOObjPtr)(csCheckSum,csKey,csData,strlen(csData));
+	
+	if (iRet != PD_OK){
+		iRet = INT_MAC_ERR;
+	}
+
+	return iRet;
+}
+
+
+int insertHeader(char (*csHdList)[IMPORT_FIELD_LEN])
+{
+	int iRet = SUCCESS;
+
+	hash_t *hHeader;
+	hHeader = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hHeader,0);
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+	strcpy(csBatchId,(*DBObjPtr)());
+	csBatchId[strlen(csBatchId)]='\0';
+
+	PutField_CString(hHeader,"merchant_id",csHdList[IDX_HEADER_MERCHANT_ID]);
+	PutField_CString(hHeader,"checksum",csHdList[IDX_HEADER_MAC]);
+	PutField_Int(hHeader,"num_of_record",atoi(csHdList[IDX_HEADER_NUMBER_OF_RECORD]));
+
+	PutField_CString(hHeader,"txn_date",cs_date);
+	PutField_CString(hHeader,"batch_id",csBatchId);
+
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutHeader","Add");
+	if((unsigned long int)(*DBObjPtr)(hHeader) == PD_OK){
+DEBUGLOG(("Add Payout Header Success [%s] [%s] [%s] [%s]\n",csBatchId,cs_date,csHdList[IDX_HEADER_MERCHANT_ID],csHdList[IDX_HEADER_NUMBER_OF_RECORD]));
+	}
+	else{
+DEBUGLOG(("Add Payout Header Failed [%s] [%s] [%s] [%s]\n",csBatchId,cs_date,csHdList[IDX_HEADER_MERCHANT_ID],csHdList[IDX_HEADER_NUMBER_OF_RECORD]));
+ERRLOG("import_merchantfile::Add Payout Header Failed [%s] [%s] [%s] [%s]\n",csBatchId,cs_date,csHdList[IDX_HEADER_MERCHANT_ID],csHdList[IDX_HEADER_NUMBER_OF_RECORD]);
+		iRet = FAILURE;
+	}
+
+	hash_destroy(hHeader);
+        FREE_ME(hHeader);
+
+	return iRet;
+}
+
+int	verifyIdentityId(const char* csID)
+{
+	int iRet = SUCCESS;
+	char cSecDigit;
+
+//check ID length (10 digits)
+	if(strlen(csID)!=PD_TW_IDENTITY_ID_LEN)
+		iRet = INT_ERR;
+
+//check 1st digit, between A-Z
+	if(iRet == SUCCESS){
+		if(!isalpha(csID[0]))
+		iRet = INT_ERR;
+	}
+
+//check 2nd digit, numeric ->NationalID; alphabet-> AlienID
+	if(iRet == SUCCESS){
+		cSecDigit = csID[1];
+		if(!isalpha(cSecDigit))
+			iRet = checkNationalID(csID);
+		else
+			iRet = checkAlienID(csID);
+	}
+	return iRet;
+}
+
+int	checkNationalID(const char* csID)
+{
+	int iRet = SUCCESS;
+	int iPos = 0;
+	int iSex = 0;
+	int iTotalSum = 0;
+	int i;
+	int iPow = 0;
+	int iCheck= 0;
+
+//check 2-10 digits, numeric
+	if(iRet == SUCCESS){
+		if(is_numeric((char*)&csID[1])!=PD_TRUE)
+			iRet = INT_ERR;
+	}
+
+//check 2nd digit, MALE or FEMALE
+	if(iRet == SUCCESS){
+		iSex = atoi(&csID[1])/pow(10,8);
+		if(!((iSex==PD_TW_MALE) || (iSex==PD_TW_FEMALE)))
+			iRet = INT_ERR;
+	}
+
+
+//check digit
+	if(iRet == SUCCESS){
+		for(iPos=0; iPos<26; iPos++){
+			if(csID[0] == csCharSet[iPos])
+				iTotalSum += atoi(csAddSet[iPos]);
+		}
+
+		for(i=8;i>0;i--){
+			iPow= pow(10,i);
+			iTotalSum += (atoi(&csID[PD_TW_IDENTITY_ID_LEN-1-i])/iPow)*i;
+		}
+
+		iCheck = (10-(iTotalSum%10))%10;
+		if(atoi(&csID[9])!= iCheck)
+			iRet = INT_ERR;
+	}
+
+	return iRet;
+}
+
+int	checkAlienID(const char* csID)
+{
+	int iRet = SUCCESS;
+	int iPos = 0;
+        int iTotalSum = 0;
+        int iCheck = 0;
+	char csTmp[3];
+	int iTmp;
+	int i;
+
+//check 3-10 digits, numeric
+	if(is_numeric((char*)&csID[2])!=PD_TRUE)
+		iRet = INT_ERR;
+
+//check digit
+	if(iRet == SUCCESS){
+		for(iPos=0;iPos<26;iPos++){
+			if(csID[0] == csCharSet[iPos]){
+				iTmp = atoi(&csIntSet[iPos][1])*9;
+				sprintf(csTmp,"%d",iTmp);
+				iTotalSum += atoi(csIntSet[iPos])/10 + atoi(&csTmp[1]);
+			}
+			if(csID[1] == csCharSet[iPos]){
+				iTmp = atoi(&csIntSet[iPos][1])*8;
+				sprintf(csTmp,"%d",iTmp);
+				if(iTmp>9) iTotalSum += atoi(&csTmp[1]);
+				else   iTotalSum += atoi(csTmp);
+			}
+		}
+
+		for(i=7;i>0;i--){
+			int iPow = pow(10,i);
+			iTmp = (atoi(&csID[PD_TW_IDENTITY_ID_LEN-1-i])/iPow)*i;
+			sprintf(csTmp,"%d",iTmp);
+			if(iTmp>9) iTotalSum += atoi(&csTmp[1]);
+			else iTotalSum += atoi(csTmp);
+
+		}
+
+		sprintf(csTmp,"%d",iTotalSum);
+		if(iTotalSum>9) iCheck = 10 - atoi(&csTmp[1]);
+		else    iCheck = 10 - atoi(csTmp);
+		if(iCheck != atoi(&csID[PD_TW_IDENTITY_ID_LEN-1]))
+			iRet = INT_ERR;
+
+	}
+
+
+	return iRet;
+}
+
+
+int insertDetails(const int iRecord, char (*csDeList)[IMPORT_FIELD_LEN], const char * csMerchantId)
+{
+	int iRet = SUCCESS;
+
+	hash_t *hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec,0);
+
+	if(strlen(csDeList[IDX_DETAIL_BRANCH_NAME])>PD_AC_BRANCH_LEN)
+		csDeList[IDX_DETAIL_BRANCH_NAME][PD_AC_BRANCH_LEN]='\0';
+
+	PutField_CString(hRec,"batch_id", csBatchId);
+
+	PutField_CString(hRec,"seq_num",csDeList[IDX_DETAIL_SEQ_NUM]);
+	PutField_CString(hRec,"merchant_id",csMerchantId);
+	PutField_CString(hRec,"merchant_ref",csDeList[IDX_DETAIL_MERCHANT_REF]);
+	PutField_CString(hRec,"country",csDeList[IDX_DETAIL_COUNTRY]);
+	PutField_CString(hRec,"identity_id",csDeList[IDX_DETAIL_ID]);
+	PutField_CString(hRec,"account_num",csDeList[IDX_DETAIL_ACC_NO]);
+	PutField_CString(hRec,"account_name",csDeList[IDX_DETAIL_ACC_NAME]);
+	PutField_CString(hRec,"bank_name",csDeList[IDX_DETAIL_BANK_NAME]);
+	PutField_CString(hRec,"bank_code",csDeList[IDX_DETAIL_BANK_CODE]);
+	PutField_CString(hRec,"branch",csDeList[IDX_DETAIL_BRANCH_NAME]);
+	PutField_CString(hRec,"phone_num",csDeList[IDX_DETAIL_PHONE_NO]);
+	PutField_CString(hRec,"province",csDeList[IDX_DETAIL_PROVINCE]);
+	PutField_CString(hRec,"city",csDeList[IDX_DETAIL_CITY]);
+	PutField_CString(hRec,"payout_currency",csDeList[IDX_DETAIL_PAYOUT_CCY]);
+	PutField_CString(hRec,"dest_currency",csDeList[IDX_DETAIL_DST_CCY]);
+	PutField_CString(hRec,"checksum",csDeList[IDX_DETAIL_MAC]);
+	PutField_CString(hRec,"amount",csDeList[IDX_DETAIL_AMOUNT]);
+	PutField_CString(hRec,"resp_code",csRecordErr[iRecord]);
+
+	if(atoi(csRecordErr[iRecord])==INT_NO_ERR)
+		PutField_Char(hRec,"status",PD_INIT_STATE);
+	else
+		PutField_Char(hRec,"status",PD_REJECTED);
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutRecord","Add");
+	if ((unsigned long int)(*DBObjPtr)(hRec) == PD_OK){
+	}
+	else{
+DEBUGLOG(("Add Payout Detail Failed [%s] [%s] [%s] [%s]\n",csBatchId,csDeList[IDX_DETAIL_SEQ_NUM],csMerchantId,csDeList[IDX_DETAIL_MERCHANT_REF]));
+ERRLOG("import_merchantfile::Add Payout Detail Failed [%s] [%s] [%s] [%s]\n",csBatchId,csDeList[IDX_DETAIL_SEQ_NUM],csMerchantId,csDeList[IDX_DETAIL_MERCHANT_REF]);
+		return FAILURE;
+	}
+	return iRet;
+}

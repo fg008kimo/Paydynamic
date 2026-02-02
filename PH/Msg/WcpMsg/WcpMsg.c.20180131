@@ -1,0 +1,1101 @@
+
+/*
+ * PDProTech (c)2016. All rights reserved. No part of this software may be reproduced in any form without written permission
+ * of an authorized representative of PDProTech.
+ *
+ * Change Description                                 Change Date             Change By
+ * -------------------------------                    ------------            --------------
+ *  Init Version                                      2016/12/01              David Wong
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "WcpMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include <zlib.h>
+#include "b64.h"
+#include <time.h>
+#include "ObjPtr.h"
+
+char	cDebug;
+
+OBJPTR(DB);
+
+void	WcpMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int FormatMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int	iRet = PD_OK;
+
+	char*	csPtr = NULL;
+	char*	csBuf = NULL;
+	char*	csCodeURL= NULL;
+	int	iTmp = 0;
+	int	iTmpRet = 0;
+
+	hash_t	*hLog;
+	hLog = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hLog,0);
+
+DEBUGLOG(("FormatMsg()\n"));
+
+	csCodeURL = (char*) malloc (PD_TMP_MSG_BUF_LEN+1);
+	memset(csCodeURL,0,sizeof(csCodeURL));
+
+	outMsg[0]= '\0';
+
+//return_code
+	if (GetField_CString(hIn,"return_code",&csPtr)) {
+DEBUGLOG(("FormatMsg:: return_code = [%s]\n",csPtr));
+		strcat((char*)outMsg,"return_code");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatMsg:: return_code is missing\n"));
+	}
+
+//code_url
+	if (GetField_CString(hIn,"code_url",&csPtr)) {
+DEBUGLOG(("FormatMsg:: code_url = [%s]\n",csPtr));
+
+
+		strcat((char*)outMsg,"code_url");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		base64_encode((unsigned char *)csPtr,strlen((char*)csPtr),csCodeURL,PD_MAX_BUFFER);
+		strcat((char*)outMsg,csCodeURL);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatMsg:: code_url is missing\n"));
+	}
+
+//txn_seq
+	if (GetField_CString(hIn,"txn_seq",&csPtr)) {
+DEBUGLOG(("FormatMsg:: txn_seq = [%s]\n",csPtr));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnQrRequestLog","GetByTxnId");
+		iTmpRet = (unsigned long int)(*DBObjPtr)(csPtr,hLog);
+		if (iTmpRet == PD_FOUND) {
+//time_init
+			if (GetField_CString(hLog,"qrcode_init_timestamp",&csPtr)) {
+DEBUGLOG(("FormatMsg:: time_init = [%s]\n",csPtr));
+				strcat((char*)outMsg,"time_init");
+				strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+				strcat((char*)outMsg,csPtr);
+				strcat((char*)outMsg,MY_WCP_TOKEN);
+			} else {
+DEBUGLOG(("FormatMsg:: time_init is missing\n"));
+			}
+
+//time_expire
+			if (GetField_Int(hLog,"expiry",&iTmp)) {
+				char csTimeExpire[PD_TMP_BUF_LEN + 1];
+				sprintf((char*)csTimeExpire,"%d",iTmp);
+DEBUGLOG(("FormatMsg:: time_expire = [%s]\n",csTimeExpire));
+				strcat((char*)outMsg,"time_expire");
+				strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+				strcat((char*)outMsg,csTimeExpire);
+				strcat((char*)outMsg,MY_WCP_TOKEN);
+			} else {
+DEBUGLOG(("FormatMsg:: time_expire is missing\n"));
+			}
+
+//time_enable
+			if (GetField_Int(hLog,"enable_button",&iTmp)) {
+				char csTimeEnable[PD_TMP_BUF_LEN + 1];
+				sprintf((char*)csTimeEnable,"%d",iTmp);
+DEBUGLOG(("FormatMsg:: time_enable = [%s]\n",csTimeEnable));
+				strcat((char*)outMsg,"time_enable");
+				strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+				strcat((char*)outMsg,csTimeEnable);
+				strcat((char*)outMsg,MY_WCP_TOKEN);
+			} else {
+DEBUGLOG(("FormatMsg:: time_enable is missing\n"));
+			}
+
+//time_auto_check
+			if (GetField_Int(hLog,"auto_check_txn_status",&iTmp)) {
+				char csTimeAutoCheck[PD_TMP_BUF_LEN + 1];
+				sprintf((char*)csTimeAutoCheck,"%d",iTmp);
+DEBUGLOG(("FormatMsg:: time_auto_check = [%s]\n",csTimeAutoCheck));
+				strcat((char*)outMsg,"time_auto_check");
+				strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+				strcat((char*)outMsg,csTimeAutoCheck);
+				strcat((char*)outMsg,MY_WCP_TOKEN);
+			} else {
+DEBUGLOG(("FormatMsg:: time_auto_check is missing\n"));
+			}
+
+//time_redirect
+			if (GetField_Int(hLog,"redirect",&iTmp)) {
+				char csTimeRedirect[PD_TMP_BUF_LEN + 1];
+				sprintf((char*)csTimeRedirect,"%d",iTmp);
+DEBUGLOG(("FormatMsg:: time_redirect = [%s]\n",csTimeRedirect));
+				strcat((char*)outMsg,"time_redirect");
+				strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+				strcat((char*)outMsg,csTimeRedirect);
+				strcat((char*)outMsg,MY_WCP_TOKEN);
+			} else {
+DEBUGLOG(("FormatMsg:: time_redirect is missing\n"));
+			}
+
+//time_curr
+			if (GetField_CString(hLog,"qrcode_curr_timestamp",&csPtr)) {
+DEBUGLOG(("FormatMsg:: time_curr = [%s]\n",csPtr));
+				strcat((char*)outMsg,"time_db_local");
+				strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+				strcat((char*)outMsg,csPtr);
+			} else {
+DEBUGLOG(("FormatMsg:: time_curr is missing\n"));
+			}
+		}
+	} else {
+DEBUGLOG(("FormatMsg:: txn_seq is missing\n"));
+	}
+
+DEBUGLOG(("outmsg = [%s]\n",outMsg));
+
+	csBuf = (char*) malloc (PD_MAX_BUFFER +1);
+	memset(csBuf,0,sizeof(csBuf));
+	base64_encode(outMsg,strlen((char*)outMsg),csBuf,PD_MAX_BUFFER);
+	outMsg[0] = '\0';
+	strcat((char*)outMsg,"qr_parameter");
+	strcat((char*)outMsg,"=");
+	strcat((char*)outMsg,csBuf);
+	FREE_ME(csBuf);
+	*outLen = strlen((const char*)outMsg);
+
+DEBUGLOG(("FormatMsg() [%s][%d]\n",outMsg,*outLen));
+DEBUGLOG(("FormatMsg() Exit\n"));
+	//FREE_ME(csPtr);
+
+	hash_destroy(hLog);
+	FREE_ME(hLog);
+
+	FREE_ME(csCodeURL);
+	return 	iRet;
+}
+
+
+int BreakDownMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	char	*csPtr = NULL;
+	hash_t	*hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec,0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n",inMsg,inLen));
+
+        if (Str2Cls(hRec,(char*)inMsg,MY_WCP_TOKEN,MY_WCP_FIELD_TOKEN) == PD_OK) {
+
+//order_id
+			if (GetField_CString(hRec,"order_id",&csPtr)) {
+				PutField_CString(hOut,"txn_seq",csPtr);
+DEBUGLOG(("BreakDownMsg:: txn_seq = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: txn_seq not found\n"));
+			}
+
+//order_time
+			if (GetField_CString(hRec,"order_time",&csPtr)) {
+				PutField_CString(hOut,"order_time",csPtr);
+DEBUGLOG(("BreakDownMsg:: order_time = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: order_time not found\n"));
+			}
+
+//order_amount
+			if (GetField_CString(hRec,"order_amount",&csPtr)) {
+				PutField_CString(hOut,"txn_amt",csPtr);
+DEBUGLOG(("BreakDownMsg:: txn_amt = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: txn_amt not found\n"));
+			}
+
+//deal_id
+			if (GetField_CString(hRec,"deal_id",&csPtr)) {
+				PutField_CString(hOut,"tid",csPtr);
+DEBUGLOG(("BreakDownMsg:: tid = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: tid not found\n"));
+			}
+
+//deal_time
+			if (GetField_CString(hRec,"deal_time",&csPtr)) {
+DEBUGLOG(("BreakDownMsg:: txn_date = [%s]\n",csPtr));
+				csPtr[PD_DATETIME_LEN] = '\0';
+				char csTxnDate[PD_DATE_LEN + 1];
+				sprintf(csTxnDate,"%.*s",PD_DATE_LEN,csPtr);
+
+				PutField_CString(hOut,"fundin_date",csPtr);
+				PutField_CString(hOut,"txn_date",csTxnDate);
+			}
+
+//pay_amount
+			if (GetField_CString(hRec,"pay_amount",&csPtr)) {
+				PutField_CString(hOut,"pay_amt",csPtr);
+DEBUGLOG(("BreakDownMsg:: pay_amt = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: pay_amt not found\n"));
+			}
+
+//pay_result
+			if (GetField_CString(hRec,"pay_result",&csPtr)) {
+				PutField_CString(hOut,"status",csPtr);
+DEBUGLOG(("BreakDownMsg:: status = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: status not found\n"));
+			}
+
+//signature
+			if (GetField_CString(hRec,"signature",&csPtr)) {
+				PutField_CString(hOut,"sign",csPtr);
+DEBUGLOG(("BreakDownMsg:: sign = [%s]\n",csPtr));
+			} else {
+DEBUGLOG(("BreakDownMsg:: sign not found\n"));
+			}
+
+	} else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+DEBUGLOG(("BreakDownMsg Exit\n"));
+	return iRet;
+}
+
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	char	*csTmp = NULL;
+DEBUGLOG(("initReplyFromRequest()\n"));
+	
+
+/* order_num */
+        if (GetField_CString(hRequest,"merchant_ref",&csTmp)) {
+DEBUGLOG(("initReplyFromRequest: order_num = [%s]\n",csTmp));
+                PutField_CString(hResponse,"order_num",csTmp);
+        }
+
+
+DEBUGLOG(("initReplyFromRequest() Exit\n"));
+	//FREE_ME(csTmp);
+	return iRet;
+}
+
+
+int BuildAuthData(hash_t* hIn)
+{
+	int	iRet = PD_OK;
+	char*	csPtr = NULL;
+	char*	csDATA = NULL;
+	double	dTmp = 0.0;
+	csDATA = (char*) malloc (PD_TMP_MSG_BUF_LEN + 1);
+
+DEBUGLOG(("BuildAuthData()\n"));
+	memset(csDATA,0,sizeof(csDATA));
+
+//version
+	if (GetField_CString(hIn,"version",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: version = [%s]\n",csPtr));
+		strcpy(csDATA,"version");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csPtr);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: version is missing\n"));
+	}
+
+//sign_type
+	if (GetField_CString(hIn,"sign_type",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: sign_type = [%s]\n",csPtr));
+		strcat(csDATA,"sign_type");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csPtr);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: sign_type is missing\n"));
+	}
+
+//mid
+	if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: mid = [%s]\n",csPtr));
+		strcat(csDATA,"mid");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csPtr);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: mid is missing\n"));
+	}
+
+//notify_url
+	if (GetField_CString(hIn,"return_url_only",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: notify_url = [%s]\n",csPtr));
+		strcat(csDATA,"notify_url");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csPtr);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: notify_url is missing\n"));
+	}
+
+/*
+//return_url
+	if (GetField_CString(hIn,"return_url_only",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: return_url = [%s]\n",csPtr));
+		strcat(csDATA,"return_url");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csPtr);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: return_url is missing\n"));
+	}
+*/
+
+//order_id
+	if (GetField_CString(hIn,"order_num",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: order_id = [%s]\n",csPtr));
+		strcat(csDATA,"order_id");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csPtr);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: order_id is missing\n"));
+	}
+
+//order_amount
+	if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+		char csTmpAmt[PD_TMP_BUF_LEN + 1];
+		sprintf((char*)csTmpAmt,"%ld",double2long(dTmp));
+DEBUGLOG(("BuildAuthData:: order_amount = [%s]\n",csTmpAmt));
+		strcat(csDATA,"order_amount");
+		strcat(csDATA,MY_WCP_FIELD_TOKEN);
+		strcat(csDATA,csTmpAmt);
+		strcat(csDATA,MY_WCP_TOKEN_SIGN);
+	} else {
+DEBUGLOG(("BuildAuthData:: order_amount is missing\n"));
+	}
+
+//order_time
+	if (GetField_CString(hIn,"local_tm_date",&csPtr)) {
+		char*	csPtr2;
+		char	csDateTime[PD_DATETIME_LEN * 2];
+		if (GetField_CString(hIn,"local_tm_time",&csPtr2)) {
+			sprintf(csDateTime,"%s%s",csPtr,csPtr2);
+DEBUGLOG(("BuildAuthData:: order_time = [%s]\n",csDateTime));
+			strcat((char*)csDATA,"order_time");
+			strcat((char*)csDATA,MY_WCP_FIELD_TOKEN);
+			strcat((char*)csDATA,csDateTime);
+			strcat((char*)csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildAuthData:: local_tm_time is missing\n"));
+		}
+	} else {
+DEBUGLOG(("BuildAuthData:: local_tm_date is missing\n"));
+	}
+
+	PutField_CString(hIn,"auth_data",csDATA);
+DEBUGLOG(("BuildAuthData:: auth_data = [%s]\n",csDATA));
+	FREE_ME(csDATA);
+
+DEBUGLOG(("BuildAuthData() Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int BuildRspAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csPtr = NULL;
+	char*	csDATA = NULL;
+        csDATA = (char*) malloc (PD_TMP_MSG_BUF_LEN  +1);
+
+DEBUGLOG(("BuildRspAuthData()\n"));
+        memset(csDATA,0,sizeof(csDATA));
+
+//return_code
+	if (GetField_CString(hIn,"return_code",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: return_code = [%s]\n",csPtr));
+		//mid
+		if (GetField_CString(hIn,"mid",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: mid = [%s]\n",csPtr));
+			strcat(csDATA,"mid");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: mid is missing\n"));
+		}
+
+		//order_id
+		if (GetField_CString(hIn,"order_id",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_id = [%s]\n",csPtr));
+			strcat(csDATA,"order_id");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_id is missing\n"));
+		}
+
+		//order_amount
+		if (GetField_CString(hIn,"order_amount",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_amount = [%s]\n",csPtr));
+			strcat(csDATA,"order_amount");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_amount is missing\n"));
+		}
+
+		//code_url
+		if (GetField_CString(hIn,"code_url",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: code_url = [%s]\n",csPtr));
+			strcat(csDATA,"code_url");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: code_url is missing\n"));
+		}
+	} else {
+		//order_id
+		if (GetField_CString(hIn,"txn_seq",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_id = [%s]\n",csPtr));
+			strcat(csDATA,"order_id");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_id is missing\n"));
+		}
+
+		//order_time
+		if (GetField_CString(hIn,"order_time",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_time = [%s]\n",csPtr));
+			strcat(csDATA,"order_time");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_time is missing\n"));
+		}
+
+		//order_amount
+		if (GetField_CString(hIn,"txn_amt",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_amount = [%s]\n",csPtr));
+			strcat(csDATA,"order_amount");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_amount is missing\n"));
+		}
+
+		//deal_id
+		if (GetField_CString(hIn,"tid",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: deal_id = [%s]\n",csPtr));
+			strcat(csDATA,"deal_id");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: deal_id is missing\n"));
+		}
+
+		//deal_time
+		if (GetField_CString(hIn,"fundin_date",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: deal_time = [%s]\n",csPtr));
+			strcat(csDATA,"deal_time");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		}
+
+		//pay_amount
+		if (GetField_CString(hIn,"pay_amt",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: pay_amount = [%s]\n",csPtr));
+			strcat(csDATA,"pay_amount");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: pay_amount is missing\n"));
+		}
+
+		//pay_result
+		if (GetField_CString(hIn,"status",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: pay_result = [%s]\n",csPtr));
+			strcat(csDATA,"pay_result");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: pay_result is missing\n"));
+		}
+	}
+
+	PutField_CString(hIn,"auth_data",csDATA);
+DEBUGLOG(("BuildRspAuthData:: auth_data = [%s]\n",csDATA));
+	FREE_ME(csDATA);
+DEBUGLOG(("BuildRspAuthData() Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int BuildInqAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csPtr = NULL;
+        char*   csBuf = NULL;
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+DEBUGLOG(("BuildInqAuthData()\n"));
+        memset(csBuf,0,MAX_MSG_SIZE);
+        csBuf[0] = '\0';
+
+/* 1 input_charset*/
+        strcat((char*)csBuf,"input_charset");
+        strcat((char*)csBuf,MY_WCP_FIELD_TOKEN);
+        strcat((char*)csBuf,"UTF-8");
+        strcat((char*)csBuf,MY_WCP_TOKEN);
+
+/* 2 out_trade_no*/
+        if (GetField_CString(hIn,"org_txn_seq",&csPtr)) {
+                strcat((char*)csBuf,"out_trade_no");
+                strcat((char*)csBuf,MY_WCP_FIELD_TOKEN);
+                strcat((char*)csBuf,csPtr);
+                strcat((char*)csBuf,MY_WCP_TOKEN);
+DEBUGLOG(("BuildInqAuthData:: out_trade_no = [%s]\n",csPtr));
+        }
+        else {
+DEBUGLOG(("BuildInqAuthData:: org_txn_seq is missing!!!\n"));
+        }
+
+/* 3 partner */
+        if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+                strcat((char*)csBuf,"partner");
+                strcat((char*)csBuf,MY_WCP_FIELD_TOKEN);
+                strcat((char*)csBuf,csPtr);
+                strcat((char*)csBuf,MY_WCP_TOKEN);
+DEBUGLOG(("BuildInqAuthData:: partner = [%s]\n",csPtr));
+        }
+        else {
+                iRet = PD_ERR;
+DEBUGLOG(("BuildInqAuthData:: ***psp_merchant_id is missing\n"));
+        }
+
+/* 4 transaction_id*/
+        if (GetField_CString(hIn,"tid",&csPtr)) {
+                strcat((char*)csBuf,"transaction_id");
+                strcat((char*)csBuf,MY_WCP_FIELD_TOKEN);
+                strcat((char*)csBuf,csPtr);
+                strcat((char*)csBuf,MY_WCP_TOKEN);
+DEBUGLOG(("BuildInqAuthData:: transaction_id = [%s]\n",csPtr));
+        }
+        else {
+DEBUGLOG(("BuildInqAuthData:: tid is missing!!!\n"));
+        }
+
+        PutField_CString(hIn,"auth_data",csBuf);
+DEBUGLOG(("BuildInqAuthData:: auth_data = [%s]\n",csBuf));
+        FREE_ME(csBuf);
+
+DEBUGLOG(("BuildInqAuthData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int FormatInqMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int	iRet = PD_OK;
+
+	char*	csPtr = NULL;
+	char*	csURL = NULL;
+	char* 	csBuf = NULL;
+
+	//double	dTmp;
+DEBUGLOG(("FormatInqMsg()\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+	outMsg[0]= '\0';
+//psp_url
+	if (GetField_CString(hIn,"psp_url",&csURL)) {
+		if (GetField_CString(hIn,"request_function",&csPtr)) {
+			strcpy((char*)csBuf,"url");
+DEBUGLOG(("FormatInqMsg:: psp_url = [%s]\n",csURL));
+DEBUGLOG(("FormatInqMsg:: request function  = [%s]\n",csPtr));
+			strcat((char*)csBuf,MY_WCP_FIELD_TOKEN);
+			strcat((char*)csBuf,csURL);
+			strcat((char*)csBuf,"/");
+			strcat((char*)csBuf,csPtr);
+			strcat((char*)csBuf,"?");
+DEBUGLOG(("FormatInqMsg:: psp_url = [%s]\n",csBuf));
+		}	
+	
+		sprintf((char*)outMsg,"%0*d",PD_WEB_HEADER_LEN_LEN,(int)strlen(csBuf));
+DEBUGLOG(("FormatInqMsg:: outMsg = [%s]\n",outMsg));
+		strcat((char*)outMsg,csBuf);
+DEBUGLOG(("FormatInqMsg:: outMsg = [%s]\n",outMsg));
+
+	}
+	FREE_ME(csBuf);
+
+//input_charset
+	strcat((char*)outMsg,"input_charset");
+	strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+	strcat((char*)outMsg,"UTF-8");
+	strcat((char*)outMsg,MY_WCP_TOKEN);
+DEBUGLOG(("FormatInqMsg:: input_charset = [UTF-8]\n"));
+
+
+//partner
+	if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+DEBUGLOG(("FormatInqMsg:: partner = [%s]\n",csPtr));
+		strcat((char*)outMsg,"partner");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	}
+	else {
+DEBUGLOG(("FormatInqMsg:: partner is missing\n"));
+	}
+
+//out_trade_no
+	if (GetField_CString(hIn,"org_txn_seq",&csPtr)) {
+DEBUGLOG(("FormatInqMsg:: out_trade_no = [%s]\n",csPtr));
+		strcat((char*)outMsg,"out_trade_no");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	}
+	else {
+DEBUGLOG(("FormatInqMsg:: out_trade_no is missing\n"));
+	}
+
+//transaction_id
+	if (GetField_CString(hIn,"tid",&csPtr)) {
+DEBUGLOG(("FormatInqMsg:: transaction_id = [%s]\n",csPtr));
+		strcat((char*)outMsg,"transaction_id");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	}
+	else {
+DEBUGLOG(("FormatInqMsg:: transaction_id is missing\n"));
+	}
+
+//sign
+	if (GetField_CString(hIn,"sign",&csPtr)) {
+DEBUGLOG(("FormatInqMsg:: sign = [%s]\n",csPtr));
+		strcat((char*)outMsg,"sign");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+//		strcat((char*)outMsg,MY_WCP_TOKEN);
+	}	
+	else {
+DEBUGLOG(("FormatInqMsg:: sign not found!!!\n"));
+	}
+
+
+DEBUGLOG(("outmsg = [%s]\n",outMsg));
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInqMsg() [%s][%d]\n",outMsg,*outLen));
+DEBUGLOG(("FormatInqMsg() Exit\n"));
+	//FREE_ME(csPtr);
+	//FREE_ME(csURL);
+	return 	iRet;
+}
+
+
+
+int FormatInitMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int	iRet = PD_OK;
+
+	char*	csPtr = NULL;
+	char*	csURL = NULL;
+	char*	csBuf = NULL;
+	double	dTmp = 0.0;
+	int	iTmp = 0;
+
+DEBUGLOG(("FormatInitMsg()\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+	outMsg[0]= '\0';
+//psp_url
+	if (GetField_CString(hIn,"psp_url",&csURL)) {
+		if (GetField_CString(hIn,"request_function",&csPtr)) {
+			strcpy((char*)csBuf,"url");
+DEBUGLOG(("FormatInitMsg:: psp_url = [%s]\n",csURL));
+DEBUGLOG(("FormatInitMsg:: request function = [%s]\n",csPtr));
+			strcat((char*)csBuf,MY_WCP_FIELD_TOKEN);
+			strcat((char*)csBuf,csURL);
+			strcat((char*)csBuf,"/");
+			strcat((char*)csBuf,csPtr);
+			//strcat((char*)csBuf,"?");
+DEBUGLOG(("FormatInitMsg:: psp_url = [%s]\n",csBuf));
+		}
+
+		sprintf((char*)outMsg,"%0*d",PD_WEB_HEADER_LEN_LEN,(int)strlen(csBuf));
+DEBUGLOG(("FormatInitMsg:: outMsg = [%s]\n",outMsg));
+		strcat((char*)outMsg,csBuf);
+		//strcat((char*)outMsg,MY_WCP_URL_END_TOKEN);
+	}
+	FREE_ME(csBuf);
+
+//version
+	if (GetField_CString(hIn,"version",&csPtr)) {
+DEBUGLOG(("FormatInitMsg:: version = [%s]\n",csPtr));
+		strcat((char*)outMsg,"version");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatInitMsg:: version is missing\n"));
+	}
+
+//sign_type
+	if (GetField_CString(hIn,"sign_type",&csPtr)) {
+DEBUGLOG(("FormatInitMsg:: sign_type = [%s]\n",csPtr));
+		strcat((char*)outMsg,"sign_type");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatInitMsg:: sign_type is missing\n"));
+	}
+
+//mid
+	if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+DEBUGLOG(("FormatInitMsg:: mid = [%s]\n",csPtr));
+		strcat((char*)outMsg,"mid");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatInitMsg:: psp_merchant_id is missing\n"));
+	}
+
+//notify_url
+	if (GetField_CString(hIn,"return_url_only",&csPtr)) {
+DEBUGLOG(("FormatInitMsg:: notify_url = [%s]\n",csPtr));
+		strcat((char*)outMsg,"notify_url");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+/*
+DEBUGLOG(("FormatInitMsg:: return_url = [%s]\n",csPtr));
+		strcat((char*)outMsg,"return_url");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+*/
+	} else {
+DEBUGLOG(("FormatInitMsg:: return_url_only is missing\n"));
+	}
+
+//order_id
+	if (GetField_CString(hIn,"order_num",&csPtr)) {
+DEBUGLOG(("FormatInitMsg:: order_id = [%s]\n",csPtr));
+		strcat((char*)outMsg,"order_id");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatInitMsg:: order_num is missing\n"));
+	}
+
+//order_amount
+	if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+		char csTmpAmt[PD_TMP_BUF_LEN + 1];
+		sprintf((char*)csTmpAmt,"%ld",double2long(dTmp));
+DEBUGLOG(("FormatInitMsg:: order_amount = [%s]\n",csTmpAmt));
+		strcat((char*)outMsg,"order_amount");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csTmpAmt);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatInitMsg:: psp_txn_amt is missing\n"));
+	}
+
+//order_time
+	if (GetField_CString(hIn,"local_tm_date",&csPtr)) {
+		char*	csPtr2 = NULL;
+		char	csDateTime[PD_DATETIME_LEN * 2];
+		if (GetField_CString(hIn,"local_tm_time",&csPtr2)) {
+			sprintf(csDateTime,"%s%s",csPtr,csPtr2);
+DEBUGLOG(("FormatInitMsg:: order_time = [%s]\n",csDateTime));
+			strcat((char*)(char*)outMsg,"order_time");
+			strcat((char*)(char*)outMsg,MY_WCP_FIELD_TOKEN);
+			strcat((char*)(char*)outMsg,csDateTime);
+			strcat((char*)(char*)outMsg,MY_WCP_TOKEN);
+		} else {
+DEBUGLOG(("FormatInitMsg:: local_tm_time is missing\n"));
+		}
+	} else {
+DEBUGLOG(("FormatInitMsg:: local_tm_date is missing\n"));
+	}
+
+//time_expire
+	if (GetField_Int(hIn,"time_expire",&iTmp)) {
+		char csTimeExpire[PD_TMP_BUF_LEN + 1];
+		sprintf((char*)csTimeExpire,"%d",iTmp);
+DEBUGLOG(("FormatInitMsg:: time_expire = [%s]\n",csTimeExpire));
+		strcat((char*)outMsg,"time_expire");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csTimeExpire);
+		strcat((char*)outMsg,MY_WCP_TOKEN);
+	}
+
+//signature
+	if (GetField_CString(hIn,"sign",&csPtr)) {
+DEBUGLOG(("FormatInitMsg:: signature = [%s]\n",csPtr));
+		strcat((char*)outMsg,"signature");
+		strcat((char*)outMsg,MY_WCP_FIELD_TOKEN);
+		strcat((char*)outMsg,csPtr);
+		//strcat((char*)outMsg,MY_WCP_TOKEN);
+	} else {
+DEBUGLOG(("FormatInitMsg:: sign is missing\n"));
+	}
+
+DEBUGLOG(("outmsg = [%s]\n",outMsg));
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInitMsg() [%s][%d]\n",outMsg,*outLen));
+DEBUGLOG(("FormatInitMsg() Exit\n"));
+	//FREE_ME(csPtr);
+	//FREE_ME(csURL);
+	return 	iRet;
+}
+
+
+int BreakDownInitRspMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	char	*csPtr = NULL;
+	char	*csReturnCode = NULL;
+	hash_t	*hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec,0);
+
+DEBUGLOG(("BreakDownInitRspMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n",inMsg,inLen));
+
+        if (Str2Cls(hRec,(char*)inMsg,MY_WCP_TOKEN_SIGN,MY_WCP_FIELD_TOKEN) == PD_OK) {
+
+		//determine which return message it is
+		if (GetField_CString(hRec,"return_code",&csReturnCode)) {
+//code_url return message
+			//return_code
+			PutField_CString(hOut,"return_code",csReturnCode);
+DEBUGLOG(("BreakDownInitRspMsg:: return_code = [%s]\n",csReturnCode));
+
+			//return_msg
+			if (GetField_CString(hRec,"return_msg",&csPtr)) {
+				PutField_CString(hOut,"return_msg",csPtr);
+DEBUGLOG(("BreakDownInitRspMsg:: return_msg = [%s]\n",csPtr));
+			}
+
+			if (!strcmp(csReturnCode,"SUCCESS")) {
+				//mid
+				if (GetField_CString(hRec,"mid",&csPtr)) {
+					PutField_CString(hOut,"mid",csPtr);
+DEBUGLOG(("BreakDownInitRspMsg:: mid = [%s]\n",csPtr));
+				}
+
+				//order_id
+				if (GetField_CString(hRec,"order_id",&csPtr)) {
+					PutField_CString(hOut,"order_id",csPtr);
+DEBUGLOG(("BreakDownInitRspMsg:: order_id = [%s]\n",csPtr));
+				}
+
+				//order_amount
+				if (GetField_CString(hRec,"order_amount",&csPtr)) {
+					PutField_CString(hOut,"order_amount",csPtr);
+DEBUGLOG(("BreakDownInitRspMsg:: order_amount = [%s]\n",csPtr));
+				}
+
+				//code_url
+				if (GetField_CString(hRec,"code_url",&csPtr)) {
+					PutField_CString(hOut,"code_url",csPtr);
+DEBUGLOG(("BreakDownInitRspMsg:: code_url = [%s]\n",csPtr));
+				}
+
+				//signature
+				if (GetField_CString(hRec,"signature",&csPtr)) {
+					PutField_CString(hOut,"sign",csPtr);
+DEBUGLOG(("BreakDownInitRspMsg:: signature = [%s]\n",csPtr));
+				}
+			}
+		} 
+		else{
+DEBUGLOG(("BreakDownInitRspMsg() Invalid Response\n"));
+			iRet = PD_ERR;
+		}
+
+	} else {
+DEBUGLOG(("BreakDownInitRspMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+DEBUGLOG(("BreakDownInitRspMsg Exit\n"));
+	return iRet;
+}
+
+/*
+int BuildInitRspAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csPtr,*csDATA;
+        char*   csBuf;
+        csDATA = (char*) malloc (PD_TMP_MSG_BUF_LEN  +1);
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+DEBUGLOG(("BuildRspAuthData()\n"));
+        memset(csDATA,0,sizeof(csDATA));
+
+//return_code
+	if (GetField_CString(hIn,"return_code",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: return_code = [%s]\n",csPtr));
+		//mid
+		if (GetField_CString(hIn,"mid",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: mid = [%s]\n",csPtr));
+			strcat(csDATA,"mid");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: mid is missing\n"));
+		}
+
+		//order_id
+		if (GetField_CString(hIn,"order_id",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_id = [%s]\n",csPtr));
+			strcat(csDATA,"order_id");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_id is missing\n"));
+		}
+
+		//order_amount
+		if (GetField_CString(hIn,"order_amount",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_amount = [%s]\n",csPtr));
+			strcat(csDATA,"order_amount");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_amount is missing\n"));
+		}
+
+		//code_url
+		if (GetField_CString(hIn,"code_url",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: code_url = [%s]\n",csPtr));
+			strcat(csDATA,"code_url");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: code_url is missing\n"));
+		}
+	} else {
+		//order_id
+		if (GetField_CString(hIn,"order_id",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_id = [%s]\n",csPtr));
+			strcat(csDATA,"order_id");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_id is missing\n"));
+		}
+
+		//order_time
+		if (GetField_CString(hIn,"order_time",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_time = [%s]\n",csPtr));
+			strcat(csDATA,"order_time");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_time is missing\n"));
+		}
+
+		//order_amount
+		if (GetField_CString(hIn,"order_amount",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: order_amount = [%s]\n",csPtr));
+			strcat(csDATA,"order_amount");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: order_amount is missing\n"));
+		}
+
+		//deal_id
+		if (GetField_CString(hIn,"deal_id",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: deal_id = [%s]\n",csPtr));
+			strcat(csDATA,"deal_id");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: deal_id is missing\n"));
+		}
+
+		//pay_amount
+		if (GetField_CString(hIn,"pay_amount",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: pay_amount = [%s]\n",csPtr));
+			strcat(csDATA,"pay_amount");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: pay_amount is missing\n"));
+		}
+
+		//pay_result
+		if (GetField_CString(hIn,"pay_result",&csPtr)) {
+DEBUGLOG(("BuildRspAuthData:: pay_result = [%s]\n",csPtr));
+			strcat(csDATA,"pay_result");
+			strcat(csDATA,MY_WCP_FIELD_TOKEN);
+			strcat(csDATA,csPtr);
+			strcat(csDATA,MY_WCP_TOKEN_SIGN);
+		} else {
+DEBUGLOG(("BuildRspAuthData:: pay_result is missing\n"));
+		}
+	}
+
+	PutField_CString(hIn,"auth_data",csDATA);
+DEBUGLOG(("BuildRspAuthData:: auth_data = [%s]\n",csDATA));
+	FREE_ME(csDATA);
+DEBUGLOG(("BuildRspAuthData() Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+*/
+

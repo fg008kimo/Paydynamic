@@ -1,0 +1,473 @@
+/*
+Partnerdelight. (c)2010. All rights reserved. No part of this software may be reproduced in any form without written 
+permission of an authorized representative of Partnerdelight
+
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/08/13              Cody Chan
+*/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sqlcpr.h>
+#include <sys/types.h>
+#include <time.h>
+
+#include "common.h"
+#include "utilitys.h"
+#include "private_key.h"
+#include "dbuser.h"
+#include "dbutility.h"
+#include "myrecordset.h"
+#include "queue_utility.h"
+#include "internal.h"
+#include "OfflineWTB.h"
+#include "OfflineWTBDB.h"
+
+
+#include "soapH.h"
+#include "ntlHelperBinding.nsmap"
+
+#include <unistd.h>             /* defines _POSIX_THREADS if pthreads are available */
+#if defined(_POSIX_THREADS) || defined(_SC_THREADS)
+#include <pthread.h>
+#endif
+
+#include <signal.h>
+char    cDebug;
+int         	return_code;
+
+int CRYPTO_thread_setup();
+void CRYPTO_thread_cleanup();
+void sigpipe_handle(int);
+
+
+int main(int argc, char*argv[])
+{
+	hash_t *hContext;   
+	hash_t *hRequest;   
+	int	iRet;
+	int	iMerchantCnt=0;
+	int	i=0;
+
+	char	csTag[PD_TAG_LEN + 1];
+	char    cTmp;
+	char	cSent = PD_SENT;
+
+
+	ConnectDB();
+
+	return_code=batch_init(argc, argv);
+        if (return_code == FAILURE) {
+DEBUGLOG(("main: section validation error\n"));
+		TxnAbort();
+                return(FAILURE);
+        }
+    	else
+        {
+        	hContext = (hash_t*) malloc (sizeof(hash_t));
+        	hRequest = (hash_t*) malloc (sizeof(hash_t));
+
+        	hash_init(hContext,0); 
+        	hash_init(hRequest,0); 
+
+                iRet=batch_proc(argc, argv,hContext,hRequest);
+DEBUGLOG(("batch_proc = iRet = [%d]\n",iRet));
+                if (iRet == PD_SKIP_OK)
+                {
+                }
+		else if(iRet == PD_OK){
+			GetField_Int(hRequest,"merchant_cnt",&iMerchantCnt);
+
+			for(i=0;i<iMerchantCnt;i++){
+
+				// TESTING 
+				sprintf(csTag, "status_%d", i);
+				if (GetField_Char(hRequest, csTag, &cTmp)) {
+					if (cTmp == PD_REJECT) {
+						cSent = PD_REJECT;
+					}
+					else {
+						sprintf(csTag, "allow_send_%d", i);
+						if (GetField_Char(hRequest, csTag, &cTmp)) {
+							if (cTmp == 'N') {
+								cSent = PD_REJECT;
+							}
+						}
+					}
+				}
+
+DEBUGLOG(("UpdatePreTWVRespTxnLog Merchant_num [%d] cSent = [%c]\n", i , cSent));
+
+				if (cSent == PD_SENT) {
+					PutField_Int(hRequest,"merchant_num",i);
+
+					iRet = Send2TWV(hContext,hRequest);
+					if(iRet==PD_OK){
+						iRet = UpdatePreTWVRespTxnLog(hContext,hRequest);
+DEBUGLOG(("UpdatePreTWVRespTxnLog iRet = [%d]\n",iRet));
+					}
+
+					
+				}
+			}
+		}
+		else{
+			TxnAbort();
+			return(return_code);
+		}
+
+		FREE_ME(hContext);
+		FREE_ME(hRequest);
+		if ((iRet == PD_OK)||(iRet==PD_SKIP_OK))
+			return_code = SUCCESS;
+        }
+
+DEBUGLOG(("return_code = [%d]\n",return_code));
+        if (return_code != SUCCESS) {
+		TxnAbort();
+DEBUGLOG(("Rollback\n"));
+	}
+        else {
+		TxnCommit();
+	}
+        return(SUCCESS);
+}
+
+
+int Send2TWV(const hash_t *hContext,
+                hash_t* hRequest)
+{
+	int 	iRet = PD_OK;
+	int	iTotal = 0,i;
+	char	*csPtr,*csAccessKey;
+	char	csTag[PD_TAG_LEN + 1];
+        char    *csURL;
+        char    *csAction;
+	double	dTmp;
+	int	iMerchant=0;
+	int	iStart=0;
+
+	struct soap *soap = soap_new1(SOAP_C_UTFSTRING); /* preserve UTF8 string content */;
+  	soap_ssl_init();
+  	if (CRYPTO_thread_setup())
+  	{ fprintf(stderr, "Cannot setup thread mutex for OpenSSL\n");
+    		errlog("Cannot setup thread mutex for OpenSS\n");
+		return PD_ERR;
+  	}
+  	/* Init gSOAP context */
+  	soap_init(soap);
+ 	soap_set_mode(soap, SOAP_C_UTFSTRING);
+
+	if (soap_ssl_client_context(soap,
+    		/* SOAP_SSL_NO_AUTHENTICATION, */ /* for encryption w/o authentication */
+    		/* SOAP_SSL_DEFAULT | SOAP_SSL_SKIP_HOST_CHECK, */  /* if we don't want the host name checks since these will change from machine to machine */
+    		SOAP_SSL_NO_AUTHENTICATION, /* use SOAP_SSL_DEFAULT in production code */
+    		NULL,               /* keyfile (cert+key): required only when client must authenticate to server (see SSL docs to create this file) */
+    		NULL,               /* password to read the keyfile */
+    		NULL,       /* optional cacert file to store trusted certificates, use cacerts.pem for all public certificates issued by common CAs */
+    		NULL,               /* optional capath to directory with trusted certificates */
+    		NULL                /* if randfile!=NULL: use a file with random data to seed randomness */
+  		))
+  		{ soap_print_fault(soap, stderr);
+    			errlog("Cannot connect to TWV\n");
+			return PD_ERR;
+  		}
+
+		soap->connect_timeout = 60;    /* try to connect for 1 minute */
+  		soap->send_timeout = soap->recv_timeout = 30;   /* if I/O stalls, then timeout after 30 seconds */
+
+
+                struct ns2__WithdrawInitResponse rRes;
+                struct WithdrawInitInfoArray *rReq;
+                struct ns1__WithdrawInitInfo *pp,**pa;
+
+DEBUGLOG(("Req: WTB\n"));
+/* init */      
+DEBUGLOG(("Req: try to allow rReq\n"));
+                rReq = soap_malloc(soap,sizeof(struct WithdrawInitInfoArray));
+                
+                
+		GetField_Int(hRequest,"merchant_num",&iMerchant);
+		sprintf(csTag,"total_record_%d",iMerchant);                
+/* total */
+DEBUGLOG(("Req: iTotal = [%d]\n",iTotal));
+		if (GetField_Int(hRequest,csTag,&iTotal)) {
+DEBUGLOG(("Req: iTotal = [%d]\n",iTotal));
+			if (iTotal == 0) {
+DEBUGLOG(("Req: abort zero record!!!\n"));
+				return iRet = PD_ERR;
+			}
+                	rReq->__size = iTotal;
+DEBUGLOG(("Req: rReq->__size = [%d]\n",rReq->__size));
+                }
+                
+
+DEBUGLOG(("Req: try to allow pa\n"));
+                pa = soap_malloc(soap,rReq->__size*sizeof(struct ns1__WithdrawInitInfo*));
+                //memset(pa,'\0',rReq->__size*sizeof(struct ns1__WithdrawInitInfo*));
+
+/* access key */
+		//if (GetField_CString(hRequest,"access_key",&csPtr)) {
+		sprintf(csTag,"access_key_%d",iMerchant);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        csAccessKey = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: access_key = [%s]\n",csAccessKey));
+                }
+
+/* URL*/
+		sprintf(csTag,"URL_%d",iMerchant);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        csURL = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: URL = [%s]\n",csURL));
+                }
+
+/*action */
+		sprintf(csTag,"action_%d",iMerchant);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        csAction = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: ACTION = [%s]\n",csAction));
+                }
+
+		sprintf(csTag,"start_%d",iMerchant);
+		GetField_Int(hRequest,csTag,&iStart);
+
+		for (i = iStart; i < iTotal+iStart; i++) {
+                	pp = soap_malloc(soap,sizeof(struct ns1__WithdrawInitInfo));
+/*order_num */  
+			sprintf(csTag,"txn_seq_%d",i);
+			if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        	pp->order_USCOREnum  = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: %s = [%s]\n",csTag,pp->order_USCOREnum));
+                	}
+			else {
+DEBUGLOG(("*******Req: %s missig\n",csTag));
+			}
+/*bank_code */  
+			sprintf(csTag,"bank_code_%d",i);
+			if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        	pp->bank_USCOREcode = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: %s = [%s]\n",csTag,pp->bank_USCOREcode));
+                	}
+
+/*branch_name */
+			sprintf(csTag,"branch_name_%d",i);
+			if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        	pp->bank_USCOREbranch = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: %s = [%s]\n",csTag,pp->bank_USCOREbranch));
+                	}
+
+/*identity_id */
+			sprintf(csTag,"identity_id_%d",i);
+			if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        	pp->account_USCOREid = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: %s = [%s]\n",csTag,pp->account_USCOREid));
+                	}
+/*account_name */
+			sprintf(csTag,"account_name_%d",i);
+			if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        	pp->account_USCOREname =  soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: %s = [%s]\n",csTag,pp->account_USCOREname));
+                	}
+/*account_id */
+			sprintf(csTag,"account_id_%d",i);
+			if (GetField_CString(hRequest,csTag,&csPtr)) {
+                        	pp->account_USCOREno = soap_strdup(soap,csPtr);
+DEBUGLOG(("Req: %s = [%s]\n",csTag,pp->account_USCOREno));
+                	}
+
+/*amount */
+			sprintf(csTag,"psp_txn_amt_%d",i);
+			if (GetField_Double(hRequest,csTag,&dTmp)) {
+                        	pp->amount  = dTmp;
+DEBUGLOG(("Req: %s = [%ld]\n",csTag,pp->amount));
+                	}
+
+DEBUGLOG(("Req: pa[%d] = pp\n",i));
+                	pa[i] = pp;
+		}
+DEBUGLOG(("Req: rReq->__ptr = pa\n"));
+                rReq->__ptr = pa;
+
+
+DEBUGLOG(("Req:  try to call WithdrawInit\n"));
+		if (iTotal > 0) {
+
+	                if (soap_call_ns2__WithdrawInit(soap, csURL, csAction, csAccessKey, rReq,&rRes) == SOAP_OK)
+                	{
+                        	iRet = PD_OK;
+DEBUGLOG(("Rsp: from Withdawinit OK\n"));
+DEBUGLOG(("Result: status = [%d]\n",rRes.status));
+				PutField_Int(hRequest,"psp_status",rRes.status);
+DEBUGLOG(("Result: batch_id = [%d]\n",rRes.batch_USCOREid));
+				PutField_Int(hRequest,"psp_batch_id",rRes.batch_USCOREid);
+DEBUGLOG(("Result: total_record = [%d]\n",rRes.result_USCORElist->__size));
+				PutField_Int(hRequest,"total_record",rRes.result_USCORElist->__size);
+			
+				for (i = 0; i < rRes.result_USCORElist->__size; i++ ) {
+					sprintf(csTag,"txn_seq_%d",i);
+					if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("req: txn_seq[%d] = [%s]\n",i,csPtr));
+DEBUGLOG(("req: txn_seq[%d][%s] = [%s] in reply\n",i,csPtr,rRes.result_USCORElist->__ptr[i]->order_USCOREnum));
+
+						if (!strcmp(csPtr,rRes.result_USCORElist->__ptr[i]->order_USCOREnum)) {
+							PutField_CString(hRequest,csTag,rRes.result_USCORElist->__ptr[i]->order_USCOREnum);
+DEBUGLOG(("Result: order_num[%d] = [%s]\n",i,rRes.result_USCORElist->__ptr[i]->order_USCOREnum));
+
+							sprintf(csTag,"record_status_%d",i);
+							PutField_Int(hRequest,csTag,rRes.result_USCORElist->__ptr[i]->status);
+DEBUGLOG(("Result: status[%d] = [%d]\n",i,rRes.result_USCORElist->__ptr[i]->status));
+
+							sprintf(csTag,"tid_%d",i);
+							PutField_CString(hRequest,csTag,rRes.result_USCORElist->__ptr[i]->tid);
+DEBUGLOG(("Result: tid[%d] = [%s]\n",i,rRes.result_USCORElist->__ptr[i]->tid));
+						}
+					}
+					else {
+DEBUGLOG(("*****************req: txn_seq[%d][%s] != [%s] in reply\n",i,csPtr,rRes.result_USCORElist->__ptr[i]->order_USCOREnum));
+					}
+				}
+                	}
+                	else {
+DEBUGLOG(("Rsp: from Withdawinit Err\n"));
+                        	soap_print_fault(soap, stderr);
+                       	 iRet = PD_ERR;
+                	}
+		}
+		else
+			iRet = INT_NOT_RECORD;
+
+
+DEBUGLOG(("try to destory\n"));
+	soap_destroy(soap); /* C++ */
+DEBUGLOG(("try to end\n"));
+  	soap_end(soap);
+DEBUGLOG(("try to done\n"));
+  	soap_done(soap);
+  	CRYPTO_thread_cleanup();
+
+	iRet = PD_OK;
+DEBUGLOG(("Send2Twv return [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+/******************************************************************************\
+ *
+ *      OpenSSL
+ *
+\******************************************************************************/
+
+#ifdef WITH_OPENSSL
+
+#if defined(WIN32)
+# define MUTEX_TYPE             HANDLE
+# define MUTEX_SETUP(x)         (x) = CreateMutex(NULL, FALSE, NULL)
+# define MUTEX_CLEANUP(x)       CloseHandle(x)
+# define MUTEX_LOCK(x)          WaitForSingleObject((x), INFINITE)
+# define MUTEX_UNLOCK(x)        ReleaseMutex(x)
+# define THREAD_ID              GetCurrentThreadId()
+#elif defined(_POSIX_THREADS) || defined(_SC_THREADS)
+# define MUTEX_TYPE             pthread_mutex_t
+# define MUTEX_SETUP(x)         pthread_mutex_init(&(x), NULL)
+# define MUTEX_CLEANUP(x)       pthread_mutex_destroy(&(x))
+# define MUTEX_LOCK(x)          pthread_mutex_lock(&(x))
+# define MUTEX_UNLOCK(x)        pthread_mutex_unlock(&(x))
+# define THREAD_ID              pthread_self()
+#else
+# error "You must define mutex operations appropriate for your platform"
+# error "See OpenSSL /threads/th-lock.c on how to implement mutex on your platform"
+#endif
+
+struct CRYPTO_dynlock_value
+{ MUTEX_TYPE mutex;
+};
+
+static MUTEX_TYPE *mutex_buf;
+
+static struct CRYPTO_dynlock_value *dyn_create_function(const char *file, int line)
+{ struct CRYPTO_dynlock_value *value;
+  value = (struct CRYPTO_dynlock_value*)malloc(sizeof(struct CRYPTO_dynlock_value));
+  if (value)
+    MUTEX_SETUP(value->mutex);
+  return value;
+}
+
+static void dyn_lock_function(int mode, struct CRYPTO_dynlock_value *l, const char *file, int line)
+{ if (mode & CRYPTO_LOCK)
+    MUTEX_LOCK(l->mutex);
+  else
+    MUTEX_UNLOCK(l->mutex);
+}
+
+static void dyn_destroy_function(struct CRYPTO_dynlock_value *l, const char *file, int line)
+{ MUTEX_CLEANUP(l->mutex);
+  free(l);
+}
+
+void locking_function(int mode, int n, const char *file, int line)
+{ if (mode & CRYPTO_LOCK)
+    MUTEX_LOCK(mutex_buf[n]);
+  else
+    MUTEX_UNLOCK(mutex_buf[n]);
+}
+
+unsigned long id_function()
+{ return (unsigned long)THREAD_ID;
+}
+
+int CRYPTO_thread_setup()
+{ int i;
+  mutex_buf = (MUTEX_TYPE*)malloc(CRYPTO_num_locks() * sizeof(pthread_mutex_t));
+  if (!mutex_buf)
+    return SOAP_EOM;
+  for (i = 0; i < CRYPTO_num_locks(); i++)
+    MUTEX_SETUP(mutex_buf[i]);
+  CRYPTO_set_id_callback(id_function);
+  CRYPTO_set_locking_callback(locking_function);
+  CRYPTO_set_dynlock_create_callback(dyn_create_function);
+  CRYPTO_set_dynlock_lock_callback(dyn_lock_function);
+  CRYPTO_set_dynlock_destroy_callback(dyn_destroy_function);
+  return SOAP_OK;
+}
+
+void CRYPTO_thread_cleanup()
+{ int i;
+  if (!mutex_buf)
+    return;
+  CRYPTO_set_id_callback(NULL);
+  CRYPTO_set_locking_callback(NULL);
+  CRYPTO_set_dynlock_create_callback(NULL);
+  CRYPTO_set_dynlock_lock_callback(NULL);
+  CRYPTO_set_dynlock_destroy_callback(NULL);
+  for (i = 0; i < CRYPTO_num_locks(); i++)
+    MUTEX_CLEANUP(mutex_buf[i]);
+  free(mutex_buf);
+  mutex_buf = NULL;
+}
+
+#else
+
+/* OpenSSL not used, e.g. GNUTLS is used */
+
+int CRYPTO_thread_setup()
+{ return SOAP_OK;
+}
+
+void CRYPTO_thread_cleanup()
+{ }
+
+#endif
+
+/******************************************************************************\
+ *
+ *      SIGPIPE
+ *
+\******************************************************************************/
+
+void sigpipe_handle(int x) { }

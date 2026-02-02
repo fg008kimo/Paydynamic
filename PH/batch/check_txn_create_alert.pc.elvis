@@ -1,0 +1,382 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/03/31              Dirk Wong 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+//Input argument
+char csDate[PD_DATE_LEN+1];
+char csMode[PD_TMP_BUF_LEN+1];
+char csRptType[PD_EML_FUNCT_LEN+1];
+int iInterval=0;
+char csStartTime[PD_DATE_LEN+PD_TIME_LEN+1];
+char csEndTime[PD_DATE_LEN+PD_TIME_LEN+1];
+
+
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+char cDebug;
+int iCnt=0;
+
+int iDynCnt=0;
+
+OBJPTR(BO);
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	char	csTxnId[PD_TXN_SEQ_LEN+1];
+	char    csPartyType[3+1];
+
+	hash_t *hContext;
+	hash_t *hTmpCreateTxnAlert;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hTmpCreateTxnAlert = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+	hash_init(hTmpCreateTxnAlert,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("check_txn_create Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_date[PD_DATE_LEN];
+		varchar hv_rpt_type[PD_EML_FUNCT_LEN];
+		char	hv_ar_ind;
+
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		varchar	v_txn_type[PD_DESC_LEN+1];
+		char	v_party_type;
+		varchar	v_party_name[PD_DESC_LEN+1];
+		varchar	v_txn_ccy[PD_CCY_ID_LEN+1];
+		double	v_txn_amt;
+		varchar	v_amt_type[PD_AMT_TYPE_LEN+1];
+		varchar v_approval_ts[PD_TIMESTAMP_LEN+1];
+		varchar v_create_user[PD_USER_LEN+1];
+		varchar	v_approval_date[PD_DESC_LEN+1];
+
+		short	ind_txn_id = -1;
+		short	ind_txn_type = -1;
+		short	ind_party_type = -1;
+		short	ind_party_name = -1;
+		short	ind_txn_ccy = -1;
+		short	ind_txn_amt = -1;
+		short	ind_amt_type = -1;
+		short	ind_approval_ts = -1;
+		short	ind_create_user = -1;
+		short	ind_approval_date = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_date.len = strlen(csDate);
+	memcpy(hv_date.arr,csDate,hv_date.len);
+
+	hv_rpt_type.len = strlen(csRptType);
+	memcpy(hv_rpt_type.arr,csRptType,hv_rpt_type.len);
+
+	hv_ar_ind = PD_ACCEPT;
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+
+		SELECT  th_txn_id,
+			tc_desc,
+			tatm_party_type,
+			(CASE	WHEN (tatm_party_type = 'M')
+            			  THEN (select short_name from MERCH_DETAIL where TH_MERCHANT_ID = MERCHANT_ID)
+            			WHEN (tatm_party_type = 'P')
+            			  THEN (select psp_name from PSP_DETAIL, TXN_PSP_DETAIL where TP_PSP_ID = PSP_ID and TP_TXN_ID = TH_TXN_ID)
+            			END) party_name,
+			th_net_ccy,
+			(CASE	WHEN (tatm_txn_amt_type = 'T')
+				  THEN (select te_amount from txn_elements where th_txn_id=te_txn_id and te_txn_element_type = tatm_element_type)
+				WHEN (tatm_txn_amt_type = 'N')
+				  THEN (select th_net_amount from txn_header th where th.th_txn_id = th_txn_id)
+				END) amount,
+			tatm_amt_type,
+			to_char(th_approval_timestamp,'MM/DD/YYYY HH24:MI') approval_ts,
+			th_create_user,
+			to_char(th_approval_timestamp,'YYYY/MM/DD') approval_date
+		FROM	TXN_HEADER,
+			TXN_ELEMENTS,
+			DEF_VIEW_TXNCODE_MAP,
+			TXN_CODE
+		WHERE	TH_TXN_CODE = TATM_TXN_CODE
+		  AND	TH_AR_IND = :hv_ar_ind
+		  AND	TH_APPROVAL_DATE >= :hv_date
+		  AND	TATM_REPORT_TYPE = :hv_rpt_type
+		  AND	TH_TXN_ID = TE_TXN_ID
+		  AND	TE_EXEC_SEQ = 1
+		  AND	TH_TXN_CODE = TC_CODE
+		  AND	NOT EXISTS ( SELECT NULL FROM TXN_ALERT_LOG t WHERE t.TAL_REPORT_TYPE = :hv_rpr_type AND t.TAL_TXN_ID = TH_TXN_ID )
+		ORDER BY
+			th_approval_timestamp;
+		
+	EXEC SQL OPEN c_cursor_getinfo;
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_txn_id:ind_txn_id,
+			:v_txn_type:ind_txn_type,
+			:v_party_type:ind_party_type,
+			:v_party_name:ind_party_name,
+			:v_txn_ccy:ind_txn_ccy,
+			:v_txn_amt:ind_txn_amt,
+			:v_amt_type:ind_amt_type,
+			:v_approval_ts:ind_approval_ts,
+			:v_create_user:ind_create_user,
+			:v_approval_date:ind_approval_date;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+DEBUGLOG(("No data found!\n"));
+			}
+			break;
+		}
+
+		/*
+		if (ind_approval_date >= 0) {
+			sprintf(csTmp,"%.*s",v_approval_date.len,v_approval_date.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"G_APPROVAL_DATE","GLO","STR",csTmp);
+		}
+		*/
+
+		if (ind_txn_id >= 0) {
+			sprintf(csTag,"ftxn_id-%d",iCnt);
+			sprintf(csTxnId,"%.*s",v_txn_id.len,v_txn_id.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTxnId);
+		}
+
+		if (ind_txn_type >= 0) {
+			sprintf(csTag,"ftxn_type-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_txn_type.len,v_txn_type.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_party_type >= 0) {
+			if (v_party_type == 'M') {
+				sprintf(csPartyType,"%s","MID");
+				
+				/*
+				if (ind_merch_short_name >= 0) {
+                        		sprintf(csTag,"fparty_name-%d",iCnt);
+                        		sprintf(csTmp,"%.*s",v_merch_short_name.len,v_merch_short_name.arr);
+                        		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+                		}
+				*/
+				if (ind_party_name >= 0) {
+                                        sprintf(csTag,"fparty_name-%d",iCnt);
+                                        sprintf(csTmp,"%.*s",v_party_name.len,v_party_name.arr);
+                                        iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+                                }
+			} else if (v_party_type == 'P') {	
+				sprintf(csPartyType,"%s","PID");
+			
+				/*
+				if (ind_psp_name >= 0) {
+                                        sprintf(csTag,"fparty_name-%d",iCnt);
+                                        sprintf(csTmp,"%.*s",v_psp_name.len,v_psp_name.arr);
+                                        iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+                                }
+				*/
+				if (ind_party_name >= 0) {
+                                        sprintf(csTag,"fparty_name-%d",iCnt);
+                                        sprintf(csTmp,"%.*s",v_party_name.len,v_party_name.arr);
+                                        iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+                                }
+			}
+			sprintf(csTag,"fparty_type-%d",iCnt);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csPartyType);
+                }
+
+		if (ind_txn_ccy >= 0) {
+			sprintf(csTag,"ftxn_ccy-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_txn_ccy.len,v_txn_ccy.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_txn_amt >= 0) {
+			sprintf(csTag,"ftxn_amt-%d",iCnt);
+			iDynCnt = set_tpl_dyn_double(hContext,iDynCnt,csTag,"DOU","stbl_body-0",v_txn_amt);
+		}
+
+		if (ind_amt_type >= 0) {
+			sprintf(csTag,"famt_type-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_amt_type.len,v_amt_type.arr);
+			if (!strcmp(csTmp,PD_CR))
+				sprintf(csTmp,"%s","Credit");
+			else if (!strcmp(csTmp,PD_DR))
+				sprintf(csTmp,"%s","Debit");
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_approval_ts >= 0) {
+			sprintf(csTag,"fapproval_ts-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_approval_ts.len,v_approval_ts.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_create_user >= 0) {
+			sprintf(csTag,"fcreate_user-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_create_user.len,v_create_user.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		iCnt++;
+
+		PutField_CString(hTmpCreateTxnAlert,"txn_seq",csTxnId);
+
+		DBObjPtr = CreateObj(DBObjPtr,"DBTmpCreateTxnAlert","Add");
+		iRet = (unsigned long)((*DBObjPtr)(hTmpCreateTxnAlert));
+		if (iRet!=PD_OK) {
+DEBUGLOG(("Call DBTmpCreateTxnAlert::Add FAILED!\n"));
+ERRLOG("check_txn_create Call DBTmpCreateTxnAlert::Add FAILED\n");
+		} else {
+DEBUGLOG(("Call DBTmpCreateTxnAlert::Add [%s] Success\n",csTxnId));
+		}
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+	if (iCnt > 0) {
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+		/*
+		sprintf(csTmp, "Alert for transaction created on system");
+		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+		*/
+
+		PutField_CString(hContext,"source","BATCH");
+		PutField_CString(hContext,"funct","CREATE_TXN_ALT");
+		PutField_Char(hContext,"party_type",'G');
+		PutField_CString(hContext,"party_id","000");
+
+		PutField_Int(hContext,"total_dyn",iDynCnt);
+
+		BOObjPtr = CreateObj(BOPtr,"BOAlertEmail","ProcessTpl");
+		if((unsigned long)((*BOObjPtr)(hContext) != PD_OK)){
+			iRet=INT_CODE_ERROR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_txn_create BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+		}
+		else
+		{
+DEBUGLOG(("BOAlertEmail:ProcessTpl Success\n"));
+		}
+	}
+
+DEBUGLOG(("check_txn_create normal exit!\n"));
+
+	FREE_ME(hContext);
+	FREE_ME(hTmpCreateTxnAlert);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("check_txn_create error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+
+        char    c;
+	strcpy(csDate,"");
+	strcpy(csMode,"");
+	strcpy(csRptType,"");
+	strcpy(csStartTime,"");
+	strcpy(csEndTime,"");
+
+        if (argc < 6) {
+                return PD_ERR;
+        }
+        while ((c = getopt(argc,argv,"d:m:t:i:s:e:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(csDate,optarg);
+                                break;
+                        case 'm':
+                                strcpy(csMode,optarg);
+                                break;
+                        case 't':
+                                strcpy(csRptType,optarg);
+                                break;
+                        case 'i':
+                                iInterval = atoi(optarg);
+                                break;
+                        case 's':
+                                strcpy(csStartTime,optarg);
+                                break;
+                        case 'e':
+                                strcpy(csEndTime,optarg);
+                                break;
+                        default:
+                                return PD_ERR;
+                }
+        }
+
+	if (!strcmp(csDate,""))
+		return FAILURE;
+	if (!strcmp(csMode,""))
+		return FAILURE;
+	if (!strcmp(csRptType,""))
+		return FAILURE;
+	if (!strcmp(csStartTime,""))
+		return FAILURE;
+	if (!strcmp(csEndTime,""))
+		return FAILURE;
+
+        return SUCCESS;
+}
+

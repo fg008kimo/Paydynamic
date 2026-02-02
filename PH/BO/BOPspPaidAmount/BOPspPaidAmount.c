@@ -1,0 +1,1502 @@
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/11/18              [WMC]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "math.h"
+#include "BOPspPaidAmount.h"
+
+static char    cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOPspPaidAmount(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int IsAllowAmtDiff(hash_t *hContext)
+{
+	int 	iRet = PD_FALSE;
+
+	int	iAllowAmtDiff = PD_FALSE;
+	
+	char*	csPspId = NULL;
+
+	hash_t* hPspDetail;
+	hPspDetail = (hash_t*) malloc (sizeof(hash_t));
+      	hash_init(hPspDetail,0);
+	
+DEBUGLOG(("IsAllowAmtDiff: Start\n"));
+
+/* psp_id */
+        if (GetField_CString(hContext,"org_psp_id",&csPspId)) {
+DEBUGLOG((" psp_id = [%s]\n",csPspId));
+
+		// Get Psp Detail
+DEBUGLOG(("Call DBPspDetail: GetPspDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetPspDetail");
+           	if ((unsigned long)(*DBObjPtr)(csPspId,hPspDetail) == PD_OK) {
+                
+/* allow_amt_diff */   	
+			if (GetField_Int(hPspDetail,"allow_amt_diff",&iAllowAmtDiff)) {
+DEBUGLOG(("Call DBPspDetail: GetPspDetail() allow_amt_diff = [%d]\n", iAllowAmtDiff));
+				iRet = iAllowAmtDiff;		
+			} else {
+DEBUGLOG(("Call DBPspDetail: GetPspDetail() allow_amt_diff is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsAllowAmtDiff: Call DBPspDetail: GetPspDetail() allow_amt_diff is missing!!\n");
+                           	iRet= INT_ERR;
+                     	}
+            	} else {
+DEBUGLOG(("Call DBPspDetail: GetPspDetail() failure!!\n"));
+ERRLOG("BOPspPaidAmount: IsAllowAmtDiff: Call DBPspDetail: GetPspDetail() failure!!\n");
+                    	iRet= INT_ERR;
+               	}
+	} else {
+DEBUGLOG((" psp_id is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsAllowAmtDiff: psp_id is missing!!\n");
+                iRet = INT_ERR;
+	}
+
+	hash_destroy(hPspDetail);
+    	FREE_ME(hPspDetail);
+	
+DEBUGLOG(("IsAllowAmtDiff: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int IsInAmtDiffRange(hash_t *hContext)
+{
+        int 	iRet = PD_TRUE;
+	int	iTmpRet = PD_OK;	
+
+	double	dPspTxnAmt = 0.0;
+	double	dPaidAmt = 0.0;
+	double	dAmtDiff = 0.0;
+	double	dValue = 0.0;
+	double	dPtr = 0.0;
+
+	char	cType = ' ';
+	char	cSign = ' ';
+
+        char*   csPspId = NULL;
+
+        hash_t* hAmtDiffRange;
+        hAmtDiffRange = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hAmtDiffRange,0);
+
+DEBUGLOG(("IsInAmtDiffRange: Start\n"));
+	
+/* psp_id */
+        if (GetField_CString(hContext,"org_psp_id",&csPspId)) {
+DEBUGLOG((" psp_id = [%s]\n",csPspId));
+	} else {
+DEBUGLOG((" psp_id is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: psp_id is missing!!\n");
+                iTmpRet = INT_ERR;
+        }
+
+/* org_dst_net_amt */	
+	if (iTmpRet == PD_OK) {
+ 		if (GetField_Double(hContext,"org_dst_net_amt",&dPspTxnAmt)) {
+DEBUGLOG((" txn_amt = [%lf]\n",dPspTxnAmt));
+        	} else {
+DEBUGLOG((" txn_amt is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: txn_amt is missing!!\n");
+                	iTmpRet = INT_ERR;
+        	}
+	}
+	
+/* paid_amt */
+	if (iTmpRet == PD_OK) {
+		if (GetField_Double(hContext,"paid_amt",&dPaidAmt)) {
+DEBUGLOG((" paid_amt = [%lf]\n",dPaidAmt));
+                } else {
+DEBUGLOG((" paid_amt is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: paid_amt is missing!!\n");
+                        iTmpRet = INT_ERR;
+                }
+        }
+
+	if (iTmpRet == PD_OK) {
+
+		if (dPaidAmt != dPspTxnAmt) {
+
+			// Get Amount Difference Range
+DEBUGLOG(("Call DBPspAmtDiffRange: Find()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspAmtDiffRange","Find");
+                	if ((unsigned long)(*DBObjPtr)(csPspId,hAmtDiffRange) == PD_FOUND) {
+
+/* type */
+                        	if (GetField_Char(hAmtDiffRange,"type",&cType)) {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() type = [%c]\n", cType));
+                        	} else {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() type is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: Call DBPspAmtDiffRange: Find() type is missing!!\n");
+                        	        iTmpRet= INT_ERR;
+                        	}
+
+/* sign */
+				if (iTmpRet == PD_OK) {
+					if (GetField_Char(hAmtDiffRange,"sign",&cSign)) {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() sign = [%c]\n", cSign));
+                        		} else {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() sign is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: Call DBPspAmtDiffRange: Find() sign is missing!!\n");
+                                		iTmpRet= INT_ERR;
+                        		}
+				}
+
+/* value */
+				if (iTmpRet == PD_OK) {
+					if (GetField_Double(hAmtDiffRange,"value",&dValue)) {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() value = [%lf]\n", dValue));
+                        		} else {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() value is missing!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: Call DBPspAmtDiffRange: Find() value is missing!!\n");
+                                		iTmpRet= INT_ERR;
+                        		}
+				}
+	
+				// Do the checking
+				if (iTmpRet == PD_OK) {
+					if (cType == PD_PRECENTAGE) {
+						
+						if (cSign == PD_AMT_DIFF_SIGN_UPPER_RANGE) {
+							dPtr = ((dPaidAmt - dPspTxnAmt)/dPspTxnAmt) * 100;
+						} else if (cSign == PD_AMT_DIFF_SIGN_LOWER_RANGE) {
+							dPtr = ((dPspTxnAmt - dPaidAmt)/dPspTxnAmt) * 100;
+						} else if (cSign == PD_AMT_DIFF_SIGN_UPPER_AND_LOWER_RANGE) {
+							dPtr = (fabs(dPspTxnAmt - dPaidAmt)/dPspTxnAmt) * 100;
+						}
+						dAmtDiff = newround(dPtr, PD_DECIMAL_LEN);
+DEBUGLOG(("Call DBPspAmtDiffRange: amt_diff (percentage value) = [%f]\n", dAmtDiff));
+
+					} else if (cType == PD_FIXED_AMOUNT) {
+				
+						if (cSign == PD_AMT_DIFF_SIGN_UPPER_RANGE) {	
+                                	                dPtr = dPaidAmt - dPspTxnAmt;
+						} else if (cSign == PD_AMT_DIFF_SIGN_LOWER_RANGE) {
+                                	                dPtr = dPspTxnAmt - dPaidAmt;
+						} else if (cSign == PD_AMT_DIFF_SIGN_UPPER_AND_LOWER_RANGE) {
+                                	                dPtr = fabs(dPspTxnAmt - dPaidAmt);
+                                	        }	
+						dAmtDiff = newround(dPtr, PD_DECIMAL_LEN);
+DEBUGLOG(("Call DBPspAmtDiffRange: amt_diff (fixed amount value) = [%f]\n", dAmtDiff));
+					}
+
+					if (dAmtDiff >= 0 && dAmtDiff <= dValue) {
+DEBUGLOG(("Call DBPspAmtDiffRange: [0] <= amt_diff[%f] <= [%f] is in the Amount Difference Range!!\n", dAmtDiff, dValue));
+                             		} else {
+DEBUGLOG(("Call DBPspAmtDiffRange: amt_diff is NOT in the Amount Difference Range!!\n"));
+                                	     	iRet = PD_FALSE;
+                              		}
+				}
+		
+                	} else {
+DEBUGLOG(("Call DBPspAmtDiffRange: Find() failure!!\n"));
+ERRLOG("BOPspPaidAmount: IsInAmtDiffRange: Call DBPspAmtDiffRange: Find() failure!!\n");
+                        	iRet= INT_ERR;
+                	}
+		} else {
+DEBUGLOG(("Call DBPspAmtDiffRange: No Amount Difference!!\n"));
+		}
+	} else {
+                iTmpRet = INT_ERR;
+	}
+
+	if (iTmpRet == INT_ERR) {
+		iRet = INT_ERR;
+	}
+
+	hash_destroy(hAmtDiffRange);
+        FREE_ME(hAmtDiffRange);
+
+DEBUGLOG(("IsInAmtDiffRange: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int GetTxnFee(hash_t *hContext, const hash_t *hRequest)
+{
+	int     iRet = PD_OK;
+
+	int     iCnt = 0;
+	int	iRuleIdValue = 0;
+
+	double	dTxnAmt = 0.0;
+
+	char    *csTxnCode = NULL;
+        char    *csChannelCode = NULL;
+	char    *csTxnCountry = NULL;
+        char    *csTxnCcy = NULL;
+	char    *csServiceCode = NULL;
+	char	*csPayMethod = NULL;
+        char    *csMerchantId = NULL;
+        char    *csMerchantClientId = NULL;
+     	char    *csBankCode = NULL;
+
+	char    csOutFeeType[PD_TXN_CHG_TYPE_LEN+1];
+
+	hash_t  *hRec;
+	recordset_t	*rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("GetTxnFee: Start\n"));
+
+/* txn_code */
+	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("GetTxnFee: txn_code = [%s]\n",csTxnCode));
+      	} else {
+DEBUGLOG(("GetTxnFee: txn_code not found!!!\n"));
+     	}
+
+/* channel_code */
+        if (GetField_CString(hContext,"channel_code",&csChannelCode)) {
+DEBUGLOG(("GetTxnFee: channel_code = [%s]\n",csChannelCode));
+        } else {
+DEBUGLOG(("GetTxnFee: channel_code not found!!!\n"));
+        }
+
+/* txn_country */
+	if (GetField_CString(hRequest,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("GetTxnFee: txn_country = [%s]\n",csTxnCountry));
+     	} else {
+DEBUGLOG(("GetTxnFee: txn_country not found!!!\n"));
+      	}		
+	
+/* txn_ccy */
+	if (GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("GetTxnFee: txn_ccy = [%s]\n",csTxnCcy));
+     	} else {
+DEBUGLOG(("GetTxnFee: txn_ccy not found!!!\n"));
+     	}
+
+/* service_code */
+	if (GetField_CString(hRequest,"service_code",&csServiceCode)) {
+DEBUGLOG(("GetTxnFee: service_code = [%s]\n",csServiceCode));
+     	} else {
+DEBUGLOG(("GetTxnFee: service_code not found!!!\n"));
+     	}
+
+/* selected_pay_method */
+	if (GetField_CString(hContext,"selected_pay_method",&csPayMethod)) {
+DEBUGLOG(("GetTxnFee: selected_pay_method = [%s]\n",csPayMethod));
+     	} else {
+DEBUGLOG(("GetTxnFee: selected_pay_method not found!!!\n"));
+     	}
+
+/* merchant_id */
+	if (GetField_CString(hRequest,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("GetTxnFee: merchant_id = [%s]\n",csMerchantId));
+      	} else {
+DEBUGLOG(("GetTxnFee: merchant_id not found!!!\n"));
+      	}
+
+/* merchant_client_id */
+	if (GetField_CString(hContext,"merchant_client_id",&csMerchantClientId)) {
+DEBUGLOG(("GetTxnFee: merchant_client_id = [%s]\n",csMerchantClientId));
+        } else {
+DEBUGLOG(("GetTxnFee: merchant_client_id not found!!!\n"));
+	}
+
+/* bank_code */
+	if (GetField_CString(hContext,"bank_code",&csBankCode)) {
+DEBUGLOG(("GetTxnFee: bank_code = [%s]\n",csBankCode));
+     	} else {
+DEBUGLOG(("GetTxnFee: bank_code not found!!!\n"));
+      	}
+
+/* txn_amt */
+        if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("GetTxnFee: txn_amt = [%lf]\n",dTxnAmt));
+        } else {
+DEBUGLOG(("GetTxnFee: txn_amt not found!!!\n"));
+        }
+
+	// Check Fee Type
+	if (iRet == PD_OK) {
+	
+		hash_t  *hGetFeeType;
+        	hGetFeeType = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hGetFeeType,0);
+	
+		memset(csOutFeeType, 0, sizeof(csOutFeeType));
+        	strncpy(csOutFeeType, PD_TXN_CHG_TYPE_FEE, PD_TXN_CHG_TYPE_LEN);
+	
+		if ((csServiceCode != NULL) || (csBankCode != NULL)) {
+
+			PutField_CString(hGetFeeType,"service_code",csServiceCode);
+			PutField_CString(hGetFeeType,"bank_code",csBankCode);
+
+DEBUGLOG(("GetTxnFee: DBServiceFeeMapping: GetFeeType()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBServiceFeeMapping","GetFeeType");
+			if ((DBObjPtr)(hGetFeeType,csOutFeeType)) {
+DEBUGLOG(("GetTxnFee: DBServiceFeeMapping: GetFeeType() fee_type = [%s]\n", csOutFeeType));
+              		} else {
+DEBUGLOG(("GetTxnFee: DBServiceFeeMapping: GetFeeType() not found, use default fee_type = [%s]\n", csOutFeeType));
+			}
+		}
+
+		hash_destroy(hGetFeeType);
+        	FREE_ME(hGetFeeType);
+	}
+
+	// Find RuleTxnFee
+	if (iRet == PD_OK) {
+
+DEBUGLOG(("GetTxnFee: DBRuleTxnFee: Find() [%s] [%s] [%s] [%s] [%s] [%s] [%s] [%s] [%s]\n",
+			csOutFeeType, csChannelCode, csTxnCode, csTxnCountry, csTxnCcy, csServiceCode, csPayMethod, csMerchantId, csMerchantClientId));
+		DBObjPtr = CreateObj(DBPtr,"DBRuleTxnFee","Find");
+		if ((*DBObjPtr)(csOutFeeType,
+                        	csTxnCountry,
+                       	 	csChannelCode,
+                        	csServiceCode,
+                        	csTxnCode,
+                        	csTxnCcy,
+                        	csMerchantId,
+                        	csMerchantClientId,
+                        	csPayMethod,
+                        	rRecordSet) != PD_OK) 
+		{
+DEBUGLOG(("GetTxnFee: DBRuleTxnFee: Find() no record(s) found!!\n"));
+		} else {
+
+			int     iFound = PD_FALSE;
+			int     iCustomTag = PD_FALSE;
+			int	iRuleId = 0;
+
+			double  dMinVal = 0.0;
+        		double  dMaxVal = 0.0;
+	
+			char    *csCustomTag = NULL;
+        		char    *csCustomValue = NULL;		
+			char    *csValue = NULL;
+
+			hash_t  *hRule;
+			recordset_t     *rRule;
+                	rRule = (recordset_t*) malloc (sizeof(recordset_t));
+                	recordset_init(rRule,0);
+
+                	hRec = RecordSet_GetFirst(rRecordSet);
+       			while (hRec && iFound == PD_FALSE) {
+		
+				/* rule_id */
+				if (GetField_Int(hRec,"rule_id",&iRuleId)) {
+DEBUGLOG(("GetTxnFee: [%d]rule_id = [%d]\n",iCnt, iRuleId));
+                        	}				
+			
+				/* min_value */
+				if (GetField_Double(hRec,"min_value",&dMinVal)) {
+DEBUGLOG(("GetTxnFee: [%d]min_value = [%f]\n",iCnt, dMinVal));
+                                }
+
+				/* max_value */
+				if (GetField_Double(hRec,"max_value",&dMaxVal)) {
+DEBUGLOG(("GetTxnFee: [%d]max_value = [%f]\n",iCnt, dMaxVal));
+                                }
+
+				/* custom_tag */
+				/* custom_value */
+				if (GetField_CString(hRec,"custom_tag",&csCustomTag) && GetField_CString(hRec,"custom_value",&csCustomValue)) {
+DEBUGLOG(("GetTxnFee: [%d]custom_tag = [%s]\n",iCnt, csCustomTag));
+DEBUGLOG(("GetTxnFee: [%d]custom_value = [%s]\n",iCnt, csCustomValue));
+					
+					if (GetField_CString(hContext,csCustomTag,&csValue)) {
+//DEBUGLOG(("GetTxnFee: [%d]request_value = [%s] for custom_tag [%s]\n",iCnt,csValue,csCustomTag));
+
+						if (!strcmp(csValue,csCustomValue)) {
+//DEBUGLOG(("GetTxnFee: [%d]Use custome_tag request_value = [%s] = value [%s] for custom_tag [%s]\n",iCnt,csValue,csCustomValue,csCustomTag));
+
+                                                	if (iCustomTag == PD_FALSE) {
+                                                        	recordset_destroy(rRule);
+                                                        	recordset_init(rRule,0);
+                                                	}
+
+                                                	iCustomTag = PD_TRUE;
+                                                	RecordSet_Add(rRule,hRec);
+						}
+                                       	} else {
+//DEBUGLOG(("GetTxnFee: [%d]custom_tag[%s] not found in Request\n",iCnt,csCustomTag));
+                               		}
+				}
+
+				if (iCustomTag == PD_FALSE) {
+                         	       RecordSet_Add(rRule,hRec);
+                        	}
+
+				iCnt++;
+		
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+			iCnt = 0;
+
+			hRule = RecordSet_GetFirst(rRule);
+                	while (hRule && iFound == PD_FALSE) {
+	
+				dMinVal = 0.0;
+                        	dMaxVal = 0.0;
+	
+				/* rule_id */
+				if (GetField_Int(hRule,"rule_id",&iRuleId)) {
+//DEBUGLOG(("GetTxnFee: [%d]rule_id = [%d]\n",iCnt, iRuleId));
+                                }
+
+                		/* custom_tag */
+				if (GetField_CString(hRule,"custom_tag",&csCustomTag)) {
+//DEBUGLOG(("GetTxnFee: [%d]custom_tag = [%s]\n",iCnt, csCustomTag));
+                       		}
+
+                		/* custom_value */
+				if (GetField_CString(hRule,"custom_value",&csCustomValue)) {
+//DEBUGLOG(("GetTxnFee: [%d]custom_value = [%s]\n",iCnt, csCustomValue));
+                                }
+
+                		/* min_value */
+				if (GetField_Double(hRule,"min_value",&dMinVal)) {
+//DEBUGLOG(("GetTxnFee: [%d]min_val = [%f]\n",iCnt, dMinVal));
+                        	}
+
+                		/* max_value */
+				if (GetField_Double(hRule,"max_value",&dMaxVal)) {
+//DEBUGLOG(("GetTxnFee: [%d]max_val = [%f]\n",iCnt, dMaxVal));
+                                }
+
+				if (dTxnAmt > dMinVal && (dTxnAmt <= dMaxVal || dMaxVal == 0.0)) {
+DEBUGLOG(("GetTxnFee: pick rule_id[%d] min_value[%f] max_value[%f]\n",iRuleId, dMinVal, dMaxVal));
+					iRuleIdValue = iRuleId;
+                                	iFound = PD_TRUE;
+                                	break;
+				}
+
+				iCnt++;
+
+				hRule = RecordSet_GetNext(rRule);
+        		}
+
+                	RecordSet_Destroy(rRule);
+                	FREE_ME(rRule);
+		}
+	}
+	
+	// Find RuleTxnFeeDef
+	if (iRet == PD_OK) {
+
+		if (iRuleIdValue != 0) {
+
+			char    cChgType = ' ';
+                     	char    cPartyType = ' ';
+                      	char    cP1PartyType = ' ';
+                      	char    cP2PartyType = ' ';
+                    	char    cType = ' ';
+                    	char    cP1Type = ' ';
+                        char    cP2Type = ' ';
+                    	double  dValue = 0.0;
+                     	double  dP1Value = 0.0;
+                    	double  dP2Value = 0.0;
+                  	double  dAddValue = 0.0;
+                   	double  dP1AddValue = 0.0;
+                    	double  dP2AddValue = 0.0;
+                     	double  dMin = 0.0;
+                     	double  dP1Min = 0.0;
+                     	double  dP2Min = 0.0;
+                    	double  dMax = 0.0;
+                      	double  dP1Max = 0.0;
+                     	double  dP2Max = 0.0;
+			
+			iCnt = 0;
+
+			RecordSet_Destroy(rRecordSet);
+                        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("GetTxnFee: DBRuleTxnFeeDef: FindID()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBRuleTxnFeeDef","FindID");
+			if ((unsigned long)(*DBObjPtr)(iRuleIdValue,rRecordSet) != PD_FOUND) {
+DEBUGLOG(("GetTxnFee: DBRuleTxnFeeDef: FindID() No Record(s) found!! Skip!!\n"));
+			} else {
+
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+
+                			/* chg_type */
+					if (GetField_Char(hRec,"chg_type",&cChgType)) {
+DEBUGLOG(("GetTxnFee: [%d]chg_type = [%c]\n",iCnt,cChgType));
+                                	}
+
+                			/* chg_party_type */
+					if (GetField_Char(hRec,"chg_party_type",&cPartyType)) {
+//DEBUGLOG(("GetTxnFee: [%d]chg_party_type = [%c]\n",iCnt,cPartyType));
+                                        }
+
+                			/* type */
+					if (GetField_Char(hRec,"type",&cType)) {
+//DEBUGLOG(("GetTxnFee: [%d]type = [%c]\n",iCnt,cType));
+                                        }
+	
+                			/* value */
+					if (GetField_Double(hRec,"value",&dValue)) {
+//DEBUGLOG(("GetTxnFee: [%d]value = [%lf]\n",iCnt,dValue));
+					}
+	
+                			/* add_value */
+					if (GetField_Double(hRec,"add_value",&dAddValue)) {
+//DEBUGLOG(("GetTxnFee: [%d]add_value = [%lf]\n",iCnt,dAddValue));
+                                        }
+
+                			/* min_value */
+					if (GetField_Double(hRec,"min_value",&dMin)) {
+//DEBUGLOG(("GetTxnFee: [%d]min_value = [%lf]\n",iCnt,dMin));
+                                        }
+
+                			/* max_value */
+					if (GetField_Double(hRec,"max_value",&dMax)) {
+//DEBUGLOG(("GetTxnFee: [%d]max_value = [%lf]\n",iCnt,dMax));
+                                        }
+
+					if (iCnt == 0) {
+					
+						cP1PartyType = cPartyType;
+                                        	cP1Type = cType;
+                                        	dP1Value = dValue;
+                                        	dP1AddValue = dAddValue;
+                                        	dP1Min = dMin;
+                                        	dP1Max = dMax;
+DEBUGLOG(("GetTxnFee: [%d] p1 party type = [%c]\n",iCnt,cP1PartyType));
+DEBUGLOG(("GetTxnFee: [%d] p1 type = [%c]\n",iCnt,cP1Type));
+DEBUGLOG(("GetTxnFee: [%d] p1 value = [%lf]\n",iCnt,dP1Value));
+DEBUGLOG(("GetTxnFee: [%d] p1 add value = [%lf]\n",iCnt,dP1AddValue));
+DEBUGLOG(("GetTxnFee: [%d] p1 min value = [%lf]\n",iCnt,dP1Min));
+DEBUGLOG(("GetTxnFee: [%d] p1 max value = [%lf]\n",iCnt,dP1Max));
+
+					} else {
+
+						cP2PartyType = cPartyType;
+                                        	cP2Type = cType;
+                                        	dP2Value = dValue;
+                                        	dP2AddValue = dAddValue;
+                                        	dP2Min = dMin;
+                                        	dP2Max = dMax;
+DEBUGLOG(("GetTxnFee: [%d] p2 party type = [%c]\n",iCnt,cP2PartyType));
+DEBUGLOG(("GetTxnFee: [%d] p2 type = [%c]\n",iCnt,cP2Type));
+DEBUGLOG(("GetTxnFee: [%d] p2 value = [%lf]\n",iCnt,dP2Value));
+DEBUGLOG(("GetTxnFee: [%d] p2 add value = [%lf]\n",iCnt,dP2AddValue));
+DEBUGLOG(("GetTxnFee: [%d] p2 min value = [%lf]\n",iCnt,dP2Min));
+DEBUGLOG(("GetTxnFee: [%d] p2 max value = [%lf]\n",iCnt,dP2Max));
+
+					}
+
+					iCnt++;
+                			hRec = RecordSet_GetNext(rRecordSet);
+        			}
+
+				if (iCnt > 0) {
+		
+					// Rule Txn Fee Information
+					PutField_Char(hContext,"chg_type",cChgType);
+
+					if (cChgType == PD_CHG_NORMAL) {
+						if (cP1PartyType == PD_CHG_PARTY_SRC) {
+							PutField_Char(hContext,"chg_party_type",PD_CHG_PARTY_SRC);
+						} else if (cP1PartyType == PD_CHG_PARTY_DST) {
+							PutField_Char(hContext,"chg_party_type",PD_CHG_PARTY_DST);
+						}
+					}					
+		
+					if (cP1PartyType == PD_CHG_PARTY_SRC) {
+
+						if (cP1Type == PD_PRECENTAGE) {
+							PutField_Double(hContext,"src_fee_pct",dP1Value);
+						} else if (cP1Type == PD_FIXED_AMOUNT) {
+							PutField_Double(hContext,"src_fixed_fee",dP1Value);						
+						} else if (cP1Type == PD_PRECENT_WITH_FIX) {
+							PutField_Double(hContext,"src_fee_pct",dP1Value);
+							PutField_Double(hContext,"src_fixed_fee",dP1AddValue);
+						}
+						PutField_Double(hContext,"src_min_fee",dP1Min);
+						PutField_Double(hContext,"src_max_fee",dP1Max);
+
+					} else if (cP1PartyType == PD_CHG_PARTY_DST) {
+
+						if (cP1Type == PD_PRECENTAGE) {
+                                                        PutField_Double(hContext,"dst_fee_pct",dP1Value);
+                                                } else if (cP1Type == PD_FIXED_AMOUNT) {
+                                                        PutField_Double(hContext,"dst_fixed_fee",dP1Value);
+                                                } else if (cP1Type == PD_PRECENT_WITH_FIX) {
+							PutField_Double(hContext,"dst_fee_pct",dP1Value);
+                                                	PutField_Double(hContext,"dst_fixed_fee",dP1AddValue);
+						}
+                                                PutField_Double(hContext,"dst_min_fee",dP1Min);
+                                                PutField_Double(hContext,"dst_max_fee",dP1Max);
+					}
+
+					if (cP2PartyType == PD_CHG_PARTY_SRC) {
+				                                	
+						if (cP2Type == PD_PRECENTAGE) {
+                                                        PutField_Double(hContext,"src_fee_pct",dP2Value);
+                                                } else if (cP2Type == PD_FIXED_AMOUNT) {
+                                                        PutField_Double(hContext,"src_fixed_fee",dP2Value);
+                                                } else if (cP2Type == PD_PRECENT_WITH_FIX) {
+                                                        PutField_Double(hContext,"src_fee_pct",dP2Value);
+                                                        PutField_Double(hContext,"src_fixed_fee",dP2AddValue);
+                                                }
+                                                PutField_Double(hContext,"src_min_fee",dP2Min);
+                                                PutField_Double(hContext,"src_max_fee",dP2Max);
+
+					} else if (cP2PartyType == PD_CHG_PARTY_DST) {
+
+						if (cP2Type == PD_PRECENTAGE) {
+                                                        PutField_Double(hContext,"dst_fee_pct",dP2Value);
+                                                } else if (cP2Type == PD_FIXED_AMOUNT) {
+                                                        PutField_Double(hContext,"dst_fixed_fee",dP2Value);
+                                                } else if (cP2Type == PD_PRECENT_WITH_FIX) {
+                                                        PutField_Double(hContext,"dst_fee_pct",dP2Value);
+                                                        PutField_Double(hContext,"dst_fixed_fee",dP2AddValue);
+                                                }
+                                                PutField_Double(hContext,"dst_min_fee",dP2Min);
+                                                PutField_Double(hContext,"dst_max_fee",dP2Max);
+                               		}
+				}
+
+				PutField_Int(hContext,"rule_txn_fee_cnt",iCnt);
+			}
+		}
+	}	
+
+	RecordSet_Destroy(rRecordSet);
+     	FREE_ME(rRecordSet);
+
+DEBUGLOG(("GetTxnFee: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+double CalTxnFee(const char* csTxnCcy, 
+	      	 double dTxnAmt,
+	      	 double dFeePct, 
+	      	 double dFixedFee, 
+	      	 double dMinFee,
+		 double dMaxFee)
+{
+	double	dTxnFee = 0.0;
+	double	dPtr = 0.0;	
+
+//DEBUGLOG(("Call CalTxnFee() Start\n"));	
+
+	dPtr = (dTxnAmt * dFeePct/100) + dFixedFee;
+        dTxnFee =  newround(dPtr,PD_DECIMAL_LEN);
+      	if (dTxnFee > 0) {
+          	if (dMinFee >= 1) {
+                      	if (dTxnFee < dMinFee) {
+DEBUGLOG(("Call CalTxnFee() txn_fee[%lf] < min_fee[%lf], set txn_fee = min_fee\n", dTxnFee, dMinFee));
+                            	dTxnFee = dMinFee;
+                     	}
+          	}
+                if (dMaxFee >= 1) {
+                     	if (dTxnFee > dMaxFee) {
+DEBUGLOG(("Call CalTxnFee() txn_fee[%lf] > max_fee[%lf], set txn_fee = max_fee\n", dTxnFee, dMaxFee));
+                              	dTxnFee = dMaxFee;
+                   	}
+            	}
+             	DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+        	if ((unsigned long)((DBObjPtr)(csTxnCcy))!=PD_TRUE){
+DEBUGLOG(("Call CalTxnFee() currency[%s] doesn't support decimal\n",csTxnCcy));
+                 	dTxnFee = newround(dTxnFee,0);
+             	}
+     	}
+
+//DEBUGLOG(("Call CalTxnFee() txn_fee = [%lf] \n", dTxnFee));
+        return dTxnFee;
+}
+
+int UpdateAmtDetails(hash_t *hContext, const hash_t *hRequest)
+{
+	int 	iRet = PD_OK;
+
+	double 	dPtr = 0.0;
+
+	char*   csPtr = NULL;
+
+DEBUGLOG(("UpdateAmtDetails: Start\n"));
+
+	// Get Reserve Amount
+DEBUGLOG(("Call BOReserve: GetReserveAmount()\n"));
+      	BOObjPtr = CreateObj(BOPtr,"BOReserve","GetReserveAmount");
+       	iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+      	if (iRet != PD_OK) {
+DEBUGLOG(("Call BOReserve: GetReserveAmount() no record(s) found!!\n"));
+     	}
+
+	if (iRet == PD_OK) {
+
+		hash_t* hCon;
+        	hCon = (hash_t*)  malloc (sizeof(hash_t));
+        	hash_init(hCon,0);
+
+        	hash_t* hReq;
+        	hReq = (hash_t*)  malloc (sizeof(hash_t));
+        	hash_init(hReq,0);	
+
+/* post_txn */
+      		PutField_Char(hCon,"post_txn",PD_YES);
+DEBUGLOG((" post_txn = [%c]\n",PD_YES));
+
+/* txn_seq */
+     		if (GetField_CString(hContext,"org_txn_seq",&csPtr)) {
+DEBUGLOG((" txn_seq = [%s]\n",csPtr));
+           		PutField_CString(hCon,"txn_seq",csPtr);
+             		PutField_CString(hCon,"from_txn_seq",csPtr);
+    		}
+
+/* txn_code */
+      		if (GetField_CString(hContext,"txn_code",&csPtr)) {
+DEBUGLOG((" txn_code = [%s]\n",csPtr));
+        	     	PutField_CString(hCon,"txn_code",csPtr);
+       		}
+
+/* dst_txn_amt */
+                if (GetField_Double(hContext,"org_dst_txn_amt",&dPtr)) {
+DEBUGLOG((" dst_txn_amt = [%f]\n",dPtr));
+                        PutField_Double(hCon,"dst_txn_amt",dPtr);
+                }
+
+/* dst_txn_ccy */
+                if (GetField_CString(hContext,"org_dst_txn_ccy",&csPtr)) {
+DEBUGLOG((" dst_txn_ccy = [%s]\n",csPtr));
+                        PutField_CString(hCon,"dst_txn_ccy",csPtr);
+                }
+
+/* txn_amt */
+                if (GetField_Double(hContext,"org_txn_amt",&dPtr)) {
+DEBUGLOG((" txn_amt = [%f]\n",dPtr));
+                        PutField_Double(hCon,"txn_amt",dPtr);
+                }
+
+/* txn_country */
+                if (GetField_CString(hContext,"org_txn_country",&csPtr)) {
+DEBUGLOG((" txn_country = [%s]\n",csPtr));
+                        PutField_CString(hReq,"txn_country",csPtr);
+                }
+
+/* txn_ccy */
+                if (GetField_CString(hContext,"org_txn_ccy",&csPtr)) {
+DEBUGLOG((" txn_ccy = [%s]\n",csPtr));
+                        PutField_CString(hReq,"txn_ccy",csPtr);
+                }
+
+/* channel_code */
+     		if (GetField_CString(hContext,"org_channel_code",&csPtr)) {
+DEBUGLOG((" channel_code = [%s]\n",csPtr));
+             		PutField_CString(hCon,"channel_code",csPtr);
+     		}
+
+/* service_code */
+                if (GetField_CString(hContext,"org_service_code",&csPtr)) {
+DEBUGLOG((" service_code = [%s]\n",csPtr));
+                        PutField_CString(hReq,"service_code",csPtr);
+                }
+
+/* merchant_id */
+                if (GetField_CString(hContext,"org_merchant_id",&csPtr)) {
+DEBUGLOG((" merchant_id = [%s]\n",csPtr));
+                        PutField_CString(hReq,"merchant_id",csPtr);
+                }
+
+/* merchant_client_id */
+     		if (GetField_CString(hContext,"org_client_id",&csPtr)) {
+DEBUGLOG((" merchant_client_id = [%s]\n",csPtr));
+             		PutField_CString(hCon,"merchant_client_id",csPtr);
+    		}
+
+/* org_pay_method */
+                if (GetField_CString(hContext,"org_pay_method",&csPtr)) {
+DEBUGLOG((" org_pay_method = [%s]\n",csPtr));
+                        PutField_CString(hCon,"selected_pay_method",csPtr);
+                }
+
+/* org_customer_group */
+                if (GetField_CString(hContext,"org_customer_group",&csPtr)) {
+DEBUGLOG((" org_customer_group = [%s]\n",csPtr));
+                }
+
+/* org_customer_tag */
+                if (GetField_CString(hContext,"org_customer_tag",&csPtr)) {
+DEBUGLOG((" org_customer_tag = [%s]\n",csPtr));
+                }
+
+/* PHDATE */
+                if (GetField_CString(hContext,"PHDATE",&csPtr)) {
+DEBUGLOG((" PHDATE = [%s]\n",csPtr));
+                }
+
+/* org_psp_id */
+     		if (GetField_CString(hContext,"org_psp_id",&csPtr)) {
+DEBUGLOG((" org_psp_id = [%s]\n",csPtr));
+     		}
+
+		// Get Merchant Fee (Post Source) if any, the merchant fee (source and destination) are calculated in DSR 
+		if (iRet == PD_OK) {
+DEBUGLOG(("Call BOFee: GetTxnFee() for [Post Source] fee\n"));
+                        BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+                        iRet = (unsigned long)(*BOObjPtr)(hCon,hReq);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Call BOFee: GetTxnFee() for [Post Source] fee failure!!\n"));
+			} 
+		}
+
+		// Add Merchant Fee (Post Source) Elements if any
+		if (iRet == PD_OK) {
+DEBUGLOG(("Call BOTxnElements: AddTxnFeeElements() for [Post Source] fee (if any)\n"));
+                        BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+                        iRet = (unsigned long)(*BOObjPtr)(hCon);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Call BOTxnElements: AddTxnFeeElements() for [Post Source] fee (if any) failure!!\n"));
+			}
+		}
+
+		hash_destroy(hReq);
+       	 	FREE_ME(hReq);
+
+        	hash_destroy(hCon);
+        	FREE_ME(hCon);
+	}
+
+	// Get Merchant Fee from TxnElements [TFEE], then calculate and return service_fee, net_amt
+        if (iRet == PD_OK) {
+DEBUGLOG(("Call BOFee: UpdateAmt()\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOFee","UpdateAmt");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+        	if (iRet != PD_OK) {
+DEBUGLOG(("Call BOFee: UpdateAmt() failure!!\n"));
+		}
+	}
+
+DEBUGLOG(("UpdateAmtDetails: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int UpdateAmtDetailsByPaidAmt(hash_t *hContext, const hash_t *hRequest)
+{
+	int 	iRet = PD_OK;
+
+	int	iRuleTxnFeeCnt = 0;
+
+	double  dOrgSrcTxnAmt = 0.0;
+	double  dOrgDstNetAmt = 0.0;
+	double  dPaidAmt = 0.0;
+	double  dReserveAmtValue = 0.0;
+      	double  dReserveAmt = 0.0;
+     	double  dFloatAmt = 0.0;
+      	double  dMarkupRate = 0.0;
+      	double  dMarkupAmt = 0.0;
+      	double  dExRate = 1.0;
+	double  dSrcFeePct = 0.0;
+       	double  dSrcFixedFee = 0.0;
+      	double  dSrcMaxFee = 0.0;
+     	double  dSrcMinFee = 0.0;
+	double  dDstFeePct = 0.0;
+        double  dDstFixedFee = 0.0;
+        double  dDstMaxFee = 0.0;
+        double  dDstMinFee = 0.0;	
+	double  dSrcTxnAmt = 0.0;
+        double  dSrcNetAmt = 0.0;
+     	double  dSrcTxnFee = 0.0;
+     	double  dDstTxnAmt = 0.0;
+     	double  dDstNetAmt = 0.0;
+      	double  dDstTxnFee = 0.0;
+      	double  dNewDstTxnFee = 0.0;
+	double 	dPtr = 0.0;
+
+	char    cReserveAmtType = ' ';
+       	char    cChgType = ' ';
+       	char    cChgPartyType = ' ';
+
+	char*	csTxnSeq = NULL;
+	char*	csTxnCcy = NULL;
+	char*	csDstTxnCcy = NULL;
+	char*	csMerchantClientId = NULL;	
+	char*	csMerchantId = NULL;
+	char*	csPspId = NULL;
+	char*   csMarkupCcy = NULL;
+	char*   csPtr = NULL;
+
+	char    csExRateSrcCcy[PD_CCY_ID_LEN+1];
+	char   	csExRateDstCcy[PD_CCY_ID_LEN+1];
+
+	hash_t* hCon;
+	hCon = (hash_t*)  malloc (sizeof(hash_t));
+      	hash_init(hCon,0);
+
+	hash_t* hReq;
+      	hReq = (hash_t*)  malloc (sizeof(hash_t));
+     	hash_init(hReq,0);
+
+	hash_t  *hElem;
+     	hElem = (hash_t*) malloc(sizeof(hash_t));
+     	hash_init(hElem, 0);
+
+      	hash_t  *hRec;
+     	recordset_t     *rRecordSet;
+     	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+      	recordset_init(rRecordSet,0);
+
+DEBUGLOG(("UpdateAmtDetailsByPaidAmt: Start\n"));
+
+/* txn_seq */
+     	if (GetField_CString(hContext,"org_txn_seq",&csTxnSeq)) {
+DEBUGLOG((" txn_seq = [%s]\n",csTxnSeq));
+           	PutField_CString(hCon,"txn_seq",csTxnSeq);
+             	PutField_CString(hCon,"from_txn_seq",csTxnSeq);
+    	}
+
+/* txn_code */
+      	if (GetField_CString(hContext,"txn_code",&csPtr)) {
+DEBUGLOG((" txn_code = [%s]\n",csPtr));
+             	PutField_CString(hCon,"txn_code",csPtr);
+       	}
+
+/* channel_code */
+     	if (GetField_CString(hContext,"org_channel_code",&csPtr)) {
+DEBUGLOG((" channel_code = [%s]\n",csPtr));
+             	PutField_CString(hCon,"channel_code",csPtr);
+     	}
+
+/* merchant_client_id */
+     	if (GetField_CString(hContext,"org_client_id",&csMerchantClientId)) {
+DEBUGLOG((" merchant_client_id = [%s]\n",csMerchantClientId));
+             	PutField_CString(hCon,"merchant_client_id",csMerchantClientId);
+    	}
+
+/* merchant_id */
+    	if (GetField_CString(hContext,"org_merchant_id",&csMerchantId)) {
+DEBUGLOG((" merchant_id = [%s]\n",csMerchantId));
+             	PutField_CString(hReq,"merchant_id",csMerchantId);
+   	}
+
+/* service_code */
+    	if (GetField_CString(hContext,"org_service_code",&csPtr)) {
+DEBUGLOG((" service_code = [%s]\n",csPtr));
+             	PutField_CString(hReq,"service_code",csPtr);
+    	}
+
+/* txn_country */
+    	if (GetField_CString(hContext,"org_txn_country",&csPtr)) {
+DEBUGLOG((" txn_country = [%s]\n",csPtr));
+            	PutField_CString(hReq,"txn_country",csPtr);
+    	}
+
+/* txn_ccy */
+     	if (GetField_CString(hContext,"org_txn_ccy",&csTxnCcy)) {
+DEBUGLOG((" txn_ccy = [%s]\n",csTxnCcy));
+		strcpy(csExRateSrcCcy, csTxnCcy);
+             	PutField_CString(hReq,"txn_ccy",csTxnCcy);
+             	PutField_CString(hCon,"src_txn_fee_ccy",csTxnCcy);
+      	}
+
+/* dst_txn_ccy */
+     	if (GetField_CString(hContext,"org_dst_txn_ccy",&csDstTxnCcy)) {
+DEBUGLOG((" dst_txn_ccy = [%s]\n",csDstTxnCcy));
+		strcpy(csExRateDstCcy, csDstTxnCcy);
+            	PutField_CString(hCon,"dst_txn_ccy",csDstTxnCcy);
+            	PutField_CString(hCon,"dst_txn_fee_ccy",csDstTxnCcy);
+      	}
+
+/* org_psp_id */
+     	if (GetField_CString(hContext,"org_psp_id",&csPspId)) {
+DEBUGLOG((" org_psp_id = [%s]\n",csPspId));
+     	}
+
+/* org_pay_method */
+      	if (GetField_CString(hContext,"org_pay_method",&csPtr)) {
+DEBUGLOG((" org_pay_method = [%s]\n",csPtr));
+            	PutField_CString(hCon,"selected_pay_method",csPtr);
+   	}
+      
+/* org_customer_group */
+	if (GetField_CString(hContext,"org_customer_group",&csPtr)) {
+DEBUGLOG((" org_customer_group = [%s]\n",csPtr));
+   	}
+
+/* org_customer_tag */
+     	if (GetField_CString(hContext,"org_customer_tag",&csPtr)) {
+DEBUGLOG((" org_customer_tag = [%s]\n",csPtr));
+     	}	
+
+/* bank_code */
+        if (GetField_CString(hContext,"bank_code",&csPtr)) {
+DEBUGLOG((" bank_code = [%s]\n",csPtr));
+                PutField_CString(hCon,"bank_code",csPtr);
+        }
+
+/* PHDATE */
+	if (GetField_CString(hContext,"PHDATE",&csPtr)) {
+DEBUGLOG((" PHDATE = [%s]\n",csPtr));
+       	}
+
+/* org_txn_amt */
+        if (GetField_Double(hContext,"org_txn_amt",&dOrgSrcTxnAmt)) {
+DEBUGLOG((" org_txn_amt = [%f]\n",dOrgSrcTxnAmt));
+        }
+
+/* org_dst_net_amt */
+	if (GetField_Double(hContext,"org_dst_net_amt",&dOrgDstNetAmt)) {
+DEBUGLOG((" org_dst_net_amt = [%f]\n",dOrgDstNetAmt));
+        }
+
+/* paid_amt */
+	if (GetField_Double(hContext,"paid_amt",&dPaidAmt)) {
+DEBUGLOG((" paid_amt = [%f]\n",dPaidAmt));
+	}
+
+	if (iRet == PD_OK) {
+
+		// Get Reserve Amount Type and Value
+DEBUGLOG(("Call DBRuleTxnRes: Find()\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBRuleTxnRes","Find");
+        	if ((unsigned long)(*DBObjPtr)(csMerchantId, csMerchantClientId, &cReserveAmtType, &dReserveAmtValue) == PD_OK) {
+DEBUGLOG(("Call DBRuleTxnRes: Find() reserve_amt_type = [%c]\n", cReserveAmtType));
+DEBUGLOG(("Call DBRuleTxnRes: Find() reserve_amt_value = [%f]\n", dReserveAmtValue));
+        	} else {
+DEBUGLOG(("Call DBRuleTxnRes: Find() no record(s) found!!\n"));
+		}
+
+		// Get Exchange Rate and Markup Rate
+		if (iRet == PD_OK) {
+
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount()\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBTmpCalAmount","GetTmpCalAmount");
+                	if ((unsigned long)(*DBObjPtr)(csTxnSeq,hCon) == PD_FOUND) {
+
+/* src_ccy */
+				if (GetField_CString(hCon,"src_ccy",&csPtr)) {
+					strcpy(csExRateSrcCcy, csPtr);	
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount() src_ccy = [%s]\n", csExRateSrcCcy));
+                                }
+	
+/* dst_ccy */
+				if (GetField_CString(hCon,"dst_ccy",&csPtr)) {
+					strcpy(csExRateDstCcy, csPtr);
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount() dst_ccy = [%s]\n", csExRateDstCcy));
+                                }
+
+/* ex_rate */
+                        	if (GetField_Double(hCon,"ex_rate",&dExRate)) {
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount() ex_rate = [%f]\n", dExRate));
+                        	}
+
+/* markup_ccy */
+                                if (GetField_CString(hCon,"markup_ccy",&csMarkupCcy)) {
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount() markup_ccy = [%s]\n", csMarkupCcy));
+                                }
+
+/* markup_rate */
+                                if (GetField_Double(hCon,"markup_rate",&dMarkupRate)) {
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount() markup_rate = [%f]\n", dMarkupRate));
+                                }
+
+	                } else {
+DEBUGLOG(("Call DBTmpCalAmount: GetTmpCalAmount() no record(s) found!!\n"));
+			}
+		}
+
+		/*
+ 			Get Destination Party: 	Customer Txn Amount
+                                               	Customer Txn Fee
+                                               	Customer Net Amount
+ 		*/ 
+		if (iRet == PD_OK) {
+
+			// Get TxnElements (Customer Txn Fee)
+DEBUGLOG(("Call DBTxnElements: GetFeeChgDetailByType() [Customer]\n"));
+                  	DBObjPtr = CreateObj(DBPtr,"DBTxnElements","GetFeeChgDetailByType");
+                   	if ((unsigned long)(*DBObjPtr)(csTxnSeq,PD_ELEMENT_TXN_FEE,PD_TYPE_CUSTOMER,rRecordSet) == PD_OK) {
+				int	iCnt = 0;
+                            	hRec = RecordSet_GetFirst(rRecordSet);
+                             	while (hRec) {
+					if (GetField_CString(hRec,"ccy",&csPtr)) {
+DEBUGLOG(("Call DBTxnElements: GetFeeChgDetailByType() [Customer] dst_txn_ccy = [%s]\n", csPtr));
+                        		}
+                                    	if (GetField_Double(hRec,"amount",&dPtr)) {
+DEBUGLOG(("Call DBTxnElements: GetFeeChgDetailByType() [Customer] dst_txn_fee = [%lf]\n", dPtr));
+						dDstTxnFee += dPtr;
+                                      	}
+					iCnt++;
+                           		hRec = RecordSet_GetNext(rRecordSet);
+                    		}
+	
+				if (iCnt == 0) {
+DEBUGLOG(("Call DBTxnElements: GetFeeChgDetailByType() [Customer] no record(s) found!!\n"));
+				}
+                     	} else {
+DEBUGLOG(("Call DBTxnElements: GetFeeChgDetailByType() failure!!\n"));
+			}
+		
+			// Destination Net Amount
+			dDstNetAmt = dPaidAmt;
+
+			// Destination Txn Amount
+                        dDstTxnAmt = dDstNetAmt - dDstTxnFee;
+		} 
+
+		/*
+			Re-calculate Source Party:	Merchant Txn Amount
+                                                        Merchant Fee
+                                                        Merchant Net Amount
+                                                        Reserve Amount
+			Re-calculate Destination Party:	Customer Txn Fee
+ 		*/
+		if (iRet == PD_OK) {
+	
+			// Calculate Source Txn Amount
+			if ((!strcmp(csTxnCcy, csExRateSrcCcy)) 
+			    && (!strcmp(csDstTxnCcy, csExRateDstCcy)) 	
+			)
+			{
+                        	dPtr = dDstTxnAmt / (dExRate * (1 + dMarkupRate));
+                        	dSrcTxnAmt = newround(dPtr,PD_DECIMAL_LEN);
+
+				PutField_Double(hCon,"txn_amt",dSrcTxnAmt);
+			}
+ 
+			// Get Source and Destination Txn Fee Rate
+			iRet = GetTxnFee(hCon, hReq);
+                        if (iRet == PD_OK) {
+
+/* rule_txn_fee_cnt */
+				GetField_Int(hCon,"rule_txn_fee_cnt",&iRuleTxnFeeCnt);
+				if (iRuleTxnFeeCnt > 0) {
+
+/* chg_type */
+					if (GetField_Char(hCon,"chg_type",&cChgType)) {
+DEBUGLOG(("Call GetTxnFee() chg_type = [%c]\n", cChgType));
+
+						if (cChgType == PD_CHG_NORMAL) {
+/* chg_party_type */
+							if (GetField_Char(hCon,"chg_party_type",&cChgPartyType)) {
+DEBUGLOG(("Call GetTxnFee() chg_party_type = [%c]\n", cChgPartyType));
+							}
+						}
+                              		}
+
+/* src_fee_pct */
+					if (GetField_Double(hCon,"src_fee_pct",&dSrcFeePct)) {
+DEBUGLOG(("Call GetTxnFee() src_fee_pct = [%f]\n", dSrcFeePct));
+                	                } 	
+
+/* src_fixed_fee */
+					if (GetField_Double(hCon,"src_fixed_fee",&dSrcFixedFee)) {
+DEBUGLOG(("Call GetTxnFee() src_fixed_fee = [%f]\n", dSrcFixedFee));
+                            		}
+
+/* src_min_fee */
+                                	if (GetField_Double(hCon,"src_min_fee",&dSrcMinFee)) {
+DEBUGLOG(("Call GetTxnFee() src_min_fee = [%f]\n", dSrcMinFee));
+                                	}
+
+/* src_max_fee */
+					if (GetField_Double(hCon,"src_max_fee",&dSrcMaxFee)) {
+DEBUGLOG(("Call GetTxnFee() src_max_fee = [%f]\n", dSrcMaxFee));
+                             		}
+
+/* dst_fee_pct */
+                                	if (GetField_Double(hCon,"dst_fee_pct",&dDstFeePct)) {
+DEBUGLOG(("Call GetTxnFee() dst_fee_pct = [%f]\n", dDstFeePct));
+                                	}
+
+/* dst_fixed_fee */
+                                	if (GetField_Double(hCon,"dst_fixed_fee",&dDstFixedFee)) {
+DEBUGLOG(("Call GetTxnFee() dst_fixed_fee = [%f]\n", dDstFixedFee));
+                                	}
+
+/* dst_min_fee */
+                                	if (GetField_Double(hCon,"dst_min_fee",&dDstMinFee)) {
+DEBUGLOG(("Call GetTxnFee() dst_min_fee = [%f]\n", dDstMinFee));
+                                	}
+
+/* dst_max_fee */
+                                	if (GetField_Double(hCon,"dst_max_fee",&dDstMaxFee)) {
+DEBUGLOG(("Call GetTxnFee() dst_max_fee = [%f]\n", dDstMaxFee));
+                                	}
+				}
+
+			} else {
+DEBUGLOG(("Call GetTxnFee() not found!!\n"));
+			}
+
+			// Calculate Source and New Destination Txn Fee
+			if (iRuleTxnFeeCnt > 0) {
+	
+				// New Destination Txn Fee
+DEBUGLOG(("Call CalTxnFee() [Destination]\n"));
+				dNewDstTxnFee = CalTxnFee(csTxnCcy,
+							   dDstTxnAmt, 
+							   dDstFeePct, 
+							   dDstFixedFee,
+							   dDstMinFee,
+							   dDstMaxFee);
+DEBUGLOG(("Call CalTxnFee() new_dst_txn_fee = [%lf]\n", dNewDstTxnFee));
+
+				// Source Txn Fee
+DEBUGLOG(("Call CalTxnFee() [Source]\n"));
+                                dSrcTxnFee = CalTxnFee(csTxnCcy,
+                                                       dSrcTxnAmt,
+                                                       dSrcFeePct,
+                                                       dSrcFixedFee,
+                                                       dSrcMinFee,
+                                                       dSrcMaxFee);
+DEBUGLOG(("Call CalTxnFee() src_txn_fee = [%lf]\n", dSrcTxnFee));
+
+				// Check Txn Fee Change Type
+				if (cChgType == PD_CHG_BOTH) {
+DEBUGLOG(("Call CalTxnFee() chg_type[BOTH]: pick src_txn_fee[%lf] new_dst_txn_fee[%lf]\n", dSrcTxnFee, dNewDstTxnFee));
+				} else if (cChgType == PD_CHG_NORMAL) {
+
+					if (cChgPartyType == PD_CHG_PARTY_SRC) {
+DEBUGLOG(("Call CalTxnFee() chg_type[NORMAL]: pick src_txn_fee[%lf] ignore new_dst_txn_fee[%lf]\n", dSrcTxnFee, dNewDstTxnFee));
+					} else if (cChgPartyType == PD_CHG_PARTY_DST) {
+DEBUGLOG(("Call CalTxnFee() chg_type[NORMAL]: pick new_dst_txn_fee[%lf] ignore src_txn_fee[%lf]\n", dDstTxnFee, dSrcTxnFee));
+					}
+
+                        	} else if (cChgType == PD_CHG_MIN) {
+
+                        	        if (dSrcTxnFee <= dNewDstTxnFee) {
+DEBUGLOG(("Call CalTxnFee() chg_type[MIN]: src_txn_fee[%lf] <= new_dst_txn_fee[%lf], pick src_txn_fee[%lf] set new_dst_txn_fee[0]\n", dSrcTxnFee, dNewDstTxnFee, dSrcTxnFee));
+						dNewDstTxnFee = 0.0;
+                        	        } else {
+DEBUGLOG(("Call CalTxnFee() chg_type[MIN]: src_txn_fee[%lf] > new_dst_txn_fee[%lf], pick new_dst_txn_fee[%lf] set src_txn_fee[0]\n", dSrcTxnFee, dNewDstTxnFee, dNewDstTxnFee));
+						dSrcTxnFee = 0.0;
+                        	        }
+
+                        	} else if (cChgType == PD_CHG_MAX) {
+
+                                	if (dSrcTxnFee >= dNewDstTxnFee) {
+DEBUGLOG(("Call CalTxnFee() chg_type[MAX]: src_txn_fee[%lf] >= new_dst_txn_fee[%lf], pick src_txn_fee[%lf] set new_dst_txn_fee[0]\n", dSrcTxnFee, dNewDstTxnFee, dSrcTxnFee));
+						dNewDstTxnFee = 0.0;
+                                	} else {
+DEBUGLOG(("Call CalTxnFee() chg_type[MAX]: src_txn_fee[%lf] < new_dst_txn_fee[%lf], pick new_dst_txn_fee[%lf] set src_txn_fee[0]\n", dSrcTxnFee, dNewDstTxnFee, dNewDstTxnFee));
+						dSrcTxnFee = 0.0;
+                                	}
+                        	} else if (cChgType == PD_CHG_POST_SRC) {
+DEBUGLOG(("Call CalTxnFee() chg_type[POST SOURCE]: pick src_txn_fee[%lf] set new_dst_txn_fee[0]\n", dSrcTxnFee));
+					dNewDstTxnFee = 0.0;
+				}
+
+			} else {
+				dSrcTxnFee = 0.0;
+				dNewDstTxnFee = 0.0;
+DEBUGLOG(("Call CalTxnFee() src_txn_fee[%lf] new_dst_txn_fee[%lf]\n", dSrcTxnFee, dNewDstTxnFee));
+			}
+
+			if (dNewDstTxnFee == dDstTxnFee) {
+DEBUGLOG(("Call CalTxnFee() *****new_dst_txn_fee[%lf] is for calcuation only!!*****\n", dNewDstTxnFee));
+			} else {
+DEBUGLOG(("Call CalTxnFee() *****new_dst_txn_fee[%lf] is for calcuation only!! No need to override dst_txn_fee[%lf]!!*****\n", dNewDstTxnFee, dDstTxnFee));
+			}
+
+			// Calculate Source Net Amount
+			dSrcNetAmt = dSrcTxnAmt - dSrcTxnFee;				
+
+			// Calculate Markup Amount
+			dPtr = dSrcTxnAmt * dExRate * dMarkupRate;
+			dMarkupAmt = newround(dPtr,PD_DECIMAL_LEN);
+	
+			// Calculate Reverse Amount
+                        if (cReserveAmtType == PD_PRECENTAGE || cReserveAmtType == PD_PRECENT_WITH_FIX) {
+                                dPtr = dSrcTxnAmt * (dReserveAmtValue/100);
+                                dReserveAmt = newround(dPtr,PD_DECIMAL_LEN);
+                        } else if (cReserveAmtType == PD_FIXED_AMOUNT) {
+                                dReserveAmt = newround(dReserveAmtValue,PD_DECIMAL_LEN);
+                        }
+
+			// Calculate Float Amount
+			dFloatAmt = dSrcNetAmt - dReserveAmt;
+		}
+
+		// Return Source and Destination Party Details
+                if (iRet == PD_OK) {
+
+                        PutField_Double(hCon,"src_txn_fee",dSrcTxnFee);
+                        PutField_Double(hContext,"src_txn_fee",dSrcTxnFee);
+                        PutField_Double(hContext,"org_txn_amt",dSrcTxnAmt);
+                        PutField_Double(hContext,"src_txn_amt",dSrcTxnAmt);
+                        PutField_Double(hContext,"src_net_amt",dSrcNetAmt);
+                        PutField_Double(hContext,"net_amt",dSrcNetAmt);
+                        PutField_Double(hContext,"reserve_amt",dReserveAmt);
+                        PutField_Double(hContext,"dst_txn_fee",dDstTxnFee);
+                        PutField_Double(hContext,"dst_txn_amt",dDstTxnAmt);
+                        PutField_Double(hContext,"dst_net_amt",dDstNetAmt);
+
+                        PutField_Double(hContext,"service_fee",dSrcTxnFee);
+                        PutField_Double(hContext,"net_amt",dSrcNetAmt);
+
+                        PutField_Double(hContext,"org_dst_txn_amt",dDstTxnAmt);
+                        PutField_Double(hContext,"org_dst_net_amt",dDstNetAmt);
+
+                        PutField_Double(hContext,"total_src_txn_fee",dSrcTxnFee);
+                        PutField_Double(hContext,"total_dst_txn_fee",dDstTxnFee);
+
+                        PutField_Double(hContext,"markup_amt",dMarkupAmt);
+
+DEBUGLOG(("Results:\n"));
+DEBUGLOG((" org_src_txn_amt = [%s][%lf]\n", csTxnCcy, dOrgSrcTxnAmt));
+DEBUGLOG((" org_dst_net_amt = [%s][%lf]\n", csDstTxnCcy, dOrgDstNetAmt));
+DEBUGLOG((" src_txn_amt = [%s][%lf]\n", csTxnCcy, dSrcTxnAmt));
+DEBUGLOG((" src_txn_fee = [%s][%lf]\n", csTxnCcy, dSrcTxnFee));
+DEBUGLOG((" src_net_amt = [%s][%lf]\n", csTxnCcy, dSrcNetAmt));
+DEBUGLOG((" dst_txn_amt = [%s][%lf]\n", csDstTxnCcy, dDstTxnAmt));
+DEBUGLOG((" dst_txn_fee = [%s][%lf]\n", csDstTxnCcy, dDstTxnFee));
+DEBUGLOG((" dst_net_amt = [%s][%lf]\n", csDstTxnCcy, dDstNetAmt));
+DEBUGLOG((" reserve_amt = [%s][%lf]\n", csTxnCcy, dReserveAmt));
+DEBUGLOG((" float_amt 	= [%s][%lf]\n", csTxnCcy, dFloatAmt));
+DEBUGLOG((" markup_amt 	= [%s][%lf]\n", csMarkupCcy, dMarkupAmt));
+                }
+
+		// Add/Update TxnElements (Merchant Txn Amount, Merchant Txn Fee, Customer Markup Amount)
+		if (iRet == PD_OK) {
+
+			int     iAddElemTxnFee = PD_TRUE;
+                        int     iUpdElemTxnAmt = PD_FALSE;
+                        int     iUpdElemTxnFee = PD_FALSE;
+                        int     iUpdElemMarkupAmt = PD_FALSE;
+                        int     iExecSeqTxnAmt = 0;
+                        int     iExecSeqTxnFee = 0;
+                        int     iExecSeqMarkupAmt = 0;
+                        int     iOrgExecSeq = 0;
+
+                        double  dOrgElemTxnAmt = 0.0;
+                        double  dOrgElemTxnFee = 0.0;
+                        double  dOrgElemMarkupAmt = 0.0;
+
+                        char    cOrgPartyType = ' ';
+
+                        char    *csOrgElemType = NULL;
+
+                        RecordSet_Destroy(rRecordSet);
+                        recordset_init(rRecordSet,0);
+
+			DBObjPtr = CreateObj(DBPtr,"DBTxnElements","GetAllFeeChgDetail");
+                        if ((unsigned long)(*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+                                hRec = RecordSet_GetFirst(rRecordSet);
+                                while (hRec) {
+                                        if (GetField_Int(hRec,"exec_seq",&iOrgExecSeq) &&
+                                            GetField_Char(hRec,"party_type",&cOrgPartyType) &&
+                                            GetField_CString(hRec,"txn_element_type",&csOrgElemType)) {
+
+                                                if (!strcmp(csOrgElemType,PD_ELEMENT_TXN_AMT)) {
+                                
+                				        if (cOrgPartyType==PD_TYPE_MERCHANT) {
+		
+                                                                if (GetField_Double(hRec,"amount",&dOrgElemTxnAmt)) {
+                                                                        iUpdElemTxnAmt = PD_TRUE;
+									iExecSeqTxnAmt = iOrgExecSeq;
+                                                                }
+							}
+
+                                                } else if (!strcmp(csOrgElemType,PD_ELEMENT_TXN_FEE)) {
+
+							if (cOrgPartyType==PD_TYPE_MERCHANT) {
+
+								if (GetField_Double(hRec,"amount",&dOrgElemTxnFee)) {
+									iAddElemTxnFee = PD_FALSE;
+        	                                                     	iUpdElemTxnFee = PD_TRUE;
+									iExecSeqTxnFee = iOrgExecSeq;
+                                	                     	}
+							}
+
+						} else if (!strcmp(csOrgElemType,PD_ELEMENT_MARKUP_AMT)) {
+
+							if (cOrgPartyType==PD_TYPE_CUSTOMER) {
+
+                                                                if (GetField_Double(hRec,"amount",&dOrgElemMarkupAmt)) {
+                                                                        iUpdElemMarkupAmt = PD_TRUE;
+									iExecSeqMarkupAmt = iOrgExecSeq;
+                                                                }
+                                                        }
+						}
+                                        }
+                                        hRec = RecordSet_GetNext(rRecordSet);
+                                }
+
+                                if ((dSrcTxnAmt!=dOrgElemTxnAmt) && (iUpdElemTxnAmt)) {
+DEBUGLOG(("Call DBTxnElements: GetAllFeeChgDetail() [Merchant] org_src_txn_amt = [%lf]\n", dOrgElemTxnAmt));
+DEBUGLOG(("Call DBTxnElements: UpdateElement() [Merchant] src_txn_amt = [%lf]\n", dSrcTxnAmt));
+					PutField_CString(hElem,"txn_seq",csTxnSeq);
+					PutField_Int(hElem,"exec_seq",iExecSeqTxnAmt);
+					PutField_Double(hElem,"amount",dSrcTxnAmt);
+                                        DBObjPtr = CreateObj(DBPtr,"DBTxnElements","UpdateElement");
+                                        if ((unsigned long)((*DBObjPtr)(hElem)) != PD_OK) {
+                                                iRet = INT_ERR;
+DEBUGLOG(("Call DBTxnElements: UpdateElement() [Merchant] failure!!\n"));
+                                        }
+                                }
+
+				if ((iRet == PD_OK) && (dSrcTxnFee!=dOrgElemTxnFee) && (iUpdElemTxnFee)) {
+DEBUGLOG(("Call DBTxnElements: GetAllFeeChgDetail() [Merchant] org_src_txn_fee = [%lf]\n", dOrgElemTxnFee));
+DEBUGLOG(("Call DBTxnElements: UpdateElement() [Merchant] src_txn_fee = [%lf]\n", dSrcTxnFee));
+					PutField_CString(hElem,"txn_seq",csTxnSeq);
+                                        PutField_Int(hElem,"exec_seq",iExecSeqTxnFee);
+                                        PutField_Double(hElem,"amount",dSrcTxnFee);
+                                        DBObjPtr = CreateObj(DBPtr,"DBTxnElements","UpdateElement");
+                                        if ((unsigned long)((*DBObjPtr)(hElem)) != PD_OK) {
+                                                iRet = INT_ERR;
+DEBUGLOG(("Call DBTxnElements: UpdateElement() [Merchant] failure!!\n"));
+                                        }
+                                }
+
+				if ((iRet == PD_OK) && (dMarkupAmt!=dOrgElemMarkupAmt) && (iUpdElemMarkupAmt)) {
+DEBUGLOG(("Call DBTxnElements: GetAllFeeChgDetail() [Customer] org_markup_amt = [%lf]\n", dOrgElemMarkupAmt));
+DEBUGLOG(("Call DBTxnElements: UpdateElement() [Customer] markup_amt = [%lf]\n", dMarkupAmt));
+					PutField_CString(hElem,"txn_seq",csTxnSeq);
+                                        PutField_Int(hElem,"exec_seq",iExecSeqMarkupAmt);
+                                        PutField_Double(hElem,"amount",dMarkupAmt);
+                                    	DBObjPtr = CreateObj(DBPtr,"DBTxnElements","UpdateElement");
+                                     	if ((unsigned long)((*DBObjPtr)(hElem)) != PD_OK) {
+                                             	iRet = INT_ERR;
+DEBUGLOG(("Call DBTxnElements: UpdateElement() [Customer] failure!!\n"));
+                                    	}
+                             	}
+                        }
+
+			if (iRet == PD_OK) {
+				if ((dSrcTxnFee != 0) && (iAddElemTxnFee)) {
+DEBUGLOG(("Call BOTxnElements: AddTxnFeeElements() [Merchant] src_txn_fee = [%lf]\n", dSrcTxnFee));
+                              		BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+                              		iRet = (unsigned long)(*BOObjPtr)(hCon);
+                               		if (iRet != PD_OK) {
+DEBUGLOG(("Call BOTxnElements: AddTxnFeeElements() [Merchant] failure!!\n"));
+                                	      	iRet = INT_ERR;
+                            		}
+				}				
+			}
+		}
+	}
+
+	hash_destroy(hCon);
+        FREE_ME(hCon);
+
+	hash_destroy(hReq);
+     	FREE_ME(hReq);
+
+	hash_destroy(hElem);
+     	FREE_ME(hElem);
+
+     	RecordSet_Destroy(rRecordSet);
+     	FREE_ME(rRecordSet);
+
+DEBUGLOG(("UpdateAmtDetailsByPaidAmt: iRet = [%d]\n", iRet));
+        return iRet;
+}
+

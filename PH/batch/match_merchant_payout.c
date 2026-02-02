@@ -1,0 +1,346 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/10/26              Cody Chan
+generate table by html				   2010/11/12		   LokMan Chow
+Add output pending file				   2010/11/16		   LokMan Chow
+*/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "batchcommon.h"
+#include "internal.h"
+#include "match_merchant_payout.h"
+
+
+/*******************************************
+        usage: -h host file -m merchant host -p pending file
+******************************************/
+
+#define  MAX_FIELD_LEN		20 
+#define  MAX_FIELD_NO          	5
+#define PD_TR           "<tr>"
+#define PD_TD           "<td>"
+#define PD_TD_STYLE     "<td class=\"format\">"
+#define PD_TR_END       "</tr>"
+#define PD_TD_END       "</td>"
+
+char    cs_ph_file[PD_MAX_FILE_LEN + 1];
+char    cs_merch_file[PD_MAX_FILE_LEN + 1];
+char    cs_pending_file[PD_MAX_FILE_LEN + 1];
+
+char   	csPhList[MAX_FIELD_NO][MAX_FIELD_LEN+1];
+char    csMerchList[MAX_FIELD_NO][MAX_FIELD_LEN+1];
+
+static int parse_arg(int argc,char **argv);
+void extract(char* log, char data[][MAX_FIELD_LEN+1]);
+void output(char csPhList[][MAX_FIELD_LEN + 1], char csMerchList[][MAX_FIELD_LEN + 1],char* remark);
+void output_pending(FILE *fp,char csPhList[][MAX_FIELD_LEN + 1], char csMerchList[][MAX_FIELD_LEN + 1],char* remark);
+void match(char* cs_ph_buf, char* cs_merch_buf);
+
+int main(int argc, char* argv[])
+{
+	FILE	*fp_ph,*fp_psp,*fp_pend;
+	int     i_read_next = PD_TRUE;
+	char    cs_h_key[256], cs_m_key[256];
+	char    cs_ph_buf[PD_MAX_BUFFER + 1];
+        char    cs_merch_buf[PD_MAX_BUFFER + 1];
+        int 	i_ret;
+	int	iRet;
+	
+	iRet = parse_arg(argc,argv);
+        if (iRet != SUCCESS) {
+                printf("parse arg error\n");
+                return (iRet);
+        }
+	fp_ph = fopen(cs_ph_file, "r");
+    	if (fp_ph == NULL){
+		printf("unable to open lms file %s\n",cs_ph_file);
+		return FAILURE;
+    	}
+
+    	fp_psp = fopen(cs_merch_file, "r");
+    	if (fp_psp == NULL){
+		printf("unable to open cul file %s\n",cs_merch_file);
+		return FAILURE;
+    	}
+	
+    	fp_pend = fopen(cs_pending_file, "w");
+    	if (fp_pend == NULL){
+		printf("unable to open pending file %s\n",cs_pending_file);
+		return FAILURE;
+    	}
+	
+	fprintf(fp_pend,"<html><body><table>\n");
+	printf("<html><body><table>\n");
+
+	fprintf(fp_pend,"%s%sMerchant Ref%s%sTxn Date%s%sStatus%s%sAccount Num%s%sTxn Amount%s%sResult%s%s\n",PD_TR,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TR_END);
+	printf("%s%sMerchant Ref%s%sTxn Date%s%sStatus%s%sAccount Num%s%sTxn Amount%s%sResult%s%s\n",PD_TR,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TD,PD_TD_END,PD_TR_END);
+
+	fprintf(fp_pend,"<style type=\"text/css\"> .format{ mso-number-format:'\\@';} </style>\n");
+	printf("<style type=\"text/css\"> .format{ mso-number-format:'\\@';} </style>\n");
+
+	while (fgets(cs_merch_buf, PD_MAX_BUF, fp_psp) != NULL) {
+		if (cs_merch_buf[strlen(cs_merch_buf) - 1] == 0x0A)
+                	cs_merch_buf[strlen(cs_merch_buf) - 1] = '\0';
+        	if (i_read_next == PD_FALSE || fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) != NULL) {
+			if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+                		cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+			
+                	while (PD_TRUE) {
+				if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+                                cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+
+                     		extract(cs_ph_buf,csPhList); 
+                        	extract(cs_merch_buf, csMerchList);
+
+				memcpy(cs_h_key, csPhList[IDX_MERCH_REF],MERCH_REF_LEN);
+				memcpy(cs_m_key, csMerchList[IDX_MERCH_REF],MERCH_REF_LEN);
+				memcpy(&cs_h_key[MERCH_REF_LEN], csPhList[IDX_TXN_DATE],TXN_DATE_LEN);
+				memcpy(&cs_m_key[MERCH_REF_LEN], csMerchList[IDX_TXN_DATE],TXN_DATE_LEN);
+				
+				i_ret = memcmp(cs_h_key, cs_m_key, MERCH_REF_LEN + TXN_DATE_LEN);
+
+                       		if (i_ret == 0) {
+          				match(cs_ph_buf, cs_merch_buf); 
+                      			i_read_next = PD_TRUE;
+                                	break;
+               			}
+                        	else if (i_ret < 0) {
+                       			extract(cs_ph_buf,csPhList);
+					if(strcmp(csPhList[IDX_STATUS],"PENDING"))
+              					output(csPhList,NULL,(char*)"No Merchant Tx");
+					else
+						output_pending(fp_pend,csPhList,NULL,(char*)"No Merchant Tx");
+                    			if (fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) == NULL) {
+						if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+                					cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+                              			extract(cs_merch_buf, csMerchList);
+						if(strcmp(csMerchList[IDX_STATUS],"PENDING"))
+                           				output(NULL, csMerchList,(char*)"No Ph Tx");
+						else
+							output_pending(fp_pend,NULL,csMerchList,(char*)"No Ph Tx");
+					
+                                        	break;
+                                	}
+                                	i_read_next = PD_TRUE;
+                   		}
+                        	else if (i_ret > 0) {
+                   			extract(cs_merch_buf, csMerchList);
+					if(strcmp(csMerchList[IDX_STATUS],"PENDING"))
+                    				output(NULL,csMerchList,(char*)"No Ph Tx");
+					else
+						output_pending(fp_pend,NULL,csMerchList,(char*)"No Ph Tx");
+                                	i_read_next = PD_FALSE;
+                                	break;
+                      		}
+			}
+    		}
+		else if(i_read_next == PD_TRUE && fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) == NULL){
+			extract(cs_merch_buf, csMerchList);
+			if(strcmp(csMerchList[IDX_STATUS],"PENDING"))
+				output(NULL,csMerchList,(char*)"No Ph Tx");
+			else
+				output_pending(fp_pend,NULL,csMerchList,(char*)"No Ph Tx");
+			i_read_next = PD_TRUE;
+		}
+	}
+	if(i_read_next == PD_FALSE){
+                if(strcmp(csPhList[IDX_STATUS],"PENDING"))
+                        output(csPhList,NULL,(char*)"NO Merchant Tx");
+                else    
+                        output_pending(fp_pend,csPhList,NULL,(char*)"NO Merchant Tx");
+        }    
+
+	while(fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) != NULL){
+		if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+			cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+
+		extract(cs_ph_buf,csPhList);
+		if(strncmp(csPhList[IDX_STATUS],"PENDING",strlen("PENDING")))
+			output(csPhList,NULL,(char*)"No Merchant Tx");
+		else
+			output_pending(fp_pend,csPhList,NULL,(char*)"No Merchant Tx");
+
+	}
+
+    	fclose(fp_psp);
+    	fclose(fp_ph);
+    	fclose(fp_pend);
+	return SUCCESS;
+}
+
+
+
+static int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_ph_file,"");
+        strcpy(cs_merch_file,"");
+        strcpy(cs_pending_file,"");
+
+        //while ((c = getopt(argc,argv,"h:m:")) != EOF && c != 0xff) {
+        while ((c = getopt(argc,argv,"h:m:p:")) != EOF) {
+                switch (c) {
+                        case 'h':
+                                strcpy(cs_ph_file, optarg);
+                                break;
+                        case 'm':
+                                strcpy(cs_merch_file, optarg);
+                                break;
+                        case 'p':
+                                strcpy(cs_pending_file, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_ph_file,"") || !strcmp(cs_merch_file,"") || !strcmp(cs_pending_file,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+void extract(char* log, char data[][MAX_FIELD_LEN+1])
+{       
+        char    *p; 
+	char*	csTmp;
+        int 	i = 0;
+
+	csTmp = (char*) malloc (strlen(log) + 1);
+	strcpy(csTmp,log);
+	for (i = 0; i < MAX_FIELD_NO; i++) {
+                if (i == 0)
+                        p = mystrtok(csTmp, (char*)PD_MATCH_TOKEN);
+                else
+                        p = mystrtok(NULL, (char*)PD_MATCH_TOKEN);
+                strcpy(data[i], p);
+        }
+	free(csTmp);
+}     
+
+void output(char csPhList[][MAX_FIELD_LEN + 1], char csMerchList[][MAX_FIELD_LEN + 1],char* remark)
+{
+	int	i;
+
+	printf("%s",PD_TR);
+
+	if (csMerchList == NULL ) {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+			if ((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM)) 
+				 printf("%s%s%s",PD_TD_STYLE,csPhList[i],PD_TD_END);
+                        else
+                                printf("%s%s%s",PD_TD,csPhList[i],PD_TD_END);
+                } 
+
+                printf("%s%s%s\n",PD_TD,remark,PD_TD_END);
+	}
+	else if (csPhList == NULL ) {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+                        if ((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM))
+                                printf("%s%s%s",PD_TD_STYLE,csMerchList[i],PD_TD_END);
+                        else
+                                printf("%s%s%s",PD_TD,csMerchList[i],PD_TD_END);
+                }
+                printf("%s%s%s\n",PD_TD,remark,PD_TD_END);
+	}
+	else {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+                        if (strcmp(csMerchList[i],csPhList[i])){
+                                if ((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM))
+                                        printf("%s*%s%s",PD_TD_STYLE,csPhList[i],PD_TD_END);
+                                else
+                                        printf("%s*%s%s",PD_TD,csPhList[i],PD_TD_END);
+                                }
+                        else{
+                                if((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM))
+                                        printf("%s%s%s",PD_TD_STYLE,csPhList[i],PD_TD_END);
+                                else
+                                        printf("%s%s%s",PD_TD,csPhList[i],PD_TD_END);
+                        }
+                }
+                printf("%s%s%s\n",PD_TD,remark,PD_TD_END);
+	}
+	printf("%s\n",PD_TR_END);
+
+}
+
+
+void match(char* cs_ph_buf, char* cs_merch_buf)
+{
+        int i, i_match = PD_TRUE;
+
+        extract(cs_ph_buf, csPhList);
+        extract(cs_merch_buf, csMerchList);
+
+        for (i = 0; i < MAX_FIELD_NO; i++) {
+		//if(i!=IDX_STATUS){
+        		if (strcmp(csPhList[i], csMerchList[i]) != 0) {
+				i_match = PD_FALSE;
+			}
+		//}
+        }
+        if (i_match == PD_FALSE) {
+                output(csPhList, csMerchList, (char*)"Tx Mismatched");
+        }
+}
+
+
+void output_pending(FILE *fp, char csPhList[][MAX_FIELD_LEN + 1], char csMerchList[][MAX_FIELD_LEN + 1],char* remark)
+{
+	int	i;
+
+	fprintf(fp,"%s",PD_TR);
+
+	if (csMerchList == NULL ) {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+			if ((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM)) 
+				 fprintf(fp,"%s%s%s",PD_TD_STYLE,csPhList[i],PD_TD_END);
+                        else
+                                fprintf(fp,"%s%s%s",PD_TD,csPhList[i],PD_TD_END);
+                } 
+
+                fprintf(fp,"%s%s%s\n",PD_TD,remark,PD_TD_END);
+	}
+	else if (csPhList == NULL ) {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+                        if ((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM))
+                                fprintf(fp,"%s%s%s",PD_TD_STYLE,csMerchList[i],PD_TD_END);
+                        else
+                                fprintf(fp,"%s%s%s",PD_TD,csMerchList[i],PD_TD_END);
+                }
+                fprintf(fp,"%s%s%s\n",PD_TD,remark,PD_TD_END);
+	}
+/*
+	else {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+                        if (strcmp(csMerchList[i],csPhList[i])){
+                                if ((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM))
+                                        fprintf(fp,"%s*%s%s",PD_TD_STYLE,csPhList[i],PD_TD_END);
+                                else
+                                        fprintf(fp,"%s*%s%s",PD_TD,csPhList[i],PD_TD_END);
+                                }
+                        else{
+                                if((i == IDX_MERCH_REF) || (i==IDX_ACC_NUM))
+                                        fprintf(fp,"%s%s%s",PD_TD_STYLE,csPhList[i],PD_TD_END);
+                                else
+                                        fprintf(fp,"%s%s%s",PD_TD,csPhList[i],PD_TD_END);
+                        }
+                }
+                fprintf(fp,"%s%s%s\n",PD_TD,remark,PD_TD_END);
+	}
+*/
+	fprintf(fp,"%s\n",PD_TR_END);
+
+}
+

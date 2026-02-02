@@ -1,0 +1,718 @@
+/*
+PDProTech (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/02/12              [MSN]
+Add lock txn_header to prevent deadlock            2015/05/27              [SWK]
+Support QR Payment				   2016/11/30		   [MSN]
+Support New Phase of Vmobile Customer Segment	   2017/11/23		   [WMC]
+Add ip_region_code                                 2021/01/18              [WMC]
+Handle multiple IPs                                2021/06/04              [WCS]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsTMI.h"
+#include "myrecordset.h"
+#include "dbutility.h"
+
+static char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Msg);
+
+void TxnMgtByUsTMI(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	csTxnSeq[PD_TXN_SEQ_LEN +1];
+	char    csOrgDateTime[PD_DATETIME_LEN +1];
+	char*	csEncTxnSeq = NULL;
+	char	*csPayMethod = NULL;
+	char	*csTxnCcy = NULL;
+	char	*csOrgTxnCountry = NULL;
+	char	*csOrgChannelCode = NULL;
+	char	*csOrgServiceCode = NULL;
+	char	*csOrgMerchantId = NULL;
+	char	*csSelectedPID = NULL;
+	char*	csPtr = NULL;
+	char*   csIpAddr = NULL;
+        char*   csUserAgent = NULL;
+	double	dTmp;
+	double	dTxnAmt;
+	char* csTxnCode = NULL;
+	char* csClientId = NULL;
+	char* csDstCcy = NULL;
+	char* csCustTag = NULL;
+	char* csOverflowGroup = NULL;
+	char  csCustomerGroup[PD_CUSTOMER_GROUP_CODE_LEN +1];
+	int   iCustGroupFound = PD_FALSE;
+	int   iCustSegEnable = PD_FALSE;
+	//char*	csBankCode = NULL;
+	int   iPhase = 0;
+	//int	iUseOverflow = PD_TRUE;
+	char    cDeviceType = PD_NBXA_DEVICE_TYPE_DESKTOP;
+	char    *csIpRegionCode = NULL;
+
+	recordset_t     *rRecordSet;   
+	hash_t	*hRec, *hTxn/*, *hCon, *hElem*/;
+
+	hTxn = (hash_t*) malloc(sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+DEBUGLOG(("Authorize()\n"));
+	memset(csTxnSeq,0,PD_TXN_SEQ_LEN);
+
+	if (GetField_CString(hRequest,"enc_txn_seq",&csEncTxnSeq)) {
+DEBUGLOG(("Authorize() enc_txn_seq = [%s]\n",csEncTxnSeq));
+		BOObjPtr = CreateObj(BOPtr,"BOSecurity","Decrypt3DESTxnSeq");
+                (BOObjPtr)(csEncTxnSeq,csTxnSeq);
+DEBUGLOG(("Authorize() txn_seq = [%s]\n",csTxnSeq));
+		PutField_CString(hResponse,"org_txn_seq",csTxnSeq);
+		PutField_CString(hContext,"org_txn_seq",csTxnSeq);
+		PutField_CString(hTxn,"from_txn_seq",csTxnSeq);
+	}
+	else {
+		iRet = INT_ENC_TXN_ID_MISSING;
+DEBUGLOG(("Authorize() enc_txn_seq is missing\n"));
+ERRLOG("TxnMgtByUsTMI::Authorize() enc_txn_seq is missing\n");
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if (iRet == PD_OK){
+		if (GetField_CString(hRequest,"ip_addr",&csIpAddr)) {
+DEBUGLOG(("Authorize() ip_addr = [%s]\n",csIpAddr));
+			char *p;
+			char csTmpIp[PD_IP_LEN + 1];
+			p = strtok (csIpAddr, ",");
+			while (p != NULL) {
+				strcpy(csTmpIp, p);
+				csTmpIp[strlen(p)]='\0';
+				break;
+			}
+			sprintf(csIpAddr, "%s", csTmpIp);
+DEBUGLOG(("Authorize() ip_addr = [%s]\n",csIpAddr));
+
+			hash_t *hIp;
+                        hIp = (hash_t*)  malloc (sizeof(hash_t));
+                        hash_init(hIp,0);
+
+                        BOObjPtr = CreateObj(BOPtr,"BOIpRegion","ConvertIp");
+                        if ((unsigned long)(BOObjPtr)(csIpAddr, hIp) == PD_OK) {
+                                if (GetField_CString(hIp,"ip_region_code",&csIpRegionCode)) {
+DEBUGLOG(("Authorize() ip_region_code = [%s]\n",csIpRegionCode));
+                                        PutField_CString(hResponse,"ip_region_code",csIpRegionCode);
+                                }
+                        }
+
+                        hash_destroy(hIp);
+                        FREE_ME(hIp)
+		}
+		if (GetField_CString(hRequest,"user_agent",&csUserAgent)) {
+DEBUGLOG(("Authorize() user_agent = [%s]\n",csUserAgent));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchRespTxn_ReadOnly");
+                if ((unsigned long)(DBObjPtr)(csTxnSeq,PD_INIT) != PD_FOUND) {
+	        	iRet = INT_TXN_ID_NOT_FOUND;    
+DEBUGLOG(("Authorize() org txn id record [%s] not found for status = [%c]\n",csTxnSeq,PD_INIT));
+//ERRLOG("Authorize() org txn id record [%s] not found for status = [%c]\n",csTxnSeq,PD_INIT);
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else{
+			int iRange = PD_DEF_TXN_EXPIRE_TIME;
+			int iTmpRet = PD_FALSE;
+			char*   csValueTmp;
+			csValueTmp = (char*) malloc (10);
+			DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+			if ((unsigned long)(DBObjPtr)("TXN_EXPIRE_TIME",csValueTmp) == FOUND) {
+				if(is_numeric(csValueTmp)){
+					iRange = atoi(csValueTmp);
+				}
+			}
+DEBUGLOG(("Authorize::Transaction Expire Time (min) = [%d]\n",iRange));
+			FREE_ME(csValueTmp);
+
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","IsCreateTimeWithinRange");
+			iTmpRet = (unsigned long)(DBObjPtr)(csTxnSeq,iRange);
+			if(iTmpRet==PD_TRUE){
+DEBUGLOG(("Authorize::Transaction not yet expired\n"));
+			}
+			else if(iTmpRet==PD_FALSE){
+				iRet = INT_TXN_EXPIRED;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::Transaction is expired!!!!\n"));
+			}
+			else{
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::DBTransaction::IsCreateTimeWithinRange Error!!!!\n"));
+			}
+		}
+	}
+
+
+
+	if (iRet == PD_OK) {
+                recordset_init(rRecordSet,0);
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+                if ((DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::txn Header found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+                                 if (GetField_CString(hRec,"txn_code",&csTxnCode)) {
+                                        PutField_CString(hTxn,"txn_code",csTxnCode);
+				 }
+                                 if (GetField_Double(hRec,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("Authorize::GetTxnHeader - txn_amt = [%lf]\n",dTxnAmt));
+                                        PutField_Double(hResponse,"txn_amt",dTxnAmt);
+					PutField_Double(hTxn,"org_txn_amt",dTxnAmt);
+					PutField_Double(hTxn,"txn_amt",dTxnAmt);
+                                 }
+                                 if (GetField_CString(hRec,"net_ccy",&csTxnCcy)) {
+                                        PutField_CString(hResponse,"txn_ccy",csTxnCcy);
+                                        PutField_CString(hTxn,"txn_ccy",csTxnCcy);
+                                        PutField_CString(hTxn,"org_txn_ccy",csTxnCcy);
+DEBUGLOG(("Authorize::GetTxnHeader - net_ccy = [%s]\n",csTxnCcy));
+				 }
+				 if (GetField_CString(hRec,"client_id",&csClientId)) {
+DEBUGLOG(("Authorize::GetTxnHeader - org_client_id = [%s]\n",csClientId));
+                                        PutField_CString(hTxn,"merchant_client_id",csClientId);
+                                 }
+                                 if (GetField_CString(hRec,"merchant_id",&csOrgMerchantId)) {
+                                        PutField_CString(hResponse,"merchant_id",csOrgMerchantId);
+                                        PutField_CString(hTxn,"merchant_id",csOrgMerchantId);
+DEBUGLOG(("Authorize::GetTxnHeader - merchant_id = [%s]\n",csOrgMerchantId));
+
+/*
+					DBObjPtr = CreateObj(DBPtr,"DBCustomerGroupMerchant","FindMerchant");
+                                        if((unsigned long)(DBObjPtr)(csOrgMerchantId) == FOUND){
+                                                iCustSegEnable = PD_TRUE;
+                                        }
+*/
+
+					DBObjPtr = CreateObj(DBPtr,"DBCustomerGroupMerchant","GetMerchantPhase");
+                                        iPhase = (unsigned long)(DBObjPtr)(csOrgMerchantId);
+					if(iPhase>=0){
+						iCustSegEnable = PD_TRUE;
+					}
+
+                                 }
+                                 if (GetField_CString(hRec,"merchant_ref",&csPtr)) {
+                                        PutField_CString(hResponse,"merchant_ref",csPtr);
+				 }
+                                 if (GetField_CString(hRec,"channel_code",&csOrgChannelCode)) {
+                                        PutField_CString(hTxn,"channel_code",csOrgChannelCode);
+DEBUGLOG(("Authorize::GetTxnHeader - channel_code = [%s]\n",csOrgChannelCode));
+                                 }
+                                 if (GetField_CString(hRec,"service_code",&csOrgServiceCode)) {
+                                        PutField_CString(hTxn,"service_code",csOrgServiceCode);
+DEBUGLOG(("Authorize::GetTxnHeader - service code = [%s]\n",csOrgServiceCode));
+                                 }
+				 if (GetField_CString(hRec,"local_tm_date",&csPtr)) {
+DEBUGLOG(("Authorize::GetTxnHeader - local_tm_date = [%s]\n",csPtr));
+                                        strcpy(csOrgDateTime,csPtr);
+                                 }
+                                 if (GetField_CString(hRec,"local_tm_time",&csPtr)) {
+DEBUGLOG(("Authorize::GetTxnHeader - local_tm_time = [%s]\n",csPtr));
+                                        memcpy(&csOrgDateTime[PD_DATE_LEN],csPtr,PD_TIME_LEN);
+                                        csOrgDateTime[PD_DATETIME_LEN] = '\0';
+DEBUGLOG(("Authorize::GetTxnHeader - org_local_tm_datetime = [%s]\n",csOrgDateTime));
+					PutField_CString(hContext,"org_local_tm_datetime",csOrgDateTime);
+					PutField_CString(hTxn,"org_datetime",csOrgDateTime);
+                                 }
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                 }
+        	RecordSet_Destroy(rRecordSet);
+        }
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet,0);
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+                if ((DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::txn detail found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+			int iTxn =0;
+                        while (hRec) {
+                                 if (GetField_CString(hRec,"pay_method",&csPayMethod)) {
+					iTxn++;
+DEBUGLOG(("Authorize::GetTxnDetail - org_pay_method = [%s]\n",csPayMethod));
+                                        PutField_CString(hResponse,"pay_method",csPayMethod);
+                                 }
+                                 if (GetField_CString(hRec,"selected_pay_method",&csPayMethod)) {
+					 PutField_CString(hTxn,"selected_pay_method",csPayMethod);
+DEBUGLOG(("Authorize::GetTxnDetail - selected_method = [%s]\n",csPayMethod));
+                                 }
+
+                                 if (GetField_CString(hRec,"txn_country",&csOrgTxnCountry)) {
+					PutField_CString(hTxn,"txn_country",csOrgTxnCountry);
+DEBUGLOG(("Authorize::GetTxnDetail - txn country = [%s]\n",csOrgTxnCountry));
+                                 }
+
+				 if (GetField_CString(hRec,"selected_pid",&csSelectedPID)) {
+DEBUGLOG(("Authorize::GetTxnDetail - selected_pid = [%s]\n",csSelectedPID));
+                                 }
+				 if (GetField_CString(hRec,"customer_tag",&csCustTag)) {
+					PutField_CString(hResponse,"customer_tag",csCustTag);
+DEBUGLOG(("Authorize::GetTxnDetail - customer_tag = [%s]\n",csCustTag));
+					DBObjPtr = CreateObj(DBPtr,"DBCustomerGroupDetail","FindGroup");
+					if ((unsigned long)(DBObjPtr)(csOrgMerchantId,csCustTag,&csCustomerGroup) == FOUND) {
+DEBUGLOG(("Authorize::GetTxnDetail - customer_group = [%s]\n",csCustomerGroup));
+						if (iPhase>0) {
+							char *csNewCustomerGroup = NULL;
+
+							hash_t	*hCustomerGroupRec;
+							hCustomerGroupRec = (hash_t*) malloc(sizeof(hash_t));
+        						hash_init(hCustomerGroupRec, 0);
+
+                                                	PutField_CString(hCustomerGroupRec,"merchant_id",csOrgMerchantId);
+                                                	PutField_CString(hCustomerGroupRec,"org_customer_group",csCustomerGroup);
+                                                	PutField_Int(hCustomerGroupRec,"update_customer_detail",PD_FALSE);
+
+							// Convert Customer Group
+							BOObjPtr = CreateObj(BOPtr,"BOCustomerGroup","ConvertCustomerGroup");
+                                                        if ((unsigned long)(BOObjPtr)(hCustomerGroupRec) == PD_OK) {
+
+								if (GetField_CString(hCustomerGroupRec,"new_customer_group",&csNewCustomerGroup)) {
+									sprintf(csCustomerGroup, csNewCustomerGroup);
+DEBUGLOG(("Authorize::GetTxnDetail - customer_group (new) = [%s]\n",csCustomerGroup));
+								}
+							}
+
+							hash_destroy(hCustomerGroupRec);
+                                                        FREE_ME(hCustomerGroupRec);
+						}
+						iCustGroupFound = PD_TRUE;
+						PutField_CString(hResponse,"customer_group",csCustomerGroup);
+					}
+                                 }
+				 else{
+					if(iCustSegEnable){
+						iRet = INT_INVALID_TXN;
+DEBUGLOG(("Authorize::GetTxnDetail - customer_tag not Found!!!!!\n"));
+					}
+				 }
+
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+			if (iTxn == 1) {
+                        	PutField_Int(hResponse,"single_pay_method",iTxn);
+			}
+DEBUGLOG(("Authorize: itxn = [%d]\n",iTxn));
+                 }
+        	RecordSet_Destroy(rRecordSet);
+	}
+
+	if (iRet == PD_OK) {
+		if (csSelectedPID != NULL) {
+/* filter by selected pid */
+DEBUGLOG(("Authorize() Filter by selected PID\n"));
+
+			if (iPhase>0) {
+				//get from bank_mapping by csPspId
+				BOObjPtr = CreateObj(BOPtr,"BOBank","GetMobileBankByPIDNew");
+                		iRet = (unsigned long)(BOObjPtr)(csSelectedPID,csOrgServiceCode,csOrgTxnCountry,hResponse);
+			} else {
+				//get from mob_bank_select by csPspId
+				BOObjPtr = CreateObj(BOPtr,"BOBank","GetMobileBankByPID");
+				iRet = (unsigned long)(BOObjPtr)(csSelectedPID,hResponse);
+			}
+			
+			recordset_init(rRecordSet,0);
+			DBObjPtr = CreateObj(DBPtr,"DBPspCountry","GetPspCountry");
+			if((unsigned long) ((*DBObjPtr)(csSelectedPID,rRecordSet))==PD_OK){
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while(hRec){
+					if (GetField_CString(hRec,"ccy_id",&csDstCcy)) {
+						PutField_CString(hTxn,"dst_txn_ccy",csDstCcy);
+DEBUGLOG(("Authorize() Get Psp ccy [%s]\n",csDstCcy));
+					}
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+
+		}
+		else {
+			if((iPhase<1)&&(iCustSegEnable)){
+
+				hash_t* hUpd;
+				hUpd = (hash_t*) malloc(sizeof(hash_t));
+				hash_init(hUpd, 0);
+				PutField_CString(hUpd,"txn_seq",csTxnSeq);
+
+				if(iCustGroupFound){
+					DBObjPtr = CreateObj(DBPtr,"DBMobBankSelection","GetOverflowGroup");
+					if((unsigned long)(*DBObjPtr)(csCustomerGroup,hTxn) == PD_OK){
+						if(GetField_CString(hTxn,"union_group",&csPtr)){
+							PutField_CString(hResponse,"union_group",csPtr);
+						}
+						if(GetField_CString(hTxn,"overflow_group",&csPtr)){
+							PutField_CString(hResponse,"overflow_group",csPtr);
+						}
+					}
+					else{
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() DBMobBankSelection: GetOverflowGroup Failed!!!!\n"));
+					}
+
+					PutField_CString(hUpd,"customer_group",csCustomerGroup);
+					PutField_Int(hResponse,"new_customer",PD_FALSE);
+				}
+				else{
+					//get available segment
+					PutField_Int(hResponse,"new_customer",PD_TRUE);
+					BOObjPtr = CreateObj(BOPtr,"BOCustomerGroup","GetAavailableMobSegment");
+					iRet = (unsigned long)(BOObjPtr)(csOrgMerchantId,hTxn);
+					if(iRet == PD_OK) {
+						if(GetField_CString(hTxn,"pick_group",&csPtr)){
+							iCustGroupFound = PD_TRUE;
+							PutField_CString(hResponse,"customer_group",csPtr);
+							
+							//update customer_group to txn_detail
+							PutField_CString(hUpd,"customer_group",csPtr);
+
+						}
+						if(GetField_CString(hTxn,"union_group",&csPtr)){
+							PutField_CString(hResponse,"union_group",csPtr);
+						}
+						if(GetField_CString(hTxn,"overflow_group",&csPtr)){
+							PutField_CString(hResponse,"overflow_group",csPtr);
+						}
+						else{
+DEBUGLOG(("Authorize() BOCustomerGroup GetAvailableMobSegment No Group Picked\n"));
+						}
+					}
+					else if (iRet == INT_NO_BANK_AVAILABLE){
+DEBUGLOG(("Authorize() BOCustomerGroup GetAvailableMobSegment No Options are available now!!!\n"));
+					}
+					else{
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() BOCustomerGroup GetAvailableMobSegment Failed!!!\n"));
+					}
+				}
+
+				/* To prevent deadlock, to select for update before update transaction record */
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBTransaction:MatchRespTxn [%s][%c]\n",csTxnSeq,PD_INIT));
+					DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchRespTxn");
+					if ((unsigned long)(DBObjPtr)(csTxnSeq,PD_INIT) != PD_FOUND) {
+						iRet = INT_TXN_ID_NOT_FOUND;
+DEBUGLOG(("Authorize() org txn id record [%s] not found for status for locking = [%c]\n",csTxnSeq,PD_INIT));
+ERRLOG("TxnMgtByUsTMI::Authorize() org txn id record [%s] not found for status for locking = [%c]\n",csTxnSeq,PD_INIT);
+					}
+				}
+				
+
+				if(iRet==PD_OK){
+DEBUGLOG(("Authorize() BOCustomerGroup Call DBTransaction:UpdateDetail\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+					iRet = (unsigned long)(*DBObjPtr)(hUpd);
+				}
+				FREE_ME(hUpd);
+			}
+
+			if((iPhase>=1)&&(iCustSegEnable)){
+
+				// Check SARIP and restricted IP
+				PutField_Int(hResponse,"SARIP",PD_FALSE);
+                               	PutField_Int(hResponse,"restricted_ip",PD_FALSE);
+
+                              	DBObjPtr = CreateObj(DBPtr,"DBRuleLB","HaveDefineSmallAmtRule");
+                            	if ((unsigned long)(DBObjPtr)(csOrgChannelCode,
+                                                              csOrgMerchantId,
+                                                              csOrgServiceCode,
+                                                              csOrgTxnCountry,
+                                                              csTxnCcy,
+                                                              PD_TYPE_ALL,
+                                                              dTxnAmt) == PD_FOUND) {
+                                
+					   	PutField_Int(hResponse,"SARIP",PD_TRUE);
+DEBUGLOG(("Authorize() small amount request[%lf]\n",dTxnAmt));
+                              	}
+
+                              	DBObjPtr = CreateObj(DBPtr,"DBIpFilter","GetIpFilter");
+                             	if ((unsigned long)((*DBObjPtr)(csIpAddr)) == PD_FOUND) {
+
+                                   	DBObjPtr = CreateObj(DBPtr,"DBRuleLB","HaveDefineRestrictedIPRule");
+                                    	if ((unsigned long)(DBObjPtr)(csOrgChannelCode,
+                                                                      csOrgMerchantId,
+                                                                      csOrgServiceCode,
+                                                                      csOrgTxnCountry,
+                                                                      csTxnCcy,
+                                                                      PD_TYPE_ALL) == PD_FOUND) {
+                                    		
+						PutField_Int(hResponse,"SARIP",PD_TRUE);
+                                               	PutField_Int(hResponse,"restricted_ip",PD_TRUE);
+DEBUGLOG(("Authorize() restricted ip [%s]\n",csIpAddr));
+                                   	}
+                             	}
+			}
+
+			if(iRet==PD_OK){
+				PutField_Char(hResponse,"device_type",cDeviceType);
+				PutField_Int(hResponse,"customer_segment_phase",iPhase);
+				PutField_Int(hResponse,"customer_segment_enable",iCustSegEnable);
+				PutField_Int(hResponse,"customer_group_found",iCustGroupFound);
+DEBUGLOG(("Authorize() BOCustomerGroup Call BOBank:GetAvailableMobileBank\n"));
+				BOObjPtr = CreateObj(BOPtr,"BOBank","GetAvailableMobileBank");
+				iRet=(unsigned long)(BOObjPtr)(csOrgChannelCode,csOrgServiceCode,csOrgTxnCountry,
+							csOrgMerchantId,csOrgDateTime,csTxnCcy,dTxnAmt,hResponse);
+
+
+				if(iPhase<1){
+					if(iRet==INT_NO_BANK_AVAILABLE){
+
+						if(GetField_CString(hResponse,"overflow_group",&csOverflowGroup)){
+							PutField_CString(hResponse,"customer_group",csOverflowGroup);
+DEBUGLOG(("Authorize() BOCustomerGroup (Use Overflow Group) Call BOBank:GetAvailableMobileBank\n"));
+							BOObjPtr = CreateObj(BOPtr,"BOBank","GetAvailableMobileBank");
+							iRet = (unsigned long)(BOObjPtr)(csOrgChannelCode,csOrgServiceCode,csOrgTxnCountry,
+									csOrgMerchantId,csOrgDateTime,csTxnCcy,dTxnAmt,hResponse);
+						}
+					}
+				}
+			}
+
+			if(iRet==PD_OK){
+				DBObjPtr = CreateObj(DBPtr,"DBRuleLB","GetDstCcyWithoutRule");
+				if((unsigned long)(DBObjPtr)(csOrgMerchantId,csOrgServiceCode,hTxn)==PD_OK){
+					if (GetField_CString(hTxn,"psp_ccy",&csDstCcy)) {
+						PutField_CString(hTxn,"dst_txn_ccy",csDstCcy);
+DEBUGLOG(("Authorize() Get Psp ccy [%s]\n",csDstCcy));
+					}
+				}
+			}
+		}
+	}
+/***** ***/
+/*
+	if (iRet == INT_TXN_ID_NOT_FOUND) {
+		char	cStatus;
+		char	*csOrgTxnCode;
+		char	*csOrgServiceCode;
+		char	*csOrgPayMethod;
+		char	*csOrgLanguage;
+		char	*csUrl;
+		recordset_init(rRecordSet,0);
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+                if ((DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::txn Header found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+                                 if (GetField_Char(hRec,"status",&cStatus)) {
+DEBUGLOG(("Authorize::GetTxnHeader - status = [%c]\n",cStatus));
+                                 }
+                                 if (GetField_CString(hRec,"service_code",&csOrgServiceCode)) {
+DEBUGLOG(("Authorize::GetTxnHeader - service code = [%s]\n",csOrgServiceCode));
+                                 }
+                                 if (GetField_CString(hRec,"txn_code",&csOrgTxnCode)) {
+DEBUGLOG(("Authorize::GetTxnHeader - txn code = [%s]\n",csOrgTxnCode));
+                                 }
+
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                }
+                RecordSet_Destroy(rRecordSet);
+
+		recordset_init(rRecordSet,0);
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+                if ((DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::txn detail found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+                                 if (GetField_CString(hRec,"selected_pay_method",&csOrgPayMethod)) {
+					 PutField_CString(hTxn,"selected_pay_method",csOrgPayMethod);
+DEBUGLOG(("Authorize::GetTxnDetail - selected_method = [%s]\n",csOrgPayMethod));
+                                 }
+                                 if (GetField_CString(hRec,"txn_country",&csOrgTxnCountry)) {
+DEBUGLOG(("Authorize::GetTxnDetail - txn country = [%s]\n",csOrgTxnCountry));
+                                 }
+
+                                 if (GetField_CString(hRec,"language",&csOrgLanguage)) {
+DEBUGLOG(("Authorize::GetTxnDetail - language= [%s]\n",csOrgLanguage));
+                                 }
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                }
+                RecordSet_Destroy(rRecordSet);
+
+
+		if (cStatus == PD_TO_PSP && (!strcmp(csOrgPayMethod,PD_NET_BANKING) || !strcmp(csOrgPayMethod,PD_CONVENIENCE_STORE) || !strcmp(csOrgPayMethod,PD_ATM_PAYMENT))) {
+			iRet = PD_OK;
+ERRLOG("Authorize() org txn id record [%s] not found for status = [%c],but using previous record stored\n",csTxnSeq,PD_INIT);
+			recordset_init(rRecordSet,0);
+                	DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","GetTxnPspDetail");
+                	if ((DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::txn psp detail found record = [%s]\n",csTxnSeq));
+                        	hRec = RecordSet_GetFirst(rRecordSet);
+                        	while (hRec) {
+                                	if (GetField_CString(hRec,"url",&csUrl)) {
+DEBUGLOG(("Authorize::GetTxnPspDetail - url = [%s]\n",csUrl));
+						PutField_CString(hResponse,"redirect_url",csUrl);
+                               		}
+
+                                	hRec = RecordSet_GetNext(rRecordSet);
+                        	}
+                	}
+                	RecordSet_Destroy(rRecordSet);
+
+DEBUGLOG(("Authorize: is redirect_url found?\n"));
+			if (!GetField_CString(hResponse,"redirect_url",&csUrl)) {
+DEBUGLOG(("Authorize: redirect_url not found\n"));
+				recordset_init(rRecordSet,0);
+DEBUGLOG(("call\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTxnRptUrl","GetRptUrl");
+DEBUGLOG(("call function ptr created\n"));
+                        	if ((DBObjPtr)(csOrgTxnCode,csOrgServiceCode,csOrgLanguage,csOrgPayMethod,rRecordSet) == PD_OK) {
+DEBUGLOG(("call and record found??\n"));
+                                	hRec = RecordSet_GetFirst(rRecordSet);
+                                	while(hRec){
+                                        	if (GetField_CString(hRec,"rpt_url",&csPtr)) {
+							char	*csBuf;
+							csBuf = (char*)  malloc (PD_TMP_BUF_LEN + 1);
+DEBUGLOG(("Authorize:: GetRptUrl - url only = [%s]\n",csPtr));
+                                                	PutField_CString(hResponse,"rpt_url_only",csPtr);
+
+                                                       	sprintf(csBuf,"%s?sessionid=%s",csPtr,csEncTxnSeq);
+                                                       	PutField_CString(hResponse,"rpt_url",csBuf);
+
+DEBUGLOG(("Authorize:: redirect_url = [%s]\n",csBuf));
+							FREE_ME(csBuf);
+                                        	}
+                                        	hRec = RecordSet_GetNext(rRecordSet);
+                                	}
+                        	}
+				else {
+DEBUGLOG(("Authorize: not rpt record found\n"));
+				}
+                        	RecordSet_Destroy(rRecordSet);
+			}
+		}
+		
+		else if(cStatus == PD_TO_PSP){
+			iRet = ResendToPsp(hContext,hRequest,hResponse);
+		}
+		else{
+ERRLOG("Authorize() org txn id record [%s] not found for status = [%c]\n",csTxnSeq,PD_INIT);
+		}
+
+	}
+*/
+	//else 
+	if(iRet==PD_OK){ //init record found 
+		if(strcmp(csTxnCcy,csDstCcy)){
+DEBUGLOG(("Authorize() Different currency flow...\n"));
+			PutField_CString(hResponse,"dst_ccy",csDstCcy);
+                	DBObjPtr = CreateObj(DBPtr,"DBTmpCalAmount","GetTmpCalAmount");
+                	if ((unsigned long)(*DBObjPtr)(csTxnSeq,hTxn) == PD_FOUND) {
+DEBUGLOG(("Authorize() GetTmpCalAmount Record Found\n"));
+				if(GetField_Double(hTxn,"dst_net_amt",&dTmp)){
+					PutField_Double(hResponse,"dst_amt",dTmp);
+					PutField_Double(hResponse,"ex_rate",dTmp/dTxnAmt);
+				}
+			}
+			else{
+DEBUGLOG(("Authorize() GetTmpCalAmount Record Not Found\n"));
+				PutField_Int(hTxn,"get_info_only",PD_TRUE);
+				BOObjPtr = CreateObj(BOPtr,"BOExchange","GetExchangeInfo");
+				iRet = (unsigned long)(*BOObjPtr)(hTxn,hTxn);
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo = [%d]\n",iRet));
+
+				if(iRet == PD_OK){
+					PutField_CString(hTxn,"txn_code",PD_INITIAL_TXN_CODE);
+					BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+					iRet = (unsigned long)(*BOObjPtr)(hTxn,hTxn);
+					RemoveField_CString(hTxn,"txn_code");
+DEBUGLOG(("Authorize() GetTxnFee result = [%d]\n",iRet));
+				
+				}
+				if(iRet == PD_OK){
+					if(GetField_Double(hTxn,"dst_net_amt",&dTmp)){
+						PutField_Double(hResponse,"dst_amt",dTmp);
+						PutField_Double(hResponse,"ex_rate",dTmp/dTxnAmt);
+					}
+					if(GetField_Double(hTxn,"dst_txn_fee",&dTmp)){
+						PutField_Double(hTxn,"dst_fee",dTmp);
+					}
+					if(GetField_Double(hTxn,"net_amt",&dTmp)){
+						PutField_Double(hTxn,"src_net_amt",dTmp);
+					}
+					if(GetField_Double(hTxn,"src_txn_fee",&dTmp)){
+						PutField_Double(hTxn,"src_fee",dTmp);
+					}
+
+					PutField_CString(hTxn,"txn_seq",csTxnSeq);
+					PutField_CString(hTxn,"src_ccy",csTxnCcy);
+					PutField_CString(hTxn,"dst_ccy",csDstCcy);
+					DBObjPtr = CreateObj(DBPtr,"DBTmpCalAmount","Add");
+					if((unsigned long)(DBObjPtr)(hTxn)==PD_OK){
+DEBUGLOG(("Authorize() DBTmpCalAmount:Add success\n"));
+					}
+					else{
+DEBUGLOG(("Authorize() DBTmpCalAmount:Add failed!!!\n"));
+ERRLOG("TxnMgtByUsTMI: Authorize() DBTmpCalAmount:Add failed!!!\n");
+					}
+
+				}
+			}
+		}
+		else{
+DEBUGLOG(("Authorize() Normal flow...\n"));
+			PutField_CString(hResponse,"dst_ccy",csTxnCcy);
+			PutField_Double(hResponse,"dst_amt",dTxnAmt);
+			PutField_Double(hResponse,"ex_rate",1);
+		}
+
+		if(iRet == PD_OK){
+			hash_t *hCon;
+			hCon = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hCon,0);
+
+			PutField_CString(hCon,"txn_seq",csTxnSeq);
+			PutField_CString(hCon,"sub_status",PD_INITIATED);
+			if (csIpAddr) PutField_CString(hCon,"ip_addr",csIpAddr);
+			if (csIpRegionCode) PutField_CString(hCon,"ip_region",csIpRegionCode);
+			if (csUserAgent) PutField_CString(hCon,"user_agent",csUserAgent);
+
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			if ((DBObjPtr)(hCon) != PD_OK) {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() DBTransaction:Update Failed!!!!\n"));
+ERRLOG("TxnMgtByUsTMI: Authorize() DBTransaction:Update Failed!!!!\n");
+			}
+			FREE_ME(hCon);
+		}
+	}
+	
+	else{
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	FREE_ME(hTxn);
+	FREE_ME(rRecordSet);
+DEBUGLOG(("Authorize() normal exit = [%d]\n",iRet));
+	return iRet;
+}

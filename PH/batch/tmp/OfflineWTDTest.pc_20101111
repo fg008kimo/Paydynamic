@@ -1,0 +1,718 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "queue_utility.h"
+#include "mq_db.h"
+#include <zlib.h>
+#include <b64.h>
+
+OBJPTR(DB);
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_TMP_TAG_LEN	25
+char    cDebug;
+#define MY_TMP_TOKEN            "&"
+#define MY_TMP_FIELD_TOKEN      "="
+
+int process_header();
+int process_txn(const char* csBatchId, const char* csMerchId, const char* csDate);
+int BatchOnelineWithdrawAll(hash_t* hReq) ;
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+
+        int     iRet;
+
+	iRet = process_header();
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;	
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int process_header()
+{
+	int     iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO head_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char    hv_status;
+		
+		varchar v_batch_id[PD_TXN_SEQ_LEN+1];
+                varchar v_merchant_id[PD_MERCHANT_ID_LEN+1];
+		varchar v_txn_date[PD_DATE_LEN+1];
+
+		//varchar	hv_dynstmt[1024];
+
+		short   ind_merchant_id = -1;
+		short   ind_batch_id = -1;
+		short   ind_txn_date= -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+        hv_status = PD_INIT_STATE;
+DEBUGLOG(("process_header::status = [%c]\n",hv_status));
+
+
+	EXEC SQL DECLARE c_cursor_getheader CURSOR FOR
+		select	batch_id,
+			merchant_id,
+			txn_date
+		from	payout_header
+		where	status = :hv_status;
+
+	EXEC SQL OPEN c_cursor_getheader;
+
+	do{
+		EXEC SQL FETCH c_cursor_getheader
+		INTO
+			:v_batch_id:ind_batch_id,
+			:v_merchant_id:ind_merchant_id,
+			:v_txn_date:ind_txn_date;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+		
+		if(ind_batch_id>=0)
+			v_batch_id.arr[v_batch_id.len]='\0';
+		
+		if(ind_merchant_id>=0)
+			v_merchant_id.arr[v_merchant_id.len]='\0';
+
+		if(ind_txn_date>=0)
+			v_txn_date.arr[v_txn_date.len]='\0';
+
+		if((ind_batch_id>=0) &&(ind_merchant_id>=0)){
+
+			//search record details
+			iRet = process_txn((const char*)v_batch_id.arr, (const char*)v_merchant_id.arr, (const char*)v_txn_date.arr);
+
+				// update header status to 'W'
+				hash_t *hSuc;
+				hSuc = (hash_t*) malloc (sizeof(hash_t));
+				hash_init(hSuc,0);
+				PutField_Char(hSuc,"status",PD_SENT);
+				PutField_CString(hSuc,"batch_id",(const char*)v_batch_id.arr);
+				PutField_CString(hSuc,"txn_date",(const char*)v_txn_date.arr);
+				DBObjPtr = CreateObj(DBPtr,"DBPayoutHeader","UpdateStatus");
+				if((unsigned long int)(*DBObjPtr)(hSuc) == SUCCESS){
+DEBUGLOG(("Update Payout Header Status Success [%s] [%s] [%c]\n",v_batch_id.arr,v_txn_date.arr,PD_SENT));
+					iRet = SUCCESS;
+				}
+				else{
+DEBUGLOG(("Update Payout Header Status Failed [%s] [%s]\n",v_batch_id.arr,v_txn_date.arr));
+				}
+				FREE_ME(hSuc);	
+		}
+	
+	}while(PD_TRUE);
+
+	return iRet;
+
+head_error:
+    DEBUGLOG(("process_header error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getheader;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+
+}
+
+int process_txn(const char* csBatchId, const char* csMerchId, const char* csDate)
+{               
+	hash_t *hReq;
+        hReq = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hReq,0); 
+        int     iRet = SUCCESS;
+	int	iTotalCnt = 0;
+	int	iErrCnt = 0;
+	char	*csCcyCode =  strdup("");
+	//char	*csTmp;
+	char	csTag[PD_TMP_TAG_LEN +1];
+        
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		char	v_status;
+	
+		varchar	hv_batch_id[PD_TXN_SEQ_LEN];
+		varchar	hv_merchant_id[PD_MERCHANT_ID_LEN];
+
+		varchar	v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		varchar	v_country[PD_COUNTRY_LEN+1];
+		varchar	v_identity_id[PD_IDENTITY_ID_LEN+1];
+		varchar	v_account_num[PD_ACCOUNT_NO_LEN+1];
+		varchar	v_account_name[PD_ACCOUNT_NAME_LEN+1];
+		varchar	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar	v_bank_code[PD_BANK_CODE_LEN+1];
+		varchar	v_branch[PD_BANK_BRANCH_LEN+1];
+		varchar	v_phone[PD_MOBILE_NO_LEN+1];
+		varchar	v_province[PD_PROVINCE_LEN];
+		varchar	v_city[PD_CITY_LEN+1];
+		varchar	v_amount[PD_AMOUNT_LEN+1];
+		varchar	v_payout_ccy[PD_CCY_ID_LEN+1];
+		varchar	v_dest_ccy[PD_CCY_ID_LEN+1];
+		varchar	v_checksum[PD_CHECKSUM_LEN+1];
+
+		short   ind_merchant_ref = -1;
+		short   ind_country = -1;
+		short	ind_identity_id = -1;
+		short	ind_account_num	= -1;
+		short	ind_account_name = -1;
+		short	ind_bank_name = -1;
+		short	ind_bank_code = -1;
+		short	ind_branch = -1;
+		short	ind_phone= -1;
+		short	ind_city = -1;
+		short	ind_province = -1;
+		short	ind_amount = -1;
+		short   ind_payout_ccy = -1;
+		short   ind_dest_ccy = -1;
+		short	ind_checksum = -1;
+		short	ind_status = -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_batch_id.len = strlen(csBatchId);
+	strncpy(hv_batch_id.arr, csBatchId, hv_batch_id.len);
+DEBUGLOG(("process_txn::batch_id = [%.*s]\n",hv_batch_id.len,hv_batch_id.arr));
+
+
+	hv_merchant_id.len = strlen(csMerchId);
+	strncpy(hv_merchant_id.arr, csMerchId, hv_merchant_id.len);
+DEBUGLOG(("process_txn::hv_merchant_id= [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+
+DEBUGLOG(("process_txn:: date= [%s]\n",csDate));
+       
+	EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select 	status,
+         		merchant_ref,
+         		country,
+         		identity_id,
+         		account_name,
+         		account_num,
+         		bank_name,
+         		bank_code,
+         		branch,
+         		phone_num,
+         		province,
+         		city,
+         		amount,
+         		payout_currency,
+         		dest_currency,
+         		checksum
+  		   from payout_record
+		  where merchant_id = :hv_merchant_id
+		  and	batch_id = :hv_batch_id;
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO	:v_status:ind_status,
+			:v_merchant_ref:ind_merchant_ref,
+			:v_country:ind_country,
+			:v_identity_id:ind_identity_id,
+			:v_account_name:ind_account_name,
+			:v_account_num:ind_account_num,
+			:v_bank_name:ind_bank_name,
+			:v_bank_code:ind_bank_code,
+			:v_branch:ind_branch,
+			:v_phone:ind_phone,
+			:v_province:ind_province,
+			:v_city:ind_city,
+			:v_amount:ind_amount,
+			:v_payout_ccy:ind_payout_ccy,
+			:v_dest_ccy:ind_dest_ccy,
+			:v_checksum:ind_checksum;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+		
+		if(v_status!=PD_INIT_STATE){
+DEBUGLOG(("Invalid record status [%c], request not sent [%s] [%.*s]\n", v_status, csBatchId,v_merchant_ref.len,v_merchant_ref.arr));
+			iErrCnt ++;
+			continue;
+		}
+
+
+/*  process_type */
+		PutField_CString(hReq,"process_type","0200");
+
+/*  process_code */
+		PutField_CString(hReq,"process_code","220001");
+
+/* merchant_id */
+		sprintf(csTag,"merchant_id_%d",iTotalCnt);	
+		PutField_CString(hReq,csTag,csMerchId);
+
+/* merchant_ref */
+		if(ind_merchant_ref>=0){
+			v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+			sprintf(csTag,"reference_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_merchant_ref.arr);
+		}
+
+/* transaction_datetime */
+		sprintf(csTag,"transaction_datetime_%d",iTotalCnt);	
+		PutField_CString(hReq,csTag,csDate);
+
+/* pay_amount */
+		if(ind_amount>=0){
+			v_amount.arr[v_amount.len] = '\0';
+			sprintf(csTag,"pay_amount_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_amount.arr);
+		}
+
+/* currency_code */
+		sprintf(csTag,"currency_code_%d",iTotalCnt);	
+		PutField_CString(hReq,csTag,"TWD");
+/*
+		if(ind_dest_ccy>=0){
+			v_dest_ccy.arr[v_dest_ccy.len] = '\0';
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","GetCcyIdByNum");
+			if((unsigned long int)(*DBObjPtr)((const char*)v_dest_ccy.arr, csTmp) == SUCCESS){
+				strcpy(csCcyCode,csTmp);
+				sprintf(csTag,"currency_code_%d",iTotalCnt);	
+				PutField_CString(hReq,csTag,csCcyCode);
+			}
+		}
+		
+*/
+
+/* country */
+		if(ind_country>=0){
+			v_country.arr[v_country.len] = '\0';
+			sprintf(csTag,"country_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_country.arr);
+		}
+
+/* bank_code */
+		if(ind_bank_code>=0){
+			v_bank_code.arr[v_bank_code.len] = '\0';
+			sprintf(csTag,"bank_code_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_bank_code.arr);
+		}
+
+/* branch */
+		if(ind_branch>=0){
+			v_branch.arr[v_branch.len] = '\0';
+			sprintf(csTag,"branch_name_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_branch.arr);
+		}
+
+/* account_id */
+		if(ind_account_num>=0){
+			v_account_num.arr[v_account_num.len] = '\0';
+			sprintf(csTag,"account_id_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_account_num.arr);
+		}
+
+/* account_name */
+		if(ind_account_name>=0){
+			v_account_name.arr[v_account_name.len] = '\0';
+			sprintf(csTag,"account_name_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_account_name.arr);
+		}
+
+/* identity_id */
+		if(ind_identity_id>=0){
+			v_identity_id.arr[v_identity_id.len] = '\0';
+			sprintf(csTag,"identity_id_%d",iTotalCnt);	
+			PutField_CString(hReq,csTag,(const char*)v_identity_id.arr);
+		}
+
+/* batch_id */
+		sprintf(csTag,"batch_id_%d",iTotalCnt);	
+		PutField_CString(hReq,csTag,csBatchId);
+
+/* mac */
+		sprintf(csTag,"mac_%d",iTotalCnt);	
+		PutField_CString(hReq,csTag,"1");
+
+/*
+
+		if(iRet != PD_ERR){
+			hash_t *hUpd;
+			hUpd = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hUpd,0);
+			PutField_Char(hUpd,"status",PD_SENT);
+			PutField_CString(hUpd,"merchant_ref",(const char*)v_merchant_ref.arr);
+			PutField_CString(hUpd,"batch_id",csBatchId);
+			DBObjPtr = CreateObj(DBPtr,"DBPayoutRecord","UpdateStatus");
+			if((unsigned long int)(*DBObjPtr)(hUpd) == SUCCESS){
+DEBUGLOG(("Update Payout Record Status Success [%s] [%s] [%c]\n",csBatchId,v_merchant_ref.arr,PD_SENT));
+			}                       
+			else{           
+DEBUGLOG(("Update Payout Record Status Failed [%s] [%s]\n",csBatchId,v_merchant_ref.arr));
+			}
+
+			hash_destroy(hUpd);
+			FREE_ME(hUpd);
+		}
+		else{
+			iErrCnt ++;
+		}
+		
+*/
+		iTotalCnt++;
+
+	}while(PD_TRUE);
+
+	PutField_Int(hReq,"total_record",iTotalCnt);
+
+DEBUGLOG(("send BatchOnelineWithdrawAll [%d]\n",iTotalCnt));
+	iRet = BatchOnelineWithdrawAll(hReq);
+DEBUGLOG(("BatchOnelineWithdrawAll RET = [%d]\n",iRet));
+
+        FREE_ME(hReq);
+
+
+	FREE_ME(csCcyCode);
+	
+	EXEC SQL CLOSE c_cursor_gettxn;
+	return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int BatchOnelineWithdrawAll(hash_t* hReq) 
+{
+	int	iRet = PD_OK;
+	char	outMsg[PD_MAX_BUFFER +1];	
+	char	*csPtr;
+	char	*p;
+	char	csTag[25 +1];
+	struct msg_t *msg;
+
+	int	iSend,iRecv;
+	long	lKey,lRspKey;
+	
+
+	int	iTotal,i;
+
+	unsigned char buf[PD_MAX_BUFFER + 1]={0};
+     	unsigned long bufLen=sizeof(buf);
+
+	unsigned char tmpbuf[PD_MAX_BUFFER + 1]={0};
+     	unsigned long tmpbufLen=sizeof(tmpbuf);
+DEBUGLOG(("BatchOnelineWithdraw() \n"));
+	tmpbufLen = 0;
+
+	memset(outMsg,0,sizeof(outMsg));
+	iSend = 0;
+
+
+	GetField_Int(hReq,"total_record",&iTotal);
+	sprintf(outMsg,"total=%d&",iTotal);
+DEBUGLOG(("BatchOnelineWithdrawAll: total_record = [%d]\n",iTotal));
+/* process_type */      
+   	if (GetField_CString(hReq,"process_type",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: process_type = [%s]\n",csPtr));
+               	strcat((char*)outMsg,"process_type");
+                strcat((char*)outMsg,MY_TMP_FIELD_TOKEN);
+                strcat((char*)outMsg, csPtr);
+                strcat((char*)outMsg,MY_TMP_TOKEN);
+         }
+
+/* process_code */
+         if (GetField_CString(hReq,"process_code",&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: process_code = [%s]\n",csPtr));
+                 strcat((char*)outMsg,"process_code");
+                 strcat((char*)outMsg,MY_TMP_FIELD_TOKEN);
+                 strcat((char*)outMsg, csPtr);
+                 strcat((char*)outMsg,MY_TMP_TOKEN);
+          }
+
+	for (i = 0 ; i < iTotal; i++) {
+/* merchant_id */
+		sprintf(csTag,"merchant_id_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"mid_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* merchant_ref */
+		sprintf(csTag,"reference_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"ref_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+/* transaction_datetime */
+		sprintf(csTag,"transaction_datetime_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"td_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+
+/* pay_amount */
+		sprintf(csTag,"pay_amount_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"pm_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* currency_code */
+		sprintf(csTag,"currency_code_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"cc_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* country */
+		sprintf(csTag,"country_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"ct_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* bank_code */
+		sprintf(csTag,"bank_code_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"bc_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+
+/* branch_name */
+		sprintf(csTag,"branch_name_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"bn_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* account_id */
+		sprintf(csTag,"account_id_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"ai_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* account_name */
+		sprintf(csTag,"account_name_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"an_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+
+/* identity_id */
+		sprintf(csTag,"identity_id_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"id_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+
+/* batch_id */
+		sprintf(csTag,"batch_id_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			sprintf(csTag,"bi_%d",i);
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+/* mac */
+		sprintf(csTag,"mac_%d",i);
+		if (GetField_CString(hReq,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnelineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+		 	strcat((char*)tmpbuf,csTag);
+                 	strcat((char*)tmpbuf,MY_TMP_FIELD_TOKEN);
+                 	strcat((char*)tmpbuf, csPtr);
+                 	strcat((char*)tmpbuf,MY_TMP_TOKEN);
+		}
+	}
+
+	iSend = strlen(outMsg);
+	tmpbufLen = strlen(tmpbuf);
+	compress(buf,&bufLen,tmpbuf,tmpbufLen);
+	base64_encode(tmpbuf,tmpbufLen,buf,PD_MAX_BUFFER);
+
+DEBUGLOG(("BatchOnelineWithdrawAll: [%d][%s]\n",strlen(buf),buf));
+
+	strcat(outMsg,"DATA=");
+	strcat(outMsg,buf);
+	iSend = strlen(outMsg);
+DEBUGLOG(("BatchOnelineWithdrawAll: [%d][%s]\n",iSend,outMsg));
+
+	lKey = GetMQKey("BATCHREQQ");
+        lRspKey = GetMQKey("BATCHRSPQ");
+DEBUGLOG(("BatchOnelineWithdraw: lKey  = [%ld]\n",lKey));
+DEBUGLOG(("BatchOnelineWithdraw: lRspKey  = [%ld]\n",lRspKey));
+
+	msg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+        msg->mtype  = getpid();
+        memset(msg->mtext,0,sizeof(msg->mtext));
+        MQ_build_header((unsigned char*)msg->mtext,
+        		MQ_REQ,
+          		"WEB",
+                        0,
+                        "BATCHRSPQ");
+
+       	memcpy(&msg->mtext[MQ_HEADER_LEN],outMsg,iSend);
+	iSend += MQ_HEADER_LEN;
+        msg->mtext[iSend] = '\0';
+
+	
+        if (MQSend(lKey,msg,iSend) != MQ_OK ) {
+DEBUGLOG(("BatchOnelineWithdraw: Sent Error\n"));
+       		iRet = PD_ERR;
+        }
+        else {
+DEBUGLOG(("BatchOnelineWithdraw: Sent [%d]\n",iSend));
+DEBUGLOG(("BatchOnelineWithdraw: try to recv\n"));
+        	memset(msg->mtext,0,sizeof(msg->mtext));
+                if (MQRecv(lRspKey,msg,&iRecv,2) != MQ_OK ) {
+DEBUGLOG(("BatchOnelineWithdraw: recv Error\n"));
+               		iRet = PD_ERR;
+	        }
+                else {
+                	msg->mtext[iRecv] = '\0';
+			iRecv -= MQ_HEADER_LEN;
+DEBUGLOG(("BatchOnelineWithdraw:  recv len = [%d]\n",iRecv));
+DEBUGLOG(("BatchOnelineWithdraw:  recv = [%s]\n",&msg->mtext[MQ_HEADER_LEN],iRecv));
+                        memcpy(outMsg,&msg->mtext[MQ_HEADER_LEN],iRecv);
+			outMsg[iRecv] = '\0';
+
+
+			p = GetField(outMsg,"total",MY_TMP_TOKEN,MY_TMP_FIELD_TOKEN);
+			if (p) {
+				iTotal = ctos(p,strlen(p));
+DEBUGLOG(("BatchOnelineWithdraw:  iTotal  = [%d]\n",iTotal));
+			}
+			for (i = 0; i < iTotal; i ++) {
+                        	hash_t *hUpd;
+                        	hUpd = (hash_t*) malloc (sizeof(hash_t));
+                        	hash_init(hUpd,0);
+
+/* response_code */
+				sprintf(csTag,"response_code_%d",i);
+				p = GetField(outMsg,csTag,MY_TMP_TOKEN,MY_TMP_FIELD_TOKEN);
+				if (p) {
+					csPtr = strdup(p);
+DEBUGLOG(("BatchOnelineWithdraw:  %s  = [%s]\n",csTag,csPtr));
+					PutField_CString(hUpd,"resp_code",csPtr);
+				}
+
+/* status */
+				if (strcmp(csPtr,"1"))  /* reject */
+                        		PutField_Char(hUpd,"status",PD_REJECT);
+				else
+                        		PutField_Char(hUpd,"status",PD_SENT);
+
+/* merchant_ref */
+				sprintf(csTag,"merchant_ref_%d",i);
+				p = GetField(outMsg,csTag,MY_TMP_TOKEN,MY_TMP_FIELD_TOKEN);
+				if (p) {
+					csPtr = strdup(p);
+DEBUGLOG(("BatchOnelineWithdraw:  %s  = [%s]\n",csTag,csPtr));
+					PutField_CString(hUpd,"merchant_ref",csPtr);
+				}
+/* batch_id */
+				sprintf(csTag,"batch_id_%d",i);
+				p = GetField(outMsg,csTag,MY_TMP_TOKEN,MY_TMP_FIELD_TOKEN);
+				if (p) {
+					csPtr = strdup(p);
+DEBUGLOG(("BatchOnelineWithdraw:  %s  = [%s]\n",csTag,csPtr));
+					PutField_CString(hUpd,"batch_id",csPtr);
+				}
+
+                        	DBObjPtr = CreateObj(DBPtr,"DBPayoutRecord","UpdateStatus");
+				iRet = (unsigned long int)(*DBObjPtr)(hUpd);
+
+DEBUGLOG(("BatchOnelineWithdraw: update record result  = [%d]\n",iRet));
+
+                       		hash_destroy(hUpd);
+                        	FREE_ME(hUpd);
+			}
+
+                }
+	}
+        FREE_ME(msg);
+	return iRet;
+}
+

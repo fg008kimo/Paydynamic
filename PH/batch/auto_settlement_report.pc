@@ -1,0 +1,570 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/12/19              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cDebug = 'Y';
+
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+int parse_arg(int argc,char **argv);
+int process_main(const char* csPostingDate);
+int is_settle_date(hash_t *hTxn,const int iSettleId);
+int process_settlement_request(hash_t *hTxn);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+		printf("usage:  -f from_date -t to_date -m merchant_id -s service_code -c currency -n country \n");
+                return (iRet);
+        }
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_main(const char* csPostingDate)
+{
+        int     iRet = SUCCESS;
+	char	csLastSettDate[PD_DATE_LEN+1];
+	int	iDoSettlement = PD_FALSE;
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("process_main\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	v_service_code[PD_SERVICE_CODE_LEN + 1];
+		varchar	v_txn_country[PD_COUNTRY_LEN +1];
+		varchar	v_txn_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_merchant_id[PD_MERCHANT_ID_LEN +1];
+		varchar	v_last_sett_date[PD_DATE_LEN +1];
+		int	v_sett_id;
+
+		short	ind_service_code = -1;
+		short	ind_txn_country = -1;
+		short	ind_txn_ccy = -1;
+		short	ind_merchant_id = -1;
+		short	ind_last_sett_date = -1;
+		short	ind_sett_id = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_get_service CURSOR FOR
+		SELECT 	m_merchant_id,
+			m_country_id,
+			m_currency_id,
+			m_service_code,
+			auto_sett_id,
+			m_last_settlement_date
+ 		  FROM  merchant_balance,
+			merch_detail
+		  WHERE	disabled = 0
+		  AND	status = 'O'
+		  and   m_merchant_id = merchant_id
+		  and	support_auto_sett = 1;
+
+        EXEC SQL OPEN c_cursor_get_service;
+        do {    
+                EXEC SQL FETCH c_cursor_get_service
+                INTO
+			v_merchant_id:ind_merchant_id,
+			v_txn_country:ind_txn_country,
+			v_txn_ccy:ind_txn_ccy,
+			v_service_code:ind_service_code,
+			v_sett_id:ind_sett_id,
+			v_last_sett_date:ind_last_sett_date;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+		if (ind_merchant_id>= 0) {
+			v_merchant_id.arr[v_merchant_id.len] = '\0';	
+			PutField_CString(hTxn,"merchant_id",(const char *)v_merchant_id.arr);
+DEBUGLOG(("merchant_id = [%s]\n",v_merchant_id.arr));
+		}
+
+		if (ind_service_code >= 0) {
+			v_service_code.arr[v_service_code.len] = '\0';	
+			PutField_CString(hTxn,"service_code",(const char *)v_service_code.arr);
+DEBUGLOG(("service code = [%s]\n",v_service_code.arr));
+		}	
+
+		if (ind_txn_country >= 0) {
+			v_txn_country.arr[v_txn_country.len] = '\0';	
+			PutField_CString(hTxn,"txn_country",(const char *)v_txn_country.arr);
+DEBUGLOG(("txn_country = [%s]\n",v_txn_country.arr));
+		}
+
+		if (ind_txn_ccy>= 0) {
+			v_txn_ccy.arr[v_txn_ccy.len] = '\0';	
+			PutField_CString(hTxn,"txn_ccy",(const char *)v_txn_ccy.arr);
+DEBUGLOG(("txn_ccy = [%s]\n",v_txn_ccy .arr));
+		}
+
+		if (ind_last_sett_date>= 0) {
+			v_last_sett_date.arr[v_last_sett_date.len] = '\0';	
+			strcpy(csLastSettDate,(const char *)v_last_sett_date.arr);
+			PutField_CString(hTxn,"last_sett_date",csLastSettDate);
+DEBUGLOG(("last_sett_date = [%s]\n",v_last_sett_date.arr));
+		}
+		else{
+			csLastSettDate[0]='\0';
+		}
+
+		if (ind_sett_id>= 0) {
+DEBUGLOG(("sett_id = [%d]\n",v_sett_id));
+		}
+		else{
+			iRet = PD_ERR;
+			break;
+		}
+
+		PutField_CString(hTxn,"posting_date",csPostingDate);
+		if (is_holidays((const char*)v_txn_country.arr,csPostingDate) != PD_TRUE) {
+                        if (iRet == PD_OK) {
+				iDoSettlement = PD_FALSE;
+				iDoSettlement = is_settle_date(hTxn,(const int)v_sett_id);
+				//iDoSettlement = is_settle_date(csPostingDate,(const char*)v_last_sett_date.arr,
+				//				(const char*)v_txn_country.arr,(const int)v_sett_id);
+
+				if(iDoSettlement){
+					iRet = process_settlement_request(hTxn);
+				}
+
+			}
+		}
+		else {
+DEBUGLOG(("today is holiday for %s... skip....\n",v_txn_country.arr));
+		}
+
+	}while(PD_TRUE);
+        EXEC SQL CLOSE c_cursor_get_service;
+
+	FREE_ME(hTxn);
+	return	iRet;
+
+sql_error:
+    DEBUGLOG(("process_main error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_daily_float::process_main sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_service;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+//int	is_settle_date(const char* csPostingDate, const char* csLastSettDate, const char* csCountry,const int iSettleId)
+int	is_settle_date(hash_t * hTxn,const int iSettleId)
+{
+	int	iRet = PD_FALSE;
+	int	iValue = 0;
+	int	iDayOfWeek = 0;
+	double	dValue = 0.0;
+	char	*csPostingDate = NULL;
+	char	csLastSettDate[PD_DATE_LEN+1];
+	char	*csCountry = NULL;
+	char	*csTmp= NULL;
+
+DEBUGLOG(("is_settle_date\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO get_rule_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+                int		hv_rule_id;
+
+                char		v_sett_type;
+		double		v_rule_value;
+		varchar		v_release_date[PD_DATE_LEN+1];
+
+		short           ind_sett_type = -1;
+		short           ind_rule_value = -1;
+		short           ind_release_date = -1;
+
+		varchar		hv_posting_date[PD_DATE_LEN];
+		varchar		hv_country[PD_COUNTRY_LEN];
+
+	EXEC SQL END DECLARE SECTION;
+
+	if(GetField_CString(hTxn,"posting_date",&csPostingDate)){
+DEBUGLOG(("is_settle_date posting_date = [%s]\n",csPostingDate));
+	}
+
+	if(GetField_CString(hTxn,"last_sett_date",&csTmp)){
+DEBUGLOG(("is_settle_date last_sett_date = [%s]\n",csTmp));
+		strcpy(csLastSettDate,csTmp);
+	}
+	else{
+		strcpy(csLastSettDate,"000000");
+	}
+	csLastSettDate[PD_DATE_LEN]='\0';
+
+	if(GetField_CString(hTxn,"txn_country",&csCountry)){
+DEBUGLOG(("is_settle_date country = [%s]\n",csCountry));
+	}
+
+        hv_rule_id = iSettleId;
+DEBUGLOG(("GetSettlementRule rule_id = [%d]\n",hv_rule_id));
+
+	EXEC SQL SELECT rs_type,
+			rs_value
+		INTO	:v_sett_type:ind_sett_type,
+			v_rule_value:ind_rule_value
+		FROM	rule_auto_settlement
+		WHERE	rs_id = :hv_rule_id
+		AND	rs_disabled = 0;
+
+	if (ind_sett_type>= 0) {
+DEBUGLOG(("GetSettlementRule settlement_type = [%c]\n",v_sett_type));
+		PutField_Char(hTxn,"rule_type",v_sett_type);
+	}
+	if (ind_rule_value>= 0) {
+		if(v_sett_type!='A'){
+			iValue = (int)v_rule_value;
+DEBUGLOG(("GetSettlementRule rule_value = [%d]\n",iValue));
+		}
+		else{
+			dValue = v_rule_value;
+			PutField_Double(hTxn,"rule_value",dValue);
+DEBUGLOG(("GetSettlementRule rule_value = [%lf]\n",dValue));
+		}
+	}
+
+	if(v_sett_type == 'D'){
+		hv_posting_date.len = strlen(csPostingDate);
+		memcpy(hv_posting_date.arr,csPostingDate,hv_posting_date.len);
+DEBUGLOG(("find_release_date posting date = [%.*s]\n",hv_posting_date.len,hv_posting_date.arr));
+
+		hv_country.len = strlen(csCountry);
+		memcpy(hv_country.arr,csCountry,hv_country.len);
+DEBUGLOG(("find_release_date country  = [%.*s]\n",hv_country.len,hv_country.arr));
+
+		EXEC SQL SELECT release_pkg.find_release_date(:hv_posting_date,:hv_country,:v_rule_value)
+			INTO	:v_release_date:ind_release_date
+			FROM	dual;
+
+		if(ind_release_date>=0){
+			v_release_date.arr[v_release_date.len]='\0';
+DEBUGLOG(("find_release_date release_date = [%s]\n",v_release_date.arr));
+
+			if(strcmp((const char *)v_release_date.arr,csLastSettDate)>0)
+				iRet  = PD_TRUE;
+		}
+	}
+	else if(v_sett_type == 'W'){
+		if(strcmp(csLastSettDate,csPostingDate)){	
+			iDayOfWeek = -1;
+			iDayOfWeek = day_of_week((const unsigned char *)csPostingDate);
+			if(iDayOfWeek==0) //Sunday
+				iDayOfWeek = 7;
+DEBUGLOG(("Today: day_of_week = [%i]\n",iDayOfWeek));
+DEBUGLOG(("Auto Settlement: day_of_week = [%i]\n",iValue));
+			if(iValue == iDayOfWeek){
+				iRet  = PD_TRUE;
+			}
+		}
+		else{
+DEBUGLOG(("Auto settlement already run!!!!!!\n"));
+		}
+	}
+	else if(v_sett_type == 'M'){
+		int vday[] = {-1, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 29};
+		int i_year, i_dd, i_mm, i;
+		char buf[40];
+
+		sprintf(buf,"%c%c%c%c", csPostingDate[0], csPostingDate[1], csPostingDate[2], csPostingDate[3]);
+		i_year = atoi(buf);
+		sprintf(buf, "%c%c", csPostingDate[4], csPostingDate[5]);
+		i_mm = atoi(buf);
+		sprintf(buf, "%c%c", csPostingDate[6], csPostingDate[7]);
+		i_dd = atoi(buf);
+
+		if(isleap(i_year) && i_mm==2)
+                        i = 13;
+                else
+                        i = i_mm;
+
+		if(strcmp(csLastSettDate,csPostingDate)){
+			if(iValue == PD_MONTH_END ||
+			   iValue > i_dd){
+				if(i_dd == vday[i])
+					iRet  = PD_TRUE;
+			}
+			else if (iValue == i_dd){
+				iRet = PD_TRUE;
+			}
+		}
+		else{
+DEBUGLOG(("Auto settlement already run!!!!!!\n"));
+		}
+
+	}
+	else if(v_sett_type == 'A'){
+DEBUGLOG(("Auto settlement by checking amount\n"));
+		iRet = PD_TRUE;
+	}
+	else{
+DEBUGLOG(("GetSettlementRule Undefined Settlement Type [%c]\n",v_sett_type));
+	}
+
+DEBUGLOG(("is_settle_date [%d]\n",iRet));
+	return iRet;
+
+get_rule_error:
+    DEBUGLOG(("is_settle_date error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_auto_settlement::is_settle_date sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int process_settlement_request(hash_t *hTxn)
+{
+        int     iRet = SUCCESS;
+	double	dSettleAmt = 0.0;
+	unsigned char   csTxnSeq[PD_TXN_SEQ_LEN +1];
+	char	*csMerchantId;
+	char    csClientId[PD_CLIENT_ID_LEN+1];
+	char	*csTmp;
+	char	cType;
+	double	dValue = 0.0;
+	
+
+DEBUGLOG(("*****Process Settlement Request Start*****\n"));
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_service_code[PD_SERVICE_CODE_LEN];
+		varchar	hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar	hv_currency_id[PD_CCY_ID_LEN];
+		varchar	hv_country[PD_COUNTRY_LEN];
+		varchar	hv_last_sett_date[PD_DATE_LEN];
+		varchar	hv_posting_date[PD_DATE_LEN];
+		double	v_sett_bal;
+		
+		short	ind_sett_bal= -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if(GetField_CString(hTxn,"service_code",&csTmp)){
+		hv_service_code.len = strlen(csTmp);
+        	memcpy(hv_service_code.arr,csTmp,hv_service_code.len);
+DEBUGLOG(("process_settlement_request service_code = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+	}
+
+	if(GetField_CString(hTxn,"merchant_id",&csMerchantId)){
+		hv_merchant_id.len = strlen(csMerchantId);
+		memcpy(hv_merchant_id.arr,csMerchantId,hv_merchant_id.len);
+DEBUGLOG(("process_settlement_request merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+	}
+
+	if(GetField_CString(hTxn,"txn_country",&csTmp)){
+		hv_country.len = strlen(csTmp);
+		memcpy(hv_country.arr,csTmp,hv_country.len);
+DEBUGLOG(("process_settlement_request country = [%.*s]\n",hv_country.len,hv_country.arr));
+	}
+
+	if(GetField_CString(hTxn,"txn_ccy",&csTmp)){
+		hv_currency_id.len = strlen(csTmp);
+		memcpy(hv_currency_id.arr,csTmp,hv_currency_id.len);
+DEBUGLOG(("process_settlement_request txn_ccy= [%.*s]\n",hv_currency_id.len,hv_currency_id.arr));
+	}
+
+	if(GetField_CString(hTxn,"last_sett_date",&csTmp)){
+		hv_last_sett_date.len = strlen(csTmp);
+		memcpy(hv_last_sett_date.arr,csTmp,hv_last_sett_date.len);
+DEBUGLOG(("process_settlement_request last_sett_date = [%.*s]\n",hv_last_sett_date.len,hv_last_sett_date.arr));
+	}
+	else{
+		hv_last_sett_date.len = PD_DATE_LEN;
+		memcpy(hv_last_sett_date.arr,"000000",hv_last_sett_date.len);
+DEBUGLOG(("process_settlement_request last_sett_date (default)= [%.*s]\n",hv_last_sett_date.len,hv_last_sett_date.arr));
+	}
+
+	if(GetField_CString(hTxn,"posting_date",&csTmp)){
+		hv_posting_date.len = strlen(csTmp);
+		memcpy(hv_posting_date.arr,csTmp,hv_posting_date.len);
+DEBUGLOG(("process_settlement_request posting_date = [%.*s]\n",hv_posting_date.len,hv_posting_date.arr));
+	}
+
+        EXEC SQL DECLARE c_cursor_get_bucket CURSOR FOR
+		SELECT nvl(ava_sett,0)
+		FROM    merchant_balance_view
+		WHERE   m_merchant_id = :hv_merchant_id
+		AND     m_service_code = :hv_service_code
+		AND     m_currency_id = :hv_currency_id
+		AND     m_country_id = :hv_country; 
+
+	EXEC SQL OPEN c_cursor_get_bucket;
+        do {   
+                EXEC SQL FETCH c_cursor_get_bucket
+                INTO
+			v_sett_bal:ind_sett_bal;
+
+	 	if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+/* settle_bal */
+                if (ind_sett_bal>= 0 ){
+			dSettleAmt = v_sett_bal;
+			PutField_Double(hTxn,"txn_amt",dSettleAmt);
+DEBUGLOG(("process_settlement_request: settlement_bal =[%lf]\n",v_sett_bal));
+                }
+	}
+	while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_get_bucket;
+
+	if(GetField_Char(hTxn,"rule_type",&cType)){
+		if(cType == 'A'){
+			GetField_Double(hTxn,"rule_value",&dValue);
+			if(dValue>dSettleAmt){
+DEBUGLOG(("process_settlement_request: settlement_bal[%lf] less then the rule value[%lf], no auto settlement\n",dSettleAmt,dValue));
+				dSettleAmt = 0.0;
+			}
+		}
+	}
+
+
+	if(dSettleAmt>0.0){
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+		strcpy((char*)csTxnSeq,(*DBObjPtr)());
+		PutField_CString(hTxn,"txn_seq",(const char*)csTxnSeq);
+DEBUGLOG(("process_settlement_request txn_id = [%s]\n",csTxnSeq));
+
+		if(GetClientId((const unsigned char*)csMerchantId,( unsigned char *)csClientId)==PD_OK){
+			PutField_CString(hTxn,"client_id",csClientId);
+		}
+DEBUGLOG(("Call TxnMgtByUsSTR:Authorize\n"));
+		PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+		PutField_CString(hTxn,"remark","Auto Settlement By SYSTEM");
+		PutField_CString(hTxn,"sett_type","S");
+		PutField_CString(hTxn,"txn_code",PD_SETTLEMENT_REQUEST);
+		TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsSTR","Authorize");
+		if((unsigned long)(*TxnObjPtr)(hTxn,hTxn,hTxn)!=PD_OK){
+			iRet = FAILURE;
+		}
+		else{
+			PutField_Char(hTxn,"status",PD_PROCESSING);
+			PutField_Int(hTxn,"internal_code",PD_OK);
+			PutField_CString(hTxn,"response_code","0");
+			PutField_CString(hTxn,"sub_status",PD_SYSTEM_REQUESTED);
+			if(AddTxnLog(hTxn)!=PD_OK){
+				iRet = FAILURE;
+			}
+		}
+	}
+
+DEBUGLOG(("process_settlement_request iRet = [%d]\n",iRet));
+
+        return iRet;
+
+sql_error:
+    DEBUGLOG(("process_settlement_request error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_auto_settlement::process_settlement_request sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_bucket;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+        strcpy(cs_from_date,"");
+        strcpy(cs_to_date,"");
+        strcpy(cs_merchant_id,"");
+        strcpy(cs_service_code,"");
+        strcpy(cs_ccy_id,"");
+        strcpy(cs_country,"");
+
+        while ((c = getopt(argc,argv,"f:t:m:s:c:n")) != EOF) {
+                switch (c) {
+			case 'f':
+				strcpy(cs_from_date, optarg);
+				break;
+			case 't':
+				strcpy(cs_to_date, optarg);
+				break;
+			case 'm':
+				strcpy(cs_merchant_id, optarg);
+				break;
+			case 's':
+				strcpy(cs_service_code, optarg);
+				break;
+			case 'c':
+				strcpy(cs_ccy_id, optarg);
+				break;
+			case 'n':
+				strcpy(cs_country, optarg);
+				break;
+			default:
+				return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_from_date,"") ||
+	    !strcmp(cs_to_date,"") ||
+	    !strcmp(cs_merchant_id,"")||
+	    !strcmp(cs_service_code,"")||
+	    !strcmp(cs_ccy_id,"")||
+	    !strcmp(cs_country,""))
+                return FAILURE;
+
+	return SUCCESS;
+}

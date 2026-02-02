@@ -1,0 +1,1998 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/09/23              Cody Chan
+Compare int and ext rate			   2011/07/29		   Cody Chan
+Change to Parameters based			   2012/10/24		   Cody Chan
+Rate Compare Correction				   2015/06/17		   LokMan Chow
+Check Mini-MMM mode				   2015/12/23		   LokMan Chow
+PRD060 NBXA Settlement not consider ACR		   2017/03/20		   LokMan Chow
+Add one offline channel to get ACR pool		   2017/03/22		   LokMan Chow
+PRD067 Support manual input exchange rate	   2017/04/24		   David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOExchange.h"
+
+char    cDebug;
+#define PD_PREFIX       "org"
+
+OBJPTR(DB);
+OBJPTR(BO);
+void BOExchange(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+double  CalExAmt(double dFromAmt,double dRate,const char* csDstCcy);
+int	CalResult(const char* csFromCcy, const char* csToCcy, const double dAmt,
+              const double dExRate, const char cExParty, const char cFrToReverse,
+              const double dMarkupRate, const char cMarkupAmtOpr,
+              hash_t* hContext);
+
+int	CalSettlementInter(const char* csFromCcy, const char* csToCcy, const double dAmt,
+	      const double dInExRate, const char cFrToReverse,
+	      const double dMarkupRate, const char cMarkupAmtOpr,
+	      hash_t* hContext);
+
+int DoExchange(hash_t* hContext,
+		double	dTxnAmt,
+		const char* csInFromCcy,
+                const char* csInToCcy,
+                const char* csCountryId,
+                const char* csChannelCode,
+                const char* csServiceCode,
+                const char* csTxnCode,
+                const char* csMerchantId,
+                const char* csClientId);
+
+int DoExchangeByDate(hash_t* hContext,
+		double	dTxnAmt,
+		const char* csInFromCcy,
+                const char* csInToCcy,
+                const char* csCountryId,
+                const char* csChannelCode,
+                const char* csServiceCode,
+                const char* csTxnCode,
+                const char* csMerchantId,
+                const char* csClientId,
+		const char* csDateTime);
+
+int GetExchangeInfo(hash_t *hContext,
+                const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+	char*	csTxnCcy;
+	char*	csPspCcy;
+	double	dAmt;
+	//,dSebBal,dRatio,dRate;
+	char*	csTxnCode;
+	char*	csTxnCountry;
+	char*	csChannelCode;
+	char*	csServiceCode;
+	char*	csMerchantId;
+	char*	csMerchantClientId;
+	char	csTag[PD_TAG_LEN +1];
+	int	iInitMode = PD_FALSE;
+	
+	hash_t	*hRec;
+
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BOExchange:GetExchangeInfo()\n"));
+        GetField_Int(hContext,"init_mode",&iInitMode);
+DEBUGLOG(("BOExchange::GetExchangeInfo() init_mode = [%d]\n",iInitMode));
+
+        if (iInitMode)
+		if (GetField_Double(hContext,"org_txn_amt",&dAmt)) {
+DEBUGLOG(("BOExchange:GetExchangeInfo org_txn_amt  = [%lf]\n",dAmt));
+		}
+		else {
+DEBUGLOG(("BOExchange:GetExchangeInfo org_txn_amt is missing!!!\n"));
+		}
+	else if (GetField_Double(hContext,"txn_amt",&dAmt)) {
+DEBUGLOG(("BOExchange:GetExchangeInfo txn_amt = [%f]\n",dAmt));
+	}
+	else {
+DEBUGLOG(("BOExchange:GetExchangeInfo txn_amt is missing!!!\n"));
+	}
+
+	if (!GetField_CString(hContext,"txn_ccy",&csTxnCcy) && iRet == PD_OK) {
+		if (!GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOExchange:GetExchangeInfo txn_ccy is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+	if (!GetField_CString(hContext,"dst_txn_ccy",&csPspCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfo dst_txn_ccy is missing!!!\n"));
+		iRet = PD_ERR;
+	}
+	else {
+	//	PutField_CString(hContext,"psp_txn_ccy",csPspCcy);
+DEBUGLOG(("BOExchange:GetExchangeInfo dst_txn_ccy  = [%s]\n",csPspCcy));
+	}
+
+
+
+
+
+/* txn code */
+        if (iInitMode)
+                sprintf(csTag,"%s_txn_code",PD_PREFIX);
+        else
+                strcpy(csTag,"txn_code");
+        if (GetField_CString(hContext,csTag,&csTxnCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csTxnCode));
+        }
+        else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s not found!!!\n",csTag));
+        }
+
+/*org txn country */
+        if (iInitMode) {
+                sprintf(csTag,"%s_txn_country",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csTxnCountry)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csTxnCountry));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"txn_country");
+                if (GetField_CString(hRequest,csTag,&csTxnCountry)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csTxnCountry));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+
+
+/*org txn ccy */
+        if (iInitMode) {
+                sprintf(csTag,"%s_txn_ccy",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csTxnCcy)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csTxnCcy));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"txn_ccy");
+                if (GetField_CString(hRequest,csTag,&csTxnCcy)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csTxnCcy));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+
+
+/*org channel code */
+        if (iInitMode)
+                sprintf(csTag,"%s_channel_code",PD_PREFIX);
+        else
+                strcpy(csTag,"channel_code");
+        if (GetField_CString(hContext,csTag,&csChannelCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csChannelCode));
+        }
+        else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+        }
+
+/*org service code */
+        if (iInitMode) {
+                sprintf(csTag,"%s_service_code",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csServiceCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csServiceCode));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"service_code");
+                if (GetField_CString(hRequest,csTag,&csServiceCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csServiceCode));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+
+/*org merchant id */
+        if (iInitMode) {
+                sprintf(csTag,"%s_merchant_id",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csMerchantId)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csMerchantId));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"merchant_id");
+                if (GetField_CString(hRequest,csTag,&csMerchantId)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csMerchantId));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+                }
+        }
+
+
+/*org merchant client id */
+        if (iInitMode) {
+                sprintf(csTag,"%s_client_id",PD_PREFIX);
+        }
+        else {
+                strcpy(csTag,"merchant_client_id");
+        }
+
+        if (GetField_CString(hContext,csTag,&csMerchantClientId)) {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s = [%s]\n",csTag,csMerchantClientId));
+        }
+        else {
+DEBUGLOG(("BOExchange::GetExchangeInfo() %s is missing!!!\n",csTag));
+        }
+
+	if (iRet == PD_OK) {	
+
+		if (!strcmp(csTxnCcy,csPspCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfo same currency!!!\n"));
+			PutField_CString(hContext,"dst_txn_ccy",csTxnCcy);
+			PutField_Double(hContext,"dst_txn_amt",dAmt);
+			PutField_Double(hContext,"ex_rate",1);
+			PutField_Char(hContext,"ex_party",PD_INT_EX);
+		}
+		else {
+DEBUGLOG(("BOExchange:GetExchangeInfo do Exchange!!!\n"));
+			if (DoExchange(hContext,
+				dAmt,
+				csTxnCcy,
+				csPspCcy,
+       	         		csTxnCountry,
+       	        	 	csChannelCode,
+       	         		csServiceCode,
+                		csTxnCode,
+                		csMerchantId,
+                		csMerchantClientId) != PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfo do Exchange Failed!!!\n"));
+ERRLOG("BOExchange:GetExchangeInfo do Exchange Failed!!!\n");
+				iRet = INT_ERR;
+			}
+		}
+	}
+
+	
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+DEBUGLOG(("BOExchange:GetExchangeInfo exit Ret = [%d]\n",iRet));
+	return iRet;
+}
+double	CalExAmt(double dFromAmt,double dRate,const char* csDstCcy)
+{
+	double	dTmp = 0.0;
+	dTmp = dFromAmt * dRate;
+DEBUGLOG(("CalExAtm: from[%lf] * rate[%lf] = [%lf][%s] \n",dFromAmt,dRate,dTmp,csDstCcy));
+	DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+	if ((unsigned long)((*DBObjPtr)(csDstCcy)) == PD_TRUE) {
+DEBUGLOG(("CalExAmt: Support Decimal\n"));
+		dTmp =  newround(dTmp, PD_DECIMAL_LEN);
+	}
+	else {
+DEBUGLOG(("CalExAmt: Doesn't Support Decimal\n"));
+		dTmp =  newround(dTmp, 0);
+	}
+	return dTmp;
+}
+int GetExternalExchangeRate(const char* csFromCcy,
+		const char* csToCcy,
+		double	dTxnAmt,
+		double	*dExRate,
+		double	*dExAmt)
+{
+	int iRet = PD_OK;
+	hash_t	*hRec;
+	double	dNewTxnAmt = dTxnAmt;
+	double	dRate = 0;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("GetExternalExchangeRate from [%s] to [%s] = [%lf]\n",csFromCcy,csToCcy,dTxnAmt));
+
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+	if ((unsigned long)((*DBObjPtr)(csFromCcy,csToCcy,hRec)) == PD_OK) {
+		
+		if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("GetExternalExchangeRate rate = [%lf]\n",dRate));
+/* apply Exchange Markup Fee */
+			double dNewAmt =  CalExAmt(dNewTxnAmt,dRate,csToCcy);
+DEBUGLOG(("GetExternalExchangeRate new amt in [%s] = [%lf]\n",csToCcy,dNewAmt));
+			*dExRate = dRate;
+			*dExAmt = dNewAmt;
+		}
+		else 
+			iRet = INT_EX_RATE_ERROR;
+	}
+	else  {
+		iRet = INT_EX_RATE_ERROR;
+	}
+
+DEBUGLOG(("GetExternalExchangeRate::() = [%d]\n",iRet));
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+	return iRet;
+}
+
+
+int DoExchange(hash_t* hContext,
+		double	dTxnAmt,
+		const char* csInFromCcy,
+		const char* csInToCcy,
+		const char* csCountryId,
+		const char* csChannelCode,
+		const char* csServiceCode,
+		const char* csTxnCode,
+		const char* csMerchantId,
+		const char* csClientId)
+{
+	int	iRet = PD_OK;
+	int	iIsToRestricted = PD_FALSE;
+	int	iIsFromRestricted = PD_FALSE;
+	double	dExRate = 0.0;
+	double	dMarkupRate = 0.0;
+	double	dMarkupAmt = 0.0;
+
+	char	*csNoneRestricted;
+	char	*csRestricted1;
+	char	*csRestricted2;
+	char	*csRes1Res2Opr;
+	char	csACRPool[PD_CCY_ID_LEN+1];
+	char	cMarkupAmtOpr;
+	char	csInterMedCcy[PD_CCY_ID_LEN +1];
+
+	double	dResMarkupRate = 0.0;
+	double	dNoneResMarkupRate = 0.0;
+	double	dTmpRate1 = 0.0;
+	double	dTmpRate21 = 0.0;
+	double	dTmpRate21b = 0.0;
+	double	dTmpRate22 = 0.0;
+	int     iInfoOnly = PD_FALSE;
+
+	char	csRestrictedCcy[PD_CCY_ID_LEN +1];
+	char	csNonRestrictedCcy[PD_CCY_ID_LEN +1];
+	int	iChk = 0;
+
+	char	csFromCcy[PD_CCY_ID_LEN+1];
+	char	csToCcy[PD_CCY_ID_LEN+1];
+	char	cFrToReverse = PD_NO;
+	char	cManualInput = PD_NOT_REQUIRED;
+	double	dInputExRate = 0.0;
+
+	double	dOandaRate = 0.0;
+	double	dInterRate = 0.0;
+	double	dHalfExRate = 0.0;
+	double	dACR = 0.0;
+	double	dFrInterExRate = 0.0;
+	double	dFrInterACRRate = 0.0;
+	double	dSettInterRate = 0.0;
+
+	int	iMiniMMMOn = PD_FALSE;
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	hash_t	*hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("DoExchange::() = [%d]\n",iRet));
+DEBUGLOG(("DoExchange::() FromCcy= [%s]\n",csInFromCcy));
+DEBUGLOG(("DoExchange::() ToCcy= [%s]\n",csInToCcy));
+
+	if(GetField_Int(hContext,"get_info_only",&iInfoOnly)){
+DEBUGLOG(("DoExchange::() Info Only = [%d]\n",iInfoOnly));
+	}
+
+	//check Mini-MMM Mode
+	char*   csValue;
+	csValue = (char*) malloc (128);
+	DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+	if ((unsigned long)(DBObjPtr)(PD_MINI_MMM_ENABLE,csValue) == FOUND) {
+DEBUGLOG(("DoExchange::() Mini-MMM Mode = [%s]\n",csValue));
+		if (!strcmp(csValue, PD_ENABLE_MMSMODE)){
+			iMiniMMMOn = PD_TRUE;
+		}
+	}
+	FREE_ME(csValue);
+
+
+	if(strcmp(csChannelCode,PD_CHANNEL_OMT) && strcmp(csChannelCode,PD_CHANNEL_OLN) && strcmp(csChannelCode,PD_CHANNEL_OPL)){
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","GetACRPool");
+		if ((unsigned long)((*DBObjPtr)(
+						csMerchantId,
+						csCountryId,
+						csInFromCcy,
+						csServiceCode,
+						&csACRPool)) == PD_OK) {
+DEBUGLOG(("DoExchange::() merchant preferred_acr_pool = [%s]\n",csACRPool));
+		}
+	}
+	else{
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchConfig","GetACRPool");
+		if ((unsigned long)((*DBObjPtr)(
+						csMerchantId,
+						csCountryId,
+						csInFromCcy,
+						csServiceCode,
+						&csACRPool)) == PD_OK) {
+DEBUGLOG(("DoExchange::() merchant preferred_acr_pool = [%s]\n",csACRPool));
+		}
+	}
+
+/* using system ex rules */
+	DBObjPtr = CreateObj(DBPtr,"DBSystemExRules","FindCode");
+       	if (!(*DBObjPtr)(csTxnCode,rRecordSet)) {
+		hash_t  *hRec;
+		hRec = RecordSet_GetFirst(rRecordSet);
+                while(hRec){
+			if (GetField_CString(hRec,"none_restricted",&csNoneRestricted)) {
+DEBUGLOG(("DoExchange: none restricted = [%s]\n",csNoneRestricted));
+			}
+			if (GetField_CString(hRec,"restricted_1",&csRestricted1)) {
+DEBUGLOG(("DoExchange: restricted1 = [%s]\n",csRestricted1));
+			}
+			if (GetField_CString(hRec,"restricted_2",&csRestricted2)) {
+DEBUGLOG(("DoExchange: restricted2 = [%s]\n",csRestricted2));
+			}
+			if (GetField_CString(hRec,"res1_res2_opr",&csRes1Res2Opr)) {
+DEBUGLOG(("DoExchange: res1_res2_opr = [%s]\n",csRes1Res2Opr));
+			}
+			if (GetField_Char(hRec,"markup_amt_opr",&cMarkupAmtOpr)) {
+DEBUGLOG(("DoExchange: markup amt opr = [%c]\n",cMarkupAmtOpr));
+			}
+			if (GetField_Char(hRec,"fr_to_reverse",&cFrToReverse)) {
+DEBUGLOG(("DoExchange: fr_to_reverse = [%c]\n",cFrToReverse));
+			}
+			if (GetField_Char(hRec,"manual_input",&cManualInput)) {
+DEBUGLOG(("DoExchange: manual_input = [%c]\n",cManualInput));
+			}
+	
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	else {
+ERRLOG("BOExchange:DoExchange:: System Error undefine System EX Rules for %s\n",csTxnCode);
+DEBUGLOG(("DoExchange:: System Error undefine System EX Rules for %s\n",csTxnCode));
+		iRet = PD_ERR;
+	}
+
+	if(iRet == PD_OK){
+		if(cManualInput == PD_MANDATORY){
+			if(GetField_Double(hContext,"input_ex_rate",&dInputExRate)){
+DEBUGLOG(("DoExchange: input_ex_rate = [%lf]\n",dInputExRate));
+			} else {
+ERRLOG("BOExchange:DoExchange:: Mandatory manual input but input_ex_rate not found!!\n");
+DEBUGLOG(("DoExchange:: Mandatory manual input but input_ex_rate not found!!\n"));
+				iRet = PD_ERR;
+			}
+		}
+	}
+
+	if(iRet == PD_OK){
+		if(cFrToReverse == PD_YES){
+			sprintf(csFromCcy,"%s",csInToCcy);
+			sprintf(csToCcy,"%s",csInFromCcy);
+DEBUGLOG(("DoExchange::() Calculate FromCcy= [%s]\n",csFromCcy));
+DEBUGLOG(("DoExchange::() Calculate ToCcy= [%s]\n",csToCcy));
+		}
+		else{
+			sprintf(csFromCcy,"%s",csInFromCcy);
+			sprintf(csToCcy,"%s",csInToCcy);
+DEBUGLOG(("DoExchange::() Calculate FromCcy= [%s]\n",csFromCcy));
+DEBUGLOG(("DoExchange::() Calculate ToCcy= [%s]\n",csToCcy));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBRuleExMarkup","Find");
+        	if ((unsigned long)((*DBObjPtr)(csCountryId,
+                	csChannelCode,
+                	csServiceCode,
+                	csTxnCode,
+                	csMerchantId,
+                	csClientId,
+		        &dNoneResMarkupRate,
+                	&dResMarkupRate)) == PD_OK) {
+DEBUGLOG(("DoExchange::() None Restricted Markup Rate = [%lf]\n",dNoneResMarkupRate));
+DEBUGLOG(("DoExchange::()      Restricted Markup Rate = [%lf]\n",dResMarkupRate));
+        	}
+		else {
+DEBUGLOG(("DoExchange::() Markup Rate does not set\n"));
+			dNoneResMarkupRate = 0.0;
+			dResMarkupRate = 0.0;
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		dMarkupRate = dNoneResMarkupRate;
+		
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+		iIsFromRestricted = ((unsigned long)(*DBObjPtr)(csFromCcy));
+		
+		if (iIsFromRestricted){
+			sprintf(csRestrictedCcy, "%s",csFromCcy);
+			sprintf(csNonRestrictedCcy, "%s",csToCcy);
+DEBUGLOG(("DoExchange: from ccy restricted = [%s]\n",csFromCcy));
+		}
+		else{
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+			iIsToRestricted = ((unsigned long)(*DBObjPtr)(csToCcy));
+
+			if (iIsToRestricted){
+				sprintf(csRestrictedCcy, "%s",csToCcy);
+				sprintf(csNonRestrictedCcy, "%s",csFromCcy);
+DEBUGLOG(("DoExchange: to ccy restricted = [%s]\n",csToCcy));
+			}
+		}
+
+		if (iIsToRestricted || iIsFromRestricted) {
+			dMarkupRate = dResMarkupRate;
+
+			if(!strcmp(csACRPool,PD_CCY_UNKNOWN)){
+				iChk = PD_NOT_FOUND;
+				if(strcmp(csTxnCode,PD_SETTLEMENT_REQUEST) && strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)){
+DEBUGLOG(("DoExchange: Call DBDefACRPool:FindPool\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBDefACRPool","FindPool");
+					iChk = (unsigned long)((*DBObjPtr)(csNonRestrictedCcy));
+				}
+
+DEBUGLOG(("DoExchange: iChk = [%d]\n",iChk));
+				if(iChk == PD_NOT_FOUND){
+					DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+					iChk = (unsigned long)((*DBObjPtr)(csRestrictedCcy,&csInterMedCcy));
+DEBUGLOG(("DoExchange: find bundle ccy for [%s]  -> [%s]\n",csRestrictedCcy,csInterMedCcy));
+				}
+				else{
+					sprintf(csInterMedCcy,"%s",csNonRestrictedCcy);
+DEBUGLOG(("DoExchange: inter ccy = [%s]\n",csInterMedCcy));
+				}
+			}
+			else{
+				if(strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+				&& strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)
+				&& strcmp(csACRPool,csNonRestrictedCcy)){
+					if(!strcmp(PD_CCY_ISO_GBP,csNonRestrictedCcy)){
+                                                sprintf(csInterMedCcy,"%s",csNonRestrictedCcy);
+                                                iChk = PD_FOUND;
+                                        }
+                                        else{
+						DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+						iChk = (unsigned long)((*DBObjPtr)(csRestrictedCcy,&csInterMedCcy));
+DEBUGLOG(("DoExchange: find bundle ccy for [%s]  -> [%s]\n",csRestrictedCcy,csInterMedCcy));
+					}
+				}
+				else{
+					sprintf(csInterMedCcy,"%s",csACRPool);
+					iChk = PD_FOUND;
+				}
+DEBUGLOG(("DoExchange: inter ccy = [%s]\n",csInterMedCcy));
+			}
+
+			if(iChk!=PD_FOUND){
+ERRLOG("BOExchange:DoExchange Fatal error can't find bundled currency for [%s]\n",csRestrictedCcy);
+DEBUGLOG(("DoExchange Fatal error can't find bundled currency for [%s]!!!!!\n",csRestrictedCcy));
+				iRet = PD_ERR;
+			}
+		}
+
+
+		if (iRet == PD_OK) {
+/* manual input exchange rate */
+			if (((cManualInput == PD_MANDATORY)
+						|| (cManualInput == PD_OPTIONAL))
+					&& (dInputExRate != 0.0)) {
+				if(cFrToReverse == PD_YES){
+					PutField_Double(hContext,"org_ex_rate",newround(1/dInputExRate,PD_ROUND_UP_DEC));
+				}
+				else{
+					PutField_Double(hContext,"org_ex_rate",dInputExRate);
+				}
+DEBUGLOG(("DoExchange::() Manual input ex Rate = [%lf]\n",dInputExRate));
+				iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+						dInputExRate,PD_MANUAL_EX,cFrToReverse,
+						dMarkupRate,cMarkupAmtOpr,
+						hContext);
+			}
+/* normal flow */
+			else {
+				if (iIsToRestricted || iIsFromRestricted) {
+
+					int iUsingExt = PD_FALSE;
+/* restricted currency */
+DEBUGLOG(("DoExchange: Restricted Currency!!![%d] [%d]\n",iIsFromRestricted,iIsToRestricted));
+					dTmpRate1 = 0.0;
+					dTmpRate21 = 0.0;
+					dTmpRate22 = 0.0;
+
+/* CrossRate */
+DEBUGLOG(("DoExchange: Rate [%s] is going to be used for External Rate for SRC to DST\n",csRestricted1));
+					DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+					if ((unsigned long)((*DBObjPtr)(csFromCcy,csToCcy,hRec)) == PD_OK) {
+						if (GetField_Double(hRec,csRestricted1,&dTmpRate1)) {
+							PutField_Double(hContext,"org_ex_rate",dTmpRate1);
+DEBUGLOG(("DoExchange::() [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted1,dTmpRate1,csFromCcy,csToCcy));
+						}
+						else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csRestricted1,csFromCcy,csToCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted1,csFromCcy,csToCcy));
+							iRet = PD_ERR;
+						}
+					}
+					else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csRestricted1,csFromCcy,csToCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted1,csFromCcy,csToCcy));
+						iRet = PD_ERR;
+					}
+/* end CrossRate */
+
+/* Ext + Int Rate */
+					if(iIsToRestricted){
+						if (iRet == PD_OK) {
+							DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+							if ((unsigned long)((*DBObjPtr)(csFromCcy,csInterMedCcy,hRec)) == PD_OK) {
+								if (GetField_Double(hRec,csRestricted2,&dTmpRate21)) {
+									PutField_Double(hContext,"half_ex_rate",dTmpRate21);///////
+									PutField_Double(hContext,"fr_inter_ex_rate",dTmpRate21);///////
+DEBUGLOG(("DoExchange::() [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted2,dTmpRate21,csFromCcy,csInterMedCcy));
+								}
+								else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csFromCcy,csInterMedCcy));
+									iRet = PD_ERR;
+								}
+							}
+							else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csFromCcy,csInterMedCcy));
+								iRet = PD_ERR;
+							}
+						}
+
+
+						if(iRet == PD_OK && !iMiniMMMOn){ //mini-mmm off
+							DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBalanceByCcy");
+							if ((unsigned long)((*DBObjPtr)(csToCcy,csInterMedCcy,hRec)) != PD_FOUND) {
+DEBUGLOG(("DoExchange Avg Rate not found for [%s] to [%s]!!!!!\n",csToCcy,csInterMedCcy));
+								iUsingExt = PD_TRUE;
+							}
+						}
+						if(iRet == PD_OK && iMiniMMMOn){ //mini-mmm turn on
+							hash_t	*hTmp;
+							hTmp= (hash_t*) malloc (sizeof(hash_t));
+							hash_init(hTmp,0);
+							PutField_CString(hTmp,"from_ccy",csToCcy);
+							PutField_CString(hTmp,"bank_ccy",csInterMedCcy);
+							DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","GetOwnAcrBal");
+							if ((unsigned long)((*DBObjPtr)(hTmp,hRec)) != PD_FOUND) {
+DEBUGLOG(("DoExchange Avg Rate not found for [%s] to [%s]!!!!!\n",csToCcy,csInterMedCcy));
+								iUsingExt = PD_TRUE;
+							}
+							FREE_ME(hTmp);
+						}
+						if(iRet == PD_OK && iUsingExt == PD_FALSE){
+							if (GetField_Double(hRec,"rate",&dTmpRate22)) {
+								PutField_Double(hContext,"inter_rate",dTmpRate22);
+DEBUGLOG(("DoExchange::() [ACR] Internal Avg Rate = [%f] from [%s] to [%s]\n",dTmpRate22,csToCcy,csInterMedCcy));
+							}
+							else {
+ERRLOG("BOExchange:DoExchange Avg Rate not found for [%s] to [%s]\n",csToCcy,csInterMedCcy);
+DEBUGLOG(("DoExchange Fatal error Avg Rate not found for [%s] to [%s]!!!!!\n",csToCcy,csInterMedCcy));
+								iRet = PD_ERR;
+							}
+						}
+					}
+
+					else if(iIsFromRestricted){
+
+						double  dTmpRate21Tmp = 0.0;
+						if(iRet == PD_OK && !iMiniMMMOn){ //mini-mmm off
+							DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBalanceByCcy");
+							if ((unsigned long)((*DBObjPtr)(csFromCcy,csInterMedCcy,hRec)) != PD_FOUND) {
+DEBUGLOG(("DoExchange Avg Rate not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+								iUsingExt = PD_TRUE;
+							}
+						}
+						if(iRet == PD_OK && iMiniMMMOn){ //mini-mmm turn on
+							hash_t	*hTmp;
+							hTmp= (hash_t*) malloc (sizeof(hash_t));
+							hash_init(hTmp,0);
+							PutField_CString(hTmp,"from_ccy",csFromCcy);
+							PutField_CString(hTmp,"bank_ccy",csInterMedCcy);
+							DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","GetOwnAcrBal");
+							if ((unsigned long)((*DBObjPtr)(hTmp,hRec)) != PD_FOUND) {
+DEBUGLOG(("DoExchange Avg Rate not found for [%s] to [%s]!!!!!\n",csToCcy,csInterMedCcy));
+								iUsingExt = PD_TRUE;
+							}
+							FREE_ME(hTmp);
+						}
+						if(iRet == PD_OK && iUsingExt == PD_FALSE){
+							if (GetField_Double(hRec,"rate",&dTmpRate21Tmp)) {
+								if(dTmpRate21Tmp>0){
+									dTmpRate21 = newround(1/dTmpRate21Tmp,PD_ROUND_UP_DEC);//////
+									PutField_Double(hContext,"inter_rate",dTmpRate21);
+									PutField_Double(hContext,"fr_inter_acr_rate",dTmpRate21);///////
+DEBUGLOG(("DoExchange::() [ACR] Internal Avg Rate = [%f] from [%s] to [%s]\n",dTmpRate21,csFromCcy,csInterMedCcy));
+								}
+								else{
+DEBUGLOG(("DoExchange Avg Rate not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+									iUsingExt = PD_TRUE;
+								}
+							}
+							else {
+ERRLOG("BOExchange:DoExchange Avg Rate not found for [%s] to [%s]\n",csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchange Fatal error Avg Rate not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+								iRet = PD_ERR;
+							}
+						}
+//get oanda rate (fromccy - interccy)
+//for merchant settlement use
+						if (iRet == PD_OK) {
+							DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+							if ((unsigned long)((*DBObjPtr)(csFromCcy,csInterMedCcy,hRec)) == PD_OK) {
+								if (GetField_Double(hRec,csRestricted2,&dTmpRate21b)) {
+									PutField_Double(hContext,"fr_inter_ex_rate",dTmpRate21b);///////
+DEBUGLOG(("DoExchange::() [Reference Only] [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted2,dTmpRate21b,csFromCcy,csInterMedCcy));
+								}
+								else {
+ERRLOG("BOExchange:DoExchange Fatal error [rate] not found for [%s] to [%s]\n",csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchange Fatal error [rate] not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+									iRet = PD_ERR;
+								}
+							}
+							else {
+ERRLOG("BOExchange:DoExchange Fatal error [rate] not found for [%s] to [%s]\n",csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchange Fatal error [rate] not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+								iRet = PD_ERR;
+							}
+						}
+
+						if (iRet == PD_OK){
+							DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+							if ((unsigned long)((*DBObjPtr)(csInterMedCcy,csToCcy,hRec)) == PD_OK) {
+								if (GetField_Double(hRec,csRestricted2,&dTmpRate22)) {
+									PutField_Double(hContext,"half_ex_rate",dTmpRate22);///////
+DEBUGLOG(("DoExchange::() [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted2,dTmpRate22,csInterMedCcy,csToCcy));
+								}
+								else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csInterMedCcy,csToCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csInterMedCcy,csToCcy));
+									iRet = PD_ERR;
+								}
+							}
+							else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csInterMedCcy,csToCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csInterMedCcy,csToCcy));
+									iRet = PD_ERR;
+							}
+						}
+
+					}
+
+					if (iRet == PD_OK) {
+////Check Channel, Service, Merchant ID which will not consider ACR
+////DBSkipAcrRule in Online only
+////Now for Settlement only. Can support other txn code but need revise program.
+
+						if(!strcmp(csChannelCode,PD_CHANNEL_MGT) &&
+								!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)){
+
+							DBObjPtr = CreateObj(DBPtr,"DBSkipAcrRule","IsSkipRule");
+							if ((unsigned long)((*DBObjPtr)(csTxnCode,csServiceCode,csMerchantId)) == PD_TRUE) {
+								iUsingExt = PD_TRUE;
+DEBUGLOG(("DoExchange Channel[%s], TxnCode[%s], Service[%s], MerhcantID[%s] will not consider ACR!!!!!\n",csChannelCode,csTxnCode,csServiceCode,csMerchantId));
+							}
+						}
+
+						if (iUsingExt == PD_FALSE) {
+// do Compare 
+							dOandaRate = 0.0;
+							dInterRate = 0.0;
+							dHalfExRate = 0.0;
+							dACR = 0.0;
+							dFrInterExRate = 0.0;
+							dFrInterACRRate = 0.0;
+							dSettInterRate = 0.0;
+							GetField_Double(hContext,"org_ex_rate",&dOandaRate);
+							GetField_Double(hContext,"half_ex_rate",&dHalfExRate);
+							GetField_Double(hContext,"inter_rate",&dInterRate);
+							GetField_Double(hContext,"fr_inter_ex_rate",&dFrInterExRate);
+							GetField_Double(hContext,"fr_inter_acr_rate",&dFrInterACRRate);
+
+							dACR = newround(dHalfExRate * dInterRate,PD_ROUND_UP_DEC);
+							if(cFrToReverse == PD_YES){
+								PutField_Double(hContext,"org_ex_rate",newround(1/dOandaRate,PD_ROUND_UP_DEC));
+								PutField_Double(hContext,"ex_int_rate",newround(1/dACR,PD_ROUND_UP_DEC));/////
+							}
+							else{
+								PutField_Double(hContext,"ex_int_rate",dACR);/////
+							}
+DEBUGLOG(("DoExchange::() compare ACR[%lf] with Oanda Rate[%lf] with Operator [%s]\n",dACR,dOandaRate,csRes1Res2Opr));
+
+
+							if(!strcmp(csRes1Res2Opr,PD_GREATER_THAN)){
+								if(dOandaRate >= dACR){
+									iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+											dOandaRate,PD_EXT_EX,cFrToReverse,
+											dMarkupRate,cMarkupAmtOpr,
+											hContext);
+									dSettInterRate = dFrInterExRate;
+								}
+								else{
+									iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+											dACR,PD_INT_EX,cFrToReverse,
+											dMarkupRate,cMarkupAmtOpr,
+											hContext);
+									dSettInterRate = dFrInterACRRate;
+								}
+							}
+							else if (!strcmp(csRes1Res2Opr,PD_LESS_THAN)) {
+								if(dOandaRate <= dACR || dACR == 0.0){
+									iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+											dOandaRate,PD_EXT_EX,cFrToReverse,
+											dMarkupRate,cMarkupAmtOpr,
+											hContext);
+									dSettInterRate = dFrInterExRate;
+								}
+								else{
+									iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+											dACR,PD_INT_EX,cFrToReverse,
+											dMarkupRate,cMarkupAmtOpr,
+											hContext);
+									dSettInterRate = dFrInterACRRate;
+								}
+							}
+							else{
+ERRLOG("DoExchange::() undefine operator\n");
+DEBUGLOG(("DoExchange::() undefine operator\n"));
+								iRet = PD_ERR;
+							}
+
+							if((!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+										|| !strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST))
+									&& iIsFromRestricted){
+								iRet = CalSettlementInter(csFromCcy,csInterMedCcy,dTxnAmt,
+										dSettInterRate,cFrToReverse,
+										dMarkupRate,cMarkupAmtOpr,
+										hContext);
+							}
+						}
+						else {
+// using crossrate
+DEBUGLOG(("DoExChange::() using crossrate\n"));
+							dOandaRate = 0.0;
+							dFrInterExRate = 0.0;
+							GetField_Double(hContext,"org_ex_rate",&dOandaRate);
+							GetField_Double(hContext,"fr_inter_ex_rate",&dFrInterExRate);
+
+							if(cFrToReverse == PD_YES){
+								PutField_Double(hContext,"org_ex_rate",newround(1/dOandaRate,PD_ROUND_UP_DEC));
+							}
+
+							iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+									dOandaRate,PD_EXT_EX,cFrToReverse,
+									dMarkupRate,cMarkupAmtOpr,
+									hContext);
+
+							if((!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+										|| !strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST))
+									&& iIsFromRestricted){
+								iRet = CalSettlementInter(csFromCcy,csInterMedCcy,dTxnAmt,
+										dFrInterExRate,cFrToReverse,
+										dMarkupRate,cMarkupAmtOpr,
+										hContext);
+							}
+						}
+					}
+/* end Ext + Int Rate */
+				}
+				else { // no restricted
+DEBUGLOG(("DoExchange: None Restricted Currency!!![%d] [%d]\n",iIsToRestricted,iIsFromRestricted));
+					DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+					if ((unsigned long)((*DBObjPtr)(csFromCcy,csToCcy,hRec)) == PD_OK) {
+DEBUGLOG(("DoExchange: Rate [%s] is going to be used for External Rate\n",csNoneRestricted));
+						if (GetField_Double(hRec,csNoneRestricted,&dExRate)) {
+							if(cFrToReverse == PD_YES){
+								PutField_Double(hContext,"org_ex_rate",newround(1/dExRate,PD_ROUND_UP_DEC));
+							}
+							else{
+								PutField_Double(hContext,"org_ex_rate",dExRate);
+							}
+DEBUGLOG(("DoExchange::() Exteranl ex Rate = [%lf]\n",dExRate));
+							iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+									dExRate,PD_EXT_EX,cFrToReverse,
+									dMarkupRate,cMarkupAmtOpr,
+									hContext);
+						}
+						else {
+ERRLOG("BOExchange:DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csNoneRestricted,csFromCcy,csToCcy);
+DEBUGLOG(("DoExchange Fatal error [%s] not found for [%s] to [%s]\n",csNoneRestricted,csFromCcy,csToCcy));
+							iRet = PD_ERR;
+						}
+					}
+					else {
+ERRLOG("BOExchange:DoExchange Call GetExchangeRate Error for [%s] to [%s]\n",csFromCcy,csToCcy);
+DEBUGLOG(("DoExchange Fatal error Call GetExchangeRate for [%s] to [%s]\n",csFromCcy,csToCcy));
+						iRet = PD_ERR;
+					}
+				}
+			}
+		} // iRet == PD_OK
+	}
+
+DEBUGLOG(("DoExchange: ---------------------------------------------------------------------------\n"));
+
+	if(GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+DEBUGLOG(("DoExChange::() markup_amt = [%lf]\n",dMarkupAmt));
+	}
+
+	if(dMarkupAmt>0.0 && iInfoOnly!=PD_TRUE){
+		if (strcmp(csTxnCode, PD_AVA_PAYOUT_REQ_TF_TO) && 
+		    strcmp(csTxnCode, PD_AVA_PAYOUT_REQ_TF_FROM) && 
+		    strcmp(csTxnCode, PD_OFL_AVA_PAYOUT_REQ_TF_FROM) && 
+		    strcmp(csTxnCode, PD_OFL_AVA_PAYOUT_REQ_TF_TO) && 
+		    strcmp(csTxnCode, PD_FUND_IN_PAYOUT_MERCHANT) && 
+		    strcmp(csTxnCode, PD_OFL_FUND_IN_PAYOUT_MERCHANT) && 
+		    strcmp(csTxnCode, PD_VOID_TXN_CODE) && 
+		    strcmp(csTxnCode, PD_OTH_SYS_2_MERCH_BAL_TRF) &&
+		    strcmp(csTxnCode, PD_OFL_OTH_SYS_2_MERCH_BAL_TRF) &&
+		    strcmp(csTxnCode, PD_MERCHANT_BAL_TFF)&&
+		    strcmp(csTxnCode, PD_MERCHANT_BAL_TFT) &&
+		    strcmp(csTxnCode, PD_OFL_MERCHANT_BAL_TFF) &&
+                    strcmp(csTxnCode, PD_OFL_MERCHANT_BAL_TFT)) {
+
+
+			char	*csTmp;
+			if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+			   || !strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)){
+				int iAddElement=PD_TRUE;
+				if(GetField_CString(hContext,"sub_txn_code",&csTmp)){
+					if(!strcmp(csTmp,PD_ENQUIRE_FX))
+						iAddElement = PD_FALSE;
+				}
+				if(iAddElement==PD_TRUE){
+					PutField_Char(hContext,"org_party_type",PD_TYPE_MERCHANT);
+					if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST))//DEV only
+							BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMarkupAmtElement");
+					else
+							BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","AddMarkupAmtElement");
+					iRet = (unsigned long)(*BOObjPtr)(hContext);
+				}
+			}
+			else{
+				if(!GetField_CString(hContext,"from_txn_seq",&csTmp)){
+					GetField_CString(hContext,"txn_seq",&csTmp);
+					PutField_CString(hContext,"from_txn_seq",csTmp);
+				}
+				if(!strcmp(csChannelCode,PD_CHANNEL_WEB) ||
+				   !strcmp(csChannelCode,PD_CHANNEL_MGT)) //DEV only
+					BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMarkupAmtElement");
+				else
+					BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","AddMarkupAmtElement");
+				iRet = (unsigned long)(*BOObjPtr)(hContext);
+			}
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+DEBUGLOG(("DoExchange::() return [%d]\n",iRet));
+	return iRet;
+}
+        
+int GetExternalExchangeRateByDate(const char* csEffectDate,
+                const char* csFromCcy,
+                const char* csToCcy,
+                double  dTxnAmt,
+                double  *dExRate,
+                double  *dExAmt)
+{       
+        int iRet = PD_OK;
+        hash_t  *hRec;
+        double  dNewTxnAmt = dTxnAmt;
+        double  dRate = 0;
+                
+        hRec = (hash_t*) malloc (sizeof(hash_t));
+  hash_init(hRec,0);    
+                
+        DEBUGLOG(("GetExternalExchangeRateByDate from [%s] to [%s] = [%lf]\n",csFromCcy,csToCcy,dTxnAmt));
+        
+        DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDate");
+        if ((unsigned long)((*DBObjPtr)(csEffectDate,csFromCcy,csToCcy,hRec)) == PD_OK) {
+         
+		//if (GetField_Double(hRec,"rate",&dRate)) {
+		if (GetField_Double(hRec,"med_ask",&dRate)) {
+                        DEBUGLOG(("GetExternalExchangeRateByDate rate = [%lf]\n",dRate));
+                        /* apply Exchange Markup Fee */
+                        double dNewAmt =  CalExAmt(dNewTxnAmt,dRate,csToCcy);
+                        DEBUGLOG(("GetExternalExchangeRate new amt in [%s] = [%lf]\n",csToCcy,dNewAmt));
+                        *dExRate = dRate;
+                        *dExAmt = dNewAmt;
+                }
+                else
+                        iRet = INT_EX_RATE_ERROR;
+        }
+        else  {
+                iRet = INT_EX_RATE_ERROR;
+        }
+
+DEBUGLOG(("GetExternalExchangeRateByDate::() = [%d]\n",iRet));
+
+        hash_destroy(hRec);
+        FREE_ME(hRec);
+        return iRet;
+}
+
+int GetExchangeInfoByDate(hash_t *hContext,
+                	  const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+	char*	csTxnCcy;
+	char*	csPspCcy;
+	double	dAmt;
+	//,dSebBal,dRatio,dRate;
+	char*	csTxnCode;
+	char*	csTxnCountry;
+	char*	csChannelCode;
+	char*	csServiceCode;
+	char*	csMerchantId;
+	char*	csMerchantClientId;
+	char*	csDateTime;
+	char	csTag[PD_TAG_LEN +1];
+	int	iInitMode = PD_FALSE;
+	
+	hash_t	*hRec;
+
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate()\n"));
+        GetField_Int(hContext,"init_mode",&iInitMode);
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() init_mode = [%d]\n",iInitMode));
+
+	if (!GetField_CString(hContext,"datetime",&csDateTime) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate datetime is missing!!!\n"));
+		iRet = PD_ERR;
+	}
+
+        if (iInitMode)
+		if (GetField_Double(hContext,"org_txn_amt",&dAmt)) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate org_txn_amt  = [%lf]\n",dAmt));
+		}
+		else {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate org_txn_amt is missing!!!\n"));
+		}
+	else if (GetField_Double(hContext,"txn_amt",&dAmt)) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate txn_amt = [%f]\n",dAmt));
+	}
+	else {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate txn_amt is missing!!!\n"));
+	}
+
+	if (!GetField_CString(hContext,"txn_ccy",&csTxnCcy) && iRet == PD_OK) {
+		if (!GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate txn_ccy is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+	if (!GetField_CString(hContext,"dst_txn_ccy",&csPspCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate dst_txn_ccy is missing!!!\n"));
+		iRet = PD_ERR;
+	}
+	else {
+	//	PutField_CString(hContext,"psp_txn_ccy",csPspCcy);
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate dst_txn_ccy  = [%s]\n",csPspCcy));
+	}
+
+
+
+
+
+/* txn code */
+        if (iInitMode)
+                sprintf(csTag,"%s_txn_code",PD_PREFIX);
+        else
+                strcpy(csTag,"txn_code");
+        if (GetField_CString(hContext,csTag,&csTxnCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csTxnCode));
+        }
+        else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s not found!!!\n",csTag));
+        }
+
+/*org txn country */
+        if (iInitMode) {
+                sprintf(csTag,"%s_txn_country",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csTxnCountry)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csTxnCountry));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"txn_country");
+                if (GetField_CString(hRequest,csTag,&csTxnCountry)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csTxnCountry));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+
+
+/*org txn ccy */
+        if (iInitMode) {
+                sprintf(csTag,"%s_txn_ccy",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csTxnCcy)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csTxnCcy));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"txn_ccy");
+                if (GetField_CString(hRequest,csTag,&csTxnCcy)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csTxnCcy));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+
+
+/*org channel code */
+        if (iInitMode)
+                sprintf(csTag,"%s_channel_code",PD_PREFIX);
+        else
+                strcpy(csTag,"channel_code");
+        if (GetField_CString(hContext,csTag,&csChannelCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csChannelCode));
+        }
+        else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+        }
+
+/*org service code */
+        if (iInitMode) {
+                sprintf(csTag,"%s_service_code",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csServiceCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csServiceCode));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"service_code");
+                if (GetField_CString(hRequest,csTag,&csServiceCode)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csServiceCode));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+
+/*org merchant id */
+        if (iInitMode) {
+                sprintf(csTag,"%s_merchant_id",PD_PREFIX);
+                if (GetField_CString(hContext,csTag,&csMerchantId)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csMerchantId));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+        else {
+                strcpy(csTag,"merchant_id");
+                if (GetField_CString(hRequest,csTag,&csMerchantId)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csMerchantId));
+                }
+                else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+                }
+        }
+
+
+/*org merchant client id */
+        if (iInitMode) {
+                sprintf(csTag,"%s_client_id",PD_PREFIX);
+        }
+        else {
+                strcpy(csTag,"merchant_client_id");
+        }
+
+        if (GetField_CString(hContext,csTag,&csMerchantClientId)) {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s = [%s]\n",csTag,csMerchantClientId));
+        }
+        else {
+DEBUGLOG(("BOExchange::GetExchangeInfoByDate() %s is missing!!!\n",csTag));
+        }
+
+	if (iRet == PD_OK) {	
+
+		if (!strcmp(csTxnCcy,csPspCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate same currency!!!\n"));
+			PutField_CString(hContext,"dst_txn_ccy",csTxnCcy);
+			PutField_Double(hContext,"dst_txn_amt",dAmt);
+			PutField_Double(hContext,"ex_rate",1);
+			PutField_Double(hContext,"org_ex_rate",1);
+			PutField_Char(hContext,"ex_party",PD_INT_EX);
+		}
+		else {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate do Exchange by date!!!\n"));
+			if (DoExchangeByDate(hContext,
+				dAmt,
+				csTxnCcy,
+				csPspCcy,
+       	         		csTxnCountry,
+       	        	 	csChannelCode,
+       	         		csServiceCode,
+                		csTxnCode,
+                		csMerchantId,
+                		csMerchantClientId,
+				csDateTime) != PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate do Exchange by date Failed!!!\n"));
+ERRLOG("BOExchange:GetExchangeInfoByDate do Exchange by date Failed!!!\n");
+				iRet = INT_ERR;
+			}
+		}
+	}
+
+	
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+DEBUGLOG(("BOExchange:GetExchangeInfoByDate exit Ret = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int DoExchangeByDate(hash_t* hContext,
+		double	dTxnAmt,
+		const char* csInFromCcy,//////
+		const char* csInToCcy,//////
+		const char* csCountryId,
+		const char* csChannelCode,
+		const char* csServiceCode,
+		const char* csTxnCode,
+		const char* csMerchantId,
+		const char* csClientId,
+		const char* csDateTime)
+{
+	int	iRet = PD_OK;
+	int	iIsToRestricted = PD_FALSE;
+	int	iIsFromRestricted = PD_FALSE;
+	double	dExRate = 0.0;
+	double	dMarkupRate = 0.0;
+	double	dMarkupAmt = 0.0;
+
+	char	*csNoneRestricted;
+	char	*csRestricted1;
+	char	*csRestricted2;
+	char	*csRes1Res2Opr;
+	char	cMarkupAmtOpr;
+	char	csInterMedCcy[PD_CCY_ID_LEN +1];
+	char	csACRPool[PD_CCY_ID_LEN +1];
+
+	double	dResMarkupRate = 0.0;
+	double	dNoneResMarkupRate = 0.0;
+	double	dTmpRate1 = 0.0;
+	double	dTmpRate21 = 0.0;
+	double	dTmpRate21b = 0.0;
+	double	dTmpRate22 = 0.0;
+	int     iInfoOnly = PD_FALSE;
+
+	char	csRestrictedCcy[PD_CCY_ID_LEN +1];
+	char	csNonRestrictedCcy[PD_CCY_ID_LEN +1];
+	int	iChk = 0;
+
+/////////
+	char	csFromCcy[PD_CCY_ID_LEN+1];
+	char	csToCcy[PD_CCY_ID_LEN+1];
+	char	cFrToReverse = PD_NO;
+
+	double	dOandaRate = 0.0;
+	double	dInterRate = 0.0;
+	double	dHalfExRate = 0.0;
+	double	dACR = 0.0;
+	double	dFrInterExRate = 0.0;
+	double	dFrInterACRRate = 0.0;
+	double	dSettInterRate = 0.0;
+/////////
+	int     iMiniMMMOn = PD_FALSE;
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	hash_t	*hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("DoExchangeByDate::() = [%d]\n",iRet));
+DEBUGLOG(("DoExchangeByDate::() FromCcy= [%s]\n",csInFromCcy));//////
+DEBUGLOG(("DoExchangeByDate::() ToCcy= [%s]\n",csInToCcy));/////
+DEBUGLOG(("DoExchangeByDate::() DateTime= [%s]\n",csDateTime));
+
+	if(GetField_Int(hContext,"get_info_only",&iInfoOnly)){
+DEBUGLOG(("DoExchangeByDate::() Info Only = [%d]\n",iInfoOnly));
+	}
+
+	//check Mini-MMM Mode
+	char*   csValue;
+	csValue = (char*) malloc (128);
+	DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+	if ((unsigned long)(DBObjPtr)(PD_MINI_MMM_ENABLE,csValue) == FOUND) {
+DEBUGLOG(("DoExchange::() Mini-MMM Mode = [%s]\n",csValue));
+		if (!strcmp(csValue, PD_ENABLE_MMSMODE)){
+			iMiniMMMOn = PD_TRUE;
+		}
+	}
+	FREE_ME(csValue);
+
+
+	if(strcmp(csChannelCode,PD_CHANNEL_OMT) && strcmp(csChannelCode,PD_CHANNEL_OLN) && strcmp(csChannelCode,PD_CHANNEL_OPL)){
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","GetACRPool");
+		if ((unsigned long)((*DBObjPtr)(
+						csMerchantId,
+						csCountryId,
+						csInFromCcy,////////
+						csServiceCode,
+						&csACRPool)) == PD_OK) {
+DEBUGLOG(("DoExchange::() merchant preferred_acr_pool = [%s]\n",csACRPool));
+		}
+	}
+	else{
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchConfig","GetACRPool");
+		if ((unsigned long)((*DBObjPtr)(
+						csMerchantId,
+						csCountryId,
+						csInFromCcy,/////////
+						csServiceCode,
+						&csACRPool)) == PD_OK) {
+DEBUGLOG(("DoExchange::() merchant preferred_acr_pool = [%s]\n",csACRPool));
+		}
+	}
+	
+/* using system ex rules */
+	DBObjPtr = CreateObj(DBPtr,"DBSystemExRules","FindCode");
+       	if (!(*DBObjPtr)(csTxnCode,rRecordSet)) {
+		hash_t  *hRec;
+		hRec = RecordSet_GetFirst(rRecordSet);
+                while(hRec){
+			if (GetField_CString(hRec,"none_restricted",&csNoneRestricted)) {
+DEBUGLOG(("DoExchangeByDate: none restricted = [%s]\n",csNoneRestricted));
+			}
+			if (GetField_CString(hRec,"restricted_1",&csRestricted1)) {
+DEBUGLOG(("DoExchangeByDate: restricted1 = [%s]\n",csRestricted1));
+			}
+			if (GetField_CString(hRec,"restricted_2",&csRestricted2)) {
+DEBUGLOG(("DoExchangeByDate: restricted2 = [%s]\n",csRestricted2));
+			}
+			if (GetField_CString(hRec,"res1_res2_opr",&csRes1Res2Opr)) {
+DEBUGLOG(("DoExchangeByDate: res1_res2_opr = [%s]\n",csRes1Res2Opr));
+			}
+			if (GetField_Char(hRec,"markup_amt_opr",&cMarkupAmtOpr)) {
+DEBUGLOG(("DoExchangeByDate: markup amt opr = [%c]\n",cMarkupAmtOpr));
+			}
+			/////////
+			if (GetField_Char(hRec,"fr_to_reverse",&cFrToReverse)) {
+DEBUGLOG(("DoExchangeByDate: fr_to_reverse = [%c]\n",cFrToReverse));
+			}
+			/////////
+	
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	else {
+ERRLOG("BOExchange:DoExchangeByDate:: System Error undefine System EX Rules for %s\n",csTxnCode);
+DEBUGLOG(("DoExchangeByDate:: System Error undefine System EX Rules for %s\n",csTxnCode));
+		iRet = PD_ERR;
+	}
+
+/////////
+	if(iRet == PD_OK){
+		if(cFrToReverse == PD_YES){
+			sprintf(csFromCcy,"%s",csInToCcy);
+			sprintf(csToCcy,"%s",csInFromCcy);
+DEBUGLOG(("DoExchangeByDate::() Calculate FromCcy= [%s]\n",csFromCcy));
+DEBUGLOG(("DoExchangeByDate::() Calculate ToCcy= [%s]\n",csToCcy));
+		}
+		else{
+			sprintf(csFromCcy,"%s",csInFromCcy);
+			sprintf(csToCcy,"%s",csInToCcy);
+DEBUGLOG(("DoExchangeByDate::() Calculate FromCcy= [%s]\n",csFromCcy));
+DEBUGLOG(("DoExchangeByDate::() Calculate ToCcy= [%s]\n",csToCcy));
+		}
+	}
+/////////
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBRuleExMarkup","Find");
+        	if ((unsigned long)((*DBObjPtr)(csCountryId,
+                	csChannelCode,
+                	csServiceCode,
+                	csTxnCode,
+                	csMerchantId,
+                	csClientId,
+		        &dNoneResMarkupRate,
+                	&dResMarkupRate)) == PD_OK) {
+DEBUGLOG(("DoExchangeByDate::() None Restricted Markup Rate = [%lf]\n",dNoneResMarkupRate));
+DEBUGLOG(("DoExchangeByDate::()      Restricted Markup Rate = [%lf]\n",dResMarkupRate));
+        	}
+		else {
+DEBUGLOG(("DoExchangeByDate::() Markup Rate does not set\n"));
+			dNoneResMarkupRate = 0.0;
+			dResMarkupRate = 0.0;
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		dMarkupRate = dNoneResMarkupRate;
+		
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+		iIsFromRestricted = ((unsigned long)(*DBObjPtr)(csFromCcy));
+		
+		if (iIsFromRestricted){
+			sprintf(csRestrictedCcy, "%s",csFromCcy);
+			sprintf(csNonRestrictedCcy, "%s",csToCcy);
+DEBUGLOG(("DoExchange: from ccy restricted = [%s]\n",csFromCcy));
+		}
+		else{
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+			iIsToRestricted = ((unsigned long)(*DBObjPtr)(csToCcy));
+
+			if (iIsToRestricted){
+				sprintf(csRestrictedCcy, "%s",csToCcy);
+				sprintf(csNonRestrictedCcy, "%s",csFromCcy);
+DEBUGLOG(("DoExchange: to ccy restricted = [%s]\n",csToCcy));
+			}
+		}
+
+		if (iIsToRestricted || iIsFromRestricted) {
+			dMarkupRate = dResMarkupRate;
+
+			if(!strcmp(csACRPool,PD_CCY_UNKNOWN)){
+				iChk = PD_NOT_FOUND;
+				if(strcmp(csTxnCode,PD_SETTLEMENT_REQUEST) && strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)){
+DEBUGLOG(("DoExchange: Call DBDefACRPool:FindPool\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBDefACRPool","FindPool");
+					iChk = (unsigned long)((*DBObjPtr)(csNonRestrictedCcy));
+				}
+
+DEBUGLOG(("DoExchange: iChk = [%d]\n",iChk));
+				if(iChk == PD_NOT_FOUND){
+					DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+					iChk = (unsigned long)((*DBObjPtr)(csRestrictedCcy,&csInterMedCcy));
+DEBUGLOG(("DoExchange: find bundle ccy for [%s]  -> [%s]\n",csRestrictedCcy,csInterMedCcy));
+				}
+				else{
+					sprintf(csInterMedCcy,"%s",csNonRestrictedCcy);
+DEBUGLOG(("DoExchange: inter ccy = [%s]\n",csInterMedCcy));
+				}
+			}
+			else{
+				if(strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+				&& strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)
+				&& strcmp(csACRPool,csNonRestrictedCcy)){
+					if(!strcmp(PD_CCY_ISO_GBP,csNonRestrictedCcy)){
+                                                sprintf(csInterMedCcy,"%s",csNonRestrictedCcy);
+                                                iChk = PD_FOUND;
+                                        }
+                                        else{
+						DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+						iChk = (unsigned long)((*DBObjPtr)(csRestrictedCcy,&csInterMedCcy));
+DEBUGLOG(("DoExchange: find bundle ccy for [%s]  -> [%s]\n",csRestrictedCcy,csInterMedCcy));
+					}
+                                }
+                                else{
+                                        sprintf(csInterMedCcy,"%s",csACRPool);
+                                        iChk = PD_FOUND;
+                                }
+DEBUGLOG(("DoExchange: inter ccy = [%s]\n",csInterMedCcy));
+			}
+
+			if(iChk!=PD_FOUND){
+ERRLOG("BOExchange:DoExchange Fatal error can't find bundled currency for [%s]\n",csRestrictedCcy);
+DEBUGLOG(("DoExchange Fatal error can't find bundled currency for [%s]!!!!!\n",csRestrictedCcy));
+				iRet = PD_ERR;
+			}
+		}
+
+		if (iRet == PD_OK) {
+			if (iIsToRestricted || iIsFromRestricted) {
+
+				int iUsingExt = PD_FALSE;
+/* restricted currency */
+DEBUGLOG(("DoExchangeByDate: Restricted Currency!!![%d] [%d]\n",iIsToRestricted,iIsFromRestricted));
+				dTmpRate1 = 0.0;
+				dTmpRate21 = 0.0;
+				dTmpRate22 = 0.0;
+
+/* CrossRate */
+DEBUGLOG(("DoExchangeByDate: Rate [%s] is going to be used for External Rate for SRC to DST\n",csRestricted1));
+				DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDateTime");
+                		if ((unsigned long)((*DBObjPtr)(csDateTime,csFromCcy,csToCcy,hRec)) == PD_OK) {
+               				if (GetField_Double(hRec,csRestricted1,&dTmpRate1)) {
+						PutField_Double(hContext,"org_ex_rate",dTmpRate1);
+DEBUGLOG(("DoExchangeByDate::() [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted1,dTmpRate1,csFromCcy,csToCcy));
+                    			}
+					else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csRestricted1,csFromCcy,csToCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted1,csFromCcy,csToCcy));
+						iRet = PD_ERR;
+					}
+				}
+				else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csRestricted1,csFromCcy,csToCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted1,csFromCcy,csToCcy));
+					iRet = PD_ERR;
+				}
+/* end CrossRate */
+
+/* Ext + Int Rate */
+				if(iIsToRestricted){
+					if (iRet == PD_OK) {
+						DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDateTime");
+						if ((unsigned long)((*DBObjPtr)(csDateTime,csFromCcy,csInterMedCcy,hRec)) == PD_OK) {
+							if (GetField_Double(hRec,csRestricted2,&dTmpRate21)) {
+								PutField_Double(hContext,"half_ex_rate",dTmpRate21);///////
+								PutField_Double(hContext,"fr_inter_ex_rate",dTmpRate21);///////
+DEBUGLOG(("DoExchangeByDate::() [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted2,dTmpRate21,csFromCcy,csInterMedCcy));
+							}
+							else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csFromCcy,csInterMedCcy));
+								iRet = PD_ERR;
+							}
+						}
+						else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csFromCcy,csInterMedCcy));
+                                        		iRet = PD_ERR;
+						}
+					}
+
+					if(iRet == PD_OK && !iMiniMMMOn){ //mini-mmm off
+						//find seb balance by date
+						DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindRateByDate");
+					}
+					if(iRet == PD_OK && iMiniMMMOn){ //mini-mmm on
+						//find mi_acr_bal by date
+						DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","FindRateByDate");
+					}
+					if(iRet == PD_OK){
+						if ((unsigned long)((*DBObjPtr)(csDateTime,csToCcy,csInterMedCcy,&dTmpRate22)) == PD_FOUND) {
+DEBUGLOG(("DoExchangeByDate::() [ACR] Internal Avg Rate = [%f] from [%s] to [%s]\n",dTmpRate22,csInterMedCcy,csToCcy));
+							PutField_Double(hContext,"inter_rate",dTmpRate22);
+							//PutField_Double(hContext,"ex_int_rate",dTmpRate21*dTmpRate22);/////////
+						}
+						else {
+DEBUGLOG(("DoExchangeByDate Avg Rate not found for [%s] to [%s]!!!!!\n",csToCcy,csInterMedCcy));
+							iUsingExt = PD_TRUE;
+						}
+					}
+				}
+
+				else if(iIsFromRestricted){
+
+					double  dTmpRate21Tmp = 0.0;
+					if(iRet == PD_OK && !iMiniMMMOn){ //mini-mmm off
+						/////find seb balance by date
+                                                DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindRateByDate");
+					}
+					if(iRet == PD_OK && iMiniMMMOn){ //mini-mmm on
+						//find mi_acr_bal by date
+						DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","FindRateByDate");
+					}
+					if(iRet == PD_OK){
+                                                if ((unsigned long)((*DBObjPtr)(csDateTime,csFromCcy,
+										csInterMedCcy,&dTmpRate21Tmp)) == PD_FOUND) {
+								if(dTmpRate21Tmp>0){
+                                                                	dTmpRate21 = newround(1/dTmpRate21Tmp,PD_ROUND_UP_DEC);//////
+								PutField_Double(hContext,"inter_rate",dTmpRate21);
+								PutField_Double(hContext,"fr_inter_acr_rate",dTmpRate21);///////
+DEBUGLOG(("DoExchangeByDate::() [ACR] Internal Avg Rate = [%f] from [%s] to [%s]\n",dTmpRate21,csFromCcy,csInterMedCcy));
+								}
+						}
+						else{
+DEBUGLOG(("DoExchangeByDate Avg Rate not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+							iUsingExt = PD_TRUE;
+						}
+                                        }
+//get oanda rate (fromccy - interccy)
+//for merchant settlement use
+					if (iRet == PD_OK) {
+						DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDateTime");
+						if ((unsigned long)((*DBObjPtr)(csDateTime,csFromCcy,csInterMedCcy,hRec)) == PD_OK) {
+							if (GetField_Double(hRec,csRestricted2,&dTmpRate21b)) {////////
+								PutField_Double(hContext,"fr_inter_ex_rate",dTmpRate21b);///////
+DEBUGLOG(("DoExchangeByDate::() [Reference Only] [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted2,dTmpRate21b,csFromCcy,csInterMedCcy));
+							}
+							else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [rate] not found for [%s] to [%s]\n",csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [rate] not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+                                                                iRet = PD_ERR;
+							}
+						}
+						else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [rate] not found for [%s] to [%s]\n",csFromCcy,csInterMedCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [rate] not found for [%s] to [%s]!!!!!\n",csFromCcy,csInterMedCcy));
+                                                        iRet = PD_ERR;
+						}
+					}
+
+                                        if (iRet == PD_OK){
+                                                DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDateTime");
+                                                if ((unsigned long)((*DBObjPtr)(csDateTime,csInterMedCcy,csToCcy,hRec)) == PD_OK) {
+                                                        if (GetField_Double(hRec,csRestricted2,&dTmpRate22)) {
+								PutField_Double(hContext,"half_ex_rate",dTmpRate22);///////
+								////PutField_Double(hContext,"ex_int_rate",dTmpRate21*dTmpRate22);/////
+DEBUGLOG(("DoExchangeByDate::() [%s] Exteranl ex Rate = [%lf] from [%s] to [%s]\n",csRestricted2,dTmpRate22,csInterMedCcy,csToCcy));
+                                                        }
+                                                        else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csInterMedCcy,csToCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csInterMedCcy,csToCcy));
+                                                                iRet = PD_ERR;
+                                                        }
+                                                }
+                                                else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csRestricted2,csInterMedCcy,csToCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]!!!!!\n",csRestricted2,csInterMedCcy,csToCcy));
+                                                        iRet = PD_ERR;
+                                                }
+                                        }
+
+                                }
+			
+				if (iRet == PD_OK) {
+
+////Check Channel, Service, Merchant ID which will not consider ACR
+////DBSkipAcrRule in Online only
+////Now for Settlement only. Can support other txn code but need revise program.
+
+					if(!strcmp(csChannelCode,PD_CHANNEL_MGT) &&
+					   !strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)){
+						
+						DBObjPtr = CreateObj(DBPtr,"DBSkipAcrRule","IsSkipRule");
+						if ((unsigned long)((*DBObjPtr)(csTxnCode,csServiceCode,csMerchantId)) == PD_TRUE) {
+							iUsingExt = PD_TRUE;
+DEBUGLOG(("DoExchangeByDate Channel[%s], TxnCode[%s], Service[%s], MerhcantID[%s] will not consider ACR!!!!!\n",csChannelCode,csTxnCode,csServiceCode,csMerchantId));
+
+							/////Not use ACR but the it should be displayed in console(if any)
+							dHalfExRate = 0.0;
+							dInterRate = 0.0;
+							if(GetField_Double(hContext,"half_ex_rate",&dHalfExRate) &&
+							   GetField_Double(hContext,"inter_rate",&dInterRate)){
+								dACR = newround(dHalfExRate * dInterRate,PD_ROUND_UP_DEC);
+								if(cFrToReverse == PD_YES){
+									PutField_Double(hContext,"ex_int_rate",newround(1/dACR,PD_ROUND_UP_DEC));/////
+								}
+								else{
+									PutField_Double(hContext,"ex_int_rate",dACR);/////
+								}
+							}
+
+						}
+					}
+
+					if (iUsingExt == PD_FALSE) {
+/* do Compare */
+						dOandaRate = 0.0;
+						dInterRate = 0.0;
+						dHalfExRate = 0.0;
+						dACR = 0.0;
+						dFrInterExRate = 0.0;
+						dFrInterACRRate = 0.0;
+						dSettInterRate = 0.0;
+						GetField_Double(hContext,"org_ex_rate",&dOandaRate);
+						GetField_Double(hContext,"half_ex_rate",&dHalfExRate);
+						GetField_Double(hContext,"inter_rate",&dInterRate);
+						GetField_Double(hContext,"fr_inter_ex_rate",&dFrInterExRate);
+						GetField_Double(hContext,"fr_inter_acr_rate",&dFrInterACRRate);
+
+						dACR = newround(dHalfExRate * dInterRate,PD_ROUND_UP_DEC);
+						if(cFrToReverse == PD_YES){
+							PutField_Double(hContext,"org_ex_rate",newround(1/dOandaRate,PD_ROUND_UP_DEC));
+							PutField_Double(hContext,"ex_int_rate",newround(1/dACR,PD_ROUND_UP_DEC));/////
+						}
+						else{
+							PutField_Double(hContext,"ex_int_rate",dACR);/////
+						}
+DEBUGLOG(("DoExchangeByDate::() compare ACR[%lf] with Oanda Rate[%lf]\n",dACR,dOandaRate));
+
+
+						if(!strcmp(csRes1Res2Opr,PD_GREATER_THAN)){
+							if(dOandaRate >= dACR){
+								iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+										 dOandaRate,PD_EXT_EX,cFrToReverse,
+										 dMarkupRate,cMarkupAmtOpr,
+										 hContext);
+								dSettInterRate = dFrInterExRate;
+							}
+							else{
+								iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+										 dACR,PD_INT_EX,cFrToReverse,
+										 dMarkupRate,cMarkupAmtOpr,
+										 hContext);
+								dSettInterRate = dFrInterACRRate;
+							}
+						}
+						else if (!strcmp(csRes1Res2Opr,PD_LESS_THAN)) {
+							if(dOandaRate <= dACR || dACR == 0.0){
+								iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+										 dOandaRate,PD_EXT_EX,cFrToReverse,
+										 dMarkupRate,cMarkupAmtOpr,
+										 hContext);
+								dSettInterRate = dFrInterExRate;
+							}
+							else{
+								iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+										 dACR,PD_INT_EX,cFrToReverse,
+										 dMarkupRate,cMarkupAmtOpr,
+										 hContext);
+								dSettInterRate = dFrInterACRRate;
+							}
+						}
+						else{
+ERRLOG("DoExchangeByDate::() undefine operator\n");
+DEBUGLOG(("DoExchangeByDate::() undefine operator\n"));
+							iRet = PD_ERR;
+						}
+
+						if((!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+						    || !strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST))
+						    && iIsFromRestricted){
+							iRet = CalSettlementInter(csFromCcy,csInterMedCcy,dTxnAmt,
+									dSettInterRate,cFrToReverse,
+									dMarkupRate,cMarkupAmtOpr,
+									hContext);
+						}
+
+					}
+					else {
+// using crossrate
+DEBUGLOG(("DoExChange::() using crossrate\n"));
+						dOandaRate = 0.0;
+						dFrInterExRate = 0.0;
+						GetField_Double(hContext,"org_ex_rate",&dOandaRate);
+						GetField_Double(hContext,"fr_inter_ex_rate",&dFrInterExRate);
+
+						if(cFrToReverse == PD_YES){
+							PutField_Double(hContext,"org_ex_rate",newround(1/dOandaRate,PD_ROUND_UP_DEC));
+						}
+
+						iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+								 dOandaRate,PD_EXT_EX,cFrToReverse,
+								 dMarkupRate,cMarkupAmtOpr,
+								 hContext);
+
+						if((!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)
+						    || !strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST))
+						    && iIsFromRestricted){
+							iRet = CalSettlementInter(csFromCcy,csInterMedCcy,dTxnAmt,
+									dFrInterExRate,cFrToReverse,
+									dMarkupRate,cMarkupAmtOpr,
+									hContext);
+						}
+					}
+				}
+// end Ext + Int Rate 
+			}
+
+			else { // no restricted
+DEBUGLOG(("DoExchangeByDate: None Restricted Currency!!![%d] [%d]\n",iIsToRestricted,iIsFromRestricted));
+				DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDateTime");
+                		if ((unsigned long)((*DBObjPtr)(csDateTime,csFromCcy,csToCcy,hRec)) == PD_OK) {
+DEBUGLOG(("DoExchangeByDate: Rate [%s] is going to be used for External Rate\n",csNoneRestricted));
+                       		 	if (GetField_Double(hRec,csNoneRestricted,&dExRate)) {
+						if(cFrToReverse == PD_YES){
+							PutField_Double(hContext,"org_ex_rate",newround(1/dExRate,PD_ROUND_UP_DEC));
+						}
+						else{
+							PutField_Double(hContext,"org_ex_rate",dExRate);
+						}
+DEBUGLOG(("DoExchangeByDate::() Exteranl ex Rate = [%lf]\n",dExRate));
+						iRet = CalResult(csFromCcy,csToCcy,dTxnAmt,
+								 dExRate,PD_EXT_EX,cFrToReverse,
+								 dMarkupRate,cMarkupAmtOpr,
+								 hContext);
+                       		 	}
+                       		 	else {
+ERRLOG("BOExchange:DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csNoneRestricted,csFromCcy,csToCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error [%s] not found for [%s] to [%s]\n",csNoneRestricted,csFromCcy,csToCcy));
+                       		         	iRet = PD_ERR;
+                       		 	}
+                		}
+                		else {
+ERRLOG("BOExchange:DoExchangeByDate Call GetExchangeRate Error for [%s] to [%s]\n",csFromCcy,csToCcy);
+DEBUGLOG(("DoExchangeByDate Fatal error Call GetExchangeRate for [%s] to [%s]\n",csFromCcy,csToCcy));
+                       		 	iRet = PD_ERR;
+                		}
+			}
+		} // iRet == PD_OK
+	}
+
+DEBUGLOG(("DoExchangeByDate: ---------------------------------------------------------------------------\n"));
+
+	if(GetField_Double(hContext,"markup_amt",&dMarkupAmt)){
+DEBUGLOG(("DoExChange::() markup_amt = [%lf]\n",dMarkupAmt));
+	}
+
+	if(dMarkupAmt>0.0 && iInfoOnly!=PD_TRUE){
+		if (strcmp(csTxnCode, PD_AVA_PAYOUT_REQ_TF_TO) && 
+		    strcmp(csTxnCode, PD_AVA_PAYOUT_REQ_TF_FROM) && 
+		    strcmp(csTxnCode, PD_FUND_IN_PAYOUT_MERCHANT) && 
+		    strcmp(csTxnCode, PD_VOID_TXN_CODE) && 
+		    strcmp(csTxnCode, PD_OTH_SYS_2_MERCH_BAL_TRF) &&
+		    strcmp(csTxnCode, PD_OFL_OTH_SYS_2_MERCH_BAL_TRF) &&
+		    strcmp(csTxnCode, PD_MERCHANT_BAL_TFF)&&
+		    strcmp(csTxnCode, PD_MERCHANT_BAL_TFT) &&
+                    strcmp(csTxnCode, PD_OFL_MERCHANT_BAL_TFF) &&
+                    strcmp(csTxnCode, PD_OFL_MERCHANT_BAL_TFT)) {
+
+			char	*csTmp;
+			if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST) 
+			   || !strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)){
+				int iAddElement=PD_TRUE;
+				if(GetField_CString(hContext,"sub_txn_code",&csTmp)){
+					if(!strcmp(csTmp,PD_ENQUIRE_FX))
+						iAddElement = PD_FALSE;
+				}
+				if(iAddElement==PD_TRUE){
+					PutField_Char(hContext,"org_party_type",PD_TYPE_MERCHANT);
+					BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMarkupAmtElement");
+					iRet = (unsigned long)(*BOObjPtr)(hContext);
+				}
+			}
+			else{
+				if(!GetField_CString(hContext,"from_txn_seq",&csTmp)){
+					GetField_CString(hContext,"txn_seq",&csTmp);
+					PutField_CString(hContext,"from_txn_seq",csTmp);
+				}
+				BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMarkupAmtElement");
+				iRet = (unsigned long)(*BOObjPtr)(hContext);
+			}
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+DEBUGLOG(("DoExchangeByDate::() return [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int CalResult(const char* csFromCcy, const char* csToCcy, const double dAmt,
+	      const double dInExRate, const char cExParty, const char cFrToReverse,
+	      const double dMarkupRate, const char cMarkupAmtOpr,
+	      hash_t* hContext)
+{
+	int	iRet = PD_OK;
+	double	dExRate = 0.0;
+	double	dExRateMU = 0.0;
+	double	dCrossAmt = 0.0;
+	double	dMarkupAmt = 0.0;
+
+DEBUGLOG(("CalResult()\n"));
+	if(cFrToReverse == PD_YES){
+		dExRate = newround(1/dInExRate,PD_ROUND_UP_DEC);
+DEBUGLOG(("CalResult() actual rate = 1/[%f] = [%f]\n",dInExRate,dExRate));
+	}
+	else{
+		dExRate = dInExRate;
+	}
+
+	PutField_Double(hContext,"ex_rate",dExRate);
+	PutField_Char(hContext,"ex_party",cExParty);
+	PutField_Double(hContext,"markup_rate",dMarkupRate);
+
+	if (cMarkupAmtOpr == PD_EX_RULE_PLUS){
+		dExRateMU = newround(dExRate*(1+dMarkupRate),PD_ROUND_UP_DEC);
+		PutField_Double(hContext,"ex_rate_w_mu",dExRateMU);
+DEBUGLOG(("CalResult::() ExRate With Markup [%f] = [%f] * (1 + [%f])\n",dExRateMU,dExRate,dMarkupRate));
+	}
+	else{
+		dExRateMU = newround(dExRate*(1-dMarkupRate),PD_ROUND_UP_DEC);
+		PutField_Double(hContext,"ex_rate_w_mu",dExRateMU);
+DEBUGLOG(("CalResult::() ExRate With Markup [%f] = [%f] * (1 - [%f])\n",dExRateMU,dExRate,dMarkupRate));
+	}
+
+	if(cFrToReverse == PD_YES){
+DEBUGLOG(("CalResult() Calculate Result Amount\n"));
+		dCrossAmt = CalExAmt(dAmt,dExRateMU,csFromCcy);
+DEBUGLOG(("CalResult() Calculate Markup Amount\n"));
+		dMarkupAmt = CalExAmt(dAmt, newround(dExRate*dMarkupRate,PD_ROUND_UP_DEC),csFromCcy);
+		PutField_CString(hContext,"markup_ccy",csFromCcy);
+	}
+	else{
+DEBUGLOG(("CalResult() Calculate Result Amount\n"));
+		dCrossAmt = CalExAmt(dAmt,dExRateMU,csToCcy);
+DEBUGLOG(("CalResult() Calculate Markup Amount, rate with markup[%f] = [%f]*[%f]\n",dExRate*dMarkupRate,dExRate,dMarkupRate));
+		dMarkupAmt = CalExAmt(dAmt, newround(dExRate*dMarkupRate,PD_ROUND_UP_DEC),csToCcy);
+		PutField_CString(hContext,"markup_ccy",csToCcy);
+	}
+
+	PutField_Double(hContext,"dst_txn_amt",dCrossAmt);
+	PutField_Double(hContext,"markup_amt",dMarkupAmt);
+
+
+DEBUGLOG(("CalResult() Exit [%d]\n",iRet));
+	return iRet;
+}
+
+
+int CalSettlementInter(const char* csFromCcy, const char* csToCcy, const double dAmt,
+	      const double dInExRate, const char cFrToReverse,
+	      const double dMarkupRate, const char cMarkupAmtOpr,
+	      hash_t* hContext)
+{
+	int	iRet = PD_OK;
+	double	dExRate = 0.0;
+	double	dExRateMU = 0.0;
+	double	dSettleInterBal = 0.0;
+
+DEBUGLOG(("CalSettlementInter()\n"));
+	if (cMarkupAmtOpr == PD_EX_RULE_PLUS){
+		dExRateMU = newround(dInExRate*(1+dMarkupRate),PD_ROUND_UP_DEC);
+DEBUGLOG(("CalSettlementInter::() ExRate With Markup [%f] = [%f] * (1 + [%f])\n",dExRateMU,dInExRate,dMarkupRate));
+	}
+	else{
+		dExRateMU = newround(dInExRate*(1-dMarkupRate),PD_ROUND_UP_DEC);
+DEBUGLOG(("CalSettlementInter::() ExRate With Markup [%f] = [%f] * (1 - [%f])\n",dExRateMU,dInExRate,dMarkupRate));
+	}
+
+	if(cFrToReverse == PD_YES){
+		dExRate = newround(1/dInExRate,PD_ROUND_UP_DEC);
+		dSettleInterBal = CalExAmt(dAmt,dExRateMU,csFromCcy);
+		PutField_CString(hContext,"inter_ccy",csFromCcy);
+	}
+	else{
+		dExRate = dInExRate;
+		dSettleInterBal = CalExAmt(dAmt,dExRateMU,csToCcy);
+		PutField_CString(hContext,"inter_ccy",csToCcy);
+	}
+
+	PutField_Double(hContext,"inter_rate",dExRate);
+	PutField_Double(hContext,"inter_amt",dSettleInterBal);
+DEBUGLOG(("CalSettlementInter() Result Amount [%f] = [%f] * [%f]\n",dSettleInterBal,dAmt,dExRateMU));
+	
+DEBUGLOG(("CalSettlementInter() Exit [%d]\n",iRet));
+	return iRet;
+}

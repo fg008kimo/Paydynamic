@@ -1,0 +1,272 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/06/17              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOMMSTxnEng.h"
+
+char    cDebug;
+OBJPTR(DB);
+
+int VerifyTxn(const char* csTxnId);
+int CheckBalanceAndLock(hash_t* hReq);
+void BOMMSTxnEng(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int RemitTxn(hash_t* hContext,const hash_t* hReq)
+{
+	int	iRet = PD_ERR;
+	int	iBalCnt = 0,i;
+	char	csTag[PD_TAG_LEN +1];
+	char	cSelType;
+	char	*csPtr;
+	double	dTmp;
+
+	hash_t	*hData;
+DEBUGLOG(("BOMMSTxnEng:RemitTxn()\n"));
+
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	if (GetField_Int(hContext,"bal_cnt",&iBalCnt)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() bal_cnt = [%d]\n",iBalCnt));
+		iRet = PD_OK;
+	}
+
+	for (i= 0 ; i < iBalCnt; i++ ) {
+        	hash_init(hData,0);
+		sprintf(csTag,"bal.%d.sel_type",i+1);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() [%s]\n",csTag));
+		if (GetField_Char(hContext,csTag,&cSelType )) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() select_type = [%c]\n",cSelType));
+		}
+		else {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() select_type not found\n"));
+ERRLOG("BOMMSTxnEng:RemitTxn() select_type not found\n");
+			iRet = INT_MMS_SELECTE_TYPE_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+			break;
+		}
+
+		if (iRet == PD_OK) {
+/* Verify Txn */
+			if (cSelType == PD_MMS_SELECT_TXN) {
+				int	iTidCnt = 0,j;
+				char	*csTxnId;
+
+				iRet = PD_ERR;
+				sprintf(csTag,"bal.%d.tid_cnt",i+1);
+				GetField_Int(hContext,csTag,&iTidCnt);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s = %d\n",csTag,iTidCnt));
+				for (j = 0; j < iTidCnt; j++) {
+					sprintf(csTag,"bal.%d.tid.%d.txn_id",i+1,j+1);
+					if (GetField_CString(hContext,csTag,&csTxnId)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s = %s\n",csTag,csTxnId));
+						if (VerifyTxn(csTxnId) != PD_OK) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() %s not found\n",csTxnId));
+ERRLOG("BOMMSTxnEng:RemitTxn() %s not found\n",csTxnId);
+							iRet = INT_ORG_TXN_NOT_FOUND;
+							PutField_Int(hContext,"internal_error",iRet);
+						}
+						else 
+							iRet = PD_OK;
+					}
+				}
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+/* check balance with credit limit */
+
+/* credit limit however system re-cal by using cl_rate and cl_frate */
+		if (GetField_Double(hContext,"cl_amt",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() cl_amt = [%lf]\n",dTmp));
+			PutField_Double(hData,"cl_amt",dTmp);
+		}
+		if (GetField_Double(hContext,"cl_rate",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() cl_rate = [%lf]\n",dTmp));
+			PutField_Double(hData,"cl_rate",dTmp);
+		}
+
+		if (GetField_Double(hContext,"cl_flat_rate",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() cl_flat_rate = [%lf]\n",dTmp));
+			PutField_Double(hData,"cl_flat_rate",dTmp);
+		}
+/* txn_amt */
+		if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_amt = [%lf]\n",dTmp));
+			PutField_Double(hData,"txn_amt",dTmp);
+		}
+/* txn_country */
+		if (GetField_CString(hReq,"txn_country",&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_country = [%s]\n",csPtr));
+			PutField_CString(hData,"txn_country",csPtr);
+		}
+/* txn_ccy */
+		if (GetField_CString(hReq,"txn_ccy",&csPtr)) {
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() txn_ccy = [%s]\n",csPtr));
+			PutField_CString(hData,"txn_ccy",csPtr);
+		}
+		iRet = CheckBalanceAndLock(hData);
+	}
+
+	FREE_ME(hData);
+DEBUGLOG(("BOMMSTxnEng:RemitTxn() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int RecvTxn(hash_t* hContext,const hash_t* hReq)
+{
+	int	iRet = PD_OK;
+DEBUGLOG(("BOMMSTxnEng:RecvTxn()\n"));
+
+
+DEBUGLOG(("BOMMSTxnEng:RecvTxn() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int CreateRecvTxn(hash_t* hContext,const hash_t* hReq)
+{
+	int	iRet = PD_OK;
+DEBUGLOG(("BOMMSTxnEng:CreateRecvTxn()\n"));
+
+
+DEBUGLOG(("BOMMSTxnEng:CreateRecvTxn() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int VerifyTxn(const char* csTxnId) 
+{
+	int	iRet = PD_OK;
+	hash_t	*hData;
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+DEBUGLOG(("VerifyTxn()\n"));
+
+/* txn_seq */
+DEBUGLOG(("VerifyTxn() txn_seq = [%s]\n",csTxnId));
+	PutField_CString(hData,"txn_seq",csTxnId);
+
+/* status */
+	PutField_Char(hData,"status",PD_COMPLETE);
+
+/* ar_ind */
+	PutField_Char(hData,"ar_ind",PD_ACCEPT);
+
+/* sub_status_cnt */
+	PutField_Int(hData,"sub_status_cnt",1);
+
+/* sub_status */
+	PutField_CString(hData,"sub_status_0",PD_PENDING);
+
+	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","MatchTxnStatus");
+
+	if (((unsigned long)(DBObjPtr)(hData)) == PD_FOUND) {
+DEBUGLOG(("VerifyTxn() txn record [%s] found\n",csTxnId));
+		iRet = PD_OK;
+	}
+	else {
+DEBUGLOG(("VerifyTxn() txn record [%s] not found\n",csTxnId));
+		iRet = PD_ERR;
+	}
+
+	FREE_ME(hData);
+DEBUGLOG(("VerifyTxn() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int CheckBalanceAndLock(hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	double	dClAmt = 0.0;
+	double	dClRate = 0.0;
+	double	dClFlatRate = 0.0;
+	double	dTxnAmt = 0.0;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+DEBUGLOG(("CheckBalanceAndLock()\n"));
+
+/* cl_amt */
+	if (GetField_Double(hReq,"cl_amt",&dClAmt)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_amt = [%lf]\n",dClAmt));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() cl_amt is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() cl_amt is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* cl_rate */
+	if (GetField_Double(hReq,"cl_rate",&dClRate)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_rate = [%lf]\n",dClRate));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() cl_rate is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() cl_rate is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* cl_flat_rate */
+	if (GetField_Double(hReq,"cl_flat_rate",&dClFlatRate)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_flat_rate = [%lf]\n",dClFlatRate));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() cl_flat_rate is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() cl_flat_rate is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_amt */
+	if (GetField_Double(hReq,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("CheckBalanceAndLock() cl_flat_rate = [%lf]\n",dTxnAmt));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() txn_amt is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() txn_amt is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_country */
+	if (GetField_CString(hReq,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("CheckBalanceAndLock() txn_country = [%s]\n",csTxnCountry));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() txn_country is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() txn_country is missing\n");
+		iRet = PD_ERR;
+	}
+
+/* txn_ccy */
+	if (GetField_CString(hReq,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("CheckBalanceAndLock() txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else {
+DEBUGLOG(("CheckBalanceAndLock() txn_ccy is missing\n"));
+ERRLOG("BOMMSTxnEng::CheckBalanceAndLock() txn_ccy is missing\n");
+		iRet = PD_ERR;
+	}
+
+
+	if (iRet == PD_OK) {
+	}
+
+DEBUGLOG(("CheckBalanceAndLock() Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}

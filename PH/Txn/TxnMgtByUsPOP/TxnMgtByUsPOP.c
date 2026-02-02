@@ -1,0 +1,80 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/10/13              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPOP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define       PD_DETAIL_TAG   "dt"
+
+char cDebug;
+OBJPTR(BO);
+
+void TxnMgtByUsPOP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+        char    *csTmp;
+	int	i = 0;
+	int	iCnt = 0;
+	char	csTag[PD_TAG_LEN+1];
+
+DEBUGLOG(("Authorize\n"));
+
+	if(GetField_CString(hRequest,"merchant_id",&csTmp)){
+DEBUGLOG(("Authorize::merchant_id = [%s]\n",csTmp));
+        }
+
+	if(GetField_Int(hContext, "total_cnt", &iCnt)){
+		PutField_Int(hContext,"total_batch_cnt",iCnt);
+DEBUGLOG(("Authorize::batch_cnt = [%d]\n", iCnt));
+		for (i = 0; i < iCnt; i++) {
+			sprintf(csTag, "%s_batchid_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+				sprintf(csTag, "batch_id_%d",i);
+				PutField_CString(hContext,csTag,csTmp);
+			}
+		}
+	}
+        
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+        }
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::call BOPayout->ProcessPayoutTxn\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOPayout","ProcessPayoutTxn");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+	}
+
+        if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+
+DEBUGLOG(("TxnMgtByUsPOP Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

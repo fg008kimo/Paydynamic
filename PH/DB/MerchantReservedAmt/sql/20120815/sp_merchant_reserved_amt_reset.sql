@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION sp_merchant_res_amt_reset(
+	in_merchant_id		merchant_reserved_amt.mr_merchant_id%type,
+	in_country_id		merchant_reserved_amt.mr_country_id%type,
+	in_currency_id		merchant_reserved_amt.mr_currency_id%type,
+	in_service_code		merchant_reserved_amt.mr_service_code%type,
+	in_day_of_week		merchant_reserved_amt.mr_day_of_week%type,
+	in_create_user		merchant_reserved_amt.mr_create_user%type
+)
+return number is
+begin
+	update merchant_reserved_amt
+	  set mr_reserved_amount = 0,
+              mr_update_user = in_create_user,
+	      mr_update_timestamp = sysdate
+        where mr_merchant_id = in_merchant_id
+          and mr_currency_id = in_currency_id
+	  and mr_country_id = in_country_id
+	  and mr_service_code = in_service_code
+	  and mr_day_of_week = in_day_of_week;
+
+	if SQL%ROWCOUNT = 0 THEN
+		insert into merchant_reserved_amt
+			(mr_merchant_id,
+			 mr_currency_id,
+			 mr_country_id,
+			 mr_service_code,
+			 mr_day_of_week,
+			 mr_reserved_amount,
+			 mr_create_user,
+			 mr_update_user,
+			 mr_create_timestamp,
+			 mr_update_timestamp)
+		values(in_merchant_id,
+                       in_currency_id,
+                       in_country_id,
+		       in_service_code,
+		       in_day_of_week,
+		       0,
+		       in_create_user,
+                       in_create_user,
+		       sysdate,
+		       sysdate);
+		if SQL%ROWCOUNT = 0 THEN
+			return 1;
+
+		else
+			return 0;
+		end if;
+	else
+		return 0;
+	end if;
+
+exception
+  when others then
+  return 9;
+end sp_merchant_res_amt_reset;
+/

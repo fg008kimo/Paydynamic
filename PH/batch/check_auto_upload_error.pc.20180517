@@ -1,0 +1,529 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/01/18              [WWK]
+Empty Provider when err [5040,5042,5062]	   2018/04/03		   [WWK]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_nature_path[PD_TMP_BUF_LEN+1];
+char cs_provider_path[PD_TMP_BUF_LEN+1];
+char cs_bank_short_name[PD_TMP_BUF_LEN+1];
+int iBankExclude;
+int iJobSeq;
+int iError;
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+char cDebug;
+int iCnt=0;
+int iDynCnt=0;
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+int CheckAllJobFinish(int iJobSeq);
+int UpdateJobStatus(int iJobSeq, int iBankExclude, char *csNaturePath, char *csProviderPath, char *csBankShortName);
+int LockJobTmpStatus(int iJobSeq);
+int DeleteJobTmpStatus(int iJobSeq);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+	int	iTmpRet = SUCCESS;	
+
+        char    csProviderName[PD_CLIENT_NAME_LEN + 1];
+        char    csProviderId[PD_CLIENT_ID_LEN + 1];
+	char    csNature[PD_ACCT_TYPE_LEN + 1];
+
+	hash_t *hContext;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+/*
+	iTmpRet = CheckAllJobFinish(iJobSeq);
+	if (iTmpRet != PD_TRUE) {
+		//Other job is processing, Quit program
+		return SUCCESS;
+	} else {
+		iTmpRet = LockJobTmpStatus(iJobSeq);
+		if (iTmpRet != SUCCESS) {
+			//Email alert sent already, quit program
+			return SUCCESS;
+		}
+	}
+*/
+
+	if (iError == 0) {
+		//No error need to handle, delete OlAutoUploadJobTmp then exit
+		DeleteJobTmpStatus(iJobSeq);
+		return SUCCESS;
+	}
+
+DEBUGLOG(("batch_proc: check_auto_upload_error Start!\n"));
+
+	// Get Provider Name
+        if (iRet == SUCCESS) {
+		memset(csProviderName, 0, sizeof(csProviderName));
+		memset(csProviderId, 0, sizeof(csProviderId));
+		memset(csNature, 0, sizeof(csNature));        
+
+	        DBObjPtr = CreateObj(DBPtr,"DBOLAutoUploadStmtSetting","GetDetailByPathName");
+                if ((unsigned long)(DBObjPtr)(cs_provider_path,cs_nature_path,csProviderName,csProviderId,csNature) == PD_FOUND) {
+DEBUGLOG(("batch_proc: DBOLAutoUploadStmtSetting: GetDetailByPathName: provider_name = [%s], provider_id = [%s], nature = [%s]\n", csProviderName, csProviderId, csNature));
+                } else {
+DEBUGLOG(("batch_proc: DBOLAutoUploadStmtSetting: GetDetailByPathName Failed!!\n"));
+ERRLOG("check_auto_upload_error: batch_proc: DBOLAutoUploadStmtSetting: GetDetailByPathName Failed!!\n");
+                        return FAILURE;
+                }
+        }
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int	hv_job_seq;
+		varchar hv_provider_name[PD_CLIENT_NAME_LEN+1]; 
+
+		varchar	v_provider[PD_CLIENT_NAME_LEN+1];
+		varchar	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar v_bank_acct_short_name[PD_BANK_ACCT_SHORT_NAME_LEN+1];
+		varchar	v_bank_acct_num[PD_BANK_ACCT_NUM_LEN+1];
+		varchar	v_stmt_filename[PD_UPLOAD_FILENAME_LEN+1];
+		char	v_status;
+		int	v_err_code;
+
+		short	ind_provider = -1;
+		short	ind_bank_name = -1;
+		short	ind_bank_acct_short_name = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_stmt_filename = -1;
+		short	ind_status = -1;
+		short	ind_err_code = -1;
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("batch_proc: DBOLAutoUploadErrLog: Get records\n"));
+
+	hv_job_seq = iJobSeq;
+DEBUGLOG(("batch_proc: hv_job_seq = [%d]\n", iJobSeq));
+
+	hv_provider_name.len = strlen(csProviderName);
+        memcpy(hv_provider_name.arr, csProviderName, hv_provider_name.len);
+DEBUGLOG(("batch_proc: hv_provider_name [%s]\n",csProviderName));	
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		SELECT	OAUEL_PROVIDER,
+			OAUEL_BANK_NAME,
+			OAUEL_ACCT_SHORT_NAME,
+			OAUEL_ACCT_NUM,
+			OAUEL_STMT_FILENAME,
+			OAUEL_STATUS,
+			OAUEL_ERR_CODE
+		FROM 	OL_AUTO_UPLOAD_ERR_LOG
+		WHERE	OAUEL_JOB_SEQ = :hv_job_seq
+		AND 	OAUEL_PROVIDER = :hv_provider_name
+		ORDER BY
+			OAUEL_PROVIDER,
+			OAUEL_BANK_NAME,
+			OAUEL_ACCT_SHORT_NAME,
+			OAUEL_ACCT_NUM,
+			OAUEL_STMT_FILENAME;
+	
+	EXEC SQL OPEN c_cursor_getinfo;
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_provider:ind_provider,
+			:v_bank_name:ind_bank_name,
+			:v_bank_acct_short_name:ind_bank_acct_short_name,
+			:v_bank_acct_num:ind_bank_acct_num,
+			:v_stmt_filename:ind_stmt_filename,
+			:v_status:ind_status,
+			:v_err_code:ind_err_code;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+DEBUGLOG(("batch_proc: No record found!\n"));
+			}
+			break;
+		}
+
+		if (ind_provider >= 0 && ind_err_code >= 0) {
+			sprintf(csTag, "fprovider-%d", iCnt);
+			if (v_err_code != INT_FILE_NOT_FOUND &&
+			    v_err_code != INT_BANK_ACCT_NOT_FOUND &&
+			    v_err_code != INT_INVALID_FILE_NAME) {
+				sprintf(csTmp, "%.*s", v_provider.len, v_provider.arr);
+			} else	sprintf(csTmp, " ");
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("batch_proc: provider = [%s]\n", csTmp));
+		}
+
+		sprintf(csTag, "fbank_name-%d", iCnt);
+		if (ind_bank_name >= 0) {
+			sprintf(csTmp, "%.*s", v_bank_name.len, v_bank_name.arr);
+		} else	sprintf(csTmp, " ");
+		iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("batch_proc: bank_name = [%s]\n", csTmp));
+
+		sprintf(csTag, "fbank_acct_num-%d", iCnt);
+		if (ind_bank_acct_short_name >= 0 && ind_bank_acct_num >= 0) {
+			sprintf(csTmp, "%.*s (%.*s)", v_bank_acct_short_name.len, v_bank_acct_short_name.arr, v_bank_acct_num.len, v_bank_acct_num.arr);
+		} else	sprintf(csTmp, " ");
+		iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("batch_proc: bank_acct_num = [%s]\n", csTmp));
+
+		if (ind_stmt_filename >= 0) {
+			sprintf(csTag, "fstmt_file_name-%d", iCnt);
+			sprintf(csTmp, "%.*s", v_stmt_filename.len, v_stmt_filename.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);		
+DEBUGLOG(("batch_proc: last_stmt_filename = [%s]\n", csTmp));
+		}
+
+		if (ind_status >= 0) {
+			sprintf(csTag, "fstatus-%d", iCnt);
+
+			if (v_status == PD_DEPOSIT_FILE_DECLINED) {
+				sprintf(csTmp,"%s",PD_DEPOSIT_FILE_DECLINED_DESC);
+			} else if (v_status == PD_DEPOSIT_FILE_CANCEL) {
+				sprintf(csTmp,"%s",PD_DEPOSIT_FILE_CANCEL_DESC);
+			} else if (v_status == PD_DEPOSIT_FILE_PENDING) {
+				sprintf(csTmp,"%s",PD_DEPOSIT_FILE_PENDING_DESC);
+			}
+
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("batch_proc: status = [%s]\n", csTmp));
+		}
+
+		if (ind_err_code >= 0) {
+			sprintf(csTag, "ferr_msg-%d", iCnt);
+
+			DBObjPtr = CreateObj(DBPtr,"DBInternalMessages","GetMsg");
+			if ((unsigned long)((*DBObjPtr)(v_err_code,csTmp) == NOT_FOUND)) {
+				iRet = INT_CODE_ERROR;
+			}
+
+			iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+DEBUGLOG(("batch_proc: err_msg = [%s]\n", csTmp));
+		}
+
+		iCnt++;
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+	if (iCnt > 0) {
+		//alert time 
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stimestamp-0", "SEC", "stimestamp-0", 0);
+		iDynCnt = set_tpl_dyn_cstring(hContext, iDynCnt, "ftimestamp-0", "STR", "stimestamp-0", write_tpl_timestamp()); 
+
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+		//email title
+		if (!strcmp(cs_nature_path,PD_AUTO_UPLOAD_NATURE_DSI)) {
+			strcpy(csNature,PD_NATURE_DEPOSIT_NAME);
+		} else if (!strcmp(cs_nature_path,PD_AUTO_UPLOAD_NATURE_POA)) {
+			strcpy(csNature,PD_NATURE_PAYOUT_NAME);
+		} else if (!strcmp(cs_nature_path,PD_AUTO_UPLOAD_NATURE_ITM)) {
+			strcpy(csNature,PD_NATURE_INTERMEDIATE_NAME);
+		} else {
+			iRet = FAILURE;
+		}
+		sprintf(csTmp, "Auto Upload %s Bank Statement - Error Occurs", csNature);
+		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+		PutField_CString(hContext, "source", PD_EML_SOURCE_BATCH);
+		PutField_CString(hContext, "funct", PD_EML_FUNCT_CHK_AUTO_UPL_ERR);
+		PutField_Char(hContext, "party_type", PD_TYPE_GLOBAL);
+		PutField_CString(hContext, "party_id", PD_EML_PARTY_ID_BATCH);
+
+		PutField_Int(hContext, "total_dyn", iDynCnt);
+
+		BOObjPtr = CreateObj(BOPtr, "BOAlertEmail", "ProcessTpl");
+		if ((unsigned long)((*BOObjPtr)(hContext) != PD_OK)){
+			iRet=INT_CODE_ERROR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("batch_proc: BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_auto_upload_error: batch_proc: BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+		}
+		else
+		{
+DEBUGLOG(("batch_proc: BOAlertEmail:ProcessTpl Success\n"));
+		}
+	}
+
+	iTmpRet = UpdateJobStatus(iJobSeq, iBankExclude, cs_nature_path, cs_provider_path, cs_bank_short_name);
+	iTmpRet = DeleteJobTmpStatus(iJobSeq);
+
+DEBUGLOG(("batch_proc: CheckAutoUploadError normal exit!\n"));
+
+	FREE_ME(hContext);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("check_auto_uload_error error_code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /*EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;*/
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_nature_path,"");
+        strcpy(cs_provider_path,"");
+        strcpy(cs_bank_short_name,"");
+	iBankExclude = 0;
+	iJobSeq = 0;
+
+	if (argc < 7) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"s:n:p:b:d:e:")) != EOF) {
+		switch (c) {
+			case 's':
+				iJobSeq = atoi(optarg);
+				break;
+			case 'n':
+				strcpy(cs_nature_path,optarg);
+				break;
+                        case 'p':
+                                strcpy(cs_provider_path, optarg);
+                                break;
+                        case 'b':
+                                strcpy(cs_bank_short_name, optarg);
+                                break;
+                        case 'd':
+                                iBankExclude = atoi(optarg);
+                                break;
+			case 'e':
+				iError = atoi(optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_nature_path,"") || !strcmp(cs_provider_path,"") || !strcmp(cs_bank_short_name,""))
+		return FAILURE;
+
+        return SUCCESS;
+}
+
+int CheckAllJobFinish(int iJobSeq)
+{
+	int iRet = PD_FALSE;
+
+        EXEC SQL WHENEVER SQLERROR GOTO checkfinish_err;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+                                
+        EXEC SQL BEGIN DECLARE SECTION;
+                int     hv_seq;
+		//char	hv_status_1;
+		//char	hv_status_2;
+		int	v_cnt; 
+                short   ind_cnt = -1;
+        EXEC SQL END DECLARE SECTION;
+
+	hv_seq = iJobSeq;
+DEBUGLOG(("CheckAllJobFinish hv_seq [%d]\n",iJobSeq));
+
+	//hv_status_1 = PD_AUTO_UPL_JOB_STATUS_PENDING;
+	//hv_status_2 = PD_AUTO_UPL_JOB_STATUS_INITIAL;                    
+            
+        EXEC SQL SELECT COUNT(*) 
+                   INTO :v_cnt:ind_cnt         
+                 FROM OL_AUTO_UPLOAD_JOB_STATUS
+		 WHERE OAUJS_JOB_SEQ = :hv_seq
+		 //AND OAUJS_STATUS IN ('P');
+		 AND OAUJS_STATUS IN ('I', 'P');
+		 //AND OAUJS_STATUS in (:hv_status_1, :hv_status_2);
+                                                        
+        if (ind_cnt >= 0) { 
+		if (v_cnt == 0) {
+                	iRet = PD_TRUE;
+		}
+        }
+
+	if (iRet == PD_TRUE) {
+DEBUGLOG(("CheckAllJobFinish TRUE\n"));
+	} else {
+DEBUGLOG(("CheckAllJobFinish FALSE\n"));
+	}
+
+	return iRet;
+                        
+checkfinish_err:
+DEBUGLOG(("checkfinish_err code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;      
+}
+
+int UpdateJobStatus(int iJobSeq, int iBankExclude, char *csNaturePath, char *csProviderPath, char *csBankShortName)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO checkfinish_err;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+                                
+        EXEC SQL BEGIN DECLARE SECTION;
+                int     hv_seq;
+		int     hv_bank_exclude;
+                varchar hv_nature_path[PD_TMP_BUF_LEN];
+                varchar hv_provider_path[PD_TMP_BUF_LEN];
+                varchar hv_bank_short_name[PD_TMP_BUF_LEN];
+		char	hv_status;
+        EXEC SQL END DECLARE SECTION;
+
+	hv_seq = iJobSeq;
+DEBUGLOG(("updatejobstatus hv_seq [%d]\n",iJobSeq));
+
+	hv_bank_exclude = iBankExclude;
+DEBUGLOG(("updatejobstatus hv_bank_exclude [%d]\n",iBankExclude));
+
+        hv_nature_path.len = strlen(csNaturePath);
+        memcpy(hv_nature_path.arr, csNaturePath, hv_nature_path.len);
+DEBUGLOG(("updatejobstatus hv_nature_path [%s]\n",csNaturePath));
+
+        hv_provider_path.len = strlen(csProviderPath);
+        memcpy(hv_provider_path.arr, csProviderPath, hv_provider_path.len);
+DEBUGLOG(("updatejobstatus hv_provider_path [%s]\n",csProviderPath));
+
+        hv_bank_short_name.len = strlen(csBankShortName);
+        memcpy(hv_bank_short_name.arr, csBankShortName, hv_bank_short_name.len);
+DEBUGLOG(("updatejobstatus hv_bank_short_name [%s]\n",csBankShortName));
+
+	hv_status = PD_AUTO_UPL_JOB_STATUS_ALERT_SENT;
+DEBUGLOG(("updatejobstatus hv_status [%c]\n",PD_AUTO_UPL_JOB_STATUS_ALERT_SENT));
+                                
+        EXEC SQL UPDATE OL_AUTO_UPLOAD_JOB_STATUS SET OAUJS_STATUS = :hv_status
+		 WHERE OAUJS_JOB_SEQ = :hv_seq
+		 AND OAUJS_NATURE_PATH = :hv_nature_path
+                 AND OAUJS_PROVIDER_PATH = :hv_provider_path
+                 AND OAUJS_PROCESS_BANK = :hv_bank_short_name
+                 AND OAUJS_EXCLUDE_MODE = :hv_bank_exclude;
+                                                        
+DEBUGLOG(("UpdateJobStatus Success\n"));
+	return SUCCESS;
+                        
+checkfinish_err:
+DEBUGLOG(("checkfinish_err code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;      
+}
+
+int LockJobTmpStatus(int iJobSeq)
+{
+	int iRet = FAILURE;
+
+        EXEC SQL WHENEVER SQLERROR GOTO lockjobtmpstatus_err;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+                                
+        EXEC SQL BEGIN DECLARE SECTION;
+                int     hv_seq;
+		char	v_status; 
+                short   ind_status = -1;
+        EXEC SQL END DECLARE SECTION;
+
+	hv_seq = iJobSeq;
+DEBUGLOG(("LockJobTmpStatus hv_seq [%d]\n",iJobSeq));
+
+        EXEC SQL SELECT OAUJT_STATUS
+                   INTO :v_status:ind_status         
+                 FROM OL_AUTO_UPLOAD_JOB_TMP
+		 WHERE OAUJT_JOB_SEQ = :hv_seq
+		 FOR UPDATE;
+                                                        
+        if (ind_status >= 0) { 
+		if (v_status == PD_AUTO_UPL_JOB_STATUS_PENDING) {
+                	iRet = SUCCESS;
+		}
+        }
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("LockJobTmpStatus SUCCESS\n"));
+	} else {
+DEBUGLOG(("LockJobTmpStatus FAILURE\n"));
+	}
+
+	return iRet;
+                        
+lockjobtmpstatus_err:
+DEBUGLOG(("lockjobtmpstatus_err code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;      
+}
+
+int DeleteJobTmpStatus(int iJobSeq)
+{
+        EXEC SQL WHENEVER SQLERROR GOTO deletejobtmp_err;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+                                
+        EXEC SQL BEGIN DECLARE SECTION;
+                int     hv_seq;
+        EXEC SQL END DECLARE SECTION;
+
+	hv_seq = iJobSeq;
+DEBUGLOG(("DeleteJobTmpStatus hv_seq [%d]\n",iJobSeq));
+
+        EXEC SQL DELETE OL_AUTO_UPLOAD_JOB_TMP WHERE OAUJT_JOB_SEQ = :hv_seq;
+                                                        
+DEBUGLOG(("DeleteJobTmpStatus Success\n"));
+	return SUCCESS;
+                        
+deletejobtmp_err:
+DEBUGLOG(("deletejobtmp_err code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;      
+}
+

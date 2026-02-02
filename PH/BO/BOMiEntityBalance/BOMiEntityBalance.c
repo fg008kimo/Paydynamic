@@ -1,0 +1,707 @@
+/*
+PDProTech (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/11/02		   [MSN]
+Add GetApprovalDT				   2015/11/12		   [WWK]
+Add checking allow negative balance		   2016/01/07		   [MSN]
+For ACR bank should not allow negative		   2016/01/14		   [MSN]
+Add roundup for dAbsNetAmt			   2016/07/20		   [WWK]
+PRD309
+ - Add lien
+ - Add lien balance checking                       2021/04/13              [ZBL]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "BOMiEntityBalance.h"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOMiEntityBalance(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+int GetEntityBalance(const hash_t *hRequest, hash_t* hResponse) 
+{
+	int	iRet = PD_OK;
+	double	dTmp;
+	char	*csPtr;
+
+DEBUGLOG(("GetEntityBalance()\n"));
+
+/* entity id */
+	if (GetField_CString(hRequest,"entity_id",&csPtr)) {
+DEBUGLOG(("GetEntityBalance() Entity ID = [%s]\n",csPtr));
+	}
+	else {
+DEBUGLOG(("GetEntityBalance() Entity ID not found\n"));
+ERRLOG("BOMiEntityBalance::GetEntityBalance() Entity ID not found\n");
+		iRet = INT_ERR;
+	}
+
+
+/* ccy */
+	if (iRet == PD_OK ) {
+		if (GetField_CString(hRequest,"ccy",&csPtr)) {
+DEBUGLOG(("GetEntityBalance() ccy = [%s]\n",csPtr));
+		}
+		else {
+DEBUGLOG(("GetEntityBalance() ccy to found\n"));
+ERRLOG("BOMiEntityBalance::GetEntityBalance() ccy not found\n");
+			iRet = INT_ERR;
+		}
+	}
+
+/* country */
+	if (iRet == PD_OK ) {
+		if (GetField_CString(hRequest,"country",&csPtr)) {
+DEBUGLOG(("GetEntityBalance() country = [%s]\n",csPtr));
+		}
+		else {
+DEBUGLOG(("GetEntityBalance() country to found\n"));
+ERRLOG("BOMiEntityBalance::GetEntityBalance() country not found\n");
+			iRet = INT_ERR;
+		}
+	}
+
+/* get entity balance*/
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBMiEntityBalance","GetEntityBalance");
+		iRet = (unsigned long)((DBObjPtr)(hRequest,hResponse));
+
+		if (iRet == PD_OK) {
+/*acct_bal */
+			if (GetField_Double(hResponse,"acct_bal",&dTmp)) {
+DEBUGLOG(("GetEntityBalance() acct_bal = [%lf]\n",dTmp));
+			}
+
+/*intransit */
+			if (GetField_Double(hResponse,"intransit",&dTmp)) {
+DEBUGLOG(("GetEntityBalance() intransit = [%lf]\n",dTmp));
+			}
+/*ar_bal */
+			if (GetField_Double(hResponse,"ar_bal",&dTmp)) {
+DEBUGLOG(("GetEntityBalance() ar_bal = [%lf]\n",dTmp));
+			}
+
+/* PRD309 RSP Lien Function Enhancement */
+/* lien */
+			if (GetField_Double(hResponse, "lien_bal", &dTmp)) {
+DEBUGLOG(("GetEntityBalance() lien_bal = [%lf]\n", dTmp));
+			}
+/* End - PRD309 RSP Lien Function Enhancement */
+		}
+	}
+
+DEBUGLOG(("GetEntityBalance:: () Noraml Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int GetEntityBalanceForUpdate(const hash_t *hRequest, hash_t* hResponse) 
+{
+	int	iRet = PD_OK;
+	double	dTmp;
+	char	*csPtr;
+
+DEBUGLOG(("GetEntityBalanceForUpdate()\n"));
+
+/* entity id */
+	if (GetField_CString(hRequest,"entity_id",&csPtr)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() Entity ID = [%s]\n",csPtr));
+	}
+	else {
+DEBUGLOG(("GetEntityBalanceForUpdate() Entity ID not found\n"));
+ERRLOG("BOMiEntityBalance::GetEntityBalanceForUpdate() Entity ID not found\n");
+		iRet = INT_ERR;
+	}
+
+
+/* ccy */
+	if (iRet == PD_OK ) {
+		if (GetField_CString(hRequest,"ccy",&csPtr)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() ccy = [%s]\n",csPtr));
+		}
+		else {
+DEBUGLOG(("GetEntityBalanceForUpdate() ccy to found\n"));
+ERRLOG("BOMiEntityBalance::GetEntityBalanceForUpdate() ccy not found\n");
+			iRet = INT_ERR;
+		}
+	}
+
+/* country */
+	if (iRet == PD_OK ) {
+		if (GetField_CString(hRequest,"country",&csPtr)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() country = [%s]\n",csPtr));
+		}
+		else {
+DEBUGLOG(("GetEntityBalanceForUpdate() country to found\n"));
+ERRLOG("BOMiEntityBalance::GetEntityBalanceForUpdate() country not found\n");
+			iRet = INT_ERR;
+		}
+	}
+
+/* get entity balance opening balance for update*/
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBMiEntityBalance","GetEntityBalanceForUpdate");
+		iRet = (unsigned long)((DBObjPtr)(hRequest,hResponse));
+
+		if (iRet == PD_OK) {
+/*acct_bal */
+			if (GetField_Double(hResponse,"acct_bal",&dTmp)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() acct_bal = [%lf]\n",dTmp));
+			}
+
+/*intransit */
+			if (GetField_Double(hResponse,"intransit",&dTmp)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() intransit = [%lf]\n",dTmp));
+			}
+/*ar_bal */
+			if (GetField_Double(hResponse,"ar_bal",&dTmp)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() ar_bal = [%lf]\n",dTmp));
+			}
+
+/* PRD309 RSP Lien Function Enhancement */
+/* lien */
+			if (GetField_Double(hResponse, "lien_bal", &dTmp)) {
+DEBUGLOG(("GetEntityBalanceForUpdate() lien_bal = [%lf]\n", dTmp));
+			}
+/* End - PRD309 RSP Lien Function Enhancement */
+		}
+	}
+
+DEBUGLOG(("GetEntityBalanceForUpdate:: () Noraml Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+
+int UpdateEntityBalance(hash_t* hContext, const hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	cBatchMode = PD_ONLINE;
+	char	cBalType;
+	char	*csAmtType;
+	char	*csTxnCcy;
+	char	*csEntityType = NULL;
+	double	dTmp = 0.0;
+	double	dTxnAmt = 0.0;
+	double	dCostAmt = 0.0;
+	double	dNetAmt = 0.0;
+	double	dAbsNetAmt = 0.0;
+	double	dAcctBal = 0.0;
+	double	dIntr = 0.0;
+	double	dArBal = 0.0;
+/* PRD309 RSP Lien Function Enhancement */
+	double	dLienBal = 0.0;
+/* End - PRD309 RSP Lien Function Enhancement */
+	int	iUpdateElement = PD_TRUE;
+	int	iAllowBalNegative = PD_FALSE;
+	int	iCheck = PD_FALSE;
+	int	iIsACRBank = PD_FALSE;
+
+	hash_t	*hData;
+	hash_t	*hRsp;
+
+DEBUGLOG(("UpdateEntityBalance:: ()\n"));
+	hData = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hData,0);
+	hRsp = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRsp,0);
+
+	//batch_mode (online/offline) (***default online)
+	if (GetField_Char(hContext,"batch_mode",&cBatchMode)) {
+DEBUGLOG(("UpdateEntityBalance() batch_mode = [%c]\n",cBatchMode));
+	}
+
+	//update_element (TRUE/FALSE)  (default TRUE)
+	if (GetField_Int(hContext,"update_element",&iUpdateElement)) {
+DEBUGLOG(("UpdateEntityBalance() update_element = [%d]\n",iUpdateElement));
+	}
+
+      	if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("UpdateEntityBalance() txn_seq = [%s]\n",csPtr));
+              	PutField_CString(hData,"txn_seq",csPtr);
+       	}
+
+      	if (GetField_CString(hReq,"entity_id",&csPtr)) {
+DEBUGLOG(("UpdateEntityBalance() entity_id = [%s]\n",csPtr));
+              	PutField_CString(hData,"entity_id",csPtr);
+
+		if(!GetField_CString(hReq,"entity_type",&csEntityType)){
+			//find the entity type of the entity
+			DBObjPtr = CreateObj(DBPtr,"DBMiEntityDetail","GetEntityType");
+			if((unsigned long)((DBObjPtr)(csPtr,hData)) == PD_FOUND){
+				if(GetField_CString(hData,"entity_type",&csEntityType)){
+DEBUGLOG(("UpdateEntityBalance() entity_type = [%s]\n",csEntityType));
+				}
+			}
+			else {
+				iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() entity_type not found\n"));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() entity_type not found\n");
+			}
+		}
+		
+       	}
+       	else {
+               	iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() entity_id not found\n"));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() entity_id not found\n");
+       	}
+
+	if (GetField_Int(hContext,"is_acr_bank",&iIsACRBank)) {
+DEBUGLOG(("UpdateEntityBalance() is_acr_bank = [%d]\n",iIsACRBank));
+	}
+
+/* ccy */
+       	if (iRet == PD_OK ) {
+               	if (GetField_CString(hReq,"ccy",&csTxnCcy)) {
+DEBUGLOG(("UpdateEntityBalance() ccy = [%s]\n",csTxnCcy));
+                       	PutField_CString(hData,"ccy",csTxnCcy);
+               	}
+               	else {
+                       	iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() ccy to found\n"));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() ccy not found\n");
+               	}
+       	}
+
+/* country */
+       	if (iRet == PD_OK ) {
+               	if (GetField_CString(hReq,"country",&csPtr)) {
+DEBUGLOG(("UpdateEntityBalance() country = [%s]\n",csPtr));
+                       	PutField_CString(hData,"country",csPtr);
+               	}
+               	else {
+                       	iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() country to found\n"));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() country not found\n");
+               	}
+       	}
+
+/* amt_type */ // CR or DR
+       	if (iRet == PD_OK ) {
+               	if (GetField_CString(hContext,"amt_type",&csAmtType)) {
+DEBUGLOG(("UpdateEntityBalance() amt_type = [%s]\n",csAmtType));
+               	}
+               	else {
+                       	iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() amt_type to found\n"));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() amt_type not found\n");
+               	}
+       	}
+
+/* bal_type */ // acct_bal or intransit or ar_bal
+       	if (iRet == PD_OK ) {
+               	if (GetField_Char(hContext,"bal_type",&cBalType)) {
+			PutField_Char(hData,"bal_type",cBalType);
+DEBUGLOG(("UpdateEntityBalance() bal_type = [%c]\n",cBalType));
+
+
+			//verify the entity type support this balance type
+			DBObjPtr = CreateObj(DBPtr,"DBMiEntityBalMap","FindMapping");
+			if((unsigned long)((DBObjPtr)(csEntityType,cBalType)) != PD_FOUND){
+				iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() bal_type[%c] not supported by this entity type[%s]\n",cBalType,csEntityType));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() bal_type[%c] not supported by this entity type[%s]\n",cBalType,csEntityType);
+			}
+               	}
+               	else {
+			iRet = INT_ERR;
+DEBUGLOG(("UpdateEntityBalance() bal_type not found\n"));
+ERRLOG("BOMiEntityBalance::UpdateEntityBalance() bal_type not found\n");
+               	}
+       	}
+
+        if (GetField_Double(hReq,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("UpdateEntityBalance() txn_amt = [%s][%lf]\n",csAmtType,dTxnAmt));
+        }
+
+        if (GetField_Double(hReq,"cost_amt",&dCostAmt)) {
+DEBUGLOG(("UpdateEntityBalance() cost_amt = [%lf]\n",dCostAmt));
+        }
+
+	if (GetField_CString(hContext,"update_user",&csPtr)) {
+		PutField_CString(hData,"update_user",csPtr);
+DEBUGLOG(("UpdateEntityBalance() update_user = [%s]\n",csPtr));
+	}
+	else {
+		PutField_CString(hData,"update_user",PD_UPDATE_USER);
+	}
+
+	if (iRet == PD_OK) {
+        	iRet = GetEntityBalanceForUpdate(hData,hRsp);
+
+		if (iRet == PD_OK) {
+/*open_acct_bal */
+                        if (GetField_Double(hRsp,"acct_bal",&dAcctBal)) {
+DEBUGLOG(("UpdateEntityBalance() open_acct_bal = [%lf]\n",dAcctBal));
+                                PutField_Double(hContext,"open_acct_bal",dAcctBal);
+                        }
+
+/*open_intransit */
+                        if (GetField_Double(hRsp,"intransit",&dIntr)) {
+DEBUGLOG(("UpdateEntityBalance() open_intransit = [%lf]\n",dIntr));
+                                PutField_Double(hContext,"open_intransit",dIntr);
+                        }
+/*open_ar_bal */
+                        if (GetField_Double(hRsp,"ar_bal",&dArBal)) {
+DEBUGLOG(("UpdateEntityBalance() open_ar_bal = [%lf]\n",dArBal));
+                                PutField_Double(hContext,"open_ar_bal",dArBal);
+                        }
+
+/* PRD309 RSP Lien Function Enhancement */
+/* open_lien_bal */
+			if (GetField_Double(hRsp, "lien_bal", &dLienBal)) {
+DEBUGLOG(("UpdateEntityBalance() open_lien_bal = [%lf]\n", dLienBal));
+				PutField_Double(hContext, "open_lien_bal", dLienBal);
+			}
+/* End - PRD309 RSP Lien Function Enhancement */
+                }
+                else {
+                        iRet = INT_MMS_NATURE_BAL_NOT_FOUND;
+                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("UpdateEntityBalance() Nature Bal not found\n"));
+ERRLOG("BOMiEntityBalance:UpdateEntityBalance() Nature Bal not found\n");
+                }
+	}
+
+	if (iRet == PD_OK) {
+		if (!strcmp(csAmtType,PD_CR)) {
+			dNetAmt = dTxnAmt - dCostAmt;
+
+			if(dCostAmt>dTxnAmt){
+				dAbsNetAmt = (-1)*dNetAmt;
+				iCheck = PD_TRUE;
+			}
+		}
+		else if (!strcmp(csAmtType,PD_DR)) {
+			dNetAmt = dTxnAmt + dCostAmt;
+			dAbsNetAmt  = dNetAmt;
+			iCheck = PD_TRUE;
+
+		}
+
+		dAbsNetAmt = newround(dAbsNetAmt,2);
+
+		if(iCheck){
+			iCheck = PD_FALSE;
+			if(cBalType == PD_MI_ENTITY_POOL_ACCT_BAL){
+				if(dAbsNetAmt > dAcctBal)
+					iCheck = PD_TRUE;
+			}
+			else if(cBalType == PD_MI_ENTITY_POOL_INTRANSIT){
+				if(dAbsNetAmt > dIntr)
+					iCheck = PD_TRUE;
+			}
+			else if(cBalType == PD_MI_ENTITY_POOL_AR_BAL){
+				if(dAbsNetAmt > dArBal)
+					iCheck = PD_TRUE;
+			}
+/* PRD309 RSP Lien Function Enhancement */
+			else if(cBalType == PD_MI_ENTITY_POOL_LIEN) {
+				if (dAbsNetAmt > dLienBal)
+					iCheck = PD_TRUE;
+			}
+/* End - PRD309 RSP Lien Function Enhancement */
+
+			if(iCheck){
+				DBObjPtr = CreateObj(DBPtr,"DBMiEntityBalMap","isAllowBalNegative");
+				iAllowBalNegative = (unsigned long)((DBObjPtr)(csEntityType,cBalType));
+				if(iAllowBalNegative == PD_FALSE){
+					iRet = INT_INSUFFICIENT_FUND;
+					iCheck = PD_FALSE;
+DEBUGLOG(("UpdateEntityBalance() [%s][%c] Not allow negative balance!!!\n",csEntityType,cBalType));
+ERRLOG("BOMiEntityBalance:UpdateEntityBalance() [%s][%c] Not allow negative balance!!!\n",csEntityType,cBalType);
+				}
+				else if(iAllowBalNegative == PD_ERR){
+					iRet = INT_ERR;
+					iCheck = PD_FALSE;
+				}
+			}
+
+			if(iCheck){
+				if(!strcmp(csEntityType,PD_MI_ENTITY_OPBANK) &&
+				   iIsACRBank == PD_TRUE){
+					iRet = INT_INSUFFICIENT_FUND;
+DEBUGLOG(("UpdateEntityBalance() ACR Bank Not allow negative balance!!!\n"));
+ERRLOG("BOMiEntityBalance:UpdateEntityBalance() ACR Bank Not allow negative balance!!!\n");
+				}
+			}
+			
+		}
+	}
+
+	if (iRet == PD_OK) {
+		/***** update  Context for approval date and approval timestamp */
+		DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+		(*DBObjPtr)(hContext);
+DEBUGLOG(("BOMiEntityBalance:UpdateEntityBalance()  SystemControl::GetApprovalDT called\n"));
+	}
+
+	if (iRet == PD_OK) {
+		if (!strcmp(csAmtType,PD_CR)) {
+			PutField_Double(hData,"txn_amt",dNetAmt);
+		}
+		else if (!strcmp(csAmtType,PD_DR)) {
+			PutField_Double(hData,"txn_amt",(-1)*dNetAmt);
+		}
+		DBObjPtr = CreateObj(DBPtr,"DBMiEntityBalance","Update");
+		iRet = (unsigned long)((DBObjPtr)(hData));
+DEBUGLOG(("BOMiEntityBalance:UpdateEntityBalance iRet = [%d] from MiEntityBalance:Update\n",iRet));
+	}
+
+/* update txn element*/
+        if (iRet == PD_OK && iUpdateElement) {
+
+		if(GetField_CString(hContext,"txn_seq",&csPtr)){
+			PutField_CString(hData,"txn_seq",csPtr);
+		}
+		/*party type*/
+		if(!strcmp(csEntityType,PD_MI_ENTITY_RSP)){
+			PutField_Char(hData,"party_type",PD_MI_PARTY_RSP);
+		}
+		else if(!strcmp(csEntityType,PD_MI_ENTITY_PSP_INTR)){
+			PutField_Char(hData,"party_type",PD_MI_PARTY_PSP_INTR);
+		}
+		else if(!strcmp(csEntityType,PD_MI_ENTITY_OPBANK)){
+			PutField_Char(hData,"party_type",PD_MI_PARTY_OPBANK);
+		}
+		PutField_CString(hData,"txn_ccy",csTxnCcy);
+
+		if(dTxnAmt>0.0){
+			/* element type */
+			/* intransit */
+			if (cBalType == PD_MI_ENTITY_POOL_INTRANSIT) {
+				PutField_CString(hData,"txn_element_type",PD_ELEMENT_IN_TRANSIT);
+			}
+			/* ar_bal */
+			else if (cBalType == PD_MI_ENTITY_POOL_AR_BAL) {
+				if (!strcmp(csAmtType,PD_CR)) {
+					PutField_CString(hData,"txn_element_type",PD_MI_ELEMENT_UNDERPAID);
+				}
+				else{
+					PutField_CString(hData,"txn_element_type",PD_MI_ELEMENT_OVERPAID);
+				}
+			}
+			/* acct_bal */
+			else if (cBalType == PD_MI_ENTITY_POOL_ACCT_BAL) {
+				PutField_CString(hData,"txn_element_type",PD_ELEMENT_TXN_AMT);
+			}
+/* PRD309 RSP Lien Function Enhancement */
+			/* lien_bal */
+			else if (cBalType == PD_MI_ENTITY_POOL_LIEN) {
+				if (!strcmp(csAmtType, PD_CR))
+					PutField_CString(hData, "txn_element_type", PD_ELEMENT_HOLD_AMT);
+				else
+					PutField_CString(hData, "txn_element_type", PD_ELEMENT_UNHOLD_AMT);
+			}
+/* End - PRD309 RSP Lien Function Enhancement */
+
+			/* ccy */
+			PutField_CString(hData,"amount_type",csAmtType);
+			PutField_Double(hData,"txn_amt",dTxnAmt);
+
+			if (cBatchMode == PD_ONLINE) {
+				BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddPspTxnElement");
+			} else if (cBatchMode == PD_OFFLINE) {
+				BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","AddPspTxnElement");
+			} else {
+				iRet = INT_ERR;
+			}
+
+			if (iRet == PD_OK) {
+				iRet = (unsigned long)((BOObjPtr)(hData));
+			}
+		}
+
+		if(dCostAmt>0.0){
+			/* element type */
+			/* intransit */
+			if (cBalType == PD_MI_ENTITY_POOL_INTRANSIT) {
+				PutField_CString(hData,"txn_element_type",PD_ELEMENT_INTRANSIT_COST);
+			}
+			/* acct_bal */
+			else if (cBalType == PD_MI_ENTITY_POOL_ACCT_BAL) {
+				PutField_CString(hData,"txn_element_type",PD_ELEMENT_TXN_FEE);
+			}
+
+			/* ccy */
+			PutField_CString(hData,"amount_type",PD_DR);
+			PutField_Double(hData,"txn_amt",dCostAmt);
+
+			if (cBatchMode == PD_ONLINE) {
+				BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddPspTxnElement");
+			} else if (cBatchMode == PD_OFFLINE) {
+				BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","AddPspTxnElement");
+			} else {
+				iRet = INT_ERR;
+			}
+
+			if (iRet == PD_OK) {
+				iRet = (unsigned long)((BOObjPtr)(hData));
+			}
+		}
+
+		
+        }
+
+/* closing balance */
+        if (iRet == PD_OK) {
+                iRet = GetEntityBalance(hData,hRsp);
+
+                if (iRet == PD_OK) {
+/*acct_bal */
+                        if (GetField_Double(hRsp,"acct_bal",&dTmp)) {
+DEBUGLOG(("UpdateEntityBalance() acct_bal = [%lf]\n",dTmp));
+                                PutField_Double(hContext,"acct_bal",dTmp);
+                        }
+/*intransit */
+                        if (GetField_Double(hRsp,"intransit",&dTmp)) {
+DEBUGLOG(("UpdateEntityBalance() intransit = [%lf]\n",dTmp));
+                                PutField_Double(hContext,"intransit",dTmp);
+                        }
+/*ar_bal */
+                        if (GetField_Double(hRsp,"ar_bal",&dTmp)) {
+DEBUGLOG(("UpdateEntityBalance() ar_bal = [%lf]\n",dTmp));
+                                PutField_Double(hContext,"ar_bal",dTmp);
+                        }
+
+/* PRD309 RSP Lien Function Enhancement */
+/* lien_bal */
+			if (GetField_Double(hRsp, "lien_bal", &dTmp)) {
+DEBUGLOG(("UpdateEntityBalance() lien_bal = [%lf]\n", dTmp));
+				PutField_Double(hContext, "lien_bal", dTmp);
+			}
+/* End - PRD309 RSP Lien Function Enhancement */
+                }
+        }
+
+	FREE_ME(hData);
+	FREE_ME(hRsp);
+DEBUGLOG(("UpdateEntityBalance:: () Noraml Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int CreditAcctBal(hash_t* hContext, const hash_t* hReq)
+{
+	int     iRet = PD_OK;
+DEBUGLOG(("CreditAcctBal:: ()\n"));
+	PutField_CString(hContext,"amt_type",PD_CR);
+	PutField_Char(hContext,"bal_type",PD_MI_ENTITY_POOL_ACCT_BAL);
+
+	iRet = UpdateEntityBalance(hContext,hReq);
+
+	RemoveField_CString(hContext,"amt_type");
+	RemoveField_Char(hContext,"bal_type");
+
+DEBUGLOG(("CreditAcctBal:: return iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int DebitAcctBal(hash_t* hContext, const hash_t* hReq)
+{
+	int     iRet = PD_OK;
+DEBUGLOG(("DebitAcctBal:: ()\n"));
+	PutField_CString(hContext,"amt_type",PD_DR);
+	PutField_Char(hContext,"bal_type",PD_MI_ENTITY_POOL_ACCT_BAL);
+
+	iRet = UpdateEntityBalance(hContext,hReq);
+
+	RemoveField_CString(hContext,"amt_type");
+	RemoveField_Char(hContext,"bal_type");
+
+DEBUGLOG(("DebitAcctBal:: return iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int CreditIntransit(hash_t* hContext, const hash_t* hReq)
+{
+	int     iRet = PD_OK;
+DEBUGLOG(("CreditIntransit:: ()\n"));
+	PutField_CString(hContext,"amt_type",PD_CR);
+	PutField_Char(hContext,"bal_type",PD_MI_ENTITY_POOL_INTRANSIT);
+
+	iRet = UpdateEntityBalance(hContext,hReq);
+
+	RemoveField_CString(hContext,"amt_type");
+	RemoveField_Char(hContext,"bal_type");
+
+DEBUGLOG(("CreditIntransit:: return iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int DebitIntransit(hash_t* hContext, const hash_t* hReq)
+{
+	int     iRet = PD_OK;
+DEBUGLOG(("DebitIntransit:: ()\n"));
+	PutField_CString(hContext,"amt_type",PD_DR);
+	PutField_Char(hContext,"bal_type",PD_MI_ENTITY_POOL_INTRANSIT);
+
+	iRet = UpdateEntityBalance(hContext,hReq);
+
+	RemoveField_CString(hContext,"amt_type");
+	RemoveField_Char(hContext,"bal_type");
+
+DEBUGLOG(("DebitIntransit:: return iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int CreditArBal(hash_t* hContext, const hash_t* hReq)
+{
+	int     iRet = PD_OK;
+DEBUGLOG(("CreditArBal:: ()\n"));
+	PutField_CString(hContext,"amt_type",PD_CR);
+	PutField_Char(hContext,"bal_type",PD_MI_ENTITY_POOL_AR_BAL);
+
+	iRet = UpdateEntityBalance(hContext,hReq);
+
+	RemoveField_CString(hContext,"amt_type");
+	RemoveField_Char(hContext,"bal_type");
+
+DEBUGLOG(("CreditArBal:: return iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int DebitArBal(hash_t* hContext, const hash_t* hReq)
+{
+	int     iRet = PD_OK;
+DEBUGLOG(("DebitArBal:: ()\n"));
+	PutField_CString(hContext,"amt_type",PD_DR);
+	PutField_Char(hContext,"bal_type",PD_MI_ENTITY_POOL_AR_BAL);
+
+	iRet = UpdateEntityBalance(hContext,hReq);
+
+	RemoveField_CString(hContext,"amt_type");
+	RemoveField_Char(hContext,"bal_type");
+
+DEBUGLOG(("DebitArBal:: return iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+

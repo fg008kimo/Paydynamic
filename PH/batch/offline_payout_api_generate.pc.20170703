@@ -1,0 +1,282 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2017/03/29              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+int	iOnlinePayout;
+char    cs_batch_id[PD_TXN_SEQ_LEN+1];
+char    cs_report_date[PD_DATE_LEN + 1];
+char    cs_user[PD_USER_LEN + 1];
+
+char cDebug = 'Y';
+OBJPTR(BO);
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 3) {
+        printf("usage: -b batch_id -o is_online -u user \n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = PD_OK;
+
+	int	iErrRetCode = 0;
+
+	char    csLocalTxnDateTime[PD_DATETIME_LEN+1];
+        char    csTmDate[PD_DATE_LEN+1];
+        char    csTmTime[PD_TIME_LEN+1];
+	char 	csTmpDate[PD_DATETIME_LEN +1];
+	
+	hash_t  *hRequest;
+        hRequest = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRequest,0);
+
+	hash_t  *hContext;
+        hContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hContext,0);
+
+	hash_t  *hResponse;
+        hResponse = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hResponse,0);
+
+	hash_t *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn, 0);
+
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS) {
+		printf("1. usage: -b batch_id -o is_online -u user \n");
+		FREE_ME(hRequest);
+		FREE_ME(hContext);
+		FREE_ME(hResponse);
+                return (iRet);
+        }
+
+DEBUGLOG(("batch_proc\n"));
+
+	//lock the payout control, no other batch/generate can be done
+DEBUGLOG(("batch_proc::Call DBPayoutActionLock::CheckTheActionCtl\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","CheckTheActionCtl");
+	iRet = (unsigned long)(*DBObjPtr)(PD_OFFLINE);
+	if(iRet==PD_OK){
+DEBUGLOG(("batch_proc::Call DBPayoutActionLock::TakeTheActionCtl\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","TakeTheActionCtl");
+		iRet = (unsigned long)(*DBObjPtr)(PD_OFFLINE);
+		if(iRet!=PD_OK){
+			TxnCommit();
+DEBUGLOG(("batch_proc::Call TxnCommit()\n"));
+		}
+	}
+	if(iRet!=PD_OK){
+DEBUGLOG(("batch_proc::Call DBPayoutActionLock::ActionCtl Failed!!\n"));
+ERRLOG("offline_payout_api_generate::batch_proc::Call DBPayoutActionLock::ActionCtl Failed!!\n");
+           	iRet = INT_OTHER_PAYOUT_PROCESSING;
+		PutField_Int(hContext,"internal_error",iRet);
+              	FREE_ME(hRequest);
+              	FREE_ME(hContext);
+              	FREE_ME(hResponse);
+              	return iRet;
+       	}
+
+DEBUGLOG(("batch_proc::batch_id= [%s]\n",cs_batch_id));
+	PutField_CString(hContext,"batch_id",cs_batch_id);
+
+DEBUGLOG(("batch_proc::is online payout= [%d]\n",iOnlinePayout));
+	PutField_Int(hContext,"online_payout",iOnlinePayout);
+
+//DEBUGLOG(("batch_proc::report_date= [%s]\n",cs_report_date));
+//	PutField_CString(hRequest,"report_date",cs_report_date);
+
+DEBUGLOG(("batch_proc::add_user= [%s]\n",cs_user));
+	PutField_CString(hContext,"add_user",cs_user);
+	PutField_CString(hContext,"update_user",cs_user);
+
+	//check system control
+	if(iRet==PD_OK){
+DEBUGLOG(("batch_proc::Call DBSystemControl::FindCode\n"));
+        	DBObjPtr = CreateObj(DBPtr,"DBSystemControl","FindCode");
+        	if ((unsigned long)(*DBObjPtr)("CTPHDATE",csTmpDate) == FOUND) {
+DEBUGLOG(("batch_proc:Current Processor Hub Date= [%s]\n",csTmpDate));
+                	PutField_CString(hContext,"PHDATE",csTmpDate);
+			PutField_CString(hRequest,"report_date",csTmpDate);
+        	} else {
+                	iRet = INT_ERR;
+DEBUGLOG(("batch_proc:NOT RECORD\n"));
+ERRLOG("offline_payout_api_generate::batch_proc::Internal Error:WEB Channel:SystemControl Record Not Found\n");
+        	}
+	}
+
+	PutField_CString(hContext,"txn_code",PD_OL_PAYOUT_GENERATE);
+	PutField_CString(hContext,"channel_code","OMT");
+
+	strcpy(csLocalTxnDateTime,getdatetime());
+	sprintf(csTmDate,"%.*s",PD_DATE_LEN,csLocalTxnDateTime);
+	PutField_CString(hContext,"local_tm_date",csTmDate);
+
+	sprintf(csTmTime,"%.*s",PD_TIME_LEN,&csLocalTxnDateTime[PD_DATE_LEN]);
+	PutField_CString(hContext,"local_tm_time",csTmTime);
+
+	//call get payout api pregen records 
+	if(iRet==PD_OK){
+		PutField_Char(hRequest, "payout_api_status", PD_OL_PO_API_PREVIEW);
+DEBUGLOG(("batch_proc:Call BOOLPayout:GetPayoutApiPregenRecords()\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOOLPayout","GetPayoutApiPregenRecords");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+		if (iRet != PD_OK) {
+DEBUGLOG(("batch_proc:Call BOOLPayout:GetPayoutApiPregenRecords Failed!!, iRet = [%d]\n",iRet));
+ERRLOG("offline_payout_api_generate::batch_proc::Call BOOLPayout::GetPayoutApiPregenRecords Failed!!, iRet = [%d]\n",iRet);		
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+        }
+
+	//call handle generate payout api
+	if(iRet==PD_OK){
+DEBUGLOG(("batch_proc:Call BOOLPayout:HandleGeneratePayoutApi()\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOOLPayout","HandleGeneratePayoutApi");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+		if (iRet != PD_OK) {
+DEBUGLOG(("batch_proc:Call BOOLPayout:HandleGeneratePayoutApi Failed!! iRet = [%d]\n",iRet));
+ERRLOG("offline_payout_api_generate::batch_proc::Call BOOLPayout::HandleGeneratePayoutApi Failed!! iRet = [%d]\n",iRet);		
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+	//handle error return code
+        if ((iRet != INT_OTHER_PAYOUT_PROCESSING) && (GetField_Int(hContext,"internal_error",&iErrRetCode))) {
+DEBUGLOG(("batch_proc::err_ret_code  = [%d]\n", iErrRetCode));
+	
+		TxnAbort();
+DEBUGLOG(("batch_proc::Call TxnAbort()\n"));
+
+DEBUGLOG(("batch_proc::Call DBOLPayoutApiPregenHD:: MatchPregenStatus_ForUpdate\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLPayoutApiPregenHD", "MatchPregenStatus_ForUpdate");
+                if (((unsigned long)(*DBObjPtr)(cs_batch_id, PD_OL_PO_API_PREVIEW)) == PD_FOUND) {
+
+                        PutField_CString(hTxn,"batch_id",cs_batch_id);
+                        PutField_Int(hTxn,"gen_ret_code",iErrRetCode);
+                        PutField_CString(hTxn,"update_user",cs_user);
+
+DEBUGLOG(("batch_proc::Call DBOLPayoutApiPregenHD:: Update\n"));
+                        DBObjPtr = CreateObj(DBPtr, "DBOLPayoutApiPregenHD", "Update");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                        if (iRet != PD_OK) {
+DEBUGLOG(("batch_proc::Call DBOLPayoutApiPregenHD:: Update Failure!!!\n"));
+ERRLOG("offline_payout_api_generate::batch_proc::Call DBOLPayoutApiPregenHD:: Update Failure!!!\n");
+                                iRet = INT_ERR;
+                        }
+                } else {
+DEBUGLOG(("batch_proc::Call DBOLPayoutApiPregenHD:: MatchPregenStatus_ForUpdate not found!!!\n"));
+ERRLOG("offline_payout_api_generate::batch_proc::Call DBOLPayoutApiPregenHD:: MatchPregenStatus_ForUpdate not found!!!\n");
+                        iRet = INT_TXN_STATUS_NOT_MATCH;
+                }
+
+                if (iRet == PD_OK) {
+                        TxnCommit();
+DEBUGLOG(("Authorize::Call TxnCommit()\n"));
+
+                        iRet = iErrRetCode;
+                }
+
+		// remove internal_error
+                RemoveField_Int(hContext, "internal_error");
+	}
+	
+	//release the payout control 
+        if (iRet != INT_OTHER_PAYOUT_PROCESSING) {
+DEBUGLOG(("batch_proc:Call DBPayoutActionLock::ReleaseTheActionCtl\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","ReleaseTheActionCtl");
+		iRet = (unsigned long)(*DBObjPtr)(PD_OFFLINE);
+		if (iRet != PD_OK) {
+DEBUGLOG(("batch_proc:Call DBPayoutActionLock::ReleaseTheActionCtl Failure!!! iRet = [%d]\n",iRet));
+ERRLOG("offline_payout_api_generate::batch_proc::Call DBPayoutActionLock:: ReleaseTheActionCtl Failure!!! iRet = [%d]\n",iRet);
+			iRet = INT_ERR;
+		}
+	}
+
+	FREE_ME(hRequest);
+
+	hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+DEBUGLOG(("offline_payout_api_generate Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_batch_id,"");
+        strcpy(cs_report_date,"");
+        strcpy(cs_user,"");
+	iOnlinePayout = PD_FALSE;
+
+        while ((c = getopt(argc,argv,"b:u:d:o:")) != EOF) {
+                switch (c) {
+                        case 'b':
+                                strcpy(cs_batch_id, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_report_date, optarg);
+                                break;
+                        case 'u':
+                                strcpy(cs_user, optarg);
+                                break;
+                        case 'o':
+                                iOnlinePayout=atoi(optarg);
+				break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_batch_id,"") || !strcmp(cs_user,""))
+                return FAILURE;
+
+        return SUCCESS;
+}

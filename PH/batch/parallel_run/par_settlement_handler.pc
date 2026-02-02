@@ -1,0 +1,1563 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/07/05              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "../batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "par_txn_handler.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "par_settlement_handler.h"
+#include "pr_bo_funct.h"
+#include "pr_par_funct.h"
+#include "pr_log_funct.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_CHAR		0x0D
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+
+char    cDebug;
+
+int  CreateNewSettlementTxn (hash_t *hMyHash);
+int  CheckSkipSettlementTxn(hash_t *hMyHash, hash_t *hTxnHeader);
+
+int  process_settlement_approve(hash_t *hMyHash);
+int  process_settlement_deliver(hash_t *hMyHash);
+int  process_settlement_reverse(hash_t *hMyHash);
+
+
+
+int settlement_handler(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+	int iTmpRet;
+	int iRecExists = PD_TRUE;
+
+	hash_t  *hTxnHeader;
+
+	recordset_t	*rRecordSet;
+	hash_t		*hRec;
+
+	char	*csTmp = NULL;
+
+	char	*csMerchNmb = NULL;
+	char	*csVNCRefNum = NULL;
+        char    csCountry [PD_COUNTRY_LEN + 1];
+        char    *csService = NULL;
+
+	int	iSkip;
+	int	iStandAloneApprove= PD_FALSE;
+	char	*csTxnStatus;
+
+	hash_t 	*hContext, *hRequest, *hResponse;
+
+	hTxnHeader = (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxnHeader, 0);
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+	hash_init (hContext, 0);
+	hash_init (hRequest, 0);
+	hash_init (hResponse, 0);
+
+	// Chk PH MID
+	if (GetField_CString(hMyHash, "txn_merch_nmb", &csMerchNmb)) {
+DEBUGLOG(("settlement_handler: txn_merch_nmb [%s]\n", csMerchNmb));
+	}
+	else {
+DEBUGLOG(("settlement_handler: txn_merch_nmb missing!\n"));
+		iRet = FAILURE;
+	}
+
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+
+	recordset_init(rRecordSet, 0);
+	if (iRet == SUCCESS) {
+
+		if (ParMerchProfile_GetMerchant(csMerchNmb, rRecordSet) != PD_OK) {
+
+DEBUGLOG(("Calling ParMerchProfile.GetMerchant FAILED!\n"));
+		} else {
+//DEBUGLOG(("Calling ParMerchProfile.GetMerchant SUCC!\n"));
+
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec, "service", &csTmp)) {
+//DEBUGLOG(("settlement_handler: ParMerchProfile.GetMerchant service [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "service", csTmp);
+				}
+
+				if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+//DEBUGLOG(("settlement_handler: ParMerchProfile.GetMerchant merchant_id [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "merchant_id", csTmp);
+				}
+
+				if (GetField_CString(hRec, "client_id", &csTmp)) {
+//DEBUGLOG(("settlement_handler: ParMerchProfile.GetMerchant client_id [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "merchant_client_id", csTmp);
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "service", &csService)) {
+
+			csCountry[0] = '\0';
+
+			if (Service_FindCountryByService((const unsigned char*) csService, csCountry) != FOUND) {
+
+DEBUGLOG(("settlement_handler: DBService.FindCountryByService FAILED\n"));
+				iRet = FAILURE;
+			} else {
+//DEBUGLOG(("settlement_handler: DBService.FindCountryByService country [%s]\n", csCountry));
+
+				PutField_CString(hMyHash, "country", csCountry);
+			}
+
+
+			recordset_init(rRecordSet, 0);
+			if (iRet == SUCCESS) {
+				if (ServicePayMethod_FindPayMethod(csService, rRecordSet) != PD_OK) {
+DEBUGLOG(("settlement_handler: DBServicePayMethod:FindPayMethod FAILED!\n"));
+				} else {
+//DEBUGLOG(("settlement_handler: DBServicePayMethod:FindPayMethod SUCC!\n"));
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while (hRec) {
+						if (GetField_CString(hRec, "pay_method", &csTmp)) {
+//DEBUGLOG(("settlement_handler: DBServicePayMethod:FindPayMethod pay_method [%s]!\n", csTmp));
+							PutField_CString(hMyHash, "pay_method", csTmp);
+						}
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+				}
+
+			}
+			RecordSet_Destroy(rRecordSet);
+
+		}
+	}
+	
+
+	// Chk if exists in txn_header
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+DEBUGLOG(("settlement_handler: txn_nmb [%s]\n", csVNCRefNum));
+		}
+		else {
+DEBUGLOG(("settlement_handler: txn_nmb not found!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		iTmpRet = ParTxnData_ChkExist(csVNCRefNum);
+		
+		if (iTmpRet == PD_FOUND) {
+DEBUGLOG(("settlement_handler: RecordExists!\n"));
+			iRecExists = PD_TRUE;
+
+			PutField_Int(hMyHash, "record_exists", PD_TRUE);
+
+		} else if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("settlement_handler: Record Not Exists!\n"));
+			iRecExists = PD_FALSE;
+			PutField_Int(hMyHash, "record_exists", PD_FALSE);
+
+		} else {
+DEBUGLOG(("settlement_handler: DBParTxnData:ChkExist FAILED!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (iRecExists == PD_TRUE) {
+			iRet = GetOrgTxnID(hMyHash, hTxnHeader);
+		}
+		if (iRet == SUCCESS) {
+			iRet = CheckSkipSettlementTxn(hMyHash, hTxnHeader);
+			if (GetField_Int(hMyHash, "skip_record", &iSkip)) {
+DEBUGLOG(("settlement_handler: skip_record [%d]\n", iSkip));
+
+				GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+			
+				if (iRecExists == PD_FALSE) {
+					if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_APPROVED")) {
+						// Rec Not Exists and is approve => skip	
+						//PutField_Int(hMyHash, "skip_record", PD_TRUE);
+						//iSkip = PD_TRUE;
+
+						PutField_Int(hMyHash, "stand_alone_approve", PD_TRUE);
+						iStandAloneApprove = PD_TRUE;
+
+					}
+				}
+				
+
+
+			}
+			else {
+				iSkip = PD_FALSE;
+			}
+
+
+		}
+	}
+
+
+	if (iRet == SUCCESS && iSkip == PD_FALSE) {
+		PutField_Int(hMyHash, "db_commit", PD_FALSE);
+
+		if (iRecExists == PD_FALSE) {
+
+			PutField_Int(hMyHash, "init_mode", PD_TRUE);
+
+			iRet = CreateNewSettlementTxn(hMyHash);
+
+			if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+				PutField_CString(hTxnHeader, "txn_seq", csTmp);
+			}
+		}
+		else {
+			//iRet = GetOrgTxnID(hMyHash, hTxnHeader);
+			if (GetField_CString(hTxnHeader, "txn_id", &csTmp)) {
+
+				PutField_CString(hMyHash, "txn_seq", csTmp);
+				PutField_CString(hTxnHeader, "txn_seq", csTmp);
+			}
+		}
+	}
+
+
+
+
+	if (iRet == SUCCESS) {
+		if (iSkip == PD_FALSE) {
+			GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+			if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_PENDING") ||
+			    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_APPROVED")) {
+
+				if ((iRecExists == PD_FALSE) && (iStandAloneApprove == PD_FALSE)) {
+					iRet = process_settlement_approve(hMyHash);
+				}
+				else if ((iRecExists == PD_FALSE) && (iStandAloneApprove == PD_TRUE)) {
+					iRet = process_settlement_deliver(hMyHash);
+				} 
+				else {
+					iRet = FAILURE;
+				}
+			}
+
+			if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DECLINED") ||
+			    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED")  ||
+			    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+
+				iRet = process_settlement_reverse(hMyHash);
+			}
+
+			if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DELIVERED")) {
+
+				iRet = process_settlement_deliver(hMyHash);
+			}
+
+
+
+			if (iRet == SUCCESS) {
+				//Update to "COMPLETE"
+				iRet = UpdateProcessResult(hMyHash, "COMPLETE");
+			}
+		}
+		else {
+			//Update to "SKIP"
+			iRet = UpdateProcessResult(hMyHash, "SKIP");
+		}
+	}
+	
+	hash_destroy(hTxnHeader);
+	FREE_ME(hTxnHeader);
+	
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+	FREE_ME(rRecordSet);
+
+	return iRet;
+}
+
+
+
+int CreateNewSettlementTxn (hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTxnSeq;
+	hash_t	*hHeader, *hDetail, *hMerchSettDtl;	
+	int	iInitMode = PD_TRUE;
+	int	iTmp;
+
+	char	*csVNCRefNum;
+
+	char	*csTmp;
+	double	dTmp = 0.0;
+
+	double  dAmount = 0.0;
+	double  dFee = 0.0;
+
+        char    csDate[PD_DATE_LEN + 1];
+        char    csTime[PD_TIME_LEN + 1];
+
+
+	hHeader = (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hDetail = (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+	hMerchSettDtl= (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hMerchSettDtl, 0);
+
+
+
+	if (GetField_Int(hMyHash, "init_mode", &iInitMode)) {
+//DEBUGLOG(("CreateNewRecord: init_mode [%d]\n", iInitMode));
+	}
+
+        if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+//DEBUGLOG(("CreateNewRecord: db_commit [%d]\n", iTmp));
+                PutField_Int(hHeader, "db_commit", iTmp);
+        }
+	
+
+	csTxnSeq = strdup((char* )prbo_GetNextMgtTxnSeq());
+
+	PutField_CString(hMyHash, "txn_seq", csTxnSeq);
+DEBUGLOG(("CreateNewRecord: Generate TxnSeq [%s]\n", csTxnSeq));
+
+	PutField_CString(hHeader, "txn_seq", csTxnSeq);
+	PutField_CString(hDetail, "txn_seq", csTxnSeq);
+	PutField_CString(hMerchSettDtl, "txn_seq", csTxnSeq);
+
+	PutField_CString(hHeader, "add_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "add_user", PD_UPDATE_USER);
+	PutField_CString(hMerchSettDtl, "add_user", PD_UPDATE_USER);
+
+	PutField_CString(hHeader, "channel_code", "MGT");
+
+	PutField_Char(hHeader,"status",PD_PROCESSING);
+	PutField_Char(hMerchSettDtl,"status",PD_PROCESSING);
+
+	if (GetField_CString(hMyHash, "org_txn_seq", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: org_txn_seq [%s]\n", csTmp));
+		PutField_CString(hHeader, "org_txn_seq", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: txn_code [%s]\n", csTmp));
+		PutField_CString(hHeader, "txn_code", csTmp);
+	}
+
+
+        if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: post_post [%s]\n", csTmp));
+                PutField_CString(hMyHash, "PHDATE", csTmp);
+                PutField_CString(hHeader, "host_posting_date", csTmp);
+		PutField_CString(hHeader, "transmission_datetime",csTmp);
+		PutField_CString(hHeader, "tm_date",csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+                PutField_CString(hHeader, "transmission_datetime",csTmp);
+
+                strncpy(csDate, csTmp, PD_DATE_LEN);
+                csDate[PD_DATE_LEN] = '\0';
+                strncpy(csTime, csTmp + PD_DATE_LEN, PD_TIME_LEN);
+
+DEBUGLOG(("CreateNewRecord: tm_time [%s]\n", csTime));
+
+                PutField_CString(hHeader, "tm_time", csTime);
+
+
+        }
+
+        if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: local_tm_date [%s]\n", csTmp));
+                PutField_CString(hHeader, "local_tm_date", csTmp);
+	}  
+
+        if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: local_tm_time [%s]\n", csTmp));
+                PutField_CString(hHeader, "local_tm_time", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: merchant_id [%s]\n", csTmp));
+                PutField_CString(hHeader, "merchant_id", csTmp);
+                PutField_CString(hMerchSettDtl, "merchant_id", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: client_ip [%s]\n", csTmp));
+                PutField_CString(hHeader, "ip_addr", csTmp);
+	}
+
+        if (GetField_CString(hMyHash, "service", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: service [%s]\n", csTmp));
+		PutField_CString(hHeader, "service_code", csTmp);
+		PutField_CString(hMerchSettDtl, "service_code", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "country", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: country [%s]\n", csTmp));
+		PutField_CString(hDetail, "txn_country", csTmp);
+		PutField_CString(hMerchSettDtl, "txn_country", csTmp);
+	}
+
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: ccy [%s]\n", csTmp));
+		PutField_CString(hDetail, "txn_ccy", csTmp);
+		PutField_CString(hHeader, "net_ccy", csTmp);
+		PutField_CString(hMerchSettDtl, "request_ccy", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: deliver_ccy [%s]\n", csTmp));
+		PutField_CString(hMerchSettDtl, "deliver_ccy", csTmp);
+	}
+	
+	if (GetField_Double(hMyHash, "amount", &dAmount)) {
+DEBUGLOG(("CreateNewRecord: request_amt [%d]\n", dAmount));
+	}
+	if (GetField_Double(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("CreateNewRecord: fee [%d]\n", dFee));
+	}
+	// txn_amt = amount - fee;
+	dTmp = dAmount - dFee;
+	PutField_Double(hHeader, "txn_amt", dTmp);
+	PutField_Double(hMerchSettDtl, "request_amt", dTmp);
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+
+
+DEBUGLOG(("CreateNewRecord: DBTransaction Add\n"));
+	/*
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+	iRet = (unsigned long) ((*DBObjPtr)(hHeader));
+	*/
+	iRet = Txn_Header_Add(hHeader);
+
+
+	if (iRet == PD_OK ) {
+DEBUGLOG(("CreateNewRecord: DBTransaction AddDetail\n"));
+		/*
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+		iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+		*/
+		iRet = Txn_Detail_AddDetail(hDetail);
+	}
+
+	if (iRet == PD_OK) {
+		if (iInitMode == PD_TRUE) {
+
+			PutField_Char(hMerchSettDtl, "type", 'M');
+
+DEBUGLOG(("CreateNewRecord: DBMerchatnSettlementDetail Add\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Add");
+	                iRet = (unsigned long) ((*DBObjPtr)(hMerchSettDtl));
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		//UpdateTxnLog
+	
+
+		if (iInitMode == PD_TRUE) {	
+			//PutField_CString(hHeader, "sub_status", PD_REQUESTED);
+			PutField_CString(hHeader, "sub_status", PD_MERCHANT_REQUESTED);
+		}
+		PutField_CString(hHeader, "process_type", "0000");
+		PutField_CString(hHeader, "process_code", "000000");
+
+		if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+			PutField_CString(hHeader, "client_id", csTmp);
+		}
+
+DEBUGLOG(("CreateNewRecord: DBTransaction Update\n"));
+		/*
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hHeader);
+		*/
+		iRet = Txn_Header_Update(hHeader);
+	}
+
+	if (iRet == PD_OK) {
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+			PutField_CString(hHeader, "vnc_ref_num", csVNCRefNum);
+
+			if (UpdateHeaderVNCRef(hHeader) == PD_OK) {
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num succ!\n"));
+			}
+			else {
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num fail!\n"));
+				iRet = FAILURE;
+			}
+		}
+	}
+
+
+
+        hash_destroy(hHeader);
+        FREE_ME(hHeader);
+
+        hash_destroy(hDetail);
+        FREE_ME(hDetail);
+
+        hash_destroy(hMerchSettDtl);
+        FREE_ME(hMerchSettDtl);
+
+	FREE_ME(csTxnSeq);
+
+	return iRet;	
+}
+
+
+
+int CheckSkipSettlementTxn(hash_t *hMyHash, hash_t *hTxnHeader)
+{
+	int 	iRet = SUCCESS;
+
+	char	cRecStatus = 'x';
+	char	cRecARInd = 'x';
+	char	*csSubStatus = NULL;
+	char	*csTxnCode = NULL;
+	char	*csTxnStatus = NULL;
+	
+	int	iRecordExists = PD_TRUE;
+
+	if (GetField_Int(hMyHash, "record_exists", &iRecordExists)) {
+DEBUGLOG(("CheckSkipSettlementTxn record_exists [%d]\n", iRecordExists));
+	}
+
+	if (iRecordExists == PD_TRUE) {
+		if (GetField_Char(hTxnHeader, "status", &cRecStatus)) {
+DEBUGLOG(("CheckSkipSettlementTxn status [%c]\n", cRecStatus));
+		}	
+
+		if (GetField_Char(hTxnHeader, "ar_ind", &cRecARInd)) {
+DEBUGLOG(("CheckSkipSettlementTxn ar_ind [%c]\n", cRecARInd));
+		}
+
+		if (GetField_CString(hTxnHeader, "sub_status", &csSubStatus)) {
+DEBUGLOG(("CheckSkipSettlementTxn sub_status [%s]\n", csSubStatus));
+		}
+	
+		if (GetField_CString(hTxnHeader, "txn_code", &csTxnCode)) {
+DEBUGLOG(("CheckSkipSettlementTxn txn_code [%s]\n", csTxnCode));
+		}
+
+
+		if (GetField_CString(hMyHash, "txn_status", &csTxnStatus)) {
+			if (!strcmp(csTxnStatus,"SETTLEMENT_MERCHANT_PENDING") ||
+			    !strcmp(csTxnStatus,"SETTLEMENT_MERCHANT_APPROVED")) {
+		 
+				if ((cRecStatus == PD_COMPLETE) && (cRecARInd == PD_ACCEPTED)) {
+
+					if (!strcmp(csSubStatus, PD_IN_PROCESS)) {
+						PutField_Int(hMyHash, "skip_record", PD_TRUE);
+					}
+				}
+			}
+		
+			if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DELIVERED")) {
+				if ((cRecStatus == PD_COMPLETE) && (cRecARInd == PD_ACCEPTED)) {
+					if (!strcmp(csSubStatus, PD_DELIVERED)) {
+						PutField_Int(hMyHash, "skip_record", PD_TRUE);
+					}
+				}
+			}
+
+			if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DECLINED") ||
+			    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED") ||
+			    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+
+				if (!strcmp(csTxnCode, "VST")) {
+					PutField_Int(hMyHash, "skip_record", PD_TRUE);
+				}
+			}
+		}
+	}
+	else {
+		PutField_Int(hMyHash, "skip_record", PD_FALSE);
+	}
+
+	return iRet;
+}
+
+int  process_settlement_approve(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp = NULL;
+	double	dTmp = 0.0;
+
+	char	*csMID = NULL;
+	char	*csCcy = NULL;
+	char	*csCountry = NULL;
+	char	*csService = NULL;
+
+	double	dOpenBal = 0.0;
+	double	dTxnAmt = 0.0;
+	double  dMarkupAmt = 0.0;
+	double  dExRate = 0.0;
+
+	double	dAmount =0.0;
+	double	dFee=0.0;
+
+	hash_t	*hTxnElement;
+	hash_t	*hDetail;
+	hash_t	*hHeader;
+	hash_t 	*hMerchBalance;
+	hash_t	*hMerchSettDtl;
+
+	char	csDate[PD_DATE_LEN + 1];
+
+	int	iStandAloneApprove= PD_FALSE;
+
+
+	hTxnElement= (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hTxnElement, 0);
+
+	hDetail = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+	hHeader= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hMerchBalance = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchBalance, 0);
+
+	hMerchSettDtl = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchSettDtl, 0);
+
+	PutField_Int(hHeader, "db_commit", PD_FALSE);
+		
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+	PutField_CString(hMerchSettDtl, "update_user", PD_UPDATE_USER);
+
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+		PutField_CString(hTxnElement, "from_txn_seq", csTmp);
+	}
+	
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+		PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		PutField_CString(hMerchBalance, "request_ccy", csTmp);
+	}
+
+	if (GetField_Double(hMyHash, "amount", &dAmount)) {
+		if (!GetField_Double(hMyHash, "fee", &dFee)) {
+			dFee = 0.0;
+		}
+		dTmp = dAmount - dFee;
+		
+		PutField_Double(hTxnElement, "org_txn_amt", dTmp);
+		PutField_Double(hMerchBalance, "net_amt", dTmp);
+		PutField_Double(hHeader, "txn_amt", dTmp);
+		PutField_Double(hHeader, "net_amt", dTmp);
+	}
+
+	if (GetField_Int(hMyHash, "stand_alone_approve", &iStandAloneApprove)) {
+	}
+
+	PutField_Char(hTxnElement,"party_type",PD_TYPE_MERCHANT);
+	PutField_CString(hTxnElement,"amount_type",PD_DR);	
+
+DEBUGLOG(("process_settlement_approve:: AddTxnAmtElement\n"));
+
+
+	iRet = prbo_AddTxnAmtElement(hTxnElement);
+
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hMyHash, "markup_amt", &dTmp)) {
+			PutField_Double(hTxnElement, "markup_amt", dTmp);
+		}
+
+		if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+			PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		}
+	
+		if (dTmp > 0.0) {
+			PutField_CString(hTxnElement,"amount_type",PD_DR);
+
+DEBUGLOG(("process_settlement_approve:: AddMarkupAmtElement\n"));
+
+			iRet = prbo_AddMarkupAmtElement(hTxnElement);
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+			PutField_CString(hTxnElement, "src_txn_fee_ccy", csTmp);
+		}
+
+		if (GetField_Double(hMyHash, "fee", &dTmp)) {
+			PutField_Double(hTxnElement, "src_txn_fee", dTmp);
+			PutField_Double(hMerchBalance, "src_txn_fee", dTmp);
+		}
+
+		if (dTmp > 0.0) {
+			PutField_CString(hTxnElement,"amount_type",PD_DR);
+
+DEBUGLOG(("process_settlement_approve:: AddTxnFeeElement\n"));
+			iRet = prbo_AddTxnFeeElements(hTxnElement);
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "merchant_id", &csMID)) {
+DEBUGLOG(("process_settlement_approve:: merchant_id [%s]\n", csMID));
+			PutField_CString(hMerchBalance, "merchant_id", csMID);
+		}
+
+		if (GetField_CString(hMyHash, "ccy", &csCcy)) {
+DEBUGLOG(("process_settlement_approve:: ccy [%s]\n", csCcy));
+		}
+
+		if (GetField_CString(hMyHash, "country", &csCountry)) {
+DEBUGLOG(("process_settlement_approve:: country [%s]\n", csCountry));
+			PutField_CString(hMerchBalance, "txn_country", csCountry);
+			PutField_CString(hDetail, "txn_country", csCountry);
+		}
+
+		if (GetField_CString(hMyHash, "service", &csService)) {
+DEBUGLOG(("process_settlement_approve:: service [%s]\n", csService));
+			PutField_CString(hMerchBalance, "service_code", csService);
+			PutField_CString(hHeader, "service_code", csService);
+		}
+
+DEBUGLOG(("process_settlement_approve:: GetOpenBalanceForUpdate\n"));
+
+		iRet = prbo_GetOpenBalanceForUpdate(hMerchBalance, csMID, csCcy, csCountry, csService);
+		if (iRet == SUCCESS) {
+			if (GetField_Double(hMerchBalance, "merchant_open_bal", &dOpenBal)) {
+DEBUGLOG(("process_settlement_approve:: GetOpenBalanceForUpdate open_bal [%lf]\n", dOpenBal));
+				PutField_Double(hDetail, "open_bal", dOpenBal);
+			}
+			if (GetField_Double(hMerchBalance, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_approve:: GetOpenBalanceForUpdate open_bal_settlement [%lf]\n", dTmp));
+				PutField_Double(hDetail, "open_bal_settlement", dTmp);
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+DEBUGLOG(("process_settlement_approve: approve_date [%s]\n", csTmp));
+
+			strncpy(csDate, csTmp, PD_DATE_LEN);
+			csDate[PD_DATE_LEN] = '\0';
+
+DEBUGLOG(("process_settlement_approve: re-format approve_date [%s]\n", csDate));
+
+
+
+			
+			PutField_CString(hHeader, "approval_date", csDate);
+		}
+		PutField_CString(hHeader, "sub_status", PD_IN_PROCESS);
+
+		// Handle Balance
+		//if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+			PutField_CString(hMerchBalance, "txn_code", "STA");
+		//}
+
+		if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+			PutField_CString(hMerchBalance, "txn_seq", csTmp);
+			PutField_CString(hDetail, "txn_seq", csTmp);
+			PutField_CString(hHeader, "txn_seq", csTmp);
+		}
+
+
+		iRet = prbo_UpdateSettlementAmount(hMerchBalance);
+		if (iRet == SUCCESS) {
+			iRet = prbo_GetCurrentValues(csMID, csCcy, csCountry, csService, hMerchBalance);
+
+			if (iRet == SUCCESS) {
+				if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: total_float [%lf]\n", dTmp));
+					PutField_Double(hDetail, "total_float", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: current_bal [%lf]\n", dTmp));
+					PutField_Double(hDetail, "current_bal", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: total_reserved_amount [%lf]\n", dTmp));
+					PutField_Double(hDetail, "total_reserved_amount", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: total_hold [%lf]\n", dTmp));
+					PutField_Double(hDetail, "total_hold", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: total_float_settlement [%lf]\n", dTmp));
+					PutField_Double(hDetail, "total_float_settlement", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: current_bal_settlement [%lf]\n", dTmp));
+					PutField_Double(hDetail, "current_bal_settlement", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: total_hold_settlement [%lf]\n", dTmp));
+					PutField_Double(hDetail, "total_hold_settlement", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_approve: total_float_after_payout [%lf]\n", dTmp));
+					PutField_Double(hDetail, "total_float_after_payout", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "fundin_payout", &dTmp)) {
+//DEBUGLOG(("process_settlement_approve: fundin_payout [%lf]\n", dTmp));
+					PutField_Double(hDetail, "fundin_payout", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "reserved_payout", &dTmp)) {
+//DEBUGLOG(("process_settlement_approve: reserved_payout [%lf]\n", dTmp));
+					PutField_Double(hDetail, "reserved_payout", dTmp);
+				}
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Char(hMerchSettDtl, "status", PD_TO_PSP);
+		
+		//Cal Delivery Amt	
+		if (GetField_Double(hMyHash, "amount", &dTxnAmt)) {
+DEBUGLOG(("process_settlement_approve: amount [%lf]\n", dTxnAmt));
+		}
+		if (GetField_Double(hMyHash, "markup_amt", &dMarkupAmt)) {
+DEBUGLOG(("process_settlement_approve: markup_amt [%lf]\n", dMarkupAmt));
+		}
+		if (GetField_Double(hMyHash, "ex_rate", &dExRate)) {
+DEBUGLOG(("process_settlement_approve: ex_rate [%lf]\n", dExRate));
+
+			PutField_Double(hHeader, "ex_rate", dExRate);
+			if (dExRate == 0.0) {
+				dExRate = 1.0;
+			}
+		}
+		else {
+			dExRate = 1.0;
+		}
+
+		if (GetField_Double(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("process_settlement_approve: fee [%lf]\n", dFee));
+		}
+		else {
+			dFee = 0.0;
+		}
+
+		dTmp = (dTxnAmt - dFee) * dExRate;
+		//dTmp = (dTxnAmt - dMarkupAmt) * dExRate;
+
+		if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+			PutField_Double(hMerchSettDtl, "deliver_amt", dTmp);
+			PutField_Double(hHeader, "settlement_txn_amt", dTmp);
+DEBUGLOG(("process_settlement_approve: deliver_amt [%lf]\n", dTmp));
+
+		}
+
+
+		if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+			PutField_CString(hMerchSettDtl, "txn_seq", csTmp);
+		}
+
+
+		PutField_CString(hMerchSettDtl, "approve_user", PD_UPDATE_USER);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Update");
+	        iRet = (unsigned long) ((*DBObjPtr)(hMerchSettDtl));
+
+		if (iRet == SUCCESS) {
+			/*
+			DBObjPtr = CreateObj(DBPtr, "DBTransaction", "UpdateDetail");
+			iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+			*/
+			iRet = Txn_Detail_UpdateDetail(hDetail);
+		}
+
+
+		if (iRet == SUCCESS) {
+			PutField_Char(hHeader, "status", PD_COMPLETE);
+			PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+
+DEBUGLOG(("process_settlement_approve: DBTransaction Update\n"));
+			/*
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			iRet = (unsigned long) ((*DBObjPtr)(hHeader));
+			*/
+			iRet = Txn_Header_Update(hHeader);
+		}
+	}
+
+        if (iRet == SUCCESS) {
+		iRet = UpdateApprovalTimestamp(hHeader);
+        }
+
+	hash_destroy(hTxnElement);
+	FREE_ME(hTxnElement);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hMerchBalance);
+	FREE_ME(hMerchBalance);
+
+	hash_destroy(hMerchSettDtl);
+	FREE_ME(hMerchSettDtl);
+
+	return iRet;
+}
+
+int  process_settlement_deliver(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp;
+	char	*csMID; 
+	char	*csCcy; 
+	char	*csCountry; 
+	char	*csService;
+
+	double	dAmount = 0.0;
+	double	dTmp = 0.0;
+	double	dOpenBal = 0.0;
+
+	char	csDate[PD_DATE_LEN + 1];
+
+
+	hash_t	*hHeader, *hMerchBalance, *hDetail, *hMerchSettDtl;
+	
+	hHeader= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hMerchBalance = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchBalance, 0);
+
+	hDetail = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+	hMerchSettDtl = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchSettDtl, 0);
+
+	int	iStandAloneApprove = PD_FALSE;
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+		PutField_CString(hHeader, "txn_seq", csTmp);
+		PutField_CString(hDetail, "txn_seq", csTmp);
+		PutField_CString(hMerchSettDtl, "txn_seq", csTmp);
+	}	
+
+
+	PutField_Int(hHeader, "db_commit", PD_FALSE);
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+	PutField_CString(hMerchSettDtl, "update_user", PD_UPDATE_USER);
+
+	PutField_CString(hHeader, "sub_status", PD_DELIVERED);
+
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+
+		strncpy(csDate, csTmp, PD_DATE_LEN);
+		csDate[PD_DATE_LEN] = '\0';
+
+		PutField_CString(hMerchSettDtl, "deliver_date", csDate);
+		PutField_CString(hMerchSettDtl, "deliver_user", PD_UPDATE_USER);
+	}
+
+
+
+	if (GetField_Int(hMyHash, "stand_alone_approve", &iStandAloneApprove)) {
+		if (iStandAloneApprove == PD_TRUE) {
+			PutField_CString(hHeader, "sub_status", PD_IN_PROCESS);
+
+			RemoveField_CString(hMerchSettDtl, "deliver_date");
+			RemoveField_CString(hMerchSettDtl, "deliver_user");
+
+			PutField_CString(hMerchSettDtl, "approve_user", PD_UPDATE_USER);
+		}  
+	}
+
+
+	PutField_CString(hMerchBalance, "txn_code", "STD");
+
+	if (GetField_CString(hMyHash, "country", &csCountry)) {
+		PutField_CString(hMerchBalance, "txn_country", csCountry);
+	}
+
+	if (GetField_CString(hMyHash, "ccy", &csCcy)) {
+		PutField_CString(hMerchBalance, "request_ccy", csCcy);
+	}
+
+	if (GetField_CString(hMyHash, "service", &csService)) {
+		PutField_CString(hMerchBalance, "service_code", csService);
+	}
+
+	if (GetField_CString(hMyHash, "merchant_id", &csMID)) {	
+		PutField_CString(hMerchBalance, "merchant_id", csMID);
+	}
+
+	if (GetField_Double(hMyHash, "amount", &dAmount)) {
+
+		if (!GetField_Double(hMyHash, "fee", &dTmp)) {
+			dTmp = 0.0;
+		}
+		dAmount = dAmount - dTmp;
+
+		PutField_Double(hMerchBalance, "net_amt", dAmount);
+		PutField_Double(hDetail, "net_amt", dAmount);
+	}
+
+	iRet = prbo_GetOpenBalanceForUpdate(hMerchBalance, csMID, csCcy, csCountry, csService);
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hMerchBalance, "merchant_open_bal", &dOpenBal)) {
+DEBUGLOG(("process_settlement_deliver:: GetOpenBalanceForUpdate open_bal [%lf]\n", dOpenBal));
+			PutField_Double(hDetail, "open_bal", dOpenBal);
+		}
+		if (GetField_Double(hMerchBalance, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver:: GetOpenBalanceForUpdate open_bal_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "open_bal_settlement", dTmp);
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		iRet = prbo_UpdateSettlementAmount(hMerchBalance);
+	}
+
+	if (iRet == SUCCESS) {
+		iRet = prbo_GetCurrentValues(csMID, csCcy, csCountry, csService, hMerchBalance);
+
+		if (iRet == SUCCESS) {
+			if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: total_float [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_float", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: current_bal [%lf]\n", dTmp));
+				PutField_Double(hDetail, "current_bal", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: total_reserved_amount [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_reserved_amount", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: total_hold [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_hold", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: total_float_settlement [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_float_settlement", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: current_bal_settlement [%lf]\n", dTmp));
+				PutField_Double(hDetail, "current_bal_settlement", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: total_hold_settlement [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_hold_settlement", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: total_float_after_payout [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_float_after_payout", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "fundin_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: fundin_payout [%lf]\n", dTmp));
+				PutField_Double(hDetail, "fundin_payout", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "reserved_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_deliver: reserved_payout [%lf]\n", dTmp));
+				PutField_Double(hDetail, "reserved_payout", dTmp);
+			}
+
+
+		}
+	}
+
+	if (iRet == SUCCESS) {
+
+		PutField_Char(hMerchSettDtl, "status", PD_COMPLETE);
+
+		if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+			PutField_Double(hMerchSettDtl, "deliver_amt", dTmp);
+			PutField_Double(hHeader, "settlement_txn_amt", dTmp);
+DEBUGLOG(("process_settlement_deliver: deliver_amt [%lf]\n", dTmp));
+
+		}
+
+		if (iStandAloneApprove == PD_FALSE) {
+DEBUGLOG(("process_settlement_deliver: MerchantSettlementDetail Update\n"));
+
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Update");
+		        iRet = (unsigned long) ((*DBObjPtr)(hMerchSettDtl));
+		}
+	}
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("process_settlement_deliver: Transaction UpdateDetail \n"));
+		/*
+		DBObjPtr = CreateObj(DBPtr, "DBTransaction", "UpdateDetail");
+		iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+		*/
+		iRet = Txn_Detail_UpdateDetail(hDetail);
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Char(hHeader, "status", PD_COMPLETE);
+		PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+
+
+DEBUGLOG(("process_settlement_deliver: Transaction Update\n"));
+		/*
+		DBObjPtr = CreateObj(DBPtr, "DBTransaction", "Update");
+		iRet = (unsigned long) ((*DBObjPtr)(hHeader));
+		*/
+		iRet = Txn_Header_Update(hHeader);
+
+	}
+
+
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hMerchBalance);
+	FREE_ME(hMerchBalance);
+
+	hash_destroy(hMerchSettDtl);
+	FREE_ME(hMerchSettDtl);
+
+	return iRet;
+}
+
+int  process_settlement_reverse(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+
+	char	*csTxnStatus;
+
+	char	*csTxnSeq;
+	char	*csOrgTxnSeq;
+
+	char	*csMID;
+	char	*csCountry;
+	char	*csCcy;
+	char	*csService;
+	double	dAmount =0.0;
+	double	dFee = 0.0;
+
+	char	*csTmp;
+	double  dTmp;
+
+	int	iTmp;
+
+	char	csDate[PD_DATE_LEN + 1];
+
+
+	hash_t 	*hHeader, *hTxnElement, *hMerchBalance, *hDetail;
+
+	hHeader= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hTxnElement = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hTxnElement, 0);
+
+	hMerchBalance= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchBalance, 0);
+
+	hDetail= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+	PutField_Int(hHeader, "db_commit", PD_FALSE);
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTxnSeq)) {
+		PutField_CString(hHeader, "txn_seq", csTxnSeq);
+	}
+	PutField_Char(hHeader, "status", PD_REVERSED);
+	PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+
+	GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+	
+	if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DECLINED"))  {
+		PutField_CString(hHeader, "sub_status", PD_MERCHANT_CANCELLED);
+	} else if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED"))  {
+		PutField_CString(hHeader, "sub_status", PD_ADMIN_CANCELLED);
+	} else if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+		PutField_CString(hHeader, "sub_status", PD_VOID);
+	}
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+
+	if (GetField_Int(hMyHash, "record_exists", &iTmp)) {
+DEBUGLOG(("process_settlement_reverse: record_exists [%d]\n", iTmp));
+	}
+
+	if (iTmp == PD_FALSE) {
+		if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+			PutField_CString(hHeader, "host_posting_date", csTmp);
+			//PutField_CString(hHeader, "approval_date", csTmp);
+		}
+	}
+	
+
+DEBUGLOG(("process_settlement_reverse: Transaction Update\n"));
+	/*
+	DBObjPtr = CreateObj(DBPtr, "DBTransaction", "Update");
+	iRet = (unsigned long) ((*DBObjPtr)(hHeader));
+	*/
+	//iRet = Txn_Header_Update(hHeader); //handle as adj, not link with previous txn
+
+	if (iRet == SUCCESS) {
+		PutField_Int(hMyHash, "init_mode", PD_FALSE);
+		//PutField_CString(hMyHash, "org_txn_seq", csTxnSeq);
+
+		if (GetField_CString(hMyHash, "reverse_txn_code", &csTmp)) {
+			PutField_CString(hHeader, "txn_code", csTmp);
+		}
+
+		RemoveField_CString(hHeader, "sub_status");
+
+
+		iRet = CreateNewSettlementTxn(hMyHash);
+
+		
+	}
+
+
+	if (iRet == SUCCESS) {
+		GetField_CString(hMyHash, "org_txn_seq", &csOrgTxnSeq);
+		GetField_CString(hMyHash, "txn_seq", &csTxnSeq);
+
+		PutField_CString(hTxnElement, "from_txn_seq", csTxnSeq);
+		PutField_CString(hHeader, "txn_seq", csTxnSeq);
+		PutField_CString(hDetail, "txn_seq", csTxnSeq);
+
+		PutField_CString(hMerchBalance, "txn_seq", csTxnSeq);
+		
+	}
+
+	// TxnElemnts
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+			PutField_CString(hTxnElement, "src_txn_fee_ccy", csTmp);
+			PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		}
+
+                if (GetField_Double(hMyHash, "fee", &dTmp)) {
+                        PutField_Double(hTxnElement, "src_txn_fee", dTmp);
+                }
+
+		if (dTmp > 0.0) {
+                        PutField_CString(hTxnElement,"amount_type",PD_CR);
+DEBUGLOG(("process_settlement_reverse :: AddTxnFeeElement\n"));
+                        iRet = prbo_AddTxnFeeElements(hTxnElement);
+		}
+
+		if (iRet == SUCCESS) {
+                	if (GetField_Double(hMyHash, "markup_amt", &dTmp)) {
+				PutField_Double(hTxnElement, "markup_amt", dTmp);
+
+				if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+					PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+				}
+
+	                	if (dTmp > 0.0) {
+                        		PutField_CString(hTxnElement,"amount_type",PD_CR);
+DEBUGLOG(("process_settlement_reverse:: AddMarkupAmtElement\n"));
+
+					iRet = prbo_AddMarkupAmtElement(hTxnElement);
+				}
+                	}
+		}
+
+		if (iRet == SUCCESS) {
+        		if (GetField_Double(hMyHash, "amount", &dTmp)) {
+
+				GetField_CString(hMyHash, "ccy", &csTmp);
+				PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+			
+
+				if (!GetField_Double(hMyHash, "fee", &dFee)) {
+					dFee = 0.0;
+				}
+				dTmp = dTmp - dFee;
+                		PutField_Double(hTxnElement, "org_txn_amt", dTmp);
+			}
+        		PutField_Char(hTxnElement,"party_type",PD_TYPE_MERCHANT);
+		        PutField_CString(hTxnElement,"amount_type",PD_CR);
+
+			iRet = prbo_AddTxnAmtElement(hTxnElement);
+        	}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "merchant_id", &csMID)) {
+DEBUGLOG(("process_settlement_reverse:: merchant_id [%s] \n", csMID));
+			PutField_CString(hHeader, "merchant_id", csMID);
+			PutField_CString(hMerchBalance, "merchant_id", csMID);
+		}
+
+		if (GetField_CString(hMyHash, "country", &csCountry)) {
+DEBUGLOG(("process_settlement_reverse:: country [%s] \n", csCountry));
+			PutField_CString(hDetail, "txn_country", csCountry);
+
+			PutField_CString(hMerchBalance, "txn_country", csCountry);
+		}
+
+		if (GetField_CString(hMyHash, "ccy", &csCcy)) {
+DEBUGLOG(("process_settlement_reverse:: ccy [%s] \n", csCcy));
+			PutField_CString(hDetail, "txn_ccy", csCcy);
+			PutField_CString(hMerchBalance, "txn_ccy", csCcy);
+		}
+
+		if (GetField_CString(hMyHash, "service", &csService)) {
+DEBUGLOG(("process_settlement_reverse:: service [%s] \n", csService));
+			PutField_CString(hHeader, "service_code", csService);
+			PutField_CString(hMerchBalance, "service_code", csService);
+		}
+
+		if (GetField_Double(hMyHash, "amount", &dAmount)) {
+DEBUGLOG(("process_settlement_reverse:: amount [%s] \n", dAmount));
+		}
+		if (GetField_CString(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("process_settlement_reverse:: fee[%s] \n", dFee));
+			PutField_Double(hMerchBalance, "src_txn_fee", dFee);
+		}
+		else {
+			dFee = 0.0;
+		}
+		dTmp = dAmount - dFee;
+
+		PutField_Double(hHeader, "txn_amt", dTmp);
+		PutField_Double(hHeader, "net_amt", dTmp);
+
+		PutField_Double(hMerchBalance, "net_amt", dTmp);
+
+		//dTmp = dAmount + dFee;
+
+//DEBUGLOG(("process_settlement_reverse:: total [%s] \n", dTmp));
+
+
+		PutField_CString(hMerchBalance, "txn_code", "VOT");
+		PutField_CString(hMerchBalance, "sub_txn_code", "VST");
+
+		iRet = prbo_UpdateSettlementAmount(hMerchBalance);		
+
+		if (iRet == SUCCESS) {
+			if (GetField_Double(hMerchBalance, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse:: open_bal [%s] \n", dTmp));
+				PutField_Double(hDetail, "open_bal", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse:: open_bal_settlement [%s] \n", dTmp));
+				PutField_Double(hDetail, "open_bal_settlement", dTmp);
+			}
+
+			if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : current_bal [%lf]\n", dTmp));
+				PutField_Double(hDetail, "current_bal", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : current_bal_settlement [%lf]\n", dTmp));
+				PutField_Double(hDetail, "current_bal_settlement", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : total_float [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_float", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : total_float_after_payout [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_float_after_payout", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : total_float_settlement [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_float_settlement", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: total_reserved_amount [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_reserved_amount", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: total_hold [%lf]\n", dTmp));
+				PutField_Double(hDetail, "total_hold", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "fundin_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: fundin_payout [%lf]\n", dTmp));
+				PutField_Double(hDetail, "settlement_in_transit", dTmp);
+			}
+			if (GetField_Double(hMerchBalance, "reserved_payout", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: reserved_payout [%lf]\n", dTmp));
+				PutField_Double(hDetail, "reserved_payout", dTmp);
+			}
+
+		}
+
+
+/*
+
+		iRet = UpdateAvalBal(hMerchBalance, csMID, csCountry, csCcy, csService, dAmount, PD_UPDATE_USER);
+
+		if (iRet == SUCCESS) {
+			if (GetField_Double(hMerchBalance, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse:: open_bal [%s] \n", dTmp));
+				PutField_Double(hDetail, "open_bal", dTmp);
+			}
+		}
+
+        	if (iRet == SUCCESS) {
+                	iRet = prbo_GetCurrentValues(csMID, csCcy, csCountry, csService, hMerchBalance);
+
+	                if (iRet == SUCCESS) {
+				if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : total_float [%lf]\n", dTmp));
+                	                PutField_Double(hDetail, "total_float", dTmp);
+				}
+				if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse : current_bal [%lf]\n", dTmp));
+                                	PutField_Double(hDetail, "current_bal", dTmp);
+                        	}
+                        	if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: total_reserved_amount [%lf]\n", dTmp));
+                                	PutField_Double(hDetail, "total_reserved_amount", dTmp);
+                        	}
+                        	if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: total_hold [%lf]\n", dTmp));
+                                	PutField_Double(hDetail, "total_hold", dTmp);
+                        	}
+                        	if (GetField_Double(hMerchBalance, "settlement_in_transit", &dTmp)) {
+DEBUGLOG(("process_settlement_reverse: settlement_in_transit [%lf]\n", dTmp));
+                                	PutField_Double(hDetail, "settlement_in_transit", dTmp);
+                        	}
+                	}
+        	}
+*/
+
+		if (iRet == PD_OK ) {
+DEBUGLOG(("process_settlement_reverse : DBTransaction AddDetail\n"));
+			/*
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+			iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+			*/
+			iRet = Txn_Detail_AddDetail(hDetail);
+		}
+		
+		if (iRet == PD_OK ) {
+DEBUGLOG(("process_settlement_reverse : DBTransaction UpdateDetail\n"));
+			/*
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+			iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+			*/
+			iRet = Txn_Detail_UpdateDetail(hDetail);
+		}
+
+
+		if (iRet == SUCCESS) {
+			PutField_Char(hHeader, "status", PD_COMPLETE);
+			PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+
+			if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+				PutField_CString(hHeader, "client_id", csTmp);
+			}
+
+			if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+DEBUGLOG(("process_settlement_reverse: approve_date [%s]\n", csTmp));
+
+				strncpy(csDate, csTmp, PD_DATE_LEN);
+				csDate[PD_DATE_LEN] = '\0';
+
+DEBUGLOG(("process_settlement_reverse: re-format approve_date [%s]\n", csDate));
+
+				PutField_CString(hHeader, "approval_date", csDate);
+			}
+			if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+DEBUGLOG(("process_settlement_reverse: host_posting_date[%s]\n", csTmp));
+				PutField_CString(hHeader, "host_posting_date", csTmp);
+			}
+			
+			if (GetField_Double(hMyHash, "ex_rate", &dTmp)) {
+				PutField_Double(hHeader, "ex_rate", dTmp);
+			}
+
+DEBUGLOG(("process_settlement_reverse : DBTransaction Update\n"));
+			/*
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			iRet = (unsigned long) ((*DBObjPtr)(hHeader));
+			*/
+			iRet = Txn_Header_Update(hHeader);
+		}
+
+
+	}
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hTxnElement);
+	FREE_ME(hTxnElement);
+
+	hash_destroy(hMerchBalance);
+	FREE_ME(hMerchBalance);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+
+	return iRet;
+}
+

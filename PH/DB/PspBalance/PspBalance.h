@@ -1,0 +1,55 @@
+#ifndef _PSP_BALANCE_H_
+#define _PSP_BALANCE_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int CreditBalance(const char* csPsp,
+                const char* csCountryId,
+                const char* csCcy,
+		char   cType,
+                double dAmt,
+                char* csUpdateUser);
+
+int GetBalance(const char* csPspID,
+                const char* csCountryId,
+                const char* csCurrencyId,
+                hash_t *hVal);
+
+int DebitBalance(const char* csPsp,
+                const char* csCountryId,
+                const char* csCcy,
+		char   cType,
+                double dAmt,
+                char* csUpdateUser);
+
+int TransferBalance(const char* csPsp,
+                const char* csCountryId,
+                const char* csCcy,
+                double dAmt,
+		const char  cTfFrom,
+                char* csUpdateUser);
+
+int UpdateHoldBalance(const char* csPsp,
+                const char* csCountryId,
+                const char* csCcy,
+                char  cType,
+                double dAmt,
+                char* csUpdateUser);
+
+int CreditBalanceRet(const char * csPsp, 
+		     const char * csCountryId, 
+		     const char * csCcy, 
+		     char cType, 
+		     double dAmt, 
+		     char * csUpdateUser, 
+		     hash_t * hOut);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

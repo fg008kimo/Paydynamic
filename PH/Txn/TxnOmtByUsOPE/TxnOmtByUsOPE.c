@@ -1,0 +1,210 @@
+/*
+PDProTech (c)2017. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version (Refer to TxnOmtByUsOPA)              2017/03/15              David Wong
+Add ack batch_txn_seq                              2017/04/26              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsOPE.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define       PD_DETAIL_TAG   "dt"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+void TxnOmtByUsOPE(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int iRet = PD_OK;
+
+	char *csBatchId= strdup("");
+	char *csDate;
+	char *csTmp;
+	int iCnt = 0;
+	int iDayOfWeek = 0;
+	double dTmp = 0.0;
+	char csCmd[PD_TMP_BUF_LEN * 2 + 1];
+        char *csUser;
+	char *csBatchTxnSeq = NULL;
+
+DEBUGLOG(("Authorize\n"));
+
+// batchid
+	if (GetField_CString(hRequest, "batch_id", &csBatchId)) {
+		PutField_CString(hContext, "batch_id", csBatchId);
+DEBUGLOG(("Authorize:: batch_id = [%s]\n", csBatchId));
+	} else {
+DEBUGLOG(("Authorize:: batch_id not found!!\n"));
+ERRLOG("TxnOmtByUsOPE: Authorize:: batch_id not found!!\n");
+		iRet = INT_BATCH_ID_NOT_FOUND;
+	}
+
+	if(GetField_CString(hContext, "txn_seq", &csBatchTxnSeq)){
+DEBUGLOG(("Authorize:: batch_txn_seq (for ack use)= [%s]\n", csBatchTxnSeq));
+        }
+
+// ip_addr
+	if (GetField_CString(hRequest, "ip_addr", &csTmp)) {
+DEBUGLOG(("Authorize:: ip_addr = [%s]\n", csTmp));
+	}
+
+// user
+	if (GetField_CString(hRequest, "add_user", &csUser)) {
+		PutField_CString(hContext, "update_user", csUser);
+		PutField_CString(hContext, "add_user", csUser);
+DEBUGLOG(("Authorize:: add_user = [%s]\n", csUser));
+	} else {
+DEBUGLOG(("Authorize:: add_user not found!!\n"));
+ERRLOG("TxnOmtByUsOPE: Authorize:: add_user not found!!\n");
+		iRet = INT_USER_NOT_FOUND;
+	}
+
+// approval date
+// approval_date & day_of_week should be overwritten later
+	if (GetField_CString(hContext, "PHDATE", &csDate)) {
+DEBUGLOG(("Authorize:: approval_date = [%s]\n", csDate));
+		PutField_CString(hContext, "approval_date", csDate);
+		PutField_CString(hContext, "posting_date", csDate);
+
+		iDayOfWeek = day_of_week((const unsigned char *)csDate);
+DEBUGLOG(("Authorize:: day_of_week = [%d]\n", iDayOfWeek));
+		PutField_Int(hContext, "day_of_week", iDayOfWeek);
+	} else {
+DEBUGLOG(("Authorize:: PHDATE not found!!\n"));
+ERRLOG("TxnOmtByUsOPE: Authorize:: PHDATE not found!!\n");
+		iRet = INT_PHDATE_NOT_FOUND;
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: call BOOLPayout->GetPayoutApiRecords\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLPayout", "GetPayoutApiRecords");
+		iRet = (unsigned long)(*BOObjPtr)(hContext, hRequest, hResponse);
+        }
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: call BOOLPayout->CheckAvalBalance\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLPayout", "CheckAvalBalance");
+		iRet = (unsigned long)(*BOObjPtr)(hContext, hRequest);
+	}
+
+	if (iRet == PD_OK) {
+		if (GetField_Double(hContext, "merchant_net_float", &dTmp)) {
+			PutField_Double(hContext, "remain_merchant_net_float", dTmp);
+DEBUGLOG(("Authorize:: merchant_net_float = [%lf]\n", dTmp));
+		}
+		if (GetField_Double(hContext, "merchant_reserved_po", &dTmp)) {
+			PutField_Double(hContext, "remain_merchant_reserved_po", dTmp);
+DEBUGLOG(("Authorize:: merchant_reserved_po = [%lf]\n", dTmp));
+		}
+		if (GetField_Double(hContext, "merchant_fundin_po", &dTmp)) {
+DEBUGLOG(("Authorize:: merchant_fundin_po = [%lf]\n", dTmp));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		int iTh = 0;
+		int iChk = 0;
+		int iProcess = 0;
+		iCnt = 0;
+		if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("Authorize:: total count = [%d]\n", iCnt));
+		}
+
+		char* csValueTmp;
+		csValueTmp = (char*) malloc (128);
+		int iMax = 1000;
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(DBObjPtr)("MAX_PAYOUT_PER_PROCESS", csValueTmp) == FOUND) {
+			iMax = atoi(csValueTmp);
+DEBUGLOG(("Authorize:: MAX_PAYOUT_PER_PROCESS = [%d]\n", iMax));
+		}
+
+		if (iRet == PD_OK) {
+			hash_t *hTxn;
+			hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+			iChk = 0;
+			DBObjPtr = CreateObj(DBPtr, "DBOLPayoutApiBatchHD", "MatchBatchStatus_ForUpdate");
+			iChk = (unsigned long)((*DBObjPtr)(csBatchId, PD_OL_PAYOUT_API_APPROVE, PD_OL_PO_API_PENDING));
+			if (iChk == PD_NOT_FOUND) {
+				iRet = INT_BATCH_ID_NOT_FOUND;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: batch_id not for approve!!\n"));
+ERRLOG("TxnOmtByUsOPE: Authorize:: batch_id not for approve!!\n");
+			} else {
+				hash_init(hTxn, 0);
+				PutField_CString(hTxn, "batch_id", csBatchId);
+				PutField_CString(hTxn, "txn_code", PD_OL_PAYOUT_API_APPROVE);
+				PutField_Char(hTxn, "status", PD_OL_PO_API_PROCESSING);
+				PutField_Int(hTxn, "ret_code", 0);
+				DBObjPtr = CreateObj(DBPtr, "DBOLPayoutApiBatchHD", "Update");
+				if ((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+					iRet = INT_BATCH_ID_NOT_FOUND;
+DEBUGLOG(("Authorize:: DBOLPayoutApiBatchHD: Update Failed\n"));
+ERRLOG("Authorize:: DBOLPayoutApiBatchHD: Update Failed\n");
+				}
+				hash_destroy(hTxn);
+			}
+			FREE_ME(hTxn);
+		}
+
+		if (iRet == PD_OK) {
+			iProcess = ceil((double)iCnt / (double)iMax);
+DEBUGLOG(("Authorize:: Total Process = [%d]\n", iProcess));
+
+			int iPCnt = iCnt / iProcess;
+			int iTmpCnt = 0;
+DEBUGLOG(("Authorize:: [%d] record(s) for each process\n", iPCnt));
+			for (iTh = 0; iTh < iProcess; iTh++) {
+				if (iTh == (iProcess - 1)) {
+					iPCnt = iCnt - iTmpCnt;
+				}
+
+				if(csBatchTxnSeq!=NULL){
+					sprintf(csCmd,"offline_payout_api_approve.exec -b %s -n %d -u %s -k %s &", csBatchId, iPCnt, csUser, csBatchTxnSeq);
+DEBUGLOG(("Authorize:: csCmd = [%s]\n", csCmd));
+DEBUGLOG(("Authorize:: offline_payout_api_approve.exec batch[%s], count[%d], user[%s], ACK Batch Seq[%s]\n", csBatchId, iPCnt, csUser,csBatchTxnSeq));
+				}else{
+					sprintf(csCmd,"offline_payout_api_approve.exec -b %s -n %d -u %s &", csBatchId, iPCnt, csUser);
+DEBUGLOG(("Authorize:: csCmd = [%s]\n", csCmd));
+DEBUGLOG(("Authorize:: offline_payout_api_approve.exec batch[%s], count[%d], user[%s]\n", csBatchId, iPCnt, csUser));
+				}
+
+				system(csCmd);
+
+				iTmpCnt += iPCnt;
+			}
+		}
+	}
+
+	FREE_ME(csBatchId);
+
+DEBUGLOG(("TxnOmtByUsOPE Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

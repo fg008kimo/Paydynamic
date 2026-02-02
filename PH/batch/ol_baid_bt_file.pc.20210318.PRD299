@@ -1,0 +1,1432 @@
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/12/03              [MIC]
+Revise to PD_OK in Verify_SweepOutAmtLimit         2021/01/13              [MIC] 
+Skip length checking for recipient account
+for checked use dummy account                      2021/01/14              [MIC]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "dbutility.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "math.h"
+
+
+
+static char	cDebug = 'Y';
+
+OBJPTR(Channel);
+OBJPTR(DB);
+OBJPTR(Txn);
+
+#define	PD_FIELD_SIZE           5
+#define PD_FILE_DELIMITER       ","
+
+#define PD_BANK_NAME_RT_ERR_MSG      "Invalid format of Bank Name"
+#define PD_BANK_ACCT_NUM_RT_ERR_MSG  "Invalid format of Bank Account Number"
+
+
+char *csDetailTagType[PD_FIELD_SIZE] = {
+PD_STRING_TYPE,PD_STRING_TYPE,PD_DOUBLE_TYPE,PD_STRING_TYPE,PD_STRING_TYPE};
+
+
+int  iDetailMaxLength[PD_FIELD_SIZE] = {
+PD_BANK_ACCT_NAME_LEN, PD_BANK_ACCT_NUM_LEN, PD_SWEEP_OUT_AMT_LEN , PD_BANK_ACCT_NAME_LEN, PD_BANK_ACCT_NUM_LEN};
+
+int  iDetailMinLength[PD_FIELD_SIZE] = {
+1, PD_MIN_ACCT_NUM_LEN, 4, 1, PD_MIN_ACCT_NUM_LEN};
+
+
+char *csMandatoryField[PD_FIELD_SIZE] =   {
+PD_MANDATORY,PD_MANDATORY,PD_MANDATORY,PD_OPTIONAL,PD_OPTIONAL};
+
+char *csDetailField[PD_FIELD_SIZE] =   {
+"Bank Name (Sender)","Bank Account Number (Sender)","Sweep Out Amount","Bank Name (Recipient)","Bank Account Number (Recipient)"};
+
+char *csDetailTagVerN[PD_FIELD_SIZE] = {
+"sr_bank_name", "sr_bank_acct_num", "sweep_out_amt", "rt_bank_name", "rt_bank_acct_num"};
+
+
+int iMaxLenErrMsg[PD_FIELD_SIZE] = {
+INT_INVALID_FORMAT_BANK_NAME      ,INT_INVALID_FORMAT_BANK_ACCT_NUM  , INT_INVALID_SWEEP_OUT_AMT, 
+INT_INVALID_FORMAT_BANK_NAME      , INT_INVALID_FORMAT_BANK_ACCT_NUM};
+
+int iMinLenErrMsg[PD_FIELD_SIZE] = {
+INT_BLANK_SENDER_BANK_NAME        , INT_INVALID_FORMAT_BANK_ACCT_NUM   , INT_INVALID_SWEEP_OUT_AMT, 
+INT_BLANK_RECIPIENT_BANK_NAME     , INT_INVALID_FORMAT_BANK_ACCT_NUM};
+
+char	csInFileId[PD_TXN_SEQ_LEN + 1];
+char	csInFilePath[PD_TMP_BUF_LEN];
+
+
+
+int parse_arg(int argc, char **argv);
+int process_data(const char* csFileId);
+int Verify_AcctNumNumeric(const char* csAcctNum);
+int Verify_BankName(const char* csBankName, hash_t* hRec);
+int Verify_SrAcctNumProvider(const char* csRawClientId, hash_t* hRec);
+int Verify_AcctNumBaidStatus(const char* csIntBankCode, const char* csBankAcctNum, hash_t* hRec);
+int Verify_AcctNumExist(const char* csIntBankCode, const char* csBankAcctNum);
+int Verify_AcctNumAcctNature(const char* csIntBankCode, const char* csBankAcctNum, const char* csAcctDtl, hash_t* hRec);
+int Verify_AcctNumCcy(hash_t* hRec);
+int Verify_AcctNumSystemAcct(const char* csIntBankCode, const char* csBankAcctNum, hash_t* hRec);
+int Verify_SweepOutAmt(const char* csSweepOutAmt);
+int Verify_SweepOutAmtLimit(const char* csSweepOutAmt);
+int is_numeric_r2(const char *csStr);
+int IsFieldMandatory(const int iUseDummyAcct, const int iCnt);
+
+int batch_init(int argc, char *argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char *argv[])
+{
+	int		iRet = FAILURE;
+	int		iDtlRet = PD_ERR;
+	
+DEBUGLOG(("batch_proc: Start!\n"));
+
+	iRet = parse_arg(argc, argv);
+	
+	if (iRet != SUCCESS) {
+		if (argc < 5) {
+			printf("usage: -f fileId -p filePath\n");
+		}
+		return (iRet);
+	}
+	
+	if (argc == 5) {
+		iDtlRet = process_data(csInFileId);
+		if (iDtlRet != PD_OK) {
+			iRet = FAILURE;
+		}
+		
+	}
+
+	return iRet;
+	
+}
+
+int process_data(const char* csFileId)
+{
+	int     iRet = PD_OK;
+	int     iDtlRet = PD_ERR;
+	int     iUpdHdRet = PD_ERR;
+	int     iCnt = 0;
+	int     iFieldSize = 0;
+	int     iCurrLine = 0;
+	int     iErrCnt = 0;
+	int		iUseDmyAcct;
+	
+	double	dSweepOutAmt = 0.0;
+	
+	char    *csField = NULL;
+	char	*csSrBankCode = (char*)malloc(10);
+	char	*csRtBankCode = (char*)malloc(10);
+	char	*csFromBaid = NULL;
+	char	*csToBaid = NULL;
+	char	*csSweepInTxnSeq = NULL;
+	char	*csSweepOutTxnSeq = NULL;
+	char	*csConvFileName = NULL;
+	char	*csSrClientId = NULL;
+
+	
+	char	*csUser;
+	
+	char	cStatus;
+	char	cHeaderStatus;
+	char    cs_input_buf[PD_TMP_MSG_BUF_LEN];
+	char    csTmpBuf[PD_TMP_MSG_BUF_LEN];
+	char    csTmpField[PD_TMP_MSG_BUF_LEN];
+	
+	char	csSrBankName[PD_BANK_ACCT_NAME_LEN + 1];
+	char	csSrBankAcctNum[PD_BANK_ACCT_NUM_LEN + 1];
+	char	csRtBankName[PD_BANK_ACCT_NAME_LEN + 1];
+	char	csRtBankAcctNum[PD_BANK_ACCT_NUM_LEN + 1];
+	
+	char	csSweepOutAmt[PD_SWEEP_OUT_AMT_LEN + 1];
+	
+	char	csTmDateTime[PD_DATETIME_LEN + 1];
+	char	csTmDate[PD_DATE_LEN + 1];
+	char	csTmTime[PD_TIME_LEN + 1];
+	
+	char	csNewFullName[PD_TMP_BUF_LEN];
+
+	char	csReportDate[PD_DATE_LEN + 1];
+	
+	int     iRetCode = PD_OK;
+	int     iIsInsertSucceed = PD_OK;
+	unsigned long	lFileId = 0;
+	FILE	*fin = NULL;
+
+	
+	hash_t* hBaidBtHeader;
+	hBaidBtHeader = (hash_t*)malloc(sizeof(hash_t));
+	hash_init(hBaidBtHeader,0);
+	
+
+
+DEBUGLOG(("OLBaidBalTrfFile:: process_data\n"));
+
+	lFileId = ctol((const unsigned char *)csFileId, strlen(csFileId));
+DEBUGLOG(("file_id = [%lu]\n", lFileId));
+
+/*Get raw filename, file status, conv_filename, sr_client_id, use_dummy_acct, rt_baid
+by <file_id> in OL_BAID_BT_FILE_HEADER*/
+
+	
+	DBObjPtr = CreateObj(DBPtr,"DBOLBaidBalTrfFile","GetHeaderByFileId");
+	iDtlRet = (unsigned long)(*DBObjPtr)(lFileId, hBaidBtHeader);
+	if(iDtlRet == PD_OK){
+DEBUGLOG(("call OLBaidBalTrfFile::GetHeaderByFileId Found!!\n"));
+/*status*/
+		if(GetField_Char(hBaidBtHeader, "status", &cStatus)){
+DEBUGLOG((" status = [%c]\n", cStatus));
+			if(cStatus != PD_BAID_BAL_TRF_FILE_STATUS_INIT){
+DEBUGLOG((" status not [P]!!\n"));
+				iRet = INT_ERR;
+			}
+		}
+		else{
+DEBUGLOG((" status not found!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId status not found!!\n");
+			iRet = INT_ERR;
+		}
+/*sender_client_id*/
+		if(iRet == PD_OK){
+			if(GetField_CString(hBaidBtHeader, "sender_client_id", &csSrClientId)){
+DEBUGLOG((" sender_client_id = [%s]\n", csSrClientId));
+			}
+			else{
+DEBUGLOG((" sender_client_id not found!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId sender_client_id not found!!\n");
+				iRet = INT_ERR;
+			}
+		}
+/*use_dummy_acct*/
+		if(iRet == PD_OK){
+			if(GetField_Int(hBaidBtHeader, "use_dummy_acct", &iUseDmyAcct)){
+DEBUGLOG((" use_dummy_acct = [%d]\n", iUseDmyAcct));
+			}
+			else{
+DEBUGLOG((" use_dummy_acct not found!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId use_dummy_acct not found!!\n");
+				iRet = INT_ERR;
+			}
+		}
+/*receiver_baid*/
+		if(iRet == PD_OK){
+			if(iUseDmyAcct == PD_CHECKED){
+				if(GetField_CString(hBaidBtHeader, "receiver_baid", &csToBaid)){
+DEBUGLOG((" receiver_baid = [%s]\n", csToBaid));
+				}
+				else{
+DEBUGLOG((" receiver_baid not found!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId receiver_baid not found!!\n");
+					iRet = INT_ERR;
+				}
+			}
+		}
+/*convert_filename*/
+		if(iRet == PD_OK){
+			if(GetField_CString(hBaidBtHeader, "convert_filename", &csConvFileName)){
+DEBUGLOG((" convert_filename = [%s]\n", csConvFileName));
+			}
+			else{
+DEBUGLOG((" convert_filename not found!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId convert_filename not found!!\n");
+				iRet = INT_ERR;
+			}
+		}
+/*create_user*/
+		if(iRet == PD_OK){
+			if(GetField_CString(hBaidBtHeader, "create_user", &csUser)){
+DEBUGLOG((" create_user = [%s]\n", csUser));
+			}
+			else{
+DEBUGLOG((" create_user not found!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId create_user not found!!\n");
+				iRet = INT_ERR;
+			}
+		}
+	}
+	else{
+DEBUGLOG(("call DBOLBaidBalTrfFile::GetHeaderByFileId Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::GetHeaderByFileId Error!!\n");
+		iRet = INT_ERR;
+	}
+
+	
+	
+
+/*Lock record on table OL_BAID_BT_FILE_HEADER by fileid*/
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr, "DBOLBaidBalTrfFile", "MatchHeaderStatusForUpdate");
+		iDtlRet = (unsigned long)(*DBObjPtr)(lFileId, PD_BAID_BAL_TRF_FILE_STATUS_INIT);
+		if(iDtlRet == PD_FOUND){
+DEBUGLOG(("call OLBaidBalTrfFile::MatchHeaderStatusForUpdate FileId[%s] Status[%c] Success!!\n", csFileId, PD_BAID_BAL_TRF_FILE_STATUS_INIT));
+		}
+		else if(iDtlRet == PD_NOT_FOUND){
+DEBUGLOG(("call OLBaidBalTrfFile::MatchHeaderStatusForUpdate FileId[%s] Status[%c] Not Found!!\n", csFileId, PD_BAID_BAL_TRF_FILE_STATUS_INIT));
+			iRet = INT_ERR;
+		}
+		else{
+DEBUGLOG(("call OLBaidBalTrfFile::MatchHeaderStatusForUpdate FileId[%s] Status[%c] Failure!!\n", csFileId, PD_BAID_BAL_TRF_FILE_STATUS_INIT));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::MatchHeaderStatusForUpdate Failure!!\n");
+			iRet = INT_ERR;
+		}
+	}
+	
+/*Update <OL_BAID_BT_FILE_HEADER.BBH_STATUS> to P */
+
+	if(iRet == PD_OK){
+		PutField_CString(hBaidBtHeader,"file_id",csFileId);
+		PutField_Char(hBaidBtHeader, "status", PD_BAID_BAL_TRF_FILE_STATUS_PROCESS); 
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLBaidBalTrfFile", "UpdateHeader");
+		iUpdHdRet = (unsigned long)(*DBObjPtr)(hBaidBtHeader);
+		if(iUpdHdRet == PD_OK){
+DEBUGLOG(("call ol_baid_bt_file::UpdateHeader fileId[%s] status[%c] Success!!\n", csFileId, PD_BAID_BAL_TRF_FILE_STATUS_PROCESS));
+			TxnCommit();
+		}
+		else{
+DEBUGLOG(("call ol_baid_bt_file::UpdateHeader fileId[%s] status[%c] Failure!!\n", csFileId, PD_BAID_BAL_TRF_FILE_STATUS_PROCESS));
+ERRLOG("ol_baid_bt_file:: process_data:: call DBOLBaidBalTrfFile::UpdateHeader Failure!!\n");
+			iRet = INT_ERR;
+		}
+		
+	}
+
+
+	if(iRet == PD_OK){
+		iFieldSize = (int)sizeof(csDetailTagVerN) / (int)sizeof(*csDetailTagVerN);
+		snprintf(csNewFullName,sizeof(csNewFullName),"%s/%s/%s", csInFilePath, PD_BAID_BAL_TRF_FILE_CONVERTED, csConvFileName);
+DEBUGLOG(("csNewFullName = [%s]\n", csNewFullName));
+
+		fin = fopen(csNewFullName, "r");
+		fgets(cs_input_buf, sizeof(cs_input_buf), fin);
+		
+
+
+		while (iIsInsertSucceed == PD_OK && fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+			
+			hash_t* hGetSrAttribute;
+			hGetSrAttribute = (hash_t*)malloc(sizeof(hash_t));
+			hash_init(hGetSrAttribute,0);
+
+			hash_t* hGetRtAttribute;
+			hGetRtAttribute = (hash_t*)malloc(sizeof(hash_t));
+			hash_init(hGetRtAttribute,0);
+			
+			hash_t* hRequest;
+			hRequest = (hash_t*)malloc(sizeof(hash_t));
+			hash_init(hRequest,0);
+			
+			hash_t* hContext;
+			hContext = (hash_t*)malloc(sizeof(hash_t));
+			hash_init(hContext,0);
+	
+			hash_t* hResponse;
+			hResponse = (hash_t*)malloc(sizeof(hash_t));
+			hash_init(hResponse,0);
+			
+
+			hash_t* hBaidBtLog;
+			hBaidBtLog = (hash_t*)malloc(sizeof(hash_t));
+			hash_init(hBaidBtLog,0);
+
+
+			
+			
+			iCurrLine++;
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+DEBUGLOG(("[%d]cs_input_buf = [%s]\n",iCurrLine, cs_input_buf));
+			if (!strcmp(cs_input_buf,"")){
+				iCurrLine--;
+				continue;
+			}
+		
+			strcpy(csSrBankName, "");
+			strcpy(csSrBankAcctNum, "");
+			strcpy(csSweepOutAmt, "");
+			strcpy(csRtBankName, "");
+			strcpy(csRtBankAcctNum, "");
+			csTmpBuf[0]='\0';
+			csTmpField[0]='\0';
+			iCnt = 0;
+			iRetCode = PD_OK;
+			
+			
+			strcpy(csTmpBuf, cs_input_buf);
+			csField = mystrtok(csTmpBuf, PD_FILE_DELIMITER);
+			while (iRetCode == PD_OK && csField != NULL && iCnt<iFieldSize) {
+				strcpy(csTmpField, TrimAll((const unsigned char*)csField, strlen(csField)));
+DEBUGLOG((" [%d][%s] = [%s]\n",iCnt, csDetailTagVerN[iCnt],csTmpField));
+				if(!strcmp(csDetailTagType[iCnt],PD_STRING_TYPE)){
+					if(IsFieldMandatory(iUseDmyAcct, iCnt) 
+						&& strlen(csTmpField)>iDetailMaxLength[iCnt]){
+DEBUGLOG((" [%d]%s Field Error [%s] length [%d] exceed max length [%d]!!\n", iCnt, csDetailField[iCnt], csTmpField, strlen(csTmpField), iDetailMaxLength[iCnt]));
+						iRetCode = iMaxLenErrMsg[iCnt];
+					}
+					else if(IsFieldMandatory(iUseDmyAcct, iCnt)
+							&& strlen(csTmpField)<iDetailMinLength[iCnt]){
+DEBUGLOG((" [%d]%s Field Error [%s] length [%d] less than min length [%d]!!\n", iCnt, csDetailField[iCnt],csTmpField, strlen(csTmpField), iDetailMinLength[iCnt]));
+						iRetCode = iMinLenErrMsg[iCnt];
+						
+						if(!strcmp(csDetailTagVerN[iCnt],"sr_bank_acct_num")){
+							if(strlen(csTmpField) == 0){
+DEBUGLOG((" [%d]%s Field Error cannot be blank [%s] length is [%d]!!\n", iCnt, csDetailField[iCnt],csTmpField, strlen(csTmpField)));
+								iRetCode = INT_BLANK_SENDER_BANK_ACCT_NUM;
+							}
+						}
+						else if(!strcmp(csDetailTagVerN[iCnt],"rt_bank_acct_num")){
+							if(strlen(csTmpField) == 0){
+DEBUGLOG((" [%d]%s Field Error cannot be blank [%s] length is [%d]!!\n", iCnt, csDetailField[iCnt],csTmpField, strlen(csTmpField)));
+								iRetCode = INT_BLANK_RECIPIENT_BANK_ACCT_NUM;
+							}
+						}
+						
+					}
+					else{
+/*Bank Name (Sender)*/
+						if(!strcmp(csDetailTagVerN[iCnt],"sr_bank_name")){
+							if(strcmp(csTmpField, PD_SYS_BANK_NAME)){
+								iRetCode = Verify_BankName(csTmpField, hGetSrAttribute);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Not Found!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_BANK_NAME_NOT_FOUND;
+								}
+							}
+
+							strcpy(csSrBankName, csTmpField);
+						}
+/*Bank Account Number (Sender)*/
+						else if(!strcmp(csDetailTagVerN[iCnt],"sr_bank_acct_num")){
+							iRetCode = Verify_AcctNumNumeric(csTmpField);
+							if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+								iRetCode = INT_INVALID_FORMAT_BANK_ACCT_NUM;
+							}
+
+							if(iRetCode == PD_OK){
+								if(!strcmp(csSrBankName, PD_SYS_BANK_NAME)){
+									if(!strcmp(csTmpField, PD_SYS_BANK_ACCT_NUM)){
+										strcpy(csSrBankCode, PD_SYS_BANK_CODE);
+									}
+									else if(!strcmp(csTmpField, PD_TW_SYS_BANK_ACCT_NUM)){
+										strcpy(csSrBankCode, PD_TW_SYS_BANK_CODE);
+									}
+									else{
+										iRetCode = INT_SENDER_BANK_ACCT_NUM_NOT_FOUND;
+									}
+								}
+								else{
+									if(GetField_CString(hGetSrAttribute, "int_bank_code", &csSrBankCode)){
+DEBUGLOG((" [%d]int_bank_code = [%s]\n", iCnt, csSrBankCode));
+									}
+									else{
+DEBUGLOG((" [%d]int_bank_code not found!!\n", iCnt));
+ERRLOG("ol_baid_bt_file:: process_data:: call BankDesc::GetBankByBankName int_bank_code not found!!\n");
+										iRetCode = INT_SENDER_BANK_NAME_NOT_FOUND;
+									}
+								}
+							}
+							
+							
+							
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_AcctNumSystemAcct(csSrBankCode, csTmpField, hGetSrAttribute);
+								
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_CANNOT_BE_SYSTEM_ACCT;
+								}
+							}
+							
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_AcctNumExist(csSrBankCode, csTmpField);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_BANK_ACCT_NUM_NOT_FOUND;
+								}
+							}
+							
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_AcctNumAcctNature(csSrBankCode, csTmpField, PD_BANK_ACCT_SENDER, hGetSrAttribute);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_ASSOCIATED_BAID_NOT_DEPOSIT;
+								}
+							}
+							
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_AcctNumCcy(hGetSrAttribute);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_BANK_ACCT_NUM_NOT_FOUND;
+								}
+							}
+							
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_SrAcctNumProvider(csSrClientId, hGetSrAttribute);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_NOT_BELONG_TO_SELECTED_PROVIDER;
+								}
+							}
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_AcctNumBaidStatus(csSrBankCode, csTmpField, hGetSrAttribute);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_SENDER_ASSOCIATED_INVALID_BAID;
+								}
+							}
+
+
+							
+							strcpy(csSrBankAcctNum, csTmpField);
+						}
+/*Bank Name (Recipient)*/
+						else if(!strcmp(csDetailTagVerN[iCnt],"rt_bank_name")){
+/*Checked Use dummy acct ignore*/
+							if(iUseDmyAcct == PD_UNCHECKED){
+								if(strcmp(csTmpField, PD_SYS_BANK_NAME)){
+									iRetCode = Verify_BankName(csTmpField, hGetRtAttribute);
+									if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Not Found!!\n", iCnt, csDetailField[iCnt], csTmpField));
+										iRetCode = INT_RECIPIENT_BANK_NAME_NOT_FOUND;
+									}
+								}
+							}
+
+							if(iUseDmyAcct == PD_UNCHECKED){
+								strcpy(csRtBankName, csTmpField);
+							}
+							else{
+								if(strlen(csTmpField)> iDetailMaxLength[iCnt]){
+									strcpy(csRtBankName, PD_BANK_NAME_RT_ERR_MSG);
+								}
+								else{
+									strcpy(csRtBankName, csTmpField);
+								}
+							}
+						}
+/*Bank Account Number (Recipient)*/
+						else if(!strcmp(csDetailTagVerN[iCnt],"rt_bank_acct_num")){
+/*Checked Use dummy acct ignore*/
+							if(iUseDmyAcct == PD_UNCHECKED){
+								iRetCode = Verify_AcctNumNumeric(csTmpField);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+									iRetCode = INT_INVALID_FORMAT_BANK_ACCT_NUM;
+								}
+								
+/*Get Bank code for system bank acct and non-system bank acct*/
+								if(iRetCode == PD_OK){
+									if(!strcmp(csRtBankName, PD_SYS_BANK_NAME)){
+										if(!strcmp(csTmpField, PD_SYS_BANK_ACCT_NUM)){
+											strcpy(csRtBankCode, PD_SYS_BANK_CODE);
+										}
+										else if(!strcmp(csTmpField, PD_TW_SYS_BANK_ACCT_NUM)){
+											strcpy(csRtBankCode, PD_TW_SYS_BANK_CODE);
+										}
+										else{
+											iRetCode = INT_RECIPIENT_BANK_ACCT_NUM_NOT_FOUND;
+										}
+									}
+									else{
+										if(GetField_CString(hGetRtAttribute, "int_bank_code", &csRtBankCode)){
+DEBUGLOG((" [%d]int_bank_code = [%s]\n", iCnt, csRtBankCode));
+										}
+										else{
+DEBUGLOG((" [%d]int_bank_code not found!!\n", iCnt));
+ERRLOG("ol_baid_bt_file:: process_data:: call BankDesc::GetBankByBankName int_bank_code not found!!\n");
+											iRetCode = INT_RECIPIENT_BANK_NAME_NOT_FOUND;
+										}
+									}
+								}
+								
+								
+								if(iRetCode == PD_OK){
+									iRetCode = Verify_AcctNumSystemAcct(csRtBankCode, csTmpField, hGetRtAttribute);
+									if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+										iRetCode = INT_RECIPIENT_CANNOT_BE_SYSTEM_ACCT;
+									}
+								}
+								
+								if(iRetCode == PD_OK){
+									iRetCode = Verify_AcctNumExist(csRtBankCode, csTmpField);
+									if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+										iRetCode = INT_RECIPIENT_BANK_ACCT_NUM_NOT_FOUND;
+									}
+								}
+								if(iRetCode == PD_OK){
+									iRetCode = Verify_AcctNumAcctNature(csRtBankCode, csTmpField, PD_BANK_ACCT_RECIPIENT, hGetRtAttribute);
+									if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+										iRetCode = INT_RECIPIENT_ASSOCIATED_BAID_NOT_PAYOUT;
+									}
+								}
+								
+								if(iRetCode == PD_OK){
+									iRetCode = Verify_AcctNumCcy(hGetRtAttribute);
+									if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+										iRetCode = INT_RECIPIENT_BANK_ACCT_NUM_NOT_FOUND;
+									}
+								}
+								
+								if(iRetCode == PD_OK){
+									iRetCode = Verify_AcctNumBaidStatus(csRtBankCode, csTmpField, hGetRtAttribute);
+									if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Field Error [%s] Invalid!!\n", iCnt, csDetailField[iCnt], csTmpField));
+										iRetCode = INT_RECIPIENT_ASSOCIATED_INVALID_BAID;
+									}
+								}
+
+							}
+							
+							if(iUseDmyAcct == PD_UNCHECKED){
+								strcpy(csRtBankAcctNum, csTmpField);
+							}
+							else{
+								if(strlen(csTmpField)> iDetailMaxLength[iCnt]){
+									strcpy(csRtBankAcctNum, PD_BANK_ACCT_NUM_RT_ERR_MSG);
+								}
+								else{
+									strcpy(csRtBankAcctNum, csTmpField);
+								}
+							}
+						}				
+					}
+				}
+				else if(!strcmp(csDetailTagType[iCnt],PD_DOUBLE_TYPE)){
+					if(IsFieldMandatory(iUseDmyAcct, iCnt) 
+						&& strlen(csTmpField)>iDetailMaxLength[iCnt]){
+DEBUGLOG((" [%d]%s Field Error [%s] length [%d] exceed max length [%d]!!\n", iCnt, csDetailField[iCnt], csTmpField, strlen(csTmpField), iDetailMaxLength[iCnt]));
+						iRetCode = iMaxLenErrMsg[iCnt];
+						
+					}
+					else if(IsFieldMandatory(iUseDmyAcct, iCnt)
+							&& strlen(csTmpField)<iDetailMinLength[iCnt]){
+DEBUGLOG((" [%d]%s Field Error [%s] length [%d] less than min length [%d]!!\n", iCnt, csDetailField[iCnt],csTmpField, strlen(csTmpField), iDetailMinLength[iCnt]));
+						iRetCode = iMinLenErrMsg[iCnt];
+						
+						if(!strcmp(csDetailTagVerN[iCnt],"sweep_out_amt")){
+							if(strlen(csTmpField) == 0){
+DEBUGLOG((" [%d]%s Field Error cannot be blank [%s] length is [%d]!!\n", iCnt, csDetailField[iCnt],csTmpField, strlen(csTmpField)));
+								iRetCode = INT_BLANK_SWEEP_OUT_AMT;
+							}
+						}
+					}
+/*Sweep Out Amount*/
+					else if(!strcmp(csDetailTagVerN[iCnt],"sweep_out_amt")){
+							iRetCode = Verify_SweepOutAmt(csTmpField);
+							if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Invalid!!\n", iCnt, csDetailField[iCnt]));
+								iRetCode = INT_INVALID_SWEEP_OUT_AMT;
+							}
+							if(iRetCode == PD_OK){
+								iRetCode = Verify_SweepOutAmtLimit(csTmpField);
+								if(iRetCode != PD_OK){
+DEBUGLOG((" [%d]%s Invalid!!\n", iCnt, csDetailField[iCnt]));
+									iRetCode = INT_SWEEP_OUT_AMT_EXCEED_TXN_AMT_LIMIT;
+								}
+							}
+							
+
+							strcpy(csSweepOutAmt, csTmpField);
+					}
+				}
+
+				csField = mystrtok(NULL, PD_FILE_DELIMITER);
+				iCnt++;
+			}//end of fetching one row
+			
+			
+
+/*Check blank mandatory field for incomplete row*/
+			if(iRetCode == PD_OK){
+				if(!strcmp(csSrBankName,"")){
+DEBUGLOG(("[%d]Bank Name (Sender) cannot be blank!!\n", iCurrLine));
+					iRetCode = INT_BLANK_SENDER_BANK_NAME;
+				}
+				else if(!strcmp(csSrBankAcctNum,"")){
+DEBUGLOG(("[%d]Bank Account Num (Sender) cannot be blank!!\n", iCurrLine));
+					iRetCode = INT_BLANK_SENDER_BANK_ACCT_NUM;
+				}
+				else if(!strcmp(csSweepOutAmt,"")){
+DEBUGLOG(("[%d]Sweep Out Amount cannot be blank!!\n", iCurrLine));
+					iRetCode = INT_BLANK_SWEEP_OUT_AMT;
+				}
+				else if(!strcmp(csRtBankName,"")){
+					if(iUseDmyAcct == PD_UNCHECKED){
+DEBUGLOG(("[%d]Bank Name (Recepient) cannot be blank!!\n", iCurrLine));
+						iRetCode = INT_BLANK_RECIPIENT_BANK_NAME;
+					}
+				}
+				else if(!strcmp(csRtBankAcctNum,"")){
+					if(iUseDmyAcct == PD_UNCHECKED){
+DEBUGLOG(("[%d]Bank Account Num (Recepient) cannot be blank!!\n", iCurrLine));
+						iRetCode = INT_BLANK_RECIPIENT_BANK_ACCT_NUM;
+					}
+				}
+			}
+			
+				
+/*Model OMTChannel*/
+
+			if(iRetCode == PD_OK){
+				PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+				PutField_CString(hRequest, "txn_ccy", PD_CCY_ISO_CNY);
+				PutField_CString(hRequest, "txnamt", csSweepOutAmt);
+
+
+DEBUGLOG(("[%d] Calling OLTxnSeq::GetNextOmtTxnSeq\n", iCurrLine));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+				csSweepOutTxnSeq = strdup((*DBObjPtr)());
+				PutField_CString(hContext, "txn_seq",csSweepOutTxnSeq);
+				
+				/* channel_code */
+				PutField_CString(hContext, "channel_code", PD_CHANNEL_OMT);
+				/* txn_code */
+				PutField_CString(hContext, "txn_code", PD_OL_PSP_BAID_BAL_TRF_INTRA);
+				
+				/* PHDATE / local_tm_date / local_tm_time */
+				strcpy(csTmDateTime, getdatetime());
+				sprintf(csTmDate, "%.*s", PD_DATE_LEN, csTmDateTime);
+				PutField_CString(hContext, "PHDATE", csTmDate);
+				PutField_CString(hContext, "local_tm_date", csTmDate);
+				sprintf(csTmTime, "%.*s", PD_TIME_LEN, &csTmDateTime[PD_DATE_LEN]);
+				PutField_CString(hContext, "local_tm_time", csTmTime);
+
+				
+				PutField_Int(hContext, "do_logging", PD_TRUE);
+				PutField_Int(hContext, "db_commit", PD_FALSE);
+				
+				PutField_CString(hContext, "add_user",PD_UPDATE_USER);
+				
+				/* process_type / process_code */
+				PutField_CString(hContext, "process_type", PD_PROCESS_TYPE_DEF);
+				PutField_CString(hContext, "process_code", PD_PROCESS_CODE_DEF);
+				
+
+				// Add Transaction Log
+				
+DEBUGLOG(("[%d] Calling OMTChannel::AddTxnLog\n", iCurrLine));
+				ChannelObjPtr = CreateObj(ChannelPtr, "OMTChannel", "AddTxnLog");
+				iDtlRet = (unsigned long)(*ChannelObjPtr)(hContext, hRequest);
+				if (iDtlRet != PD_OK){
+DEBUGLOG(("[%d] Calling OMTChannel::AddTxnLog Failure!!\n", iCurrLine));
+					iRetCode = INT_FAIL_CREATE_BAID_BALANCE_INTRA_TXN;
+				}
+				
+				// Call Transaction Common Handler		
+				if(iRetCode == PD_OK){
+DEBUGLOG(("[%d] Calling TxnOmtByUsCOM::Authorize\n", iCurrLine));
+					TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsCOM", "Authorize");
+					iDtlRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+					if (iDtlRet != PD_OK){
+DEBUGLOG(("[%d] Calling TxnOmtByUsCOM::Authorize Failure [%d]!!\n", iCurrLine, iDtlRet));
+						iRetCode = INT_FAIL_CREATE_BAID_BALANCE_INTRA_TXN;
+					}
+				}
+			}
+				
+			
+/* Create action on PBF*/
+			if(iRetCode == PD_OK){
+/*fr_baid*/
+				DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetBaidByBankAcct");
+				iDtlRet = (unsigned long)(*DBObjPtr)(csSrBankCode, csSrBankAcctNum, PD_NATURE_DEPOSIT, hGetSrAttribute);
+				if(iDtlRet == PD_OK){
+					if(GetField_CString(hGetSrAttribute, "baid", &csFromBaid)){
+DEBUGLOG(("[%d]fr_baid = [%s]\n", iCurrLine, csFromBaid));
+						PutField_CString(hRequest, "fr_baid", csFromBaid);
+					}
+					else{
+DEBUGLOG(("[%d]fr_baid not found!!\n", iCurrLine));
+ERRLOG("ol_baid_bt_file:: process_data:: call DBOLBankAcctId::GetBaidByBankAcct fr_baid not found!!\n");
+					}
+				}
+/*to_baid*/
+				if(iUseDmyAcct == PD_UNCHECKED){
+					DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetBaidByBankAcct");
+					iDtlRet = (unsigned long)(*DBObjPtr)(csRtBankCode, csRtBankAcctNum, PD_NATURE_PAYOUT, hGetRtAttribute);
+					if(iDtlRet == PD_OK){
+						if(GetField_CString(hGetRtAttribute, "baid", &csToBaid)){
+DEBUGLOG(("[%d]to_baid = [%s]\n", iCurrLine, csToBaid));
+							PutField_CString(hRequest, "to_baid", csToBaid);
+						}
+						else{
+DEBUGLOG(("[%d]to_baid not found!!\n", iCurrLine));
+ERRLOG("ol_baid_bt_file:: process_data:: call DBOLBankAcctId::GetBaidByBankAcct to_baid not found!!\n");
+						}
+					}
+				}
+				else{
+DEBUGLOG(("[%d]to_baid = [%s]\n", iCurrLine, csToBaid));
+					PutField_CString(hRequest, "to_baid", csToBaid);
+				}
+			}
+			
+			
+			PutField_CString(hRequest, "fr_remark", PD_FR_TO_REMARK);
+			PutField_CString(hRequest, "to_remark", PD_FR_TO_REMARK);
+			sprintf(csReportDate, "%.*s", PD_DATE_LEN, csTmDateTime);
+			PutField_CString(hRequest, "report_date", csReportDate);
+			PutField_CString(hRequest, "gen_unique_amt", PD_FIELD_DISABLE);
+			
+
+
+			if(iRetCode == PD_OK){
+				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsPBF", "Authorize");
+				iDtlRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+				if(iDtlRet == PD_OK){
+DEBUGLOG(("[%d]call TxnOmtByUsPBF::Authorize Success!!\n", iCurrLine));
+				}
+				else{
+DEBUGLOG(("[%d]call TxnOmtByUsPBF::Authorize Failure!!\n", iCurrLine));
+					iRetCode = INT_FAIL_CREATE_BAID_BALANCE_INTRA_TXN;
+DEBUGLOG(("[%d]iRetCode:[%d]\n", iCurrLine, iRetCode));
+				}
+			}
+			
+/* Prepare For Updating Transaction Log */
+			if (iRetCode == PD_OK)
+			{
+				/* status / ar_ind / sub_status / recon_status */
+				PutField_Char(hContext, "status", PD_COMPLETE);
+				PutField_Char(hContext, "ar_ind", PD_ACCEPT);
+				
+
+				PutField_CString(hContext, "sub_status", PD_APPROVED);
+				PutField_Char(hContext, "recon_status", PD_UNRECONCILED);
+
+
+				/* internal_code / response_code */
+				PutField_Int(hContext, "internal_code", PD_OK);
+				PutField_CString(hContext, "response_code", "0");
+
+				// Update Transaction Log
+DEBUGLOG(("[%d]call OMTChannel::UpdateTxnLog\n", iCurrLine));
+				ChannelObjPtr = CreateObj(ChannelPtr, "OMTChannel", "UpdateTxnLog");
+				iDtlRet = (unsigned long)(*ChannelObjPtr)(hContext, hRequest, hResponse);
+
+				if (iDtlRet != PD_OK){
+DEBUGLOG(("[%d]call OMTChannel::UpdateTxnLog Failure!!\n", iCurrLine));
+					iRetCode = INT_FAIL_CREATE_BAID_BALANCE_INTRA_TXN;
+				}
+
+			}
+			
+
+			
+			if(iRetCode == PD_OK){
+				TxnCommit();
+			}
+			else{
+				TxnAbort();
+			}
+			
+
+			
+			if(iRetCode == PD_OK){
+				PutField_CString(hBaidBtLog, "file_id", csFileId);
+				PutField_Int(hBaidBtLog, "seq", iCurrLine);
+				PutField_CString(hBaidBtLog, "sender_bank_name", csSrBankName);
+				PutField_CString(hBaidBtLog, "sender_bank_acct_num", csSrBankAcctNum);
+				dSweepOutAmt = string2doublewithsign((const unsigned char *)csSweepOutAmt);
+				PutField_Double(hBaidBtLog, "sweep_out_amt", dSweepOutAmt);
+				PutField_CString(hBaidBtLog, "receiver_bank_name", csRtBankName);
+				PutField_CString(hBaidBtLog, "receiver_bank_acct_num", csRtBankAcctNum);
+				if(GetField_CString(hResponse, "txn_seq_tt", &csSweepInTxnSeq)){
+DEBUGLOG(("[%d]txn_seq_tt = [%s]\n", iCurrLine, csSweepInTxnSeq));
+					PutField_CString(hBaidBtLog, "sweep_in_txn_id", csSweepInTxnSeq);
+				}
+				else{
+DEBUGLOG(("[%d]txn_seq_tt not found!!\n", iCurrLine));
+ERRLOG("ol_baid_bt_file:: process_data:: call TxnOmtByUsPBF::Authorize txn_seq_tt not found!!\n");
+					iRetCode = INT_FAIL_CREATE_BAID_BALANCE_INTRA_TXN;
+				}
+				PutField_CString(hBaidBtLog, "sweep_out_txn_id", csSweepOutTxnSeq);
+				PutField_CString(hBaidBtLog, "create_user", csUser);
+				
+				
+				DBObjPtr = CreateObj(DBPtr,"DBOLBaidBalTrfFile","AddDetail");
+				if ((unsigned long)(*DBObjPtr)(hBaidBtLog) == PD_OK){
+DEBUGLOG(("[%d]call DBOLBaidBalTrfFile::AddDetail file_id [%s] ret_code[%d] Success!!\n", iCurrLine, csFileId, iRetCode));
+					TxnCommit();
+				}
+				else{
+					iErrCnt++;
+DEBUGLOG(("[%d]call DBOLBaidBalTrfFile::AddDetail file_id [%s] ret_code[%d] Failure!!\n", iCurrLine, csFileId, iRetCode));
+ERRLOG("ol_baid_bt_file:: process_data:: call DBOLBaidBalTrfFile::AddDetail Failure!!\n");
+					TxnAbort();
+					iIsInsertSucceed = PD_ERR;
+				}
+			}
+			else{
+				PutField_CString(hBaidBtLog, "file_id", csFileId);
+				PutField_Int(hBaidBtLog, "seq", iCurrLine);
+				PutField_Int(hBaidBtLog, "msg_code", iRetCode);
+				PutField_CString(hBaidBtLog, "line_content", cs_input_buf);
+				PutField_CString(hBaidBtLog, "create_user", csUser);			
+
+				DBObjPtr = CreateObj(DBPtr,"DBOLBaidBalTrfFile","AddError");
+				if ((unsigned long)(*DBObjPtr)(hBaidBtLog) == PD_OK){
+					iErrCnt++;
+DEBUGLOG(("[%d]call DBOLBaidBalTrfFile::AddError file_id [%s] ret_code[%d] Success!!\n", iCurrLine, csFileId, iRetCode));
+					TxnCommit();
+				}
+				else{
+					iErrCnt++;
+DEBUGLOG(("[%d]call DBOLBaidBalTrfFile::AddError file_id [%s] ret_code[%d] Failure!!\n", iCurrLine, csFileId, iRetCode));
+ERRLOG("ol_baid_bt_file:: process_data:: call DBOLBaidBalTrfFile::AddError Failure!!\n");
+					TxnAbort();
+					iIsInsertSucceed = PD_ERR;
+				}
+			}
+			
+			if(iIsInsertSucceed != PD_OK){
+				iRet = INT_ERR;
+			}
+			
+			
+			hash_destroy(hGetSrAttribute);
+			FREE_ME(hGetSrAttribute);
+			
+			hash_destroy(hGetRtAttribute);
+			FREE_ME(hGetRtAttribute);
+			
+			hash_destroy(hBaidBtLog);
+			FREE_ME(hBaidBtLog);
+			
+			hash_destroy(hRequest);
+			FREE_ME(hRequest);
+			
+			hash_destroy(hContext);
+			FREE_ME(hContext);
+			
+			hash_destroy(hResponse);
+			FREE_ME(hResponse);
+			
+			
+			
+		}//end of fetching all rows
+		
+	}
+	
+	
+	
+	if(iRet != PD_OK){
+		TxnAbort();
+	}
+	
+	
+	
+	PutField_CString(hBaidBtHeader,"file_id",csFileId);
+	PutField_CString(hBaidBtHeader, "update_user", csUser);
+	PutField_CString(hBaidBtHeader, "convert_filename", csConvFileName);
+	PutField_Int(hBaidBtHeader, "total_count", iCurrLine);
+	PutField_Int(hBaidBtHeader, "accept_count", iCurrLine-iErrCnt);
+	if(iCurrLine == 0 || iCurrLine == iErrCnt){
+		cHeaderStatus = PD_ACCT_FILE_STATUS_DECLINED;
+		PutField_Char(hBaidBtHeader, "status", PD_BAID_BAL_TRF_FILE_STATUS_DECLINED);
+		if(iRet != PD_OK){
+/*Invalid file format, internal error*/
+			PutField_Int(hBaidBtHeader, "msg_code", iRet);
+		}
+		else{
+			PutField_Int(hBaidBtHeader, "msg_code", INT_ALL_REJECTED);
+		}
+	}
+	else{
+		cHeaderStatus = PD_ACCT_FILE_STATUS_APPROVED;
+		PutField_Char(hBaidBtHeader, "status", PD_BAID_BAL_TRF_FILE_STATUS_APPROVED);
+		PutField_Int(hBaidBtHeader, "msg_code", iRet);
+	}
+
+	DBObjPtr = CreateObj(DBPtr, "DBOLBaidBalTrfFile", "UpdateHeader");
+	iUpdHdRet = (unsigned long)(*DBObjPtr)(hBaidBtHeader);
+	if(iUpdHdRet == PD_OK){
+DEBUGLOG(("call OLBaidBalTrfFile::UpdateHeader status[%c] ret_code[%d] Success!!\n", cHeaderStatus, iRet));
+	}
+	else{
+DEBUGLOG(("call OLBaidBalTrfFile::UpdateHeader status[%c] ret_code[%d] Failure!!\n", cHeaderStatus, iRet));
+ERRLOG("ol_baid_bt_file:: process_data:: call OLBaidBalTrfFile::UpdateHeader Failure!!\n");
+		iRet = INT_ERR;
+
+	}
+	
+	
+	hash_destroy(hBaidBtHeader);
+	FREE_ME(hBaidBtHeader);
+
+
+	
+	FREE_ME(csSrBankCode);
+	FREE_ME(csRtBankCode);
+DEBUGLOG(("process_data() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+	
+}
+
+
+int Verify_AcctNumNumeric(const char* csAcctNum)
+{
+	int iRet = PD_ERR;
+	int iCheck = PD_FALSE;
+	
+	iCheck = is_numeric((char*)csAcctNum);
+	if(iCheck == PD_TRUE){
+DEBUGLOG(("  Verify_AcctNumNumeric [%s] Numeric\n",csAcctNum));
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("  Verify_AcctNumNumeric [%s] is Non-Numeric\n",csAcctNum));
+		iRet = PD_ERR;
+	}
+
+	return iRet;
+	
+}
+
+
+
+
+int Verify_BankName(const char* csBankName, hash_t* hRec)
+{
+	int iRet = PD_ERR;
+	int iDtlRet = PD_ERR;
+	int iOfflSupport = 0;
+	int iSysSupport = 0;
+
+	DBObjPtr = CreateObj(DBPtr,"DBBankDesc","GetBankByBankName");
+	iDtlRet = (unsigned long)(*DBObjPtr)(csBankName, hRec);
+	if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("  Verify_BankName: call DBBankDesc::GetBankByBankName Found!!\n"));
+		if(GetField_Int(hRec,"offline_support", &iOfflSupport)){
+DEBUGLOG(("  Verify_BankName: offline_support = [%d]\n", iOfflSupport));
+			if(iOfflSupport == PD_OFFL_SUPPORT_ENABLE){
+				iRet = PD_OK;
+			}
+		}
+		else{
+DEBUGLOG(("  Verify_BankName: offline_support not found!!\n"));
+			iRet = PD_ERR;
+		}
+		
+		if(iRet == PD_OK){
+			if(GetField_Int(hRec,"system_support", &iSysSupport)){
+DEBUGLOG(("  Verify_BankName: system_support = [%d]\n", iSysSupport));
+				if(iSysSupport == PD_SYS_SUPPORT_ENABLE){
+					iRet = PD_OK;
+				}
+				else{
+					iRet = PD_ERR;
+				}
+			}
+			else{
+DEBUGLOG(("  Verify_BankName: system_support not found!!\n"));
+				iRet = PD_ERR;
+			}
+		}
+	}
+	else if(iDtlRet == PD_NOT_FOUND){
+DEBUGLOG(("  Verify_BankName: call BankDesc::GetBankByBankName Not Found!!\n"));
+		iRet = PD_ERR;
+	}
+	else{
+DEBUGLOG(("  Verify_BankName: call BankDesc::GetBankByBankName Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_BankName:: call BankDesc::GetBankByBankName Error!!\n");
+		iRet = INT_ERR;
+	}
+	
+	return iRet;
+	
+}
+
+
+int Verify_SrAcctNumProvider(const char* csRawClientId, hash_t* hRec)
+{
+	int iRet = PD_ERR;
+	char *csDbClientId = NULL;
+	
+	if (GetField_CString(hRec, "init_provider_id", &csDbClientId)) {
+DEBUGLOG(("  Verify_SrAcctNumProvider:: init_provider_id = [%s]\n", csDbClientId));
+		if(!strcmp(csRawClientId, csDbClientId)){
+DEBUGLOG(("  Verify_SrAcctNumProvider: Provider of Bank Account Number (Sender) [%s] belong to selected provider [%s]!!\n", csDbClientId, csRawClientId));
+			iRet = PD_OK;
+		}
+		else{
+DEBUGLOG(("  Verify_SrAcctNumProvider: Provider of Bank Account Number (Sender) [%s] not belong to selected provider [%s]!!\n", csDbClientId, csRawClientId));
+			iRet = PD_ERR;
+		}
+	}
+	else {
+DEBUGLOG(("  Verify_SrAcctNumProvider:: init_provider_id is not found!!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_SrAcctNumProvider:: call OLBankAccts::GetBankAccts init_provider_id not found!!!\n");
+		iRet = INT_ERR;
+	}
+	return iRet;
+	
+}
+
+
+
+int Verify_AcctNumBaidStatus(const char* csIntBankCode, const char* csBankAcctNum, hash_t* hRec)
+{
+	
+	int iRet = PD_ERR;
+	int iDtlRet = PD_ERR;
+	
+	DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetDtlByBankAcct");
+	iDtlRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, hRec);
+	if(iDtlRet == PD_OK){
+DEBUGLOG(("  Verify_AcctNumBaidStatus: call OLBankAcctId::GetDtlByBankAcct Found!!\n"));
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("  Verify_AcctNumBaidStatus: call OLBankAcctId::GetDtlByBankAcct Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_AcctNumBaidStatus:: call OLBankAccts::GetDtlByBankAcct Error!!\n");
+		iRet = INT_ERR;
+	}
+	
+	return iRet;
+}
+
+
+int Verify_AcctNumExist(const char* csIntBankCode, const char* csBankAcctNum)
+{
+	int iRet = PD_ERR;
+	int iDtlRet = PD_ERR;
+	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","ChkBankAcctExists");
+	iDtlRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum);
+	if(iDtlRet == PD_FOUND){
+DEBUGLOG(("  Verify_AcctNumExist: Bank acct [%s]-[%s] Found!!\n", csIntBankCode, csBankAcctNum));
+		iRet = PD_OK;
+	}
+	else if(iDtlRet == PD_ERR){
+DEBUGLOG(("  Verify_AcctNumExist: call OLBankAccts::ChkBankAcctExists Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_AcctNumExist:: call OLBankAccts::ChkBankAcctExists Error!!\n");
+		iRet = INT_ERR;
+	}
+	else{
+DEBUGLOG(("  Verify_AcctNumExist: Bank acct [%s]-[%s] Not Found!!\n", csIntBankCode, csBankAcctNum));
+		iRet = PD_ERR;
+	}
+	return iRet;
+}
+
+
+int Verify_AcctNumAcctNature(const char* csIntBankCode, const char* csBankAcctNum, const char* csAcctDtl, hash_t* hRec)
+{
+	int iRet = PD_ERR;
+	int iDtlRet = PD_ERR;
+	char *csAcctType = NULL;
+		
+	DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","GetBankAccts");
+	iDtlRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, hRec);
+	if(iDtlRet == PD_OK){
+DEBUGLOG(("  Verify_AcctNumAcctNature: call OLBankAccts::GetBankAccts Found!!\n"));
+		if (GetField_CString(hRec, "acct_type", &csAcctType)) {
+DEBUGLOG(("  Verify_AcctNumAcctNature:: acct_type = [%s]\n", csAcctType));
+			if(!strcmp(csAcctDtl, PD_BANK_ACCT_SENDER)){
+				if(!strcmp(csAcctType, PD_NATURE_DEPOSIT)){
+DEBUGLOG(("  Verify_AcctNumAcctNature:: acct_type is deposit [%s]!!\n", csAcctType));
+					iRet = PD_OK;
+				}
+				else{
+DEBUGLOG(("  Verify_AcctNumAcctNature:: acct_type is not deposit [%s]!!\n", csAcctType));
+					iRet = PD_ERR;
+				}
+			}
+			else if(!strcmp(csAcctDtl, PD_BANK_ACCT_RECIPIENT)){
+				if(!strcmp(csAcctType, PD_NATURE_PAYOUT)){
+DEBUGLOG(("  Verify_AcctNumAcctNature:: acct_type is payout [%s]!!\n", csAcctType));
+					iRet = PD_OK;
+				}
+				else{
+DEBUGLOG(("  Verify_AcctNumAcctNature:: acct_type is not payout [%s]!!\n", csAcctType));
+					iRet = PD_ERR;
+				}
+			}
+		}
+		else {
+DEBUGLOG(("  Verify_AcctNumAcctNature:: acct_type is missing!!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_AcctNumAcctNature() acct_type is missing!!!\n");
+			iRet = INT_ERR;
+		}
+	}
+	else{
+DEBUGLOG(("  Verify_AcctNumAcctNature: call OLBankAccts::GetBankAccts Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_AcctNumAcctNature:: call OLBankAccts::GetBankAccts Error!!\n");
+		iRet = INT_ERR;
+	}
+	
+	return iRet;
+	
+}
+
+int Verify_AcctNumCcy(hash_t* hRec)
+{
+	int iRet = PD_ERR;
+	char *csAcctCcy = NULL;
+	if (GetField_CString(hRec, "acct_ccy", &csAcctCcy)) {
+		if(!strcmp(csAcctCcy, PD_CCY_ISO_CNY)){
+DEBUGLOG(("  Verify_AcctNumCcy:: Valid csAcctCcy is [%s]!!\n", csAcctCcy));
+			iRet = PD_OK;
+		}
+		else{
+DEBUGLOG(("  Verify_AcctNumCcy:: Invalid csAcctCcy is [%s]!!\n", csAcctCcy));
+			iRet = PD_ERR;
+		}
+	}
+	else{
+DEBUGLOG(("  Verify_AcctNumCcy: call OLBankAccts::GetBankAccts Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_AcctNumAcctNature:: call OLBankAccts::GetBankAccts Error!!\n");
+		iRet = INT_ERR;
+	}
+	
+	return iRet;
+}
+
+int Verify_AcctNumSystemAcct(const char* csIntBankCode, const char* csBankAcctNum, hash_t* hRec)
+{
+	int iRet = PD_ERR;
+	if((!strcmp(csIntBankCode, PD_SYS_BANK_CODE) && !strcmp(csBankAcctNum, PD_SYS_BANK_ACCT_NUM))
+	|| (!strcmp(csIntBankCode, PD_TW_SYS_BANK_CODE) && !strcmp(csBankAcctNum, PD_TW_SYS_BANK_ACCT_NUM))
+	){
+DEBUGLOG(("  Verify_AcctNumSystemAcct: Bank Account Number (Sender)[%s]-[%s] is system account [%s]-[%s]!!\n", csIntBankCode, csBankAcctNum, PD_SYS_BANK_CODE, PD_SYS_BANK_ACCT_NUM));
+		iRet = PD_ERR;
+	}
+	else{
+DEBUGLOG(("  Verify_AcctNumSystemAcct: Bank Account Number (Sender)[%s]-[%s] is not system account [%s]-[%s]!!\n", csIntBankCode, csBankAcctNum, PD_SYS_BANK_CODE, PD_SYS_BANK_ACCT_NUM));
+		iRet = PD_OK;
+	}
+	return iRet;
+}
+
+
+int Verify_SweepOutAmt(const char* csSweepOutAmt)
+{
+	int iRet = PD_OK;
+	int iCheck = PD_FALSE;
+	
+	long lTmpA=0;
+	long lTmpB=0;
+
+	char *csPos;
+	char *p = (char*)strchr(csSweepOutAmt, '.');
+DEBUGLOG(("  Verify_SweepOutAmt SweepOutAmt: [%s]\n",csSweepOutAmt));
+/*reject negative amount*/
+	if(csSweepOutAmt[0] == '-'){
+		return PD_ERR;
+	}
+	
+	csPos = (char *)csSweepOutAmt;
+
+DEBUGLOG(("  Verify_SweepOutAmt Pos: [%c]\n", *csPos));
+	if(p != NULL){
+/*Prevent csSweepOutAmt is . */
+		if(csSweepOutAmt[0] == '.'){
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+			return PD_ERR;
+		}
+
+		iCheck = is_numeric_r2(csPos);
+		
+		if (iCheck != PD_TRUE) {
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+			return PD_ERR;
+		}
+		
+/*Prevent csSweepOutAmt is 1.*/
+		if(*(p+1) == '\0'){
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+			return PD_ERR;
+		}
+		
+		if(strlen(p+1) != 2){
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+			return PD_ERR;
+		}
+		
+		iCheck = is_numeric(p+1);
+		if (iCheck != PD_TRUE) {
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+			return PD_ERR;
+		}
+/*Check csSweepOutAmt is 0.0*/
+		sscanf(csSweepOutAmt, "%ld.%ld", &lTmpA, &lTmpB);
+		if(lTmpA == 0 && lTmpB == 0) {
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+			return PD_ERR;
+		}
+		
+	}
+	else{
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Invalid\n",csSweepOutAmt));
+		return PD_ERR;
+	}
+DEBUGLOG(("  Verify_SweepOutAmt [%s] Valid\n",csSweepOutAmt));
+	
+	
+	return iRet;
+	
+}
+
+
+int Verify_SweepOutAmtLimit(const char* csSweepOutAmt)
+{
+	
+	int iRet = PD_ERR;
+	int iDtlRet = PD_ERR;
+	double	dAmtLimit = 0.0;
+	double	dSweepOutAmt = 0.0;
+		
+		
+	hash_t* hRec;
+	hRec = (hash_t*)malloc(sizeof(hash_t));
+	hash_init(hRec,0);
+	
+	dSweepOutAmt = string2doublewithsign((const unsigned char *)csSweepOutAmt);
+	
+	PutField_CString(hRec,"limit_code", PD_TXN_LIMIT_CODE_BAID_INTRA);
+	PutField_CString(hRec,"limit_ccy", PD_CCY_ISO_CNY);
+	PutField_Char(hRec,"party_type", PD_TYPE_GLOBAL);
+	PutField_CString(hRec,"party_id", PD_TXN_LIMIT_PARTY_GLOBAL);
+	
+	
+	DBObjPtr = CreateObj(DBPtr,"DBOLTxnAmtLimit","Get");
+	iDtlRet = (unsigned long)(*DBObjPtr)(hRec);
+	if(iDtlRet == PD_FOUND){
+DEBUGLOG(("  Verify_SweepOutAmtLimit: call OLTxnAmtLimit::Get Found!!\n"));
+		if (GetField_Double(hRec, "amt_limit", &dAmtLimit)) {
+DEBUGLOG(("  Verify_SweepOutAmtLimit:: amt_limit = [%lf]\n", dAmtLimit));
+			if(dSweepOutAmt > dAmtLimit){
+DEBUGLOG(("  Verify_SweepOutAmtLimit:: Invalid SweepOutAmt [%lf] > amt_limit [%lf]\n", dSweepOutAmt, dAmtLimit));
+				iRet = PD_ERR;
+			}
+			else{
+DEBUGLOG(("  Verify_SweepOutAmtLimit:: Valid SweepOutAmt [%lf] <= amt_limit [%lf]\n", dSweepOutAmt, dAmtLimit));
+				iRet = PD_OK;
+			}
+		}
+		else {
+DEBUGLOG(("  Verify_SweepOutAmtLimit:: amt_limit is missing!!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_SweepOutAmtLimit() amt_limit is missing!!!\n");
+			iRet = INT_ERR;
+		}
+	}
+	else if(iDtlRet == PD_NOT_FOUND){
+DEBUGLOG(("  Verify_SweepOutAmtLimit: call OLTxnAmtLimit::Get Not Found!!\n"));
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("  Verify_SweepOutAmtLimit: call OLTxnAmtLimit::Get Error!!\n"));
+ERRLOG("ol_baid_bt_file:: process_data:: Verify_SweepOutAmtLimit:: call OLTxnAmtLimit::Get Error!!\n");
+		iRet = INT_ERR;
+	}
+	
+	return iRet;
+	
+}
+
+
+int is_numeric_r2(const char *csStr)
+{
+	while(*csStr != '.')
+	{
+DEBUGLOG(("  is_numeric_r2 [%c]\n",*csStr));
+		if(*csStr < '0' || *csStr > '9'){
+DEBUGLOG(("  is_numeric_r2 [%c] Invalid\n",*csStr));
+			return PD_FALSE;
+		}
+		csStr++;
+	}
+	return PD_TRUE;
+}
+
+int IsFieldMandatory(const int iUseDummyAcct, const int iCnt)
+{
+	if(iUseDummyAcct == PD_CHECKED){
+		if (csMandatoryField[iCnt] == PD_MANDATORY){
+DEBUGLOG(("  IsFieldMandatory: [%s] is Mandatory field. Require length checking!!\n", csDetailField[iCnt]));
+			return PD_TRUE;
+		}
+		else{
+DEBUGLOG(("  IsFieldMandatory: [%s] is Optional field. Skip length checking!!\n", csDetailField[iCnt]));
+			return PD_FALSE;
+		}
+	}
+	else{
+DEBUGLOG(("  IsFieldMandatory: [%s] is Mandatory field. Require length checking!!\n", csDetailField[iCnt]));
+		return PD_TRUE;
+	}
+}
+
+int batch_terminate(int argc, char *argv[])
+{
+	return SUCCESS;
+}
+
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+
+	strcpy(csInFileId, "");
+	strcpy(csInFilePath, "");
+
+	if (argc < 5)
+	{
+DEBUGLOG(("- argc = [%d]\n", argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc, argv, "f:p:")) != EOF)
+	{
+		switch (c)
+		{
+			case 'f':
+				strcpy(csInFileId, optarg);
+				break;
+			case 'p':
+				strcpy(csInFilePath, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csInFileId, "") ||
+	!strcmp(csInFilePath, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}

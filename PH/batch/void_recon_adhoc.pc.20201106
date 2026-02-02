@@ -1,0 +1,175 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+#include <sys/stat.h>
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_input_file[PD_TMP_BUF_LEN + 1];
+
+static char cDebug = 'Y';
+
+OBJPTR(Txn);
+OBJPTR(DB);
+
+int parse_arg(int argc, char **argv);
+int process_main();
+
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc != 3) {
+		printf("usage: -f input_file\n");
+		return FAILURE;
+	}
+	else
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+	int iTmpRet = PD_OK;
+	FILE *fproc;
+	char cs_input_buf[PD_MAX_BUFFER + 1];
+
+	hash_t *hContext;
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext, 0);
+
+	hash_t *hRequest;
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRequest, 0);
+
+	hash_t *hResponse;
+	hResponse = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hResponse, 0);
+
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	hash_t *hRec;
+
+	char cTmp = ' ';
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage: -f input_file\n");
+		return (iRet);
+	}
+
+	fproc = fopen(cs_input_file, "r");
+	if (fproc == NULL) {
+DEBUGLOG(("batch_proc: Error opening file = [%s]\n", cs_input_file));
+ERRLOG("void_recon: batch_proc: Error opening file = [%s]\n", cs_input_file);
+		return FAILURE;
+	}
+
+	while ((iRet == SUCCESS) && (fgets(cs_input_buf, PD_MAX_BUFFER, fproc) != NULL)) {
+DEBUGLOG(("--------------------------------------------------\n"));
+
+		cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+DEBUGLOG(("txn_id = [%s](%d)\n", cs_input_buf, strlen(cs_input_buf)));
+
+		RecordSet_Destroy(rRecordSet);
+		recordset_init(rRecordSet, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+		iTmpRet = (unsigned long)(*DBObjPtr)(cs_input_buf, rRecordSet);
+		if (iTmpRet == PD_OK) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+			if (GetField_Char(hRec, "status", &cTmp)) {
+DEBUGLOG(("status = [%c]\n", cTmp));
+
+				if (cTmp == 'R') {
+DEBUGLOG(("transaction is already voided, skip\n"));
+					continue;
+				}
+			} else {
+DEBUGLOG(("cannot get status\n"));
+				iRet = FAILURE;
+			}
+		} else {
+DEBUGLOG(("cannot find transaction\n"));
+			iRet = FAILURE;
+		}
+
+		if (iRet == SUCCESS) {
+			PutField_CString(hRequest, "org_txn_seq", cs_input_buf);
+			PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+			PutField_CString(hContext, "add_user", PD_UPDATE_USER);
+
+			TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsRBT", "Authorize");
+			iTmpRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+			if (iTmpRet == PD_OK) {
+DEBUGLOG(("batch_proc: call TxnOmtByUsRBT: Authorize() success, iTmpRet = [%d]\n", iTmpRet));
+				EXEC SQL COMMIT WORK;
+			}
+			else {
+DEBUGLOG(("batch_proc: call TxnOmtByUsRBT: Authorize() failed, iTmpRet = [%d]\n", iTmpRet));
+ERRLOG("void_recon: batch_proc: call TxnOmtByUsRBT: Authorize() failed, iTmpRet = [%d]\n", iTmpRet);
+				iRet = FAILURE;
+			}
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	FREE_ME(hResponse);
+	FREE_ME(hRequest);
+	FREE_ME(hContext);
+
+	fclose(fproc);
+
+DEBUGLOG(("--------------------------------------------------\n"));
+DEBUGLOG(("iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+	strcpy(cs_input_file, "");
+
+	while ((c = getopt(argc, argv, "f:")) != EOF) {
+		switch (c) {
+			case 'f':
+				strcpy(cs_input_file, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_input_file, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}
+

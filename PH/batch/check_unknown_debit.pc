@@ -1,0 +1,206 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/08/27              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+#define PD_OPEN_TAG             "<tr><td>"
+#define PD_NEXT_TAG             "</td><td>"
+#define PD_END_TAG              "</td></tr>"
+
+OBJPTR(DB);
+char    cDebug = 'Y';
+
+char    cs_time[PD_DESC_LEN + 1];
+
+
+int parse_arg(int argc, char **argv);
+int process_txn();
+
+
+int	iTitle = 0;
+
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage: -t <check_timediff(in hour)>\n");
+		return iRet;
+	}
+
+	iRet = process_txn();
+
+
+	return iRet;
+
+
+}
+
+int process_txn()
+{
+	int	iRet = SUCCESS;
+	int	iCnt = 0;
+
+	int	iTimeDiff = 0;
+
+	if(sscanf(cs_time, "%d", &iTimeDiff) == 1) {
+DEBUGLOG(("check_unknown_debit:: TimeDiff [%d]\n", iTimeDiff));
+	} else {
+		iRet = FAILURE;
+		return iRet;
+	}
+
+	EXEC SQL WHENEVER SQLERROR GOTO chkunknowndr_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                int     hv_time_diff;
+
+                varchar v_bank_name[PD_BANK_NAME_LEN + 1];
+                varchar v_owner_name[PD_OWNER_NAME_LEN + 1];
+		double  v_deposit_amt;
+
+		short	ind_bank_name = -1;
+		short	ind_owner_name = -1;
+		short	ind_deposit_amt;
+
+        EXEC SQL END DECLARE SECTION;
+
+
+	hv_time_diff = iTimeDiff;
+
+        EXEC SQL DECLARE c_unknown_debit CURSOR FOR
+		select bank_name, ob_owner_name, obt_txn_amt 
+		from bank_desc,ol_bank_accts,  ol_bank_acct_id, ol_statement_detail, ol_baid_txn
+		where obt_create_timestamp > sysdate - :hv_time_diff / 24
+		and obt_txn_code in ('UBD', 'USO')
+		and obt_status = 'C'
+		and obt_ar_ind = 'A'
+		and mod(obt_txn_amt, 1) = 0
+		and obt_txn_amt >= 100
+		and obt_baid = obai_baid
+		and olsd_stat_txn_id = obt_stat_txn_id
+		and internal_bank_code = obai_int_bank_code
+		and olsd_int_bank_code = ob_int_bank_code
+		and olsd_bank_acct_num = ob_bank_acct_num
+		and exists (select 1
+				from ol_psp_detail
+				where opd_psp_id = obai_psp_id
+				and opd_bank_acct_type = 'DSI'
+				)
+		order by bank_name, ob_owner_name;
+
+        EXEC SQL OPEN c_unknown_debit;
+        for (;;) {
+                EXEC SQL FETCH c_unknown_debit 
+                INTO
+                        :v_bank_name:ind_bank_name,
+                        :v_owner_name:ind_owner_name,
+                        :v_deposit_amt:ind_deposit_amt;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                iCnt++;
+
+
+printf("%s",PD_OPEN_TAG);
+
+                if (ind_bank_name>= 0) {
+                        v_bank_name.arr[v_bank_name.len]='\0';
+printf("%s",(char*)v_bank_name.arr);
+DEBUGLOG(("check_unknown_debit() [%d] bank_name= [%s]\n", iCnt, v_bank_name.arr));
+                }
+
+printf("%s",PD_NEXT_TAG);
+
+                if (ind_owner_name>= 0) {
+                        v_owner_name.arr[v_owner_name.len]='\0';
+printf("%s",(char*)v_owner_name.arr);
+DEBUGLOG(("check_unknown_debit() [%d] owner_name = [%s]\n", iCnt, v_owner_name.arr));
+                }
+
+printf("%s",PD_NEXT_TAG);
+
+                if (ind_deposit_amt>= 0) {
+printf("%.2lf", v_deposit_amt);
+DEBUGLOG(("check_unknown_debit() [%d] deposit_amt = [%.2lf]\n", iCnt, v_deposit_amt));
+                }
+printf("%s\n", PD_END_TAG);
+	}
+        EXEC SQL CLOSE c_unknown_debit;
+
+DEBUGLOG(("check_unknown_debit() iRet = [%d]\n",iRet));
+        return iRet;
+
+chkunknowndr_error:
+DEBUGLOG(("check_unknown_debit error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_unknown_debit;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc, char **argv)
+{
+        char    c;
+
+        while ((c = getopt(argc, argv, "t:")) != EOF) {
+                switch (c) {
+                        case 't':
+                                strcpy(cs_time, optarg);
+                                cs_time[strlen(cs_time)] = '\0';
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_time, ""))
+                return FAILURE;
+
+
+        return SUCCESS;
+}

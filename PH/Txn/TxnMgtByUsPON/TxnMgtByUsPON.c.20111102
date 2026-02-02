@@ -1,0 +1,243 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Initial Version					   2011/10/24		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPON.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+
+void TxnMgtByUsPON(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char    *csBatchId;
+        char    *csTmp;
+        char    *csPspId;
+
+        double  dTmp;
+        double  dAmt;
+
+        int     iSeqNum;
+ 
+        long    lBatchId;
+        long    lTmp=0l;
+
+        int     i, iCnt, iResult, iTmp;
+        char    csTag[PD_TAG_LEN +1];
+
+        hash_t  *hRec;
+        recordset_t        *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+        hash_t  *hHeader;
+        hHeader = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hHeader,0);
+
+        
+        if(GetField_CString(hRequest,"file_id",&csTmp)){
+DEBUGLOG(("Authorize::file_id= [%s]\n",csTmp));
+                PutField_CString(hTxn,"file_id",csTmp);
+                PutField_CString(hHeader,"file_id",csTmp);
+        }
+
+
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"update_user",csTmp);
+                PutField_CString(hHeader,"update_user",csTmp);
+        }
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBPayoutGeneratedFileHD:GetHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileHD","GetHeader");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn,rRecordSet);
+		if (iRet == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec, "psp_id", &csPspId)) {
+					PutField_CString(hContext,"org_psp_id",csPspId);
+DEBUGLOG(("GetHeader::psp_id = [%s]\n",csPspId));
+				}
+				if (GetField_CString(hRec, "filename", &csTmp)) {
+DEBUGLOG(("GetHeader::filename = [%s]\n",csTmp));
+				}
+				if (GetField_Int(hRec, "status", &iTmp)) {
+DEBUGLOG(("GetHeader::status = [%d]\n",iTmp));
+					if(iTmp!=PD_PAYOUTFILE_GENERATED){
+						iRet = INT_INVALID_TXN;
+DEBUGLOG(("GetHeader::invalid status. Cannot cancel file[%s]!!!\n",csTmp));
+					}
+				}
+				if (GetField_Int(hRec, "txn_count", &iTmp)) {
+					PutField_Int(hContext,"total_count",iTmp);
+DEBUGLOG(("GetHeader::txn_cnt = [%d]\n",iTmp));
+				}
+				if (GetField_Double(hRec, "total_txn_amt", &dTmp)) {
+					//PutField_Double(hContext,"org_dst_net_amt",dTmp);
+DEBUGLOG(("GetHeader::total_txn_amt = [%lf]\n",dTmp));
+				}
+				if (GetField_CString(hRec, "payout_ccy", &csTmp)) {
+					PutField_CString(hContext,"org_psp_txn_ccy",csTmp);
+DEBUGLOG(("GetHeader::payout_ccy = [%s]\n",csTmp));
+                                }
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+        RecordSet_Destroy(rRecordSet);
+
+	if(iRet==PD_OK){
+        	recordset_init(rRecordSet,0);
+DEBUGLOG(("Authorize::Call DBPayoutGeneratedFileDT:GetDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileDT","GetDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn,rRecordSet);
+		if (iRet == PD_OK) {
+			i = 0;
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec, "batch_id", &csBatchId)) {
+					sprintf(csTag, "batch_id_%d", i);
+					PutField_CString(hTxn,csTag,csBatchId);
+DEBUGLOG(("GetDetail::batch_id = [%s]\n",csBatchId));
+				}
+				if (GetField_Int(hRec, "seq_num", &iSeqNum)) {
+DEBUGLOG(("GetDetail::seq_num = [%d]\n",iSeqNum));
+                                }
+				if (GetField_CString(hRec, "txn_country", &csTmp)) {
+					PutField_CString(hContext,"org_txn_country",csTmp);
+DEBUGLOG(("GetDetail::txn_country = [%s]\n",csTmp));
+				}
+				if(GetField_Double(hRec,"payout_amount",&dTmp)){
+					if(GetField_Double(hContext,"org_dst_net_amt",&dAmt))
+						dAmt += dTmp;
+					else
+						dAmt = dTmp;
+
+					PutField_Double(hContext,"org_dst_net_amt",dAmt);
+				}
+
+				PutField_CString(hTxn,"psp_id","");
+				PutField_CString(hTxn,"generated_file_name","");
+				PutField_Int(hTxn, "status", PAYOUT_MASTER_TRANSACTION_APPROVED);
+
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:UpdateDetailByBatchId\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","UpdateDetailByBatchId");
+				if ((unsigned long)(*DBObjPtr)(csBatchId,iSeqNum,hTxn) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileDetail:UpdateDetailByBatchId Failed\n"));
+				}
+
+				i++;
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+        RecordSet_Destroy(rRecordSet);
+
+
+	if(iRet==PD_OK){
+		PutField_Char(hContext,"response_mode",PD_REVERSED);
+		PutField_Char(hContext,"party_type",PD_TYPE_PSP);
+			
+		BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdatePayoutAmount");
+		if((unsigned long)(*BOObjPtr)(hContext)!=PD_OK){
+DEBUGLOG(("Authorize::BOBalance:UpdatePayoutAmount Failed!!!\n"));
+ERRLOG("Authorize::BOBalance:UpdatePayoutAmount Failed!!!\n");
+			iRet = INT_ERR;
+		}
+	}
+
+
+	if(iRet==PD_OK){
+		PutField_Int(hHeader,"status",PD_PAYOUTFILE_DECLINED);
+
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileHD","Update");
+		if((unsigned long)(*DBObjPtr)(hHeader)!=PD_OK){
+DEBUGLOG(("Authorize::PayoutGeneratedFileHD::Add Error!!!\n"));
+			iRet = INT_ERR;
+		}
+	}
+
+
+	if(iRet==PD_OK){
+		iCnt=0;
+		if(GetField_Int(hContext,"total_count",&iCnt)){
+DEBUGLOG(("Authorize::total_count= [%d]\n",iCnt));
+		}
+		for(i=0; i<iCnt; i++){
+			sprintf(csTag, "batch_id_%d", i);
+			GetField_CString(hTxn,csTag,&csBatchId);
+			PutField_CString(hTxn,"batch_id",csBatchId);
+			lBatchId = ctol((const unsigned char *)csBatchId,strlen(csBatchId));
+			if (lTmp==lBatchId)
+				continue;
+
+			lTmp = lBatchId;
+
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","MatchCount");
+			iResult = (unsigned long) ((*DBObjPtr)(lBatchId,PAYOUT_MASTER_TRANSACTION_APPROVED));
+			if(iResult!=PD_ERR && iResult!=PD_NOT_FOUND){
+				if(iResult==PD_TRUE)
+                			PutField_Int(hTxn, "status", PD_PAYOUTFILE_APPROVED);
+				else if (iResult==PD_FALSE)
+                			PutField_Int(hTxn, "status", PD_PAYOUTFILE_PARTIAL_GENERATED);
+			
+DEBUGLOG(("Authorize::DBMerchantUploadFileHeader:UpdateHeader\n"));
+                		DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","UpdateHeader");
+                		if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+                        		iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileHeader:UpdateHeader Failed\n"));
+                		}
+			}
+		}
+	}
+
+
+        if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(hTxn);
+        FREE_ME(hHeader);
+
+
+DEBUGLOG(("TxnMgtByUsPON Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

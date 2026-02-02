@@ -1,0 +1,34 @@
+load data
+infile '/home/php3dev/Doc/parallel_run/data_files/merchant_txn_20120710.csv'
+append
+into table par_txn_data
+fields terminated by ',' OPTIONALLY ENCLOSED BY '"'
+trailing nullcols
+(
+  PTD_TXN_SEQ           "decode(:ptd_txn_seq, 'NULL', NULL, :ptd_txn_seq)",
+  PTD_POST_DATE         "to_date(decode(:ptd_post_date, 'NULL', NULL, :ptd_post_date), 'YYYY/MM/DD HH24:MI:SS')",
+  PTD_TXN_DATE          "to_date(decode(:ptd_txn_date, 'NULL', NULL, :ptd_txn_date), 'YYYY/MM/DD HH24:MI:SS')",
+  PTD_TXN_MERCH_NMB     "decode(:ptd_txn_merch_nmb, 'NULL', NULL, :ptd_txn_merch_nmb)",
+  PTD_TXN_NMB           "decode(:ptd_txn_nmb, 'NULL', NULL, :ptd_txn_nmb)",
+  PTD_MERCH_REF         "decode(:ptd_merch_ref, 'NULL', NULL, :ptd_merch_ref)",
+  PTD_TXN_TYPE          "decode(:ptd_txn_type, 'NULL', NULL, :ptd_txn_type)",
+  PTD_TXN_STATUS        "decode(:ptd_txn_status, 'NULL', NULL, :ptd_txn_status)",
+  PTD_TXN_STATUS_GROUP  "decode(:ptd_txn_status_group, 'NULL', NULL, :ptd_txn_status_group)",
+  PTD_TO_CCY            "decode(:ptd_to_ccy, 'NULL', NULL, :ptd_to_ccy)",
+  PTD_TO_AMOUNT         "decode(:ptd_to_amount, 'NULL', NULL, :ptd_to_amount)",
+  PTD_CCY               "decode(:ptd_ccy, 'NULL', NULL, :ptd_ccy)",
+  PTD_AMOUNT            "decode(:ptd_amount, 'NULL', NULL, :ptd_amount)",
+  PTD_FEE               "decode(:ptd_fee, 'NULL', NULL, :ptd_fee)",
+  PTD_EX_RATE           "decode(:ptd_ex_rate, 'NULL', NULL, :ptd_ex_rate)",
+  PTD_MARKUP_AMT        "decode(:ptd_markup_amt, 'NULL', NULL, :ptd_markup_amt)",
+  PTD_PSP_TYPE_CODE     "decode(:ptd_psp_type_code, 'NULL', NULL, :ptd_psp_type_code)",
+  PTD_ORDER_ID          "decode(:ptd_order_id, 'NULL', NULL, :ptd_order_id)",
+  PTD_GATE_ID           "decode(:ptd_gate_id, 'NULL', NULL, :ptd_gate_id)",
+  PTD_CLIENT_IP         TERMINATED BY WHITESPACE "decode(:ptd_client_ip, 'NULL', NULL, :ptd_client_ip)",
+  PTD_CREATE_TIMESTAMP  sysdate,
+  PTD_CREATE_USER       constant 'SYSTEM',
+  PTD_UPDATE_TIMESTAMP  sysdate,
+  PTD_UPDATE_USER       constant 'SYSTEM',
+  PTD_PROC_STATUS        
+)
+

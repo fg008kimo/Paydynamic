@@ -1,0 +1,4 @@
+ALTER TABLE test_create 
+MODIFY tc_disabled DEFAULT 0;
+ALTER TABLE test_create
+ADD TC_CCY VARCHAR2(3) CONSTRAINT fk_currency REFERENCES currency(CURRENCY_ID);

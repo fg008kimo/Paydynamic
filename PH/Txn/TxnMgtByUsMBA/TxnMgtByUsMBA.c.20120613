@@ -1,0 +1,255 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/01/16              Virginia Yun
+Include merchant_pay_method			   2012/05/28		   Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsMBA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define PD_DETAIL_TAG   "dt"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsMBA(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	int	iDtlRet = PD_OK;
+
+	char	*csTmp = NULL;	
+	int	iCnt, i ;
+	int	iTmp = 0;
+
+	char	*csMid = NULL;
+	char	*csService = NULL;
+	char	*csCountry = strdup("");
+
+        char    csTag[PD_TAG_LEN +1];
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+	recordset_t 	*rRecordSet;
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+	hash_t		*hRec;
+
+
+DEBUGLOG(("TxnMgtByUsMBA::Authorize\n"));
+
+/* mid */
+        if (GetField_CString(hRequest, "merchant_id", &csMid)){
+DEBUGLOG(("Authorize::merchant_id = [%s]\n", csMid));
+	}
+	else {
+DEBUGLOG(("Authorize::merchant_Id not found\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::merchant_id not found\n");
+		iRet = INT_MERCHANT_ID_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* total_cnt */
+	if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("Authorize::total_cnt = [%d]\n", iCnt));
+		PutField_Int(hResponse, "total_cnt", iCnt);
+	}
+	else {
+DEBUGLOG(("Authorize::total_cnt not found\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::total_cnt not found\n");
+		iRet = INT_FORMAT_ERR;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	if (iRet == PD_OK) {
+		for (i = 0; i < iCnt; i++) {
+       	 		hash_init(hTxn, 0);
+
+/* merchant_id */
+			PutField_CString(hTxn, "merchant_id", csMid);
+
+/* ccy */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_ccy_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+                		PutField_CString(hTxn, "ccy", csTmp);
+			}	
+			else {		
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_CURRENCY_CODE_NOT_FOUND;
+			}
+
+/* allow_payout */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_payout_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+				iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize::() [%s] = [%d]\n", csTag, iTmp));
+				PutField_Int(hTxn, "allow_payout", iTmp);
+			}
+			else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+                                iDtlRet = INT_ERR; 
+			}
+				
+/* service */
+			memset(csTag, 0, sizeof(csTag));	
+			sprintf(csTag, "%s_service_%d", PD_DETAIL_TAG, i+1);
+                        if (GetField_CString(hRequest, csTag, &csService)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csService));
+                                PutField_CString(hTxn, "service_code", csService);
+                        } 
+                        else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMBA::Authorize::[%s] not found\n", csTag);
+                                iDtlRet = INT_SERVICE_CODE_MISSING;
+                        }
+
+/* find country by service */
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBService:FindCountryByService\n"));
+
+				DBObjPtr = CreateObj(DBPtr,"DBService","FindCountryByService");
+				if((unsigned long)(*DBObjPtr)(csService, csCountry) != FOUND){
+DEBUGLOG(("Authorize::DBService:FindCountryByService Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBService:FindCountryByService Failed\n");
+					iDtlRet = INT_TXN_COUNTRY_NOT_FOUND;
+				}
+				else {
+DEBUGLOG(("Authorize::DBService:FindCountryByService country [%s]\n", csCountry));
+                                	PutField_CString(hTxn, "country", csCountry);
+				}
+			}
+
+/* disabled */	
+			PutField_Int(hTxn, "disabled", PD_FALSE);
+
+/* status */
+			PutField_CString(hTxn, "status", PD_ACC_OPEN);
+
+/* add_user */
+			if(GetField_CString(hRequest,"add_user",&csTmp)) {
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+				PutField_CString(hTxn,"create_user",csTmp);
+        		}
+
+			if (iDtlRet == PD_OK) {
+
+				/* Merchant Bal Acct*/
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBMerchantBalAcct:Add\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","Add");
+					if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantBalAcct:Add Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBMerchantBalAcct:Add Failed\n");
+
+						iDtlRet = INT_ERR;
+						iRet = INT_ERR;
+                			}
+			                else {
+DEBUGLOG(("Authorize::DBMerchantBalAcct:Add Succ\n"));
+                			}
+        			}
+			}
+
+			if (iDtlRet == PD_OK) {
+				/* Get Pay_Method */
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBServicePayMethod:FindPayMethod\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBServicePayMethod","FindPayMethod");
+					if((unsigned long)((*DBObjPtr)(csService, rRecordSet) != PD_OK)){
+DEBUGLOG(("Authorize::DBServicePayMethod:FindPayMethod Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBServicePayMethod:FindPayMethod Failed\n");
+
+						iDtlRet = INT_ERR;
+						iRet = INT_ERR;
+					}
+					else {
+						hRec = RecordSet_GetFirst(rRecordSet);
+						while (hRec) {
+							if (GetField_CString(hRec, "pay_method", &csTmp)) {
+DEBUGLOG(("Authorize::DBServicePayMethod:pay_method [%s]\n", csTmp));
+								PutField_CString(hTxn, "pay_method", csTmp);
+
+DEBUGLOG(("Authorize::Call DBMerchantPayMethod:Add\n"));
+								DBObjPtr = CreateObj(DBPtr,"DBMerchantPayMethod","Add");
+								if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantPayMethod:Add Failed\n"));
+ERRLOG("TxnMgtByUsMBA::Authorize::DBMerchantPayMethod:Add Failed\n");
+
+									iDtlRet = INT_ERR;
+									iRet = INT_ERR;
+								}
+								else {
+DEBUGLOG(("Authorize::DBMerchantPayMethod:Add Succ\n"));
+								}
+							}
+
+							hRec = RecordSet_GetNext(rRecordSet);
+						}
+					}
+				}
+			}
+			
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "ret_%d", i+1);
+DEBUGLOG(("Authorize::() [%s] = [%d]\n",csTag, iDtlRet));
+			PutField_Int(hResponse, csTag ,iDtlRet);
+
+			if (iDtlRet != PD_OK) {
+				iRet = INT_ERR;
+			}
+
+		}
+	}
+
+
+/*
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+*/
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+	FREE_ME(csCountry);
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+
+DEBUGLOG(("TxnMgtByUsMBA Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

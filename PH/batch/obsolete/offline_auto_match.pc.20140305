@@ -1,0 +1,139 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+char cDebug = 'Y';
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = PD_OK;
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+
+	recordset_t *myRec;
+	myRec = (recordset_t*) malloc (sizeof(recordset_t));
+
+	hash_t *hTxn;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar v_int_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar v_bank_acct_num[PD_BANK_ACCT_NUM_LEN + 1];
+
+		short ind_int_bank_code = -1;
+		short ind_bank_acct_num = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE c_cursor CURSOR FOR
+		SELECT omb_int_bank_code, omb_bank_acct_num
+		FROM ol_merchant_bank_acct
+		WHERE omb_service_code in ('LBP', 'LBT', 'QBT')
+		AND omb_status = 'O'
+		AND omb_disabled = 0;
+
+	EXEC SQL OPEN c_cursor;
+	do {
+		EXEC SQL FETCH c_cursor
+		INTO :v_int_bank_code:ind_int_bank_code,
+				:v_bank_acct_num:ind_bank_acct_num;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		hash_init(myHash, 0);
+
+		// int_bank_code
+		if (ind_int_bank_code >= 0) {
+			v_int_bank_code.arr[v_int_bank_code.len] = '\0';
+			PutField_CString(myHash, "int_bank_code", (const char*)v_int_bank_code.arr);
+DEBUGLOG(("int_bank_code = [%s]\n", v_int_bank_code.arr));
+		} else {
+DEBUGLOG(("cannot get int_bank_code\n"));
+			hash_destroy(myHash);
+			continue;
+		}
+
+		// bank_acct_num
+		if (ind_bank_acct_num >= 0) {
+			v_bank_acct_num.arr[v_bank_acct_num.len] = '\0';
+			PutField_CString(myHash, "bank_acct_num", (const char*)v_bank_acct_num.arr);
+DEBUGLOG(("bank_acct_num = [%s]\n", v_bank_acct_num.arr));
+		} else {
+DEBUGLOG(("cannot get bank_acct_num\n"));
+			hash_destroy(myHash);
+			continue;
+		}
+
+		recordset_init(myRec, 0);
+
+		BOObjPtr = CreateObj(BOPtr, "BOOLDepositMatch", "GetUnallocatedStmt");
+		iRet = (unsigned long)(*BOObjPtr)(myHash, myRec);
+
+		if (iRet == PD_OK) {
+			// auto match
+			hTxn = RecordSet_GetFirst(myRec);
+			while (hTxn) {
+				BOObjPtr = CreateObj(BOPtr, "BOOLDepositMatch", "ProcessMatching");
+				if ((unsigned long)(*BOObjPtr)(hTxn) == PD_OK) {
+					// should commit every txn?
+				}
+				hTxn = RecordSet_GetNext(myRec);
+			}
+		}
+
+		RecordSet_Destroy(myRec);
+
+		hash_destroy(myHash);
+	}
+	while(PD_TRUE && iRet == PD_OK);
+
+	EXEC SQL CLOSE c_cursor;
+
+	FREE_ME(myRec);
+
+	FREE_ME(myHash);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor;
+	// FREE_ME(myRec);
+	// FREE_ME(myHash);
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}

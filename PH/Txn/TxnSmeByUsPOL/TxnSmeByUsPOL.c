@@ -1,0 +1,70 @@
+/*
+PDProTech (c)2018. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/02/28              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnSmeByUsPOL.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+char cDebug;
+
+OBJPTR(Txn);
+OBJPTR(DB);
+OBJPTR(Channel);
+void TxnSmeByUsPOL(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	char	*csSuccessCode;
+
+	char    csTxnSeq[PD_TXN_SEQ_LEN +1];
+	char	csLocalTxnDateTime[PD_DATETIME_LEN +1];
+	char	*csPtr;
+
+
+        DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+        strcpy(csTxnSeq,(*DBObjPtr)());
+        PutField_CString(hContext,"txn_seq",csTxnSeq);
+	strcpy(csLocalTxnDateTime,getdatetime());	
+	PutField_CString((hash_t*)hRequest,"local_tm_datetime",csLocalTxnDateTime);
+	
+DEBUGLOG(("TxnSmeByUsPOL()\n"));
+	if (GetField_CString(hContext,"psp_id",&csPtr)) {
+		PutField_CString(hContext,"org_txn_id",csPtr);
+		PutField_CString(hContext,"org_txn_code",PD_POLL_TXN_CODE);
+		ChannelObjPtr = CreateObj(ChannelPtr,"WEBChannel","UpdateContext");
+   		iRet = (unsigned long)((*ChannelObjPtr)(hContext));
+
+DEBUGLOG(("TxnSmeByUsPOL() call TxnSmeOnUsPOL\n"));
+     		TxnObjPtr = CreateObj(TxnPtr,"TxnSmeByUsINQ","Authorize");
+       		iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+		if (GetField_CString(hResponse,"success_code",&csSuccessCode)) {
+DEBUGLOG(("TxnSmeByUsPOL::Authorize() success_code = [%s]\n",csSuccessCode));
+        	}
+	}
+
+DEBUGLOG(("TxnSmeByUsPOL() exit = [%d]\n",iRet));
+	return	iRet;
+}

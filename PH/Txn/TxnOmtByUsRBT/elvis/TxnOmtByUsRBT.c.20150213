@@ -1,0 +1,2667 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/01/14              Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsRBT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+//#define PD_DETAIL_TAG   "dt"
+
+#define PD_DEFAULT_DATE_FORMAT          "%Y%m%d"
+#define PD_DEFAULT_DATETIME_FORMAT      "%Y%m%d%H%M%S"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+int 	iAction = PD_BATCH_ACTION_CANCEL;
+
+int     AddTxnRelation(hash_t* hRls);
+int     AddBatchTxnRelation(hash_t* hRls);
+int     AddBatchRelation(hash_t* hRls);
+int	CheckActionByTxnId(const char* csTxnId);
+int     ProcessOffset(const char* csOrgTxnSeq, char* csNewTxnSeq, hash_t* hOrgTxn, hash_t* hNewTxn, hash_t *hContext, hash_t *hTxnRelation);
+int  	GetTxnInfo(const char *csTxnSeq, hash_t *hContext, hash_t *hTxn);
+int	FormNewTxn(hash_t *hOrgTxn, hash_t *hOfstTxn, hash_t *hContext, hash_t *hTxnRelation, int iIsOffset);
+int	ProcessNewTxn(hash_t *hOfstTxn, hash_t *hContext);
+int	ProcessOrgTxn(hash_t *hOrgTxn, hash_t *hContext);
+int	AddTxnRelationLinkage(const char *csOrgTxnSeq, hash_t *hContext, hash_t *hTxnRelation);
+int     ProcessLastTxn(const char* csTxnId, hash_t* hOrgTxn, hash_t* hNewTxn, hash_t *hContext);
+int     CheckActionByStmtTxnId(const char* csStmtTxnId);
+int     ProcessStmtOffset(const char* csOrgStmtTxnSeq, char* csNewStmtTxnSeq, hash_t *hContext);
+int     GetStmtTxnInfo(const char *csOrgStmtTxnSeq, hash_t *hContext, hash_t *hStmtTxn);
+int     FormNewStmtTxn(hash_t *hOrgStmtTxn, hash_t *hOfstStmtTxn, hash_t *hContext);
+int     ProcessNewStmtTxn(hash_t *hOfstStmtTxn, hash_t *hContext);
+
+void 	TxnOmtByUsRBT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int     iDtlRet = PD_FALSE;
+
+	char	cTmp;
+	char    *csTmp = NULL;
+
+        char    *csUser = NULL;
+	
+	char	*csOrgTxnSeq = NULL;
+	char	*csNewTxnSeq = NULL;
+	char	*csTmpTxnSeq = NULL;
+	
+	char	*csTxnCode = NULL;
+	char	*csProcessType = NULL;
+	char	*csProcessCode = NULL;
+
+	char    *csOrgStmtTxnSeq = NULL;
+        char    *csNewStmtTxnSeq = NULL;
+        char    *csTmpStmtTxnSeq = NULL;
+
+	char	csOrgBatchId[PD_TXN_SEQ_LEN + 1];
+	char	csNewBatchId[PD_TXN_SEQ_LEN + 1];
+
+	int	iIsOffsetTxn = PD_FALSE;
+	int     iRecCnt = 0;
+	int	iTmpAction = PD_FALSE;
+
+	hash_t	*hRec = NULL;
+	hash_t  *hBatchRec = NULL;
+        hash_t  *hTxnRec = NULL;
+	hash_t  *hStmtTxnRec = NULL;
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	recordset_t     *rBatchRecordSet; 
+	rBatchRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+        recordset_init(rBatchRecordSet,0);
+
+	hash_t	*hTxnContext;
+	hTxnContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnContext,0);
+        recordset_t     *rTxnRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+        recordset_init(rTxnRecordSet,0);
+
+	hash_t  *hStmtTxnContext;
+        hStmtTxnContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hStmtTxnContext,0);
+        recordset_t     *rStmtTxnRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+        recordset_init(rStmtTxnRecordSet,0);
+
+	hash_t	*hTxnRelation;
+	hTxnRelation = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnRelation,0);
+
+DEBUGLOG(("Authorize::TxnOmtByUsRBT: START!!!!!!!!!\n"));
+
+/* txn_seq */
+	if(GetField_CString(hRequest, "txn_seq", &csTmp)) {
+DEBUGLOG(("Authorize::txn_seq = [%s]\n",csTmp));
+		PutField_CString(hContext,"txn_seq",csTmp);
+		PutField_CString(hResponse,"org_txn_seq",csTmp);
+        } else {
+                iRet = INT_TXN_ID_MISSING;
+DEBUGLOG(("Authorize: txn_id missing\n"));
+ERRLOG("TxnOmtByUsRBT::Authorize: txn_id missing\n");
+        }
+
+/* remark */
+	if(GetField_CString(hContext, "remark", &csTmp)) {
+DEBUGLOG(("Authorize::remark = [%s]\n",csTmp));
+                PutField_CString(hContext,"remark",csTmp);
+        }
+
+/* user */
+        if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("Authorize: add_user= [%s]\n",csUser));
+                PutField_CString(hContext,"update_user",csUser);
+                PutField_CString(hTxnContext,"update_user",csUser);
+                PutField_CString(hStmtTxnContext,"update_user",csUser);
+        } else {
+                iRet = INT_USER_NOT_FOUND;
+DEBUGLOG(("Authorize: add_user missing\n"));
+ERRLOG("TxnOmtByUsRBT::Authorize: add_user missing\n");
+        }
+
+/*
+ * Step 1: Do Txn Level * * * * * * * * * * * * * * * * * * * *
+ */	
+	// Get Batch Id, check if multiple batch include
+	if (iRet == PD_OK) {
+                iRecCnt = 0;
+
+                PutField_Char(hContext,"txn_level",PD_TXN_LEVEL);
+		PutField_Char(hContext,"batch_type",PD_GENERAL);
+		if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+                        PutField_CString(hContext,"txn_id",csTmp);
+                }
+
+DEBUGLOG(("Authorize:: Call DBOLBatchTxnRelation:GetBatchId\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation","GetBatchId");
+                iRet = (unsigned long)(*DBObjPtr)(hContext,rBatchRecordSet);
+                if (iRet == PD_OK) {
+                        hBatchRec = RecordSet_GetFirst(rBatchRecordSet);
+                        while (hBatchRec) {
+
+/* batch_id */
+				if (GetField_CString(hBatchRec,"batch_id",&csTmp)) {
+					strcpy(csOrgBatchId,csTmp);
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetBatchId() batch_id = [%s]\n",csOrgBatchId));
+                                }
+
+                                iRecCnt++;
+
+                                hBatchRec = RecordSet_GetNext(rBatchRecordSet);
+                        }
+
+			// Check Number of Found Batch Id
+			if (iRecCnt == 0) {
+                        	iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetBatchId() Batch Id Not Found!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::GetBatchId() Batch Id Not Found!!!\n");
+                	} else if (iRecCnt > 1) {
+                        	iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetBatchId() Multi-Batch Id Found!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::GetBatchId() Multi-Batch Id Found!!!\n");
+                	}
+                } else {
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetBatchId() Invalid Txn Id!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::GetBatchId() Invalid Txn Id!!!\n");
+                }
+        }
+	
+	// Get Txn Id recordset, order by approval_ts DESC
+	if (iRet == PD_OK) {
+
+		PutField_Char(hTxnContext,"txn_level",PD_TXN_LEVEL);
+		PutField_Char(hTxnContext,"batch_type",PD_GENERAL);
+                PutField_CString(hTxnContext,"batch_id",csOrgBatchId);
+
+DEBUGLOG(("Authorize:: Call DBOLBatchTxnRelation:GetTxnId\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation","GetTxnId");
+                iRet = (unsigned long)(*DBObjPtr)(hTxnContext,rTxnRecordSet);
+                if (iRet == PD_OK) {
+                        hTxnRec = RecordSet_GetFirst(rTxnRecordSet);
+			while ((hTxnRec) && (iRet == PD_OK)) {
+/* txn_id */
+                                if (GetField_CString(hTxnRec,"txn_id",&csTmpTxnSeq)) {
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetTxnId() txn_id = [%s]\n",csTmpTxnSeq));
+                                }
+
+				//check multiple batch id
+DEBUGLOG(("Authorize:: Call DBOLBatchTxnRelation:CheckSingleBatchId\n"));
+                                DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation","CheckSingleBatchId");
+                                iDtlRet = (unsigned long)(*DBObjPtr)(hContext,rBatchRecordSet);
+                                if (iDtlRet == PD_TRUE) {
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::CheckSingleBatchId() Single Batch Id Found!!!\n"));
+                                } else if (iDtlRet == PD_FALSE) {
+                                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::CheckSingleBatchId() Multi-Batch Id Found!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::CheckSingleBatchId() Multi-Batch Id Found!!!\n");
+
+                                } else {
+                                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::CheckSingleBatchId() Invalid Txn Id!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::CheckSingleBatchId() Invalid Txn Id!!!\n");
+                                }
+
+				//check txn_header status
+				if (iRet == PD_OK) {
+					recordset_init(rRecordSet,0);
+DEBUGLOG(("Authorize: call DBOLTransaction::GetTxnHeader\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnHeader");
+					if ((unsigned long)(*DBObjPtr)(csTmpTxnSeq,rRecordSet) == PD_OK) {
+						hRec = RecordSet_GetFirst(rRecordSet);
+						while (hRec) {
+							if (GetField_Char(hRec,"status",&cTmp)) {
+DEBUGLOG(("Authorize: txn_id [%s] status = [%c]\n",csTmpTxnSeq,cTmp));
+								if (cTmp != PD_COMPLETE) {
+									iRet = INT_INVALID_TXN;
+DEBUGLOG(("Authorize: txn_id [%s] status must be [%c]\n",csTmpTxnSeq,PD_COMPLETE));
+ERRLOG("TxnOmtByUsRBT::Authorize: txn_id [%s] status must be [%c]\n",csTmpTxnSeq,PD_COMPLETE);
+								}
+							}
+							if (GetField_Char(hRec,"ar_ind",&cTmp)) {
+DEBUGLOG(("Authorize: txn_id [%s] ar_ind = [%c]\n",csTmpTxnSeq,cTmp));
+								if (cTmp != PD_ACCEPT) {
+									iRet = INT_INVALID_TXN;
+DEBUGLOG(("Authorize: txn_id [%s] ar_ind must be [%c]\n",csTmpTxnSeq,PD_ACCEPT));
+ERRLOG("TxnOmtByUsRBT::Authorize: txn_id [%s] ar_ind must be [%c]\n",csTmpTxnSeq,PD_ACCEPT);
+								}
+							}
+
+							//check is offset txn
+							if (GetField_CString(hRec,"txn_code",&csTxnCode)) {
+DEBUGLOG(("Authorize: txn_id [%s] txn_code = [%s]\n",csTmpTxnSeq,csTxnCode));
+							}
+							if (GetField_CString(hRec,"process_type",&csProcessType)) {
+DEBUGLOG(("Authorize: txn_id [%s] process_type = [%s]\n",csTmpTxnSeq,csProcessType));
+							}
+							if (GetField_CString(hRec,"process_code",&csProcessCode)) {
+DEBUGLOG(("Authorize: txn_id [%s] process_code = [%s]\n",csTmpTxnSeq,csProcessCode));
+							}
+							DBObjPtr = CreateObj(DBPtr,"DBTxnCode","IsOffset");
+							iIsOffsetTxn = (unsigned long)(*DBObjPtr)(csTxnCode,csProcessType,csProcessCode);
+DEBUGLOG(("Authorize: txn_id [%s] isOffsetTxn = [%d]\n",csTmpTxnSeq,iIsOffsetTxn));
+
+							hRec = RecordSet_GetNext(rRecordSet);
+						}
+					} else {
+DEBUGLOG(("Authorize: call DBOLTransaction::GetTxnHeader FAILED\n"));
+ERRLOG("TxnOmtByUsRBT::Authorize: call DBOLTransaction::GetTxnHeader FAILED\n");
+					}
+				}
+
+				if ((iIsOffsetTxn != PD_TRUE) && (iRet == PD_OK)) {	
+					//Call function to check void/cancel
+					iTmpAction = CheckActionByTxnId(csTmpTxnSeq);
+
+					if (iTmpAction > PD_FALSE) {
+						switch (iTmpAction) {
+							case PD_BATCH_ACTION_VOID:
+								DBObjPtr = CreateObj(DBPtr,"DBTxnCode","IsVoidable");
+								if ((unsigned long)(*DBObjPtr)(csTxnCode,csProcessType,csProcessCode) != PD_TRUE) {
+									iAction = PD_FALSE;
+								} else {
+									iAction = PD_BATCH_ACTION_VOID;
+								}
+								break;
+							case PD_BATCH_ACTION_CANCEL:
+								DBObjPtr = CreateObj(DBPtr,"DBTxnCode","AllowCancel");
+								if ((unsigned long)(*DBObjPtr)(csTxnCode,csProcessType,csProcessCode) != PD_TRUE) {
+									iAction = PD_FALSE;
+								}
+								break;
+							default:
+								iRet = iTmpAction;
+DEBUGLOG(("Authorize: CheckActionByTxnId return error [%d]\n",iRet));
+								break;
+						}
+					} else {
+						iRet = INT_ERR;
+						break;
+					}
+				}
+
+                                hTxnRec = RecordSet_GetNext(rTxnRecordSet);
+                        }
+                } else {
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetTxnId() Invalid Batch Id!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::GetTxnId() Invalid Batch Id!!!\n");
+                }
+        }
+
+	// handle Offset for batch txn_id
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextActionBatchSeq");
+		strcpy(csNewBatchId, (*DBObjPtr)());
+		PutField_CString(hContext, "batch_txn_seq", csNewBatchId);
+DEBUGLOG(("Authorize: new_batch_id = [%s]\n",csNewBatchId));
+	}
+
+	//loop txnid from batch for void/cancel action
+	if (iRet == PD_OK) {
+		hash_t  *hOrgTxn;
+                hOrgTxn = (hash_t*) malloc (sizeof(hash_t));
+
+                hash_t  *hNewTxn;
+                hNewTxn = (hash_t*) malloc (sizeof(hash_t));
+
+                hTxnRec = RecordSet_GetFirst(rTxnRecordSet);
+                while (hTxnRec) {
+                        hash_init(hOrgTxn, 0);
+                        hash_init(hNewTxn, 0);
+
+                        if (GetField_CString(hTxnRec,"txn_id",&csOrgTxnSeq)) {
+DEBUGLOG(("Authorize: org_txn_id = [%s]\n",csOrgTxnSeq));
+                                iRet = ProcessOffset(csOrgTxnSeq, csNewTxnSeq, hOrgTxn, hNewTxn, hContext, hTxnRelation);
+DEBUGLOG(("Authorize: new_txn_id = [%s]\n",csNewTxnSeq));
+                        }
+
+                        hTxnRec = RecordSet_GetNext(rTxnRecordSet);
+
+			//do last txn
+			if (!hTxnRec) {
+                                iRet = ProcessLastTxn(csNewTxnSeq, hOrgTxn, hNewTxn, hContext);
+                        }
+
+			//remove fields - element_acct_bal and element_intransit
+			RemoveField_Double(hContext, "element_acct_bal");
+                        RemoveField_Double(hContext, "element_intransit");
+
+                        hash_destroy(hOrgTxn);
+                        hash_destroy(hNewTxn);
+                }
+
+                FREE_ME(hOrgTxn);
+                FREE_ME(hNewTxn);
+	}
+
+#if 0
+/*
+ * Step 2: Do Txn Relation (Linkage) * * * * * * * * * * * * * * * * * * * *
+ */
+	//loop txnid to add OLTxnRelation for linkage
+	if (iRet == PD_OK) {
+                hTxnRec = RecordSet_GetFirst(rTxnRecordSet);
+                while (hTxnRec) {
+                        if (GetField_CString(hTxnRec,"txn_id",&csOrgTxnSeq)) {
+DEBUGLOG(("Authorize: txn_id = [%s]\n",csOrgTxnSeq));
+                                iRet = AddTxnRelationLinkage(csOrgTxnSeq, hContext, hTxnRelation);
+                        }
+                        hTxnRec = RecordSet_GetNext(rTxnRecordSet);
+                }
+        }
+
+/*
+ * Step 3: Do Stmt Txn Level * * * * * * * * * * * * * * * * * * * *
+ */
+	//Get Stmt Txn Id recordset, order by approval_ts DESC
+	if (iRet == PD_OK) {
+                PutField_Char(hStmtTxnContext,"txn_level",PD_STMT_LEVEL);
+                PutField_Char(hStmtTxnContext,"batch_type",PD_GENERAL);
+                PutField_CString(hStmtTxnContext,"batch_id",csOrgBatchId);
+
+DEBUGLOG(("Authorize:: Call DBOLBatchTxnRelation:GetTxnId\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation","GetTxnId");
+                iRet = (unsigned long)(*DBObjPtr)(hStmtTxnContext,rStmtTxnRecordSet);
+                if (iRet == PD_OK) {
+                        hStmtTxnRec = RecordSet_GetFirst(rStmtTxnRecordSet);
+			while ((hStmtTxnRec) && (iRet == PD_OK)) {
+
+/* txn_id */
+                                if (GetField_CString(hStmtTxnRec,"txn_id",&csTmpStmtTxnSeq)) {
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetTxnId() txn_id = [%s]\n",csTmpStmtTxnSeq));
+                                }
+
+				//check multiple batch id	
+DEBUGLOG(("Authorize:: Call DBOLBatchTxnRelation:CheckSingleBatchId\n"));
+                                DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation","CheckSingleBatchId");
+                                iDtlRet = (unsigned long)(*DBObjPtr)(hContext,rBatchRecordSet);
+                                if (iDtlRet == PD_TRUE) {
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::CheckSingleBatchId() Single Batch Id Found!!!\n"));
+                                } else if (iDtlRet == PD_FALSE) {
+                                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::CheckSingleBatchId() Multi-Batch Id Found!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::CheckSingleBatchId() Multi-Batch Id Found!!!\n");
+
+                                } else {
+                                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::CheckSingleBatchId() Invalid Txn Id!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::CheckSingleBatchId() Invalid Txn Id!!!\n");
+                                }
+
+                                hStmtTxnRec = RecordSet_GetNext(rStmtTxnRecordSet);
+                        }
+                } else {
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLBatchTxnRelation::GetTxnId() Invalid Batch Id!!!\n"));
+ERRLOG("TxnOmtByUsRBT::Call DBOLBatchTxnRelation::GetTxnId() Invalid Batch Id!!!\n");
+                }
+        }
+
+	//loop stmt txnid from batch for action
+	if (iRet == PD_OK) {
+                hStmtTxnRec = RecordSet_GetFirst(rStmtTxnRecordSet);
+                while (hStmtTxnRec) {
+                        if (GetField_CString(hStmtTxnRec,"txn_id",&csOrgStmtTxnSeq)) {
+DEBUGLOG(("Authorize: stmt_txn_id = [%s]\n",csOrgStmtTxnSeq));
+		
+                                // Call function to check action
+				iDtlRet = CheckActionByStmtTxnId(csOrgStmtTxnSeq);
+
+                                if (iDtlRet == PD_TRUE) {
+                                        iRet = ProcessStmtOffset(csOrgStmtTxnSeq, csNewStmtTxnSeq, hContext);
+                                } else if (iDtlRet == PD_FALSE) {
+					// Do Nothing...
+				} else {
+                                        iRet = iDtlRet;
+                                }
+                        }
+
+                        hStmtTxnRec = RecordSet_GetNext(rStmtTxnRecordSet);
+                }
+        }
+
+/*
+ * Step 4: Do Batch Relation * * * * * * * * * * * * * * * * * * * *
+ */
+	// Add Batch Relation	
+	if (iRet == PD_OK) {
+
+                PutField_CString(hContext, "org_batch_id", csOrgBatchId);
+                PutField_CString(hContext, "batch_id", csNewBatchId);
+
+                iRet = AddBatchRelation(hContext);
+        }
+#endif
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	RecordSet_Destroy(rBatchRecordSet);
+        FREE_ME(rBatchRecordSet);
+
+        RecordSet_Destroy(rTxnRecordSet);
+        FREE_ME(rTxnRecordSet);
+
+	RecordSet_Destroy(rStmtTxnRecordSet);
+        FREE_ME(rStmtTxnRecordSet);
+
+	FREE_ME(hTxnContext);
+	FREE_ME(hStmtTxnContext);
+
+DEBUGLOG(("TxnOmtByUsRBT Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int     AddTxnRelation(hash_t* hRls)
+{
+        int     iRet = PD_OK;
+
+        char    cTmp;
+        char    *csTmp = NULL;
+
+        hash_t  *hRelation = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hRelation, 0);
+
+/* org_txn_seq */
+        if(GetField_CString(hRls,"org_txn_seq",&csTmp)){
+DEBUGLOG(("AddTxnRelation: org_txn_seq = [%s]\n",csTmp));
+                PutField_CString(hRelation,"p1_txn_id",csTmp);
+        } else {
+                iRet=INT_INVALID_TXN;
+DEBUGLOG(("AddTxnRelation::txn_seq not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::txn_seq not found!!\n");
+        }
+
+/* txn_seq */
+        if(GetField_CString(hRls,"txn_seq",&csTmp)){
+DEBUGLOG(("AddTxnRelation: p2_txn_id = [%s]\n",csTmp));
+                PutField_CString(hRelation,"p2_txn_id",csTmp);
+        } else {
+                iRet=INT_INVALID_TXN;
+DEBUGLOG(("AddTxnRelation::txn_seq not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::txn_seq not found!!\n");
+        }
+
+/* party */
+        if(GetField_Char(hRls,"party",&cTmp)){
+DEBUGLOG(("AddTxnRelation: party = [%c]\n",cTmp));
+                PutField_CString(hRelation,"party",csTmp);
+        } else {
+                iRet=INT_ERR;
+DEBUGLOG(("AddTxnRelation::party not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::party not found!!\n");
+        }
+
+/* txn_level */
+        if(GetField_Char(hRls,"txn_level",&cTmp)){
+DEBUGLOG(("AddTxnRelation: txn_level = [%c]\n",cTmp));
+                PutField_CString(hRelation,"txn_level",csTmp);
+        } else {
+                iRet=INT_ERR;
+DEBUGLOG(("AddTxnRelation::txn_level not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::txn_level not found!!\n");
+        }
+
+/* relation_type */
+        if(GetField_Char(hRls,"relation_type",&cTmp)){
+DEBUGLOG(("AddTxnRelation: relation_type = [%c]\n",cTmp));
+                PutField_CString(hRelation,"relation_type",csTmp);
+        } else {
+                iRet=INT_ERR;
+DEBUGLOG(("AddTxnRelation::relation_type not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::relation_type not found!!\n");
+        }
+
+/* user */
+        if(GetField_CString(hRls,"add_user",&csTmp)){
+DEBUGLOG(("AddTxnRelation: add_user= [%s]\n",csTmp));
+                PutField_CString(hRelation,"add_user",csTmp);
+                PutField_CString(hRelation,"create_user",csTmp);
+                PutField_CString(hRelation,"update_user",csTmp);
+        } else {
+                iRet = INT_ERR;
+DEBUGLOG(("AddTxnRelation: add_user missing\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation: add_user missing\n");
+        }
+
+        if (iRet == PD_OK) {
+DEBUGLOG(("AddTxnRelation Call DBOLTxnRelation:Add\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelation", "Add");
+                iRet = (unsigned long)(*DBObjPtr)(hRelation);
+                if (iRet != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("AddTxnRelation::call DBOLTxnRelation Add::failed!!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::call DBOLTxnRelation Add::failed!!!\n");
+                }
+        }
+
+        hash_destroy(hRelation);
+        FREE_ME(hRelation);
+
+        return iRet;
+}
+
+int     AddBatchTxnRelation(hash_t* hRls)
+{
+        int     iRet = PD_OK;
+
+        char    cTmp;
+        char    *csTmp = NULL;
+
+        hash_t  *hRelation = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hRelation, 0);
+
+/* batch_txn_seq */
+        if(GetField_CString(hRls,"batch_txn_seq",&csTmp)){
+DEBUGLOG(("AddBatchTxnRelation: batch_id = [%s]\n",csTmp));
+                PutField_CString(hRelation,"batch_id",csTmp);
+        } else {
+                iRet=INT_ERR;
+DEBUGLOG(("AddBatchTxnRelation::batch_txn_seq not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchTxnRelation::batch_txn_seq not found!!\n");
+        }
+
+/* txn_seq */
+        if(GetField_CString(hRls,"txn_seq",&csTmp)){
+DEBUGLOG(("AddBatchTxnRelation: txn_id = [%s]\n",csTmp));
+                PutField_CString(hRelation,"txn_id",csTmp);
+        } else {
+                iRet=INT_INVALID_TXN;
+DEBUGLOG(("AddBatchTxnRelation::txn_seq not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchTxnRelation::txn_seq not found!!\n");
+        }
+
+/* batch_type */
+        if(GetField_Char(hRls,"batch_type",&cTmp)){
+DEBUGLOG(("AddTxnRelation: batch_type = [%c]\n",cTmp));
+                PutField_CString(hRelation,"batch_type",csTmp);
+        } else {
+                iRet=INT_ERR;
+DEBUGLOG(("AddTxnRelation::batch_type not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::batch_type not found!!\n");
+        }
+
+/* txn_level */
+        if(GetField_Char(hRls,"txn_level",&cTmp)){
+DEBUGLOG(("AddTxnRelation: txn_level = [%c]\n",cTmp));
+                PutField_CString(hRelation,"txn_level",csTmp);
+        } else {
+                iRet=INT_ERR;
+DEBUGLOG(("AddTxnRelation::txn_level not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelation::txn_level not found!!\n");
+        }
+
+/* user */
+        if(GetField_CString(hRls,"add_user",&csTmp)){
+DEBUGLOG(("AddBatchTxnRelation: add_user= [%s]\n",csTmp));
+                PutField_CString(hRelation,"add_user",csTmp);
+                PutField_CString(hRelation,"create_user",csTmp);
+                PutField_CString(hRelation,"update_user",csTmp);
+        } else {
+                iRet = INT_ERR;
+DEBUGLOG(("AddBatchTxnRelation: add_user missing\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchTxnRelation: add_user missing\n");
+        }
+
+        if (iRet == PD_OK) {
+DEBUGLOG(("AddBatchTxnRelation Call DBOLBatchTxnRelation:Add\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+                iRet = (unsigned long)(*DBObjPtr)(hRelation);
+                if (iRet != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("AddBatchTxnRelation::call DBOLBatchTxnRelation Add::failed!!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchTxnRelation::call DBOLBatchTxnRelation Add::failed!!!\n");
+                }
+        }
+
+        hash_destroy(hRelation);
+        FREE_ME(hRelation);
+
+        return iRet;
+}
+
+int     AddBatchRelation(hash_t* hRls)
+{
+        int     iRet = PD_OK;
+
+        char    *csTmp = NULL;
+
+        hash_t  *hRelation = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hRelation, 0);
+
+/* org_batch_id */
+        if(GetField_CString(hRls,"org_batch_id",&csTmp)){
+DEBUGLOG(("AddBatchRelation: org_batch_id = [%s]\n",csTmp));
+                PutField_CString(hRelation,"org_batch_id",csTmp);
+        } else {
+                iRet=INT_INVALID_TXN;
+DEBUGLOG(("AddBatchRelation::org_batch_id not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchRelation::org_batch_id not found!!\n");
+        }
+
+/* batch_id */
+        if(GetField_CString(hRls,"batch_id",&csTmp)){
+DEBUGLOG(("AddBatchRelation: batch_id = [%s]\n",csTmp));
+                PutField_CString(hRelation,"batch_id",csTmp);
+        } else {
+                iRet=INT_INVALID_TXN;
+DEBUGLOG(("AddBatchRelation::batch_id not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchRelation::batch_id not found!!\n");
+        }
+
+/* user */
+        if(GetField_CString(hRls,"add_user",&csTmp)){
+DEBUGLOG(("AddBatchRelation: add_user= [%s]\n",csTmp));
+                PutField_CString(hRelation,"add_user",csTmp);
+                PutField_CString(hRelation,"create_user",csTmp);
+                PutField_CString(hRelation,"update_user",csTmp);
+        } else {
+                iRet = INT_ERR;
+DEBUGLOG(("AddBatchRelation: add_user missing\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchRelation: add_user missing\n");
+        }
+
+if (iRet == PD_OK) {
+DEBUGLOG(("AddBatchRelation Call DBOLBatchRelation:Add\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBatchRelation", "Add");
+                iRet = (unsigned long)(*DBObjPtr)(hRelation);
+                if (iRet != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("AddBatchRelation::call DBOLBatchRelation Add::failed!!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddBatchRelation::call DBOLBatchRelation Add::failed!!!\n");
+                }
+        }
+
+        hash_destroy(hRelation);
+        FREE_ME(hRelation);
+
+        return iRet;
+}
+
+int 	CheckActionByTxnId(const char* csTxnId)
+{
+	int 	iRet = PD_OK;
+	int 	iDtlRet = PD_FALSE;
+
+	char    *csTxnCode = NULL;
+        char    *csSubStatus = NULL;
+        char    cArInd;
+        char    cReconStatus;
+
+        hash_t  *hRec = NULL;
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+	// Get Txn Header
+	if (iRet == PD_OK) {
+                recordset_init(rRecordSet,0);
+
+DEBUGLOG(("CheckActionByTxnId:: Call DBOLTransaction:GetTxnHeader [%s]\n", csTxnId));
+                DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+                if ((*DBObjPtr)(csTxnId,rRecordSet) == PD_OK) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+
+/* txn_code */
+                                if (GetField_CString(hRec, "txn_code", &csTxnCode)) {
+DEBUGLOG(("CheckActionByTxnId::call DBOLTransaction:: txn_code = [%s]\n", csTxnCode));
+                                }
+
+/* ar_ind */
+                                if (GetField_Char(hRec, "ar_ind", &cArInd)) {
+DEBUGLOG(("CheckActionByTxnId::call DBOLTransaction:: ar_ind = [%c]\n", cArInd));
+                                }
+
+/* sub_status */
+                                if (GetField_CString(hRec, "sub_status", &csSubStatus)) {
+DEBUGLOG(("CheckActionByTxnId::call DBOLTransaction:: sub_status = [%s]\n", csSubStatus));
+                                }
+
+/* recon_status */
+                                if (GetField_Char(hRec, "recon_status", &cReconStatus)) {
+DEBUGLOG(("CheckActionByTxnId::call DBOLTransaction:: recon_status = [%c]\n", cReconStatus));
+                                }
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                } else {
+                        iRet = INT_INVALID_TXN;
+DEBUGLOG(("CheckActionByTxnId::call DBOLBAIDTxn GetTxnHeader::not found record for [%s]\n", csTxnId));
+ERRLOG("TxnOmtByUsRBT::CheckActionByTxnId::call DBOLBAIDTxn GetTxnHeader::not found record for [%s]\n", csTxnId);
+                }
+
+                RecordSet_Destroy(rRecordSet);
+        }
+
+	// Check Cases for Cancel/Void/Not Allow
+	// Step: Txn Code -> Sub Status -> Recon Status
+	if (iRet == PD_OK) {
+                if (!strcmp(csTxnCode, PD_BANK_DEPOSIT_TXN_CODE)) {
+                        if (strcmp(csSubStatus, PD_UNALLOCATED)) {
+                                iDtlRet = PD_BATCH_ACTION_VOID;
+                        }
+                } else if (!strcmp(csTxnCode, PD_PSP_SETTLEMENT_TXN_CODE)) {
+                        if ((!strcmp(csSubStatus, PD_DELIVERED)) || (!strcmp(csSubStatus, PD_DELIVERING))) {
+                             	iDtlRet = PD_FALSE;
+                        } else {
+                                if (cReconStatus == PD_UNRECONCILED) {
+                                        iDtlRet = PD_BATCH_ACTION_CANCEL;
+                                }
+                        }
+                } else {
+                        if (cReconStatus == PD_UNRECONCILED) {
+                                iDtlRet = PD_BATCH_ACTION_CANCEL;
+                        } else if (cReconStatus == PD_RECONCILED) {
+                                iDtlRet = PD_BATCH_ACTION_VOID;
+                        }
+                }
+        }
+
+	if (iRet == PD_OK) {
+		iRet = iDtlRet;
+	}
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+DEBUGLOG(("CheckActionByTxnId() Ret = [%d]\n",iRet));
+	return iRet;
+}
+
+int	ProcessOffset(const char* csOrgTxnSeq, char* csNewTxnSeq, hash_t* hOrgTxn, hash_t* hNewTxn, hash_t* hContext, hash_t* hTxnRelation)
+{
+	int	iRet = PD_OK;
+
+DEBUGLOG(("===== ProcessOffset ===== START!!\n"));	
+
+DEBUGLOG(("ProcessOffset:: txn_id [%s]\n", csOrgTxnSeq));
+
+	// Lock Org Txn + Get Org Txn
+	iRet = GetTxnInfo(csOrgTxnSeq, hContext, hOrgTxn);
+
+	// Form Offset Txn (include reversal CR / DR sign)
+	if (iRet == PD_OK) {
+		iRet = FormNewTxn(hOrgTxn, hNewTxn, hContext, hTxnRelation, PD_TRUE);
+	}
+
+	// Create Txn + Update Balance (with add approval_date, approval_timestamp)
+	if (iRet == PD_OK) {
+		iRet = ProcessNewTxn(hNewTxn, hContext);
+	}
+
+	// Update Org Txn to (void)
+	if (iRet == PD_OK) {
+		iRet = ProcessOrgTxn(hOrgTxn, hContext);
+	}
+
+/* new_txn_id */
+	if (GetField_CString(hNewTxn, "txn_seq", &csNewTxnSeq)) {
+DEBUGLOG(("ProcessOffset:: new_txn_id [%s]\n", csNewTxnSeq));
+	}
+		
+DEBUGLOG(("===== ProcessOffset ===== END !!\n"));	
+
+	return iRet;
+}
+
+int     GetTxnInfo(const char *csTxnSeq, hash_t *hContext, hash_t *hTxn)
+{
+        int     iRet = PD_OK;
+
+        char    *csTmp = NULL;
+        char    cTmp;
+        double  dTmp = 0.0;
+        int     iTmp = 0;
+
+        char    *csBaid = NULL;
+
+        int     iTotalElement = 0;
+
+        char    csTag[PD_TAG_LEN + 1];
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+        hash_t  *hRec = NULL;
+
+        hash_t  *hTxnPspDetail = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxnPspDetail, 0);
+
+        hash_t  *hBaidDetail = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hBaidDetail, 0);
+
+DEBUGLOG(("GetTxnInfo:: Call DBOLTransaction:GetTxnIdForUpdate [%s]\n", csTxnSeq));
+        DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnIdForUpdate");
+        iRet = (unsigned long)(*DBObjPtr)(csTxnSeq);
+        if (iRet == PD_OK) {
+                PutField_CString(hTxn, "txn_seq", csTxnSeq);
+        } else {
+                iRet = INT_INVALID_TXN;
+DEBUGLOG(("GetTxnInfo::call DBOLTransaction GetTxnIdForUpdate::Invalid Txn Id!!!\n"));
+ERRLOG("TxnOmtByUsRBT::GetTxnInfo::call DBOLTransaction GetTxnIdForUpdate::Invalid Txn Id!!!\n");
+        }
+
+	// Txn Header
+	if (iRet == PD_OK) {
+                recordset_init(rRecordSet,0);
+
+DEBUGLOG(("GetTxnInfo:: Call DBOLTransaction:GetTxnHeader [%s]\n", csTxnSeq));
+                DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+                iRet = (unsigned long)(*DBObjPtr)(csTxnSeq,rRecordSet);
+                if (iRet == PD_OK) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+
+/* txn_code */
+                                if (GetField_CString(hRec, "txn_code", &csTmp)) {
+                                        PutField_CString(hTxn, "txn_code", csTmp);
+DEBUGLOG(("GetTxnInfo (Header):: txn_code = [%s]\n", csTmp));
+                                }
+
+/* status */
+                                if (GetField_Char(hRec, "status", &cTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: status = [%c]\n", cTmp));
+                                        if (cTmp != PD_COMPLETE) {
+ERRLOG("TxnOmtByUsCPC::GetTxnInfo (Header):: status = [%c]\n", cTmp);
+                                                iRet = INT_INVALID_TXN;
+                                                break;
+                                        }
+                                }
+
+/* ar_ind */
+                                if (GetField_Char(hRec, "ar_ind", &cTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: ar_ind = [%c]\n", cTmp));
+                                        if (cTmp != PD_ACCEPT) {
+ERRLOG("TxnOmtByUsCPC::GetTxnInfo (Header):: ar_ind = [%c]\n", cTmp);
+                                                iRet = INT_INVALID_TXN;
+                                                break;
+                                        }
+                                }
+
+/* sub_status */
+                                if (GetField_CString(hRec, "sub_status", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: sub_status = [%s]\n", csTmp));
+                                }
+
+/* recon_status */
+                                if (GetField_Char(hRec, "recon_status", &cTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: recon_status = [%c]\n", cTmp));
+                                }
+
+/* txn_amt */
+                                if (GetField_Double(hRec, "txn_amt", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: txn_amt = [%lf]\n", dTmp));
+                                        PutField_Double(hTxn, "txn_amt", dTmp);
+                                }
+
+/* net_amt */
+                                if (GetField_Double(hRec, "net_amt", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: net_amt = [%lf]\n", dTmp));
+                                        PutField_Double(hTxn, "net_amt", dTmp);
+                                }
+
+/* net_ccy */
+                                if (GetField_CString(hRec, "net_ccy", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: net_ccy = [%lf]\n",csTmp));
+                                        PutField_CString(hTxn,"net_ccy",csTmp);
+                                }
+
+/* deposit_amt */
+                                if (GetField_Double(hRec, "deposit_amt", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: deposit_amt = [%lf]\n",dTmp));
+                                        PutField_Double(hTxn,"deposit_amt",dTmp);
+                                }
+
+/* display_amt */
+                                if (GetField_Double(hRec, "display_amt", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: display_amt= [%lf]\n",dTmp));
+                                        PutField_Double(hTxn,"display_amt",dTmp);
+                                }
+
+/* ex_supplier */
+                                if (GetField_Char(hRec, "ex_supplier", &cTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: ex_supplier = [%c]\n", cTmp));
+                                        PutField_Char(hTxn,"ex_supplier",cTmp);
+                                }
+
+                                if (GetField_Double(hRec, "ex_rate", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (Header):: ex_rate = [%lf]\n", dTmp));
+                                        PutField_Double(hTxn,"ex_rate",dTmp);
+                                }
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                } else {
+DEBUGLOG(("GetTxnInfo (Header):: not found record for [%s]\n",csTxnSeq));
+                        iRet = INT_INVALID_TXN;
+                }
+
+                RecordSet_Destroy(rRecordSet);
+	}
+
+	// TxnPspDetail
+	if (iRet == PD_OK) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail)::Call OLTxnPspDetail:GetTxnPspDetail\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBOLTxnPspDetail","GetTxnPspDetail");
+                iRet = (unsigned long)(*DBObjPtr)(csTxnSeq,hTxnPspDetail);
+                if (iRet == PD_OK) {
+
+/* psp_id */
+                        if (GetField_CString(hTxnPspDetail, "psp_id", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: psp_id = [%s]\n", csTmp));
+                                PutField_CString(hTxn, "psp_id", csTmp);
+                        }
+
+/* baid */
+                        if (GetField_CString(hTxnPspDetail, "baid", &csBaid)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: baid = [%s]\n", csBaid));
+                                PutField_CString(hTxn, "baid", csBaid);
+                        }
+
+/* txn_country */
+                 	if (GetField_CString(hTxnPspDetail, "txn_country", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: txn_country = [%s]\n", csTmp));
+                              	 PutField_CString(hTxn, "txn_ccy", csTmp);                        
+			}
+
+/* txn_ccy */
+                       	if (GetField_CString(hTxnPspDetail, "txn_ccy", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: txn_ccy = [%s]\n", csTmp));
+                              	PutField_CString(hTxn, "txn_ccy", csTmp);
+                      	}
+
+/* txn_amount */
+                     	if (GetField_Double(hTxnPspDetail, "txn_amount", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: txn_amount = [%f]\n", dTmp));
+                               	PutField_Double(hTxn, "txn_amount", dTmp);
+                       	}
+
+/* bank_code */
+                      	if (GetField_CString(hTxnPspDetail, "bank_code", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: bank_code = [%s]\n", csTmp));
+                            	PutField_CString(hTxn, "bank_code", csTmp);
+                     	}
+
+/* bank_acct_num */
+                      	if (GetField_CString(hTxnPspDetail, "bank_acct_num", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: bank_acct_num = [%s]\n", csTmp));
+                            	PutField_CString(hTxn, "bank_acct_num", csTmp);
+                      	}
+
+/* cost */
+                     	if (GetField_Double(hTxnPspDetail, "cost", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: cost = [%lf]\n", dTmp));
+                              	PutField_Double(hTxn, "cost", dTmp);
+                       	}
+
+/* txn_hold_ind */
+                     	if (GetField_Int(hTxnPspDetail, "txn_hold_ind", &iTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: txn_hold_ind = [%d]\n", iTmp));
+                             	PutField_Int(hTxn, "txn_hold_ind", iTmp);
+                      	}
+
+/* sys_match_ind */
+                 	if (GetField_Int(hTxnPspDetail, "sys_match_ind", &iTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: sys_match_ind = [%d]\n", iTmp));
+                            	PutField_Int(hTxn, "sys_match_ind", iTmp);
+                     	}
+
+/* customer_text */
+                      	if (GetField_CString(hTxnPspDetail, "customer_text", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: customer_text = [%s]\n", csTmp));
+                             	PutField_CString(hTxn, "customer_text", csTmp);
+                    	}
+
+/* sender_name */
+                     	if (GetField_CString(hTxnPspDetail, "sender_name", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: sender_name = [%s]\n", csTmp));
+                      		PutField_CString(hTxn, "sender_name", csTmp);
+                      	}
+
+/* txn_ref_num */
+                       	if (GetField_CString(hTxnPspDetail, "txn_ref_num", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: txn_ref_num = [%s]\n", csTmp));
+                             	PutField_CString(hTxn, "txn_ref_num", csTmp);
+                   	}
+                } else {
+DEBUGLOG(("GetTxnInfo (TxnPspDetail):: not found record for [%s]\n",csTxnSeq));
+                        iRet = INT_INVALID_TXN;
+                }
+        }
+
+
+	// Txn Elements
+	if (iRet == PD_OK) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: call DBOLTxnElements:GetAllFeeChgDetail\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBOLTxnElements","GetAllFeeChgDetail");
+                iRet = (unsigned long)(*DBObjPtr)(csTxnSeq,rRecordSet);
+                if (iRet == PD_OK) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec && (iRet == PD_OK)) {
+                                iTotalElement++;
+
+/* txn_element_type */
+                                if (GetField_CString(hRec, "txn_element_type", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: txn_id[%s] Cnt[%d] element_type = [%s]\n", csTxnSeq, iTotalElement, csTmp));
+                                        sprintf(csTag, "element_type_%d", iTotalElement);
+                                        PutField_CString(hTxn, csTag, csTmp);
+                                }
+
+/* amount */
+                                if (GetField_Double(hRec, "amount", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: txn_id[%s] Cnt[%d] amt_type = [%f]\n", csTxnSeq, iTotalElement, dTmp));
+                                        sprintf(csTag, "element_amount_%d", iTotalElement);
+                                        PutField_Double(hTxn, csTag, dTmp);
+                                }
+
+/* ccy */
+                                if (GetField_CString(hRec, "ccy", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: txn_id[%s] Cnt[%d] ccy = [%s]\n", csTxnSeq, iTotalElement, csTmp));
+                                        sprintf(csTag, "element_ccy_%d", iTotalElement);
+                                        PutField_CString(hTxn, csTag, csTmp);
+                                }
+
+/* amt_type */
+                                if (GetField_CString(hRec, "amt_type", &csTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: txn_id[%s] Cnt[%d] amt_type = [%s]\n", csTxnSeq, iTotalElement, csTmp));
+                                        sprintf(csTag, "element_amt_type_%d", iTotalElement);
+                                        PutField_CString(hTxn, csTag, csTmp);
+                                }
+
+/* party_type */
+                                if (GetField_Char(hRec, "party_type", &cTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: txn_id[%s] Cnt[%d] party_type = [%c]\n", csTxnSeq, iTotalElement, cTmp));
+                                        sprintf(csTag, "element_party_type_%d", iTotalElement);
+                                        PutField_Char(hTxn, csTag, cTmp);
+                                }
+
+/* rate */
+                                if (GetField_Double(hRec, "rate", &dTmp)) {
+DEBUGLOG(("GetTxnInfo (TxnElements):: txn_id[%s] Cnt[%d] rate = [%f]\n", csTxnSeq, iTotalElement, dTmp));
+                                        sprintf(csTag, "element_rate_%d", iTotalElement);
+                                        PutField_Double(hTxn, csTag, dTmp);
+                                }
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+			
+			sprintf(csTag, "element_total_cnt");
+                        PutField_Int(hTxn, csTag, iTotalElement);
+DEBUGLOG(("GetTxnInfo (TxnElements):: total Expected Element [%d]\n", iTotalElement));
+
+                        RecordSet_Destroy(rRecordSet);
+                } else {
+DEBUGLOG(("GetTxnInfo (TxnElements):: not found record for [%s]\n",csTxnSeq));
+                        iRet = INT_INVALID_TXN;
+                }
+        }
+
+        hash_destroy(hTxnPspDetail);
+        FREE_ME(hTxnPspDetail);
+
+        hash_destroy(hBaidDetail);
+        FREE_ME(hBaidDetail);
+
+        FREE_ME(rRecordSet);
+
+        return iRet;
+}	
+
+int     FormNewTxn(hash_t *hOrgTxn, hash_t *hOfstTxn, hash_t *hContext, hash_t *hTxnRelation, int iIsOffset)
+{
+        int     iRet = PD_OK;
+
+	char	csVoidTxnCode[PD_TXN_CODE_LEN + 1];
+        char    csOfstTxnSeq[PD_TXN_SEQ_LEN + 1];
+        char    csTxnDateTime[PD_DATETIME_LEN + 1];
+        char    csTag[PD_TAG_LEN + 1];
+
+        int     iElementCnt = 0;
+
+        char    cPartyType;
+        char    cTmpDCInd;
+        char    *csOrgCcy = NULL;
+        char    *csOrgElementCcy = NULL;
+        char    *csOrgElementType = NULL;
+        char    *csOrgElementAmtType = NULL;
+        double  dOrgElementAmount = 0.0;
+        double  dTotalAcctBal = 0.0;
+        double  dTotalIntransitBal = 0.0;
+
+        char    *csTmp = NULL;
+        char    cTmp;
+        double  dTmp = 0.0;
+        int     iTmp = 0;
+
+        int     i;
+
+/* txn_seq */
+DEBUGLOG(("FormNewTxn:: Call DBOLTxnSeq: GetNextOmtTxnSeq\n"));
+        DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+        strcpy(csOfstTxnSeq, (*DBObjPtr)());
+
+        PutField_CString(hOfstTxn, "txn_seq", csOfstTxnSeq);
+DEBUGLOG(("FormNewTxn::Offset TxnSeq (Generated!!) [%s]\n", csOfstTxnSeq));
+
+/* org_txn_id */
+        if (GetField_CString(hOrgTxn, "txn_seq", &csTmp)) {
+DEBUGLOG(("FormNewTxn::org_txn_seq [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "org_txn_seq", csTmp);
+        }
+
+// Put into hTxnRelation for further use of Linkage (Do once, in the beginning)
+	if (iIsOffset) {
+		sprintf(csTag,"id_%s",csTmp);
+		PutField_CString(hTxnRelation,csTag,(const char*)csOfstTxnSeq);
+	}
+
+/* channel */
+        if (GetField_CString(hContext, "channel_code", &csTmp)) {
+DEBUGLOG(("FormNewTxn::channel_code [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "channel_code", csTmp);
+        }
+
+	// Txn Header
+
+/* status */
+        PutField_Char(hOfstTxn,"status",PD_PROCESSING);
+
+/* txn_code */
+        if (GetField_CString(hOrgTxn, "txn_code", &csTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset txn_code [%s]\n", csTmp));
+		
+#if 0
+		//Get void txn code from DBTxnCode
+		DBObjPtr = CreateObj(DBPtr, "DBTxnCode", "FindVoidTxnCode");
+		iRet = (unsigned long)(*DBObjPtr)(csTmp,(char*)csVoidTxnCode);
+		if (iRet == PD_OK) {
+           		PutField_CString(hOfstTxn, "txn_code", csVoidTxnCode);
+		}
+#endif
+
+        }
+
+/* amt_type */
+	if (GetField_Char(hOrgTxn, "amt_type", &cTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset amt_type [%c]\n", cTmp));
+              	PutField_Char(hOfstTxn, "amt_type", cTmp);
+	}
+
+/* process_type */
+        PutField_CString(hOfstTxn,"process_code", PD_PROCESS_CODE_DEF);
+
+/* process_code */
+        PutField_CString(hOfstTxn,"process_type", PD_PROCESS_TYPE_DEF);
+
+/* host_posting_date */
+        if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset host_posting_date [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "host_posting_date", csTmp);
+        }
+
+/* transmission_datetime */
+        if (GetField_CString(hContext, "local_tm_date", &csTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset transmission_time [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "local_tm_date", csTmp);
+                PutField_CString(hOfstTxn, "tm_date", csTmp);
+
+                strcpy(csTxnDateTime, csTmp);
+                PutField_CString(hOfstTxn, "transmission_datetime", csTxnDateTime);
+
+                if (GetField_CString(hContext, "local_tm_time", &csTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset transmission_date [%s]\n", csTmp));
+                        PutField_CString(hOfstTxn, "local_tm_time", csTmp);
+
+                        strcat(csTxnDateTime, csTmp);
+                        PutField_CString(hOfstTxn, "transmission_datetime", csTxnDateTime);
+                }
+        }
+
+/* transaction_amount */
+        if  (GetField_Double(hOrgTxn, "txn_amt", &dTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset transaction_amount [%f]\n", dTmp));
+                PutField_Double(hOfstTxn, "txn_amt", dTmp);
+        }
+
+/* net_amt */
+        if (GetField_Double(hOrgTxn, "net_amt", &dTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset net_amt [%f]\n", dTmp));
+                PutField_Double(hOfstTxn,"net_amt",dTmp);
+        }
+
+/* net_ccy */
+        if (GetField_CString(hOrgTxn, "net_ccy", &csTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset net_ccy [%s]\n", csTmp));
+                PutField_CString(hOfstTxn,"net_ccy",csTmp);
+        }
+
+/* deposit_amt */
+        if (GetField_Double(hOrgTxn, "deposit_amt", &dTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset deposit_amt [%f]\n", dTmp));
+                PutField_Double(hOfstTxn,"deposit_amt",dTmp);
+        }
+
+/* display_amt */
+        if (GetField_Double(hOrgTxn, "display_amt", &dTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset display_amt [%f]\n", dTmp));
+                PutField_Double(hOfstTxn,"display_amt",dTmp);
+        }
+
+/* ex_supplier */
+        if (GetField_Char(hOrgTxn, "ex_supplier", &cTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset ex_supplier [%c]\n", cTmp));
+                PutField_Char(hOfstTxn,"ex_supplier",cTmp);
+        }
+
+/* ex_rate */
+        if (GetField_Double(hOrgTxn, "ex_rate", &dTmp)) {
+DEBUGLOG(("FormNewTxn (Header)::Offset ex_supplier [%f]\n", dTmp));
+                PutField_Double(hOfstTxn,"ex_rate",dTmp);
+        }
+
+/* response_code */
+        PutField_CString(hOfstTxn, "response_code", "0");
+
+/* internal_code */
+        PutField_Int(hOfstTxn, "internal_code", 0);
+
+	// Txn PSP Detail
+
+/* psp_id */
+        if (GetField_CString(hOrgTxn, "psp_id", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset psp_id [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "psp_id", csTmp);
+        }
+
+/* baid */
+        if (GetField_CString(hOrgTxn, "baid", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset baid [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "baid", csTmp);
+        }
+
+/* txn_date */
+        if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset txn_date [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "txn_date", csTmp);
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hOrgTxn, "txn_ccy", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset txn_ccy [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "txn_ccy", csTmp);
+        }
+
+/* txn_amount */
+        if (GetField_Double(hOrgTxn, "txn_amount", &dTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset txn_amount [%f]\n", dTmp));
+                PutField_Double(hOfstTxn, "txn_amount", dTmp);
+        }
+
+/* bank_code */
+        if (GetField_CString(hOrgTxn, "bank_code", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset bank_code [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "bank_code", csTmp);
+        }
+
+/* bank_acct_num */
+        if (GetField_CString(hOrgTxn, "bank_acct_num", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset bank_acct_num [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "bank_acct_num", csTmp);
+        }
+
+/* cost */
+        if (GetField_Double(hOrgTxn, "cost", &dTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset cost [%f]\n", dTmp));
+                PutField_Double(hOfstTxn, "cost", dTmp);
+        }
+
+/* txn_hold_ind */
+        if (GetField_Int(hOrgTxn, "txn_hold_ind", &iTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset txn_hold_ind [%d]\n", iTmp));
+                PutField_Int(hOfstTxn, "txn_hold_int", iTmp);
+        }
+
+/* sys_match_ind */
+        if (GetField_Int(hOrgTxn, "sys_match_ind", &iTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset sys_match_ind [%d]\n", iTmp));
+                PutField_Int(hOfstTxn, "sys_match_ind", iTmp);
+        }
+
+/* customer_text */
+        if (GetField_CString(hOrgTxn, "customer_text", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset customer_text [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "customer_text", csTmp);
+        }
+
+/* sender_name */
+        if (GetField_CString(hOrgTxn, "sender_name", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset sender_name [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "sender_name", csTmp);
+        }
+
+/* txn_ref_num */
+        if (GetField_CString(hOrgTxn, "txn_ref_num", &csTmp)) {
+DEBUGLOG(("FormNewTxn (TxnPspDetail)::Offset txn_ref_num [%s]\n", csTmp));
+                PutField_CString(hOfstTxn, "txn_ref_num", csTmp);
+        }
+
+	// Txn Elements
+
+/* txn_ccy */
+        if (GetField_CString(hOrgTxn, "txn_ccy", &csOrgCcy)) {
+DEBUGLOG(("FormNewTxn (TxnElements)::txn_ccy [%s]\n", csOrgCcy));
+        }
+
+/* element_total_cnt */
+        if (GetField_Int(hOrgTxn, "element_total_cnt", &iElementCnt)) {
+DEBUGLOG(("FormNewTxn (TxnElements)::Offset element_total_cnt [%d]\n", iElementCnt));
+
+                PutField_Int(hOfstTxn, "element_total_cnt", iElementCnt);
+
+                for (i = 1; i < iElementCnt + 1; i++) {
+DEBUGLOG(("FormNewTxn (TxnElements):: element_cnt = [%d]\n", i));
+
+			// convert DR / CR
+			// count diff_pool PD_ACCT_BAL_POOL / INTRANSIT_POOL
+
+			sprintf(csTag, "element_party_type_%d", i);
+                        if (GetField_Char(hOrgTxn, csTag, &cPartyType)) {
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] party_type [%c]\n", i, cPartyType));
+                                PutField_Char(hOfstTxn, csTag, cPartyType);
+                        }
+
+                        sprintf(csTag, "element_ccy_%d", i);
+                        if (GetField_CString(hOrgTxn, csTag, &csOrgElementCcy)) {
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] ccy [%s]\n", i, csOrgElementCcy));
+                                PutField_CString(hOfstTxn, csTag, csOrgElementCcy);
+                        }
+
+                        sprintf(csTag, "element_amt_type_%d", i);
+                        if (GetField_CString(hOrgTxn, csTag, &csOrgElementAmtType)) {
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] amt_type [%s]\n", i, csOrgElementAmtType));
+                                PutField_CString(hOfstTxn, csTag, csOrgElementAmtType);
+
+				if (iIsOffset) {
+					// convert DR / CR
+					if (!strcmp(csOrgElementAmtType, PD_CR)) {
+	                                        PutField_CString(hOfstTxn, csTag, PD_DR);
+	                                        cTmpDCInd = PD_IND_DEBIT;
+	
+	                                } else if (!strcmp(csOrgElementAmtType, PD_DR)) {
+	                                        PutField_CString(hOfstTxn, csTag, PD_CR);
+	                                        cTmpDCInd = PD_IND_CREDIT;
+					}
+                                }
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] DR / CR [%c]\n", i, cTmpDCInd));
+                        }
+
+                        sprintf(csTag, "element_amount_%d", i);
+                        if (GetField_Double(hOrgTxn, csTag, &dOrgElementAmount)) {
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] amount [%f]\n", i, dOrgElementAmount));
+                                PutField_Double(hOfstTxn, csTag, dOrgElementAmount);
+                        }
+
+                        sprintf(csTag, "element_type_%d", i);
+                        if (GetField_CString(hOrgTxn, csTag, &csOrgElementType)) {
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] type [%s]\n", i, csOrgElementType));
+                                PutField_CString(hOfstTxn, csTag, csOrgElementType);
+
+                                if (!strcmp(csOrgElementCcy, csOrgCcy) &&
+                                        (cPartyType == PD_TYPE_PSP) ) {
+
+                                        if (!strcmp(csOrgElementType, PD_ELEMENT_TXN_AMT) ||
+                                            !strcmp(csOrgElementType, PD_ELEMENT_TXN_FEE)) {
+                                                if (cTmpDCInd == PD_IND_DEBIT) {
+                                                        dTotalAcctBal = dTotalAcctBal - dOrgElementAmount;
+                                                } else if (cTmpDCInd == PD_IND_CREDIT) {
+                                                        dTotalAcctBal = dTotalAcctBal + dOrgElementAmount;
+                                                }
+                                        }
+                                        else {
+                                                if (cTmpDCInd == PD_IND_DEBIT) {
+                                                        dTotalIntransitBal = dTotalIntransitBal - dOrgElementAmount;
+                                                } else if (cTmpDCInd == PD_IND_CREDIT) {
+                                                        dTotalIntransitBal = dTotalIntransitBal + dOrgElementAmount;
+                                                }
+                                        }
+                                }
+                        }
+
+			sprintf(csTag, "element_rate_%d", i);
+                        if (GetField_Double(hOrgTxn, csTag, &dTmp)) {
+DEBUGLOG(("FormNewTxn (TxnElements): [%d] rate [%f]\n", i, dTmp));
+                                PutField_Double(hOfstTxn, csTag, dTmp);
+                        }
+                }
+
+                dTotalAcctBal = newround(dTotalAcctBal, PD_DECIMAL_LEN);
+                dTotalIntransitBal= newround(dTotalIntransitBal, PD_DECIMAL_LEN);
+
+DEBUGLOG(("FormNewTxn (TxnElements):: AcctBal [%lf]\n", dTotalAcctBal));
+DEBUGLOG(("FormNewTxn (TxnElements):: Intansit[%lf]\n", dTotalIntransitBal));
+
+                PutField_Double(hContext, "element_acct_bal", dTotalAcctBal);
+                PutField_Double(hContext, "element_intransit", dTotalIntransitBal);
+        }
+
+        return iRet;
+}
+
+int     ProcessNewTxn(hash_t *hTxn, hash_t *hContext)
+{
+        int     iRet = PD_OK;
+
+        char    csTag[PD_TAG_LEN + 1];
+
+        char    *csTmp = NULL;
+        char    cTmp;
+        double  dTmp = 0.0;
+
+        int     i;
+
+        double  dTotalAcctBal = 0.0;
+        double  dTotalIntransitBal = 0.0;
+
+        char    *csOrgTxnSeq = NULL;
+        char    *csTxnSeq = NULL;
+        char    *csBatchSeq = NULL;
+
+        char    cAmtType;
+        int     iElementCnt = 0;
+        int     iGetOpenBal = PD_FALSE;
+
+        hash_t  *hTxnRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxnRec, 0);
+
+        hash_t *hTxnElement;
+        hTxnElement = (hash_t*) malloc(sizeof(hash_t));
+
+        hash_t *hRelation;
+        hRelation = (hash_t*) malloc(sizeof(hash_t));
+
+/* txn_seq */
+        if (GetField_CString(hTxn, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("ProcessNewTxn::TxnSeq [%s]\n", csTxnSeq));
+        }
+
+/* batch_txn_seq */
+        if (GetField_CString(hContext, "batch_txn_seq", &csBatchSeq)) {
+DEBUGLOG(("ProcessNewTxn:: BatchTxnSeq[%s]\n", csBatchSeq));
+        }
+
+/* org_txn_seq */
+        if (GetField_CString(hTxn, "org_txn_seq", &csOrgTxnSeq)) {
+DEBUGLOG(("ProcessNewTxn:: OrgTxnSeq [%s]\n", csOrgTxnSeq));
+        }
+
+/* update_user */
+        if (GetField_CString(hContext, "update_user", &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: update_user [%s]\n", csTmp));
+
+		PutField_CString(hTxnRec, "add_user", csTmp);
+                PutField_CString(hTxnRec, "update_user", csTmp);
+                PutField_CString(hTxnRec, "create_user", csTmp);
+
+                PutField_CString(hTxn, "add_user", csTmp);
+                PutField_CString(hTxn, "update_user", csTmp);
+                PutField_CString(hTxn, "create_user", csTmp);
+        }
+
+#if 0
+/* db_commit */
+        PutField_Int(hTxn, "db_commit", PD_FALSE);
+DEBUGLOG(("ProcessNewTxn: Call OMTChannel: AddTxnLog\n"));
+
+DEBUGLOG(("ProcessNewTxn:: Call DBOLTransaction:Add\n"));
+        DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Add");
+        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+        if (iRet == PD_OK) {
+
+/* baid */
+                if (GetField_CString(hTxn, "baid", &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: baid [%s]\n", csTmp));
+                        PutField_CString(hTxnRec, "baid", csTmp);
+                }
+
+/* txn_country */
+                if (GetField_CString(hTxn, "txn_country", &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: txn_country [%s]\n", csTmp));
+                        PutField_CString(hTxnRec, "txn_country", csTmp);
+                }
+
+/* txn_ccy */
+                if (GetField_CString(hTxn, "txn_ccy", &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: txn_ccy [%s]\n", csTmp));
+                        PutField_CString(hTxnRec, "txn_ccy", csTmp);
+                }
+
+/* element_acct_bal */
+                if (GetField_Double(hContext, "element_acct_bal", &dTotalAcctBal)) {
+DEBUGLOG(("ProcessNewTxn:: acct_bal [%lf]\n", dTotalAcctBal));
+                }
+
+/* element_intransit */
+                if (GetField_Double(hContext, "element_intransit", &dTotalIntransitBal)) {
+DEBUGLOG(("ProcessNewTxn:: intransit [%lf]\n", dTotalIntransitBal));
+                }
+
+		// Acct Bal
+		if (dTotalAcctBal < 0.0) {
+                        dTotalAcctBal = dTotalAcctBal * (-1.0);
+                        cAmtType = PD_IND_DEBIT;
+                } else if (dTotalAcctBal > 0.0) {
+                        cAmtType = PD_IND_CREDIT;
+                }
+
+                if (dTotalAcctBal > 0.0) {
+
+                        PutField_Char(hTxnRec, "amt_type", cAmtType);
+                        PutField_Double(hTxnRec, "txn_amt", dTotalAcctBal);
+                        PutField_CString(hTxnRec, "pool", PD_ACCT_BAL_POOL);
+
+DEBUGLOG(("ProcessNewTxn:: Call BOOLBalance: UpdateAmount\n"));
+                        BOObjPtr = CreateObj(BOPtr, "BOOLBalance", "UpdateAmount");
+                        iRet = (unsigned long)(*BOObjPtr)(hTxnRec);
+                        if (iRet == PD_OK) {
+
+                                iGetOpenBal = PD_TRUE;
+
+/* open_bal */
+                                if (GetField_Double(hTxnRec, "open_bal", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:open_bal [%f]\n", dTmp));
+                                        PutField_Double(hTxn, "open_bal", dTmp);
+                                }
+
+/* open_in_transit */
+                                if (GetField_Double(hTxnRec, "open_in_transit", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:open_in_transit [%f]\n", dTmp));
+                                        PutField_Double(hTxn, "open_in_transit", dTmp);
+                                }
+
+/* approval_date */
+                                if (GetField_CString(hTxnRec, "approval_date", &csTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:approval_date [%s]\n", csTmp));
+                                        PutField_CString(hTxn, "approval_date", csTmp);
+                                }
+
+/* approval_timestamp */
+                                if (GetField_CString(hTxnRec, "approval_timestamp", &csTmp))  {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:approval_timestamp [%s]\n", csTmp));
+                                        PutField_CString(hTxn, "approval_timestamp", csTmp);
+                                }
+
+/* bal */
+                                if (GetField_Double(hTxnRec, "bal", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:balance = [%f]\n", dTmp));
+                                        PutField_Double(hTxn, "bal", dTmp);
+                                }
+
+/* total_hold */
+                                if (GetField_Double(hTxnRec, "total_hold", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:total_hold = [%f]\n", dTmp));
+                                        PutField_Double(hTxn, "total_hold", dTmp);
+                                }
+
+/* prepaid */
+                                if (GetField_Double(hTxnRec, "prepaid", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:prepaid = [%f]\n", dTmp));
+                                        PutField_Double(hTxn, "prepaid", dTmp);
+                                }
+
+/* in_transit */
+                                if (GetField_Double(hTxnRec, "in_transit", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:in_transit = [%f]\n", dTmp));
+                                        PutField_Double(hTxn, "in_transit", dTmp);
+                                }
+                        }
+                }
+
+		// Intrasit
+		if (iRet == PD_OK) {
+
+                        if (dTotalIntransitBal < 0.0) {
+                                dTotalIntransitBal = dTotalIntransitBal * (-1.0);
+                                cAmtType = PD_IND_DEBIT;
+                        } else if (dTotalIntransitBal > 0.0) {
+                                cAmtType = PD_IND_CREDIT;
+                        }
+
+                        if (dTotalIntransitBal > 0.0) {
+
+                                PutField_Char(hTxnRec, "amt_type", cAmtType);
+                                PutField_Double(hTxnRec, "txn_amt", dTotalIntransitBal);
+                                PutField_CString(hTxnRec, "pool", PD_INTRANSIT_POOL);
+
+DEBUGLOG(("ProcessNewTxn:: Call BOOLBalance: UpdateAmount\n"));
+                                BOObjPtr = CreateObj(BOPtr, "BOOLBalance", "UpdateAmount");
+                                iRet = (unsigned long)(*BOObjPtr)(hTxnRec);
+                                if (iRet == PD_OK) {
+
+                                        if (iGetOpenBal == PD_FALSE) {
+
+/* open_bal */
+                                                if (GetField_Double(hTxnRec, "open_bal", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:open_bal [%f]\n", dTmp));
+                                                        PutField_Double(hTxn, "open_bal", dTmp);
+                                                }
+
+/* open_in_transit */
+                                                if (GetField_Double(hTxnRec, "open_in_transit", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:open_in_transit [%f]\n", dTmp));
+                                                        PutField_Double(hTxn, "open_in_transit", dTmp);
+                                                }
+
+/* approval_date */
+                                                if (GetField_CString(hTxnRec, "approval_date", &csTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:approval_date [%s]\n", csTmp));
+                                                        PutField_CString(hTxn, "approval_date", csTmp);
+                                                }
+
+/* approval_timestamp */
+                                                if (GetField_CString(hTxnRec, "approval_timestamp", &csTmp))  {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:approval_timestamp [%s]\n", csTmp));
+                                                        PutField_CString(hTxn, "approval_timestamp", csTmp);
+                                                }
+                                        }
+
+/* bal */
+                                        if (GetField_Double(hTxnRec, "bal", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:balance = [%f]\n", dTmp));
+                                                PutField_Double(hTxn, "bal", dTmp);
+                                        }
+
+/* total_hold */
+                                        if (GetField_Double(hTxnRec, "total_hold", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:total_hold = [%f]\n", dTmp));
+                                                PutField_Double(hTxn, "total_hold", dTmp);
+                                        }
+
+/* prepaid */
+                                        if (GetField_Double(hTxnRec, "prepaid", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:prepaid = [%f]\n", dTmp));
+                                                PutField_Double(hTxn, "prepaid", dTmp);
+                                        }
+
+/* in_transit */
+                                        if (GetField_Double(hTxnRec, "in_transit", &dTmp)) {
+DEBUGLOG(("ProcessNewTxn::Call BOOLBalance:in_transit = [%f]\n", dTmp));
+                                                PutField_Double(hTxn, "in_transit", dTmp);
+                                        }
+                                }
+                        }
+                }
+        }
+
+	// Add Element
+	if (iRet == PD_OK) {
+                hash_init(hTxnElement, 0);
+
+/* update_user */
+                if (GetField_CString(hContext, "update_user", &csTmp)) {
+                        PutField_CString(hTxnElement, "update_user", csTmp);
+                        PutField_CString(hTxnElement, "add_user", csTmp);
+                        PutField_CString(hTxnElement, "create_user", csTmp);
+                }
+
+/* element_total_cnt */
+                if (GetField_Int(hTxn, "element_total_cnt", &iElementCnt)) {
+DEBUGLOG(("ProcessNewTxn:: element_total_cnt [%d]\n", iElementCnt));
+                }
+
+                for (i = 1 ; i < iElementCnt + 1; i++) {
+
+/* txn_seq */
+                        PutField_CString(hTxnElement, "txn_seq", csTxnSeq);
+
+/* txn_ccy */
+                        sprintf(csTag, "element_ccy_%d", i);
+                        if (GetField_CString(hTxn, csTag, &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: [%d] txn_ccy [%s]\n", i, csTmp));
+                                PutField_CString(hTxnElement, "txn_ccy", csTmp);
+                        }
+
+/* txn_amt */
+                        sprintf(csTag, "element_amount_%d", i);
+                        if (GetField_Double(hTxn, csTag, &dTmp)) {
+DEBUGLOG(("ProcessNewTxn:: [%d] txn_amt [%d]\n", i, dTmp));
+                                PutField_Double(hTxnElement, "txn_amt", dTmp);
+                        }
+
+/* txn_element_type */
+                        sprintf(csTag, "element_type_%d", i);
+                        if (GetField_CString(hTxn, csTag, &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: [%d] txn_element_type [%s]\n", i, csTmp));
+                                PutField_CString(hTxnElement, "txn_element_type", csTmp);
+                        }
+
+/* party_type */
+                        sprintf(csTag, "part_type_%d", i);
+                        if (GetField_Char(hTxn, csTag, &cTmp)) {
+DEBUGLOG(("ProcessNewTxn:: [%d] party_type [%c]\n", i, cTmp));
+                                PutField_Char(hTxnElement, "party_type", cTmp);
+                        }
+
+/* amount_type */
+                        sprintf(csTag, "element_amt_type_%d", i);
+                        if (GetField_CString(hTxn, csTag, &csTmp)) {
+DEBUGLOG(("ProcessNewTxn:: [%d] amount_type [%s]\n", i, csTmp));
+                                PutField_CString(hTxnElement, "amount_type", csTmp);
+                        }
+
+DEBUGLOG(("ProcessNewTxn Call BOOLTxnElements:AddPspTxnElement [%d]\n",i ));
+                        BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "AddPspTxnElement");
+                        iRet = (unsigned long)(*BOObjPtr)(hTxnElement);
+                        if (iRet != PD_OK) {
+DEBUGLOG(("ProcessNewTxn Call BOOLTxnElements:AddPspTxnElement [%d] error\n",i ));
+                                break;
+                        } else {
+DEBUGLOG(("ProcessNewTxn Call BOOLTxnElements:AddPspTxnElement [%d] completed\n",i ));
+                        }
+                }
+
+                hash_destroy(hTxnElement);
+        }
+
+	// Update Txn Header
+        if (iRet == PD_OK) {
+
+                PutField_Char(hTxn, "status", PD_COMPLETE);
+                PutField_Char(hTxn, "ar_ind", PD_ACCEPT);
+                PutField_CString(hTxn, "sub_status", PD_APPROVED);
+                PutField_Char(hTxn, "recon_status", PD_UNRECONCILED);
+
+DEBUGLOG(("ProcessNewTxn Call DBOLTransaction:Update\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+                iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                if (iRet != PD_OK) {
+                        iRet = INT_ERR;
+                }
+        }
+
+	// Add Txn PSP Detail
+        if (iRet == PD_OK) {
+
+DEBUGLOG(("ProcessNewTxn Call DBOLTxnPspDetail:Add\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+                iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                if (iRet != PD_OK) {
+                        iRet = INT_ERR;
+                }
+        }
+
+	// Update Txn PSP Detail
+        if (iRet == PD_OK) {
+
+DEBUGLOG(("ProcessNewTxn Call DBOLTxnPspDetail:Update\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Update");
+                iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                if (iRet != PD_OK) {
+                        iRet = INT_ERR;
+                }
+        }
+#endif
+
+	// Add Txn Relation
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessNewTxn TxnRelation!\n"));
+
+                hash_init(hRelation, 0);
+
+		// Org Txn Seq
+		PutField_Char(hRelation, "party", PD_TYPE_PSP);
+                PutField_CString(hRelation, "p1_txn_id", csTxnSeq);
+                PutField_CString(hRelation, "p2_txn_id", csOrgTxnSeq);
+                PutField_Char(hRelation, "txn_level", PD_TXN_LEVEL);
+                PutField_Char(hRelation, "relation_type", PD_REL_VOID);
+                if (GetField_CString(hContext, "update_user", &csTmp)) {
+                        PutField_CString(hRelation, "update_user", csTmp);
+                        PutField_CString(hRelation, "add_user", csTmp);
+                        PutField_CString(hRelation, "create_user", csTmp);
+                }
+
+                iRet = AddTxnRelation(hRelation);
+
+                hash_destroy(hRelation);
+        }
+
+	// Add Batch Txn Relation
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessNewTxn BatchTxnRelation!\n"));
+
+                hash_init(hRelation, 0);
+
+                PutField_Char(hRelation, "batch_type", PD_GENERAL);
+                PutField_CString(hRelation, "batch_id", csBatchSeq);
+                PutField_Char(hRelation, "txn_level", PD_TXN_LEVEL);
+                PutField_CString(hRelation, "txn_id", csTxnSeq);
+
+                iRet = AddBatchTxnRelation(hRelation);
+
+                hash_destroy(hRelation);
+        }
+
+	hash_destroy(hTxnRec);
+        hash_destroy(hTxnElement);
+
+        FREE_ME(hTxnRec);
+        FREE_ME(hTxnElement);
+        FREE_ME(hRelation);
+
+        return iRet;	
+}
+
+int     ProcessOrgTxn(hash_t *hOrgTxn, hash_t *hContext)
+{
+        int     iRet = PD_OK;
+
+        char    *csTmp = NULL;
+        char    *csTxnSeq = NULL;
+
+        hash_t  *hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec, 0);
+
+#if 0
+/* txn_seq */
+        if (GetField_CString(hOrgTxn, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("ProcessOrgTxn txn_seq [%s]\n", csTxnSeq));
+                PutField_CString(hRec, "txn_seq", csTxnSeq);
+        }
+
+/* update_user */
+        if (GetField_CString(hContext, "update_user", &csTmp)) {
+DEBUGLOG(("ProcessOrgTxn upate_user [%s]\n", csTmp));
+                PutField_CString(hRec, "update_user", csTmp);
+        }
+
+/* status */
+        PutField_Char(hRec, "status", PD_REVERSED);
+
+/* sub_status */
+	if (iAction == PD_BATCH_ACTION_CANCEL)
+        	PutField_CString(hRec, "sub_status", PD_CANCELLED);
+	else if (iAction == PD_BATCH_ACTION_VOID)
+		PutField_CString(hRec, "sub_status", PD_UNDO);
+
+DEBUGLOG(("ProcessOrgTxn() call DBOLTransaction::Update()\n"));
+        DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+        iRet = (unsigned long)(*DBObjPtr)(hRec);
+        if (iRet != PD_OK) {
+                iRet = INT_ERR;
+DEBUGLOG(("ProcessOrgTxn() call DBOLTransaction::Update() failed\n"));
+ERRLOG("TxnOmtByUsRBT::ProcessOrgTxn() call DBOLTransaction::Update() failed\n");
+        }
+#endif
+
+        hash_destroy(hRec);
+        FREE_ME(hRec);
+
+        return iRet;
+}
+
+int     AddTxnRelationLinkage(const char* csOrgTxnSeq, hash_t *hContext, hash_t *hTxnRelation)
+{
+        int 	iRet = PD_OK;
+        int 	iDtlRet = PD_FOUND;
+
+	char 	*csTmp = NULL;
+	char	csTag[PD_TMP_BUF_LEN+1];
+
+        hash_t  *hRec = NULL;
+        hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelation","GetTxnRelationByBatchId");
+        iRet = (unsigned long)(*DBObjPtr)(hRec,rRecordSet);
+        if (iRet == PD_FOUND) {
+        	hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                	if (GetField_CString(hRec,"p1_txn_id",&csTmp)) {
+				sprintf(csTag,"id_%s",csTmp);
+DEBUGLOG(("AddTxnRelationLinkage old_p1_txn_id = [%s]\n",csTmp));
+				if (GetField_CString(hTxnRelation,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnRelationLinkage new_p1_txn_id = [%s]\n",csTmp));
+					PutField_CString(hRec,"p1_txn_id",csTmp);
+				}
+                        }
+
+                	if (GetField_CString(hRec,"p2_txn_id",&csTmp)) {
+				sprintf(csTag,"id_%s",csTmp);
+DEBUGLOG(("AddTxnRelationLinkage old_p2_txn_id = [%s]\n",csTmp));
+				if (GetField_CString(hTxnRelation,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnRelationLinkage new_p2_txn_id = [%s]\n",csTmp));
+					PutField_CString(hRec,"p2_txn_id",csTmp);
+				}
+                        }
+
+			if (GetField_CString(hContext,"create_user",&csTmp)) {
+				PutField_CString(hRec,"create_user",csTmp);
+			}
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelation","Add");
+			iDtlRet = (unsigned long)(*DBObjPtr)(hRec);
+			if (iDtlRet != PD_OK) {
+DEBUGLOG(("AddTxnRelationLinkage() Call DBOLTxnRelation::Add() FAIL!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelationLinkage() Call DBOLTxnRelation::Add() FAIL!!\n");
+			}
+
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+        } else {
+        	iRet = INT_ERR;
+DEBUGLOG(("AddTxnRelationLinkage() Call DBOLTxnRelation::GetTxnRelationByBatchId() Not Found!!!\n"));
+ERRLOG("TxnOmtByUsRBT::AddTxnRelationLinkage() Call DBOTxnRelation::GetTxnRelationByBatchId() Not Found!!!\n");
+        }
+
+        hash_destroy(hRec);
+        FREE_ME(hRec);
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+        return iRet;
+}
+
+int     ProcessLastTxn(const char* csTxnId, hash_t* hOrgTxn, hash_t* hNewTxn, hash_t *hContext)
+{
+	int     iRet = PD_OK;
+	int     iDtlRet = PD_FALSE;
+
+	char    *csOrgTxnId = NULL;
+        char    *csNewTxnId = NULL;
+	
+	char	*csTxnCode = NULL;
+	char	*csProcessType = NULL;
+	char	*csProcessCode = NULL;
+
+	hash_t  *hRec;
+        hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec, 0);
+
+DEBUGLOG(("===== ProcessLastTxn ===== START!!\n"));
+
+DEBUGLOG(("ProcessLastTxn:: txn_id [%s]\n", csTxnId));
+	
+	// Check Fe Init
+	if (iRet == PD_OK) {
+
+/* txn_code */
+          	if (GetField_CString(hOrgTxn, "txn_code", &csTxnCode)) {
+DEBUGLOG(("ProcessLastTxn::call DBOLTransaction:: txn_code = [%s]\n", csTxnCode));
+            	}
+
+/* process_type */
+              	if (GetField_CString(hOrgTxn, "process_type", &csProcessType)) {
+DEBUGLOG(("ProcessLastTxn::call DBOLTransaction:: process_type = [%s]\n", csProcessType));
+            	}
+
+/* process_code */
+            	if (GetField_CString(hOrgTxn, "process_code", &csProcessCode)) {
+DEBUGLOG(("ProcessLastTxn::call DBOLTransaction:: process_code = [%s]\n", csProcessCode));
+              	}
+
+		DBObjPtr = CreateObj(DBPtr,"DBTxnCode","AllowFeInit");
+                iDtlRet = (unsigned long)(*DBObjPtr)(csTxnCode,csProcessType,csProcessCode);
+                if (iDtlRet == PD_TRUE) {
+DEBUGLOG(("ProcessLastTxn::call DBTxnCode AllowFeInit:: fe_init = PD_TRUE\n"));
+		} else if (iDtlRet == PD_FALSE) {
+DEBUGLOG(("ProcessLastTxn::call DBTxnCode AllowFeInit:: fe_init = PD_FALSE\n"));
+                } else {
+                        iRet = INT_ERR;
+DEBUGLOG(("ProcessLastTxn::call DBTxnCode AllowFeInit::not found!!\n"));
+ERRLOG("TxnOmtByUsRBT::ProcessLastTxn::call DBTxnCode AllowFeInit::not found!!\n");
+                }
+	}
+
+	// Form Offset Txn (NOT reversal CR / DR sign)
+	if ((iRet == PD_OK) && (iDtlRet == PD_TRUE)) {
+		iRet = FormNewTxn(hOrgTxn,hNewTxn,hContext,hContext,PD_FALSE);
+	}
+
+	// Create Txn (with add approval_date, approval_timestamp)
+	if ((iRet == PD_OK) && (iDtlRet == PD_TRUE)) {
+		iRet = ProcessNewTxn(hNewTxn,hContext);
+	}
+
+	// Create Payout Gen File Detail Map (Payout Only)
+	if ((iRet == PD_OK) && (iDtlRet == PD_TRUE)) {
+                if (!strcmp(csTxnCode, PD_OFFLINE_PAYOUT_TXN_CODE)) {
+
+/* action_type */
+                        PutField_Char(hRec, "action_type", PD_OL_ACTION_VOID);
+DEBUGLOG(("ProcessLastTxn:: action_type [%s]\n", PD_OL_ACTION_VOID));
+
+/* org_txn_id */
+                        if (GetField_CString(hOrgTxn, "org_txn_seq", &csOrgTxnId)) {
+DEBUGLOG(("ProcessLastTxn:: org_txn_id [%s]\n", csOrgTxnId));
+                                PutField_CString(hRec, "org_txn_id", csOrgTxnId);
+                        }
+
+/* new_txn_id */
+                        if (GetField_CString(hNewTxn, "txn_seq", &csNewTxnId)) {
+DEBUGLOG(("ProcessLastTxn:: new_txn_id [%s]\n", csNewTxnId));
+                                PutField_CString(hRec, "new_txn_id", csNewTxnId);
+                        }
+
+                        DBObjPtr = CreateObj(DBPtr,"DBOLPayoutGenFileDtMap","Add");
+                        iDtlRet = (unsigned long)(*DBObjPtr)(hRec);
+                        if (iDtlRet != PD_OK) {
+                                iRet = INT_ERR;
+DEBUGLOG(("ProcessLastTxn::call DBOLPayoutGenFileDtMap Add::failed!!\n"));
+ERRLOG("TxnOmtByUsRBT::ProcessLastTxn::call DBOLPayoutGenFileDtMap Add::failed!!\n");
+                        }
+                }
+        }
+
+DEBUGLOG(("===== ProcessLastTxn ===== END !!\n"));
+
+        hash_destroy(hRec);
+
+        FREE_ME(hRec);
+
+        return iRet;
+}
+
+int     CheckActionByStmtTxnId(const char* csStmtTxnId)
+{
+        int 	iRet = PD_OK;
+        int 	iDtlRet = PD_TRUE;
+
+        char    *csTxnCode = NULL;
+        char    cReconStatus;
+
+        hash_t  *hRec = NULL;
+
+	// Get BAID Txn
+	if (iRet == PD_OK) {
+
+DEBUGLOG(("CheckActionByStmtTxnId:: Call DBOLBAIDTxn:GetBaidTxn [%s]\n", csStmtTxnId));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+                iRet = (unsigned long)(*DBObjPtr)(csStmtTxnId,hRec);
+                if (iRet == PD_OK) {
+
+/* txn_code */
+                        if (GetField_CString(hRec, "txn_code", &csTxnCode)) {
+DEBUGLOG(("CheckActionByStmtTxnId::call DBOLBAIDTxn:: txn_code = [%s]\n", csTxnCode));
+                        }
+
+/* recon_status */
+                        if (GetField_Char(hRec, "recon_status", &cReconStatus)) {
+DEBUGLOG(("CheckActionByStmtTxnId::call DBOLBAIDTxn:: recon_status = [%c]\n", cReconStatus));
+                        }
+
+                } else {
+                        iRet = INT_INVALID_TXN;
+DEBUGLOG(("CheckActionByStmtTxnId::call DBOLBAIDTxn GetBaidTxn::not found record for [%s]\n", csStmtTxnId));
+ERRLOG("TxnOmtByUsRBT::CheckActionByStmtTxnId::call DBOLBAIDTxn GetBaidTxn::not found record for [%s]\n", csStmtTxnId);
+                }
+        }
+
+	// Check Cases for stmt action
+	// Step: Txn Code -> Recon Status
+	if (iRet == PD_OK) {
+                if (!strcmp(csTxnCode, PD_BANK_DEPOSIT_TXN_CODE)) {
+                        if (cReconStatus == PD_UNRECONCILED) {
+                                iDtlRet = PD_FALSE;
+                        }
+                }
+        }
+
+        if (iRet == PD_OK) {
+                iRet = iDtlRet;
+        }
+
+DEBUGLOG(("CheckActionByStmtTxnId() Ret = [%d]\n",iRet));
+        return iRet;
+}
+
+int     ProcessStmtOffset(const char* csOrgStmtTxnSeq, char* csNewStmtTxnSeq, hash_t* hContext)
+{
+        int     iRet = PD_OK;
+
+	hash_t  *hOrgStmtTxn;
+        hOrgStmtTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hOrgStmtTxn, 0);
+
+        hash_t  *hNewStmtTxn;
+        hNewStmtTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hNewStmtTxn, 0);
+
+DEBUGLOG(("===== ProcessStmtOffset ===== START!!\n"));
+
+DEBUGLOG(("ProcessStmtOffset:: stmt_txn_id [%s]\n", csOrgStmtTxnSeq));
+
+	// Lock Org Stmt Txn + Get Org Stmt Txn
+	iRet = GetStmtTxnInfo(csOrgStmtTxnSeq, hContext, hOrgStmtTxn);
+
+	// Form Offset Stmt Txn
+	if (iRet == PD_OK) {
+        	iRet = FormNewStmtTxn(hOrgStmtTxn, hNewStmtTxn, hContext);
+	}
+
+        // Create Stmt Txn (with add approval_date, approval_timestamp)
+        if (iRet == PD_OK) {
+        	iRet = ProcessNewStmtTxn(hNewStmtTxn, hContext);
+	}
+
+/* new_stmt_txn_id */
+	if (GetField_CString(hNewStmtTxn, "stmt_txn_seq", &csNewStmtTxnSeq)) {
+DEBUGLOG(("ProcessStmtOffset:: new_stmt_txn_id [%s]\n", csNewStmtTxnSeq));
+        }
+
+DEBUGLOG(("===== ProcessStmtOffset ===== END !!\n"));
+
+	hash_destroy(hOrgStmtTxn);
+        hash_destroy(hNewStmtTxn);
+
+        FREE_ME(hOrgStmtTxn);
+        FREE_ME(hNewStmtTxn);
+
+        return iRet;
+}
+
+int     GetStmtTxnInfo(const char *csOrgStmtTxnSeq, hash_t *hContext, hash_t *hStmtTxn)
+{
+        int     iRet = PD_OK;
+
+        char    *csTmp = NULL;
+        char    cTmp;
+        double  dTmp = 0.0;
+        int     iTmp = 0;
+
+	// Get BAID Txn
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: GetBaidTxn()\n"));
+        DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+        iRet = (unsigned long)(*DBObjPtr)(csOrgStmtTxnSeq, hStmtTxn);
+        if (iRet == PD_OK) {
+
+/* org_txn_id */
+                if (GetField_CString(hStmtTxn, "org_txn_id", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: org_txn_id [%s]\n", csTmp));
+                }
+
+/* input_channel */
+                if (GetField_CString(hStmtTxn, "input_channel", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: input_channel [%s]\n", csTmp));
+                }
+
+/* status */
+                if (GetField_Char(hStmtTxn, "status", &cTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: status [%c]\n", cTmp));
+                }
+
+/* ar_ind */
+                if (GetField_Char(hStmtTxn, "ar_ind", &cTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: ar_ind [%c]\n", cTmp));
+                }
+
+/* sub_status */
+                if (GetField_CString(hStmtTxn, "sub_status", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: sub_status [%s]\n", csTmp));
+                }
+
+/* stat_txn_id */
+                if (GetField_CString(hStmtTxn, "stat_txn_id", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: stat_txn_id [%s]\n", csTmp));
+                }
+
+/* txn_code */
+                if (GetField_CString(hStmtTxn, "txn_code", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: txn_code [%s]\n", csTmp));
+                }
+
+/* pid */
+                if (GetField_CString(hStmtTxn, "pid", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: pid [%s]\n", csTmp));
+                }
+
+/* baid */
+                if (GetField_CString(hStmtTxn, "baid", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: baid [%s]\n", csTmp));
+                }
+
+/* posting_date */
+                if (GetField_CString(hStmtTxn, "posting_date", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: posting_date [%s]\n", csTmp));
+                }
+
+/* transmission_datetime */
+                if (GetField_CString(hStmtTxn, "transmission_datetime", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: transmission_datetime [%s]\n", csTmp));
+                }
+
+/* txn_ccy */
+                if (GetField_CString(hStmtTxn, "txn_ccy", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: txn_ccy [%s]\n", csTmp));
+                }
+
+/* txn_amt */
+                if (GetField_Double(hStmtTxn, "txn_amt", &dTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: txn_amt [%f]\n", dTmp));
+                }
+
+/* open_bal */
+                if (GetField_Double(hStmtTxn, "open_bal", &dTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: open_bal [%f]\n", dTmp));
+                }
+
+/* curr_bal */
+                if (GetField_Double(hStmtTxn, "curr_bal", &dTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: curr_bal [%f]\n", dTmp));
+                }
+
+/* dst_txn_id */
+                if (GetField_CString(hStmtTxn, "dst_txn_id", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: dst_txn_id [%s]\n", csTmp));
+                }
+
+/* bank_code */
+                if (GetField_CString(hStmtTxn, "bank_code", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: bank_code [%s]\n", csTmp));
+                }
+
+/* bank_acct_num */
+                if (GetField_CString(hStmtTxn, "bank_acct_num", &csTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: bank_acct_num [%s]\n", csTmp));
+                }
+
+/* pid_txn_hold_ind */
+                if (GetField_Int(hStmtTxn, "pid_txn_hold_ind", &iTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: pid_txn_hold_ind [%d]\n", iTmp));
+                }
+
+/* pid_sys_match_ind */
+                if (GetField_Int(hStmtTxn, "pid_sys_match_ind", &iTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: pid_sys_match_ind [%d]\n", iTmp));
+                }
+
+/* posted_ind */
+                if (GetField_Int(hStmtTxn, "posted_ind", &iTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: posted_ind [%d]\n", iTmp));
+                }
+
+/* recon_status */
+                if (GetField_Char(hStmtTxn, "recon_status", &cTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: recon_status [%c]\n", cTmp));
+                }
+
+/* classified_status */
+                if (GetField_Char(hStmtTxn, "classified_status", &cTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: classified_status [%c]\n", cTmp));
+                }
+
+/* hold_recon */
+                if (GetField_Int(hStmtTxn, "hold_recon", &iTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: hold_recon [%d]\n", iTmp));
+                }
+
+/* est_net_amount */
+                if (GetField_Double(hStmtTxn, "est_net_amount", &dTmp)) {
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn:: est_net_amount [%f]\n", dTmp));
+                }
+
+	} else {
+                iRet = INT_INVALID_TXN;
+DEBUGLOG(("GetStmtTxnInfo::call DBOLBAIDTxn GetBaidTxn [%s] FAILURE!!!\n", csOrgStmtTxnSeq));
+ERRLOG("TxnOmtByUsRBT::GetStmtTxnInfo::call DBOLBAIDTxn GetBaidTxn[%s] FAILURE!!!\n", csOrgStmtTxnSeq);
+        }
+
+        return iRet;
+}
+
+int     FormNewStmtTxn(hash_t *hOrgStmtTxn, hash_t *hOfstStmtTxn, hash_t *hContext)
+{
+        int     iRet = PD_OK;
+
+        char    *csOfstStmtTxnSeq = NULL;
+	char	*csAmtType = NULL;
+	char	*csFailedBaidTxnCode = NULL;
+
+        char    *csTmp = NULL;
+        char    cTmp;
+        double  dTmp = 0.0;
+        int     iTmp = 0;
+
+/* db_commit */
+        PutField_Int(hOfstStmtTxn, "db_commit", PD_FALSE);
+
+/* txn_seq */
+DEBUGLOG(("FormNewStmtTxn:: Call DBOLTxnSeq: GetNextStmtTxnSeq\n"));
+        DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextStmtTxnSeq");
+        strcpy(csOfstStmtTxnSeq, (*DBObjPtr)());
+
+        PutField_CString(hOfstStmtTxn, "txn_seq", csOfstStmtTxnSeq);
+DEBUGLOG(("FormNewStmtTxn::Offset StmtTxnSeq (Generated!!) [%s]\n", csOfstStmtTxnSeq));
+
+/* org_txn_id */
+        if (GetField_CString(hOrgStmtTxn, "txn_seq", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::org_txn_seq [%s]\n", csTmp));
+                PutField_CString(hOrgStmtTxn, "txn_id", csTmp);
+                PutField_CString(hOfstStmtTxn, "org_txn_seq", csTmp);
+        }
+
+/* input_channel */
+        if (GetField_CString(hOrgStmtTxn, "input_channel", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::input_channel [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "input_channel", csTmp);
+        }
+
+/* status */
+        if (GetField_Char(hOrgStmtTxn, "status", &cTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: status [%c]\n", cTmp));
+                PutField_Char(hOfstStmtTxn, "status", cTmp);
+        }
+
+/* ar_ind */
+        if (GetField_Char(hOrgStmtTxn, "ar_ind", &cTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: ar_ind [%c]\n", cTmp));
+                PutField_Char(hOfstStmtTxn, "ar_ind", cTmp);
+        }
+
+/* sub_status */
+        if (GetField_CString(hOrgStmtTxn, "sub_status", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: sub_status [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "sub_status", csTmp);
+        }
+
+/* stat_txn_id */
+        if (GetField_CString(hOrgStmtTxn, "stat_txn_id", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: stat_txn_id [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "stat_txn_id", csTmp);
+        }
+
+/* txn_code */
+        if (GetField_CString(hOrgStmtTxn, "txn_code", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: txn_code [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "txn_code", csTmp);
+        }
+
+/* pid */
+        if (GetField_CString(hOrgStmtTxn, "pid", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: pid [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "pid", csTmp);
+        }
+
+/* baid */
+        if (GetField_CString(hOrgStmtTxn, "baid", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: baid [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "baid", csTmp);
+        }
+
+/* posting_date */
+        if (GetField_CString(hOrgStmtTxn, "posting_date", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: posting_date [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "posting_date", csTmp);
+        }
+
+/* transmission_datetime */
+        if (GetField_CString(hOrgStmtTxn, "transmission_datetime", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: transmission_datetime [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "transmission_datetime", csTmp);
+        }
+
+/* txn_ccy */
+        if (GetField_CString(hOrgStmtTxn, "txn_ccy", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: txn_ccy [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "txn_ccy", csTmp);
+        }
+
+/* txn_amt */
+        if (GetField_Double(hOrgStmtTxn, "txn_amt", &dTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: txn_amt [%f]\n", dTmp));
+                PutField_Double(hOfstStmtTxn, "txn_amt", dTmp);
+        }
+
+/* open_bal */
+        if (GetField_Double(hOrgStmtTxn, "open_bal", &dTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: open_bal [%f]\n", dTmp));
+                PutField_Double(hOfstStmtTxn, "open_bal", dTmp);
+        }
+
+/* curr_bal */
+        if (GetField_Double(hOrgStmtTxn, "curr_bal", &dTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: curr_bal [%f]\n", dTmp));
+                PutField_Double(hOfstStmtTxn, "curr_bal", dTmp);
+        }
+
+/* dst_txn_id */
+        if (GetField_CString(hOrgStmtTxn, "dst_txn_id", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: dst_txn_id [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "dst_txn_id", csTmp);
+        }
+
+/* bank_code */
+        if (GetField_CString(hOrgStmtTxn, "bank_code", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: bank_code [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "bank_code", csTmp);
+        }
+
+/* bank_acct_num */
+        if (GetField_CString(hOrgStmtTxn, "bank_acct_num", &csTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: bank_acct_num [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "bank_acct_num", csTmp);
+        }
+
+/* pid_txn_hold_ind */
+        if (GetField_Int(hOrgStmtTxn, "pid_txn_hold_ind", &iTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: pid_txn_hold_ind [%d]\n", iTmp));
+                PutField_Int(hOfstStmtTxn, "pid_txn_hold_ind", iTmp);
+        }
+
+/* pid_sys_match_ind */
+        if (GetField_Int(hOrgStmtTxn, "pid_sys_match_ind", &iTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: pid_sys_match_ind [%d]\n", iTmp));
+                PutField_Int(hOfstStmtTxn, "pid_sys_match_ind", iTmp);
+        }
+
+/* posted_ind */
+        if (GetField_Int(hOrgStmtTxn, "posted_ind", &iTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: posted_ind [%d]\n", iTmp));
+                PutField_Int(hOfstStmtTxn, "posted_ind", iTmp);
+        }
+
+/* recon_status */
+        PutField_Char(hOfstStmtTxn, "recon_status", PD_UNRECONCILED);
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: recon_status [%c]\n", PD_UNRECONCILED));
+
+/* classified_status */
+        PutField_Char(hOfstStmtTxn, "classified_status", PD_UNCLASSIFIED);
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: classified_status [%c]\n", PD_UNCLASSIFIED));
+
+/* hold_recon */
+        PutField_Int(hOfstStmtTxn, "hold_recon", PD_TRUE);
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: hold_recon [%d]\n", PD_TRUE));
+
+/* est_net_amount */
+        if (GetField_Double(hOrgStmtTxn, "est_net_amount", &dTmp)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLBAIDTxn:: est_net_amount [%f]\n", dTmp));
+                PutField_Double(hOfstStmtTxn, "est_net_amount", dTmp);
+        }
+
+/* txn_code */
+DEBUGLOG(("FormNewStmtTxn::call DBOLStmtMatchEngine CheckFailedBaidTxnCode\n"));
+        DBObjPtr = CreateObj(DBPtr,"DBOLStmtMatchEngine","CheckFailedBaidTxnCode");
+        iRet = (unsigned long)(*DBObjPtr)(hOrgStmtTxn);
+        if (iRet == PD_OK) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLStmtMatchEngine CheckFailedBaidTxnCode\n"));
+
+/* amt_type */	
+		if (GetField_CString(hOrgStmtTxn, "amt_type", &csAmtType)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLStmtMatchEngine:: amt_type [%s]\n", csAmtType));
+		}
+
+/* failed_baid_txn_code */
+                if (GetField_CString(hOrgStmtTxn, "failed_baid_txn_code", &csFailedBaidTxnCode)) {
+DEBUGLOG(("FormNewStmtTxn::call DBOLStmtMatchEngine:: failed_baid_txn_code [%s]\n", csFailedBaidTxnCode));
+
+                        if ((!strcmp(csFailedBaidTxnCode, PD_TXN_CODE_UNKNOWN_SWEEP_IN)) ||
+                            (!strcmp(csFailedBaidTxnCode, PD_TXN_CODE_UNKNOWN_SWEEP_OUT))
+                        )
+                        {
+                                PutField_CString(hOfstStmtTxn, "txn_code", csFailedBaidTxnCode);
+                        }
+                        else
+                        {
+                           	if (!strcmp(csAmtType, PD_CR)) {
+                           		PutField_CString(hOfstStmtTxn, "txn_code", PD_TXN_CODE_UNKNOWN_CREDIT);
+                            	} else if (!strcmp(csAmtType, PD_DR)) {
+                                    	PutField_CString(hOfstStmtTxn, "txn_code", PD_TXN_CODE_UNKNOWN_DEBIT);
+                             	}
+                        }
+                } else {
+			if (!strcmp(csAmtType, PD_CR)) {
+                            	PutField_CString(hOfstStmtTxn, "txn_code", PD_TXN_CODE_UNKNOWN_CREDIT);
+                       	} else if (!strcmp(csAmtType, PD_DR)) {
+                              	PutField_CString(hOfstStmtTxn, "txn_code", PD_TXN_CODE_UNKNOWN_DEBIT);
+                    	}
+		}
+
+        } else {
+                iRet = INT_ERR;
+DEBUGLOG(("FormNewStmtTxn::call DBOLStmtMatchEngine CheckFailedBaidTxnCode Not Found\n"));
+ERRLOG("TxnOmtByUsRBT::FormNewStmtTxn() Call DBOLStmtMatchEngine CheckFailedBaidTxnCode Not Found!!!\n");
+        }
+
+        return iRet;
+}
+	
+int     ProcessNewStmtTxn(hash_t *hOfstStmtTxn, hash_t *hContext)
+{
+	int     iRet = PD_OK;
+
+        char    *csOrgStmtTxnSeq = NULL;
+        char    *csStmtTxnSeq = NULL;
+        char    *csBatchSeq = NULL;
+
+        char    *csTmp = NULL;
+
+        char    csDate[PD_DATE_LEN + 1] = "";
+        char    csDateTime[PD_DATETIME_LEN + 1] = "";
+
+        time_t  tNow = time(NULL);
+        struct  tm tStruct = *localtime(&tNow);
+
+        hash_t *hRelation;
+        hRelation = (hash_t*) malloc(sizeof(hash_t));
+
+/* txn_seq */
+        if (GetField_CString(hOfstStmtTxn, "txn_seq", &csStmtTxnSeq)) {
+DEBUGLOG(("ProcessNewTxn::StmtTxnSeq [%s]\n", csStmtTxnSeq));
+        }
+
+/* batch_txn_seq */
+        if (GetField_CString(hContext, "batch_txn_seq", &csBatchSeq)) {
+DEBUGLOG(("ProcessNewTxn:: BatchTxnSeq[%s]\n", csBatchSeq));
+        }
+
+/* org_txn_seq */
+        if (GetField_CString(hOfstStmtTxn, "org_txn_seq", &csOrgStmtTxnSeq)) {
+DEBUGLOG(("ProcessNewTxn:: OrgStmtTxnSeq [%s]\n", csOrgStmtTxnSeq));
+        }
+
+/* approval_date */
+        strftime(csDate, sizeof(csDate), PD_DEFAULT_DATE_FORMAT, &tStruct);
+        PutField_CString(hContext, "approval_date", csDate);
+DEBUGLOG(("ProcessNewTxn:: approval_date [%s]\n", csDate));
+
+/* approval_timestamp */
+        strftime(csDateTime, sizeof(csDateTime), PD_DEFAULT_DATETIME_FORMAT, &tStruct);
+        PutField_CString(hContext, "approval_timestamp", csDateTime);
+DEBUGLOG(("ProcessNewTxn:: approval_timestamp [%s]\n", csDateTime));
+
+/* add user */
+        if (GetField_CString(hContext, "update_user", &csTmp)) {
+DEBUGLOG(("ProcessNewStmtTxn: update_user [%s]\n", csTmp));
+                PutField_CString(hOfstStmtTxn, "update_user", csTmp);
+                PutField_CString(hOfstStmtTxn, "add_user", csTmp);
+                PutField_CString(hOfstStmtTxn, "create_user", csTmp);
+        }
+
+/* db_commit */
+        PutField_Int(hOfstStmtTxn, "db_commit", PD_FALSE);
+DEBUGLOG(("ProcessNewStmtTxn: db_commit [%d]\n", PD_FALSE));
+
+DEBUGLOG(("ProcessNewStmtTxn() call DBOLBAIDTxn::Add()\n"));
+        DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Add");
+        iRet = (unsigned long)(*DBObjPtr)(hOfstStmtTxn);
+        if (iRet != PD_OK) {
+                iRet = INT_ERR;
+DEBUGLOG(("ProcessNewStmtTxn() call DBOLBAIDTxn::Add() failed\n"));
+ERRLOG("TxnOmtByUsRBT::ProcessNewStmtTxn() call DBOLBAIDTxn::Add() failed\n");
+        }
+
+	// Add Txn Relation
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessNewStmtTxn TxnRelation!\n"));
+	
+		hash_init(hRelation, 0);
+
+		// Org Txn Seq
+		PutField_Char(hRelation, "party", PD_TYPE_PSP);
+                PutField_CString(hRelation, "p1_txn_id", csOrgStmtTxnSeq);
+                PutField_CString(hRelation, "p2_txn_id", csStmtTxnSeq);
+                PutField_Char(hRelation, "txn_level", PD_STMT_LEVEL);
+                PutField_Char(hRelation, "relation_type", PD_REL_LINKAGE);
+                if (GetField_CString(hContext, "update_user", &csTmp)) {
+                        PutField_CString(hRelation, "update_user", csTmp);
+                        PutField_CString(hRelation, "add_user", csTmp);
+                        PutField_CString(hRelation, "create_user", csTmp);
+                }
+
+                iRet = AddTxnRelation(hRelation);
+
+                hash_destroy(hRelation);
+        }
+
+	// Add Batch Txn Relation
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessNewStmtTxn BatchTxnRelation!\n"));
+
+                hash_init(hRelation, 0);
+
+                PutField_Char(hRelation, "batch_type", PD_GENERAL);
+                PutField_CString(hRelation, "batch_id", csBatchSeq);
+                PutField_Char(hRelation, "txn_level", PD_STMT_LEVEL);
+                PutField_CString(hRelation, "txn_id", csStmtTxnSeq);
+
+                iRet = AddBatchTxnRelation(hRelation);
+
+                hash_destroy(hRelation);
+        }
+
+	FREE_ME(hRelation);
+
+        return iRet;
+}
+

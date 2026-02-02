@@ -1,0 +1,1592 @@
+/*
+PDProTech (c)2018. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+ Init Version                                      2018/11/12              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <string.h>
+#include <ctype.h>
+#include "queue_utility.h"
+#include "OflComChannel.h"
+#include "utilitys.h"
+#include "common.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "mydb.h"
+#include "mq_db.h"
+#include "dbutility.h"
+#include "langconvert.h"
+
+
+static char    cDebug;
+OBJPTR(Msg);
+OBJPTR(BO);
+OBJPTR(DB);
+
+
+void 	OflComChannel(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+int     doResponse(hash_t *hContext, hex_t *outMsg)
+{
+	int     iRet = PD_OK;
+
+	int	iSend = PD_FALSE;
+	
+	long    lResponseQueueMtype;
+	long    lKey;
+	long    lRemoteKey = 0l;
+	
+	char*	csChannelPtr;
+
+DEBUGLOG(("OflComChannel:: doResponse()\n"));
+
+	if (GetField_Long(hContext,"queue_key",&lKey)){
+DEBUGLOG(("queue_key =[%ld]\n", lKey));
+		iSend = PD_TRUE;
+	}
+	else {
+DEBUGLOG(("queue_key is missing!!!\n"));
+		return PD_ERR;
+	}
+
+	if (GetField_Long(hContext,"remote_reply_key",&lRemoteKey)) {
+DEBUGLOG(("remote_reply_key =[%ld]\n", lRemoteKey));
+	}
+	else {
+DEBUGLOG(("remote_reply_key is missing!!!\n"));
+		return PD_ERR;
+	}
+
+	if (GetField_Long(hContext,"response_queue_mtype",&lResponseQueueMtype)) {
+DEBUGLOG(("response queue mtype = [%ld]\n",lResponseQueueMtype));
+        }
+	else {
+DEBUGLOG(("response_queue_mtype is missing!!!\n"));
+		return PD_ERR;
+	}
+
+// channel_code 
+	if (GetField_CString(hContext,"channel_code",&csChannelPtr)) {
+DEBUGLOG(("OflComChannel:: doResponse() channel_code  =[%s]\n",csChannelPtr));
+	}
+	else {
+DEBUGLOG(("channel_code is missing!!!\n"));
+		return PD_ERR;
+	}
+
+	if (iSend == PD_TRUE) {
+		struct msg_t* msg;
+		msg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+		msg->mtype  = lResponseQueueMtype;
+		memset(msg->mtext,0,sizeof(msg->mtext));
+		MQ_build_header((unsigned char*)msg->mtext,
+				MQ_RESP,
+				csChannelPtr,
+				0,
+				NULL,
+				lRemoteKey);
+		memcpy(&msg->mtext[MQ_HEADER_LEN],outMsg->msg,outMsg->len);
+		msg->mtext[MQ_HEADER_LEN + outMsg->len] = '\0';
+DEBUGLOG(("send len = [%d]\n",MQ_HEADER_LEN + outMsg->len));
+
+		iRet = MQSend(lKey,msg,MQ_HEADER_LEN + outMsg->len);
+
+		FREE_ME(msg);	
+	}
+
+DEBUGLOG(("OflComChannel:: doResponse() Normal Exit[%d]\n", iRet));
+	return iRet;
+}
+
+
+int     enBlock( hash_t *hContext,const hash_t *hResponse, hex_t *outMsg)
+{
+        int     iRet = PD_OK;
+
+        char    *csChannelCodePtr;
+        char    *csHandler;
+
+        csHandler = (char*) malloc (PD_HANDLER_LEN +1);
+        if (GetField_CString(hContext,"channel_code",&csChannelCodePtr)) {
+// set default return channel code 
+DEBUGLOG(("enBlock: channel code = [%s]\n",csChannelCodePtr));
+        }
+        else  {
+DEBUGLOG(("enBlock: unable to get channel code\n"));
+                iRet = PD_ERR;
+        }
+
+        if (iRet == PD_OK) {
+                sprintf(csHandler,"%c%sMsg",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]));
+DEBUGLOG(("enBlock [%s]BuildRspAuthData\n",csHandler));
+                MsgObjPtr = CreateObj(MsgPtr,csHandler,"BuildRspAuthData");
+                iRet = (unsigned long)(*MsgObjPtr)(hResponse);
+        }
+
+        if (iRet == PD_OK) {
+                sprintf(csHandler,"BO%c%sSecurity",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]));
+                BOObjPtr = CreateObj(BOPtr,csHandler,"GenerateMac");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hResponse);
+        }
+
+        if (iRet == PD_OK) {
+                sprintf(csHandler,"%c%sMsg",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]));
+DEBUGLOG(("enBlock [%s]FormatMsg\n",csHandler));
+                MsgObjPtr = CreateObj(MsgPtr,csHandler,"FormatMsg");
+                iRet = (unsigned long)(*MsgObjPtr)(hResponse, outMsg->msg, &outMsg->len);
+DEBUGLOG(("iRet = [%d] from [%s]:FormatMsg\n",iRet, csHandler));
+        }
+
+        FREE_ME(csHandler);
+DEBUGLOG(("enBlock Normal return iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+
+int     deBlock( hash_t *hContext, hash_t *hRequest, hash_t *hResponse,const char *inMsg, int inLen)
+{
+        int     iRet = PD_OK;
+
+        char    *csChannelCodePtr;
+        char    *csHandler;
+
+        if (GetField_CString(hContext,"channel_code",&csChannelCodePtr)) {
+/* set default return channel code */
+                PutField_CString(hResponse,"channel_code",csChannelCodePtr);
+DEBUGLOG(("deBlock:: channel code = [%s]\n",csChannelCodePtr));
+        }
+        else  {
+DEBUGLOG(("deBlock: unable to get channel code\n"));
+                iRet = PD_ERR;
+        }
+
+        csHandler = (char*) malloc (PD_HANDLER_LEN +1);
+        sprintf(csHandler,"%c%sMsg",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]));
+DEBUGLOG(("deBlock:: csHandler[%s]\n",csHandler));
+        MsgObjPtr = CreateObj(MsgPtr,csHandler,"BreakDownMsg");
+        iRet = (unsigned long)(*MsgObjPtr)(hRequest, inMsg, inLen);
+
+        if (iRet == PD_OK ) {
+DEBUGLOG(("To call [%s]::initReplyFromRequest\n",csHandler));
+                MsgObjPtr = CreateObj(MsgPtr,csHandler,"initReplyFromRequest");
+                if ((*MsgObjPtr)(hRequest,hResponse) != PD_OK)  {
+                        iRet = INT_BREAKDOWN_ERR;
+                }
+        }
+
+DEBUGLOG(("deBlock Normal return iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+
+int     AddTxnReqRef(const hash_t *hContext,
+		     const hash_t* hRequest)
+{
+	int 	iRet = PD_OK;
+
+	int     iDoLog = 0;
+
+	char    *csPtr;
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("AddTxnReqRef:: begin\n"));
+
+/* do_logging */
+	GetField_Int(hContext,"do_logging",&iDoLog);
+DEBUGLOG(("AddTxnReqRef:: do_log = [%d]\n",iDoLog));
+
+	if (iDoLog !=  PD_ADD_LOG) {
+                return iRet;
+        }
+
+/* txn_seq */
+	if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("txn_seq = [%s]\n",csPtr));
+                PutField_CString(hTxn,"txn_seq",csPtr);
+
+/* channel_code */
+		if (GetField_CString(hContext,"channel_code",&csPtr)) {
+DEBUGLOG(("channel_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"channel_code",csPtr);
+                }
+
+/* txn_code */
+                if (GetField_CString(hContext,"txn_code",&csPtr)) {
+DEBUGLOG(("txn_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"txn_code",csPtr);
+                }
+
+/* req_ref */
+		if (GetField_CString(hRequest,"req_ref",&csPtr)) {
+DEBUGLOG(("req_ref = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"req_ref",csPtr);
+                }
+
+/* version */
+		if (GetField_CString(hRequest,"version",&csPtr)) {
+DEBUGLOG(("version = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"version",csPtr);
+                }
+		
+
+/* add_user */
+		if (GetField_CString(hContext,"add_user",&csPtr)) {
+DEBUGLOG(("add_user = [%s]\n",csPtr));
+			PutField_CString(hTxn,"add_user",csPtr);
+		} else {
+DEBUGLOG(("add_user = [%s]\n",PD_UPDATE_USER));
+			PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+		}
+
+		// status
+		PutField_Char(hTxn,"status",PD_PROCESSING);
+DEBUGLOG(("status = [%c]\n",PD_PROCESSING));
+
+		// Add OLTxnRequestRef
+DEBUGLOG(("Call DBOLTxnRequestRef:: Add \n"));
+                DBObjPtr = CreateObj(DBPtr,"DBOLTxnRequestRef","Add");
+                iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+		if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLTxnRequestRef:: Add Failure!!\n"));
+ERRLOG("OflComChannel:: AddTxnReqRef:: Call DBOLTxnRequestRef:: Add Failure!!\n");
+		}
+	}
+
+	hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+DEBUGLOG(("AddTxnReqRef:: iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int	UpdateTxnReqRef(const hash_t *hContext,
+			const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+
+	int	iNotUpdate=PD_FALSE;
+	int     iPtr;
+
+	char    cPtr;
+
+	char	*csPtr = NULL;
+
+	hash_t  *hTxn;
+
+DEBUGLOG(("UpdateTxnReqRef:: begin\n"));
+
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn, 0);
+
+	if (GetField_Int(hContext, "not_update_log", &iNotUpdate)) {
+DEBUGLOG(("UpdateTxnReqRef:: not update log = [%d]\n",iNotUpdate));
+	}
+
+// Update Log!
+	if (!iNotUpdate) {
+		if (GetField_CString(hContext, "txn_seq", &csPtr)) {
+DEBUGLOG(("txn_seq = [%s]\n", csPtr));
+			PutField_CString(hTxn, "txn_seq", csPtr);
+		}
+
+		if (GetField_CString(hContext, "t1_txn_id", &csPtr)) {
+DEBUGLOG(("t1_txn_id = [%s]\n", csPtr));
+			PutField_CString(hTxn, "t1_txn_id", csPtr);
+		}
+
+		if (GetField_CString(hContext, "t2_txn_id", &csPtr)) {
+DEBUGLOG(("t2_txn_id = [%s]\n", csPtr));
+			PutField_CString(hTxn, "t2_txn_id", csPtr);
+		}
+
+		if (GetField_Char(hContext, "status", &cPtr)) {
+DEBUGLOG(("status = [%c]\n", cPtr));
+			PutField_Char(hTxn, "status", cPtr);
+		}
+
+		if (GetField_Int(hContext, "internal_code", &iPtr)) {
+DEBUGLOG(("internal_code = [%d]\n", iPtr));
+			PutField_Int(hTxn, "ret_code", iPtr);
+		}
+
+                if (GetField_CString(hContext,"update_user",&csPtr)) {
+DEBUGLOG(("update_user = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"update_user",csPtr);
+                } 
+
+		if (iRet == PD_OK) {
+DEBUGLOG(("Call DBOLTxnRequestRef:: Update!\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLTxnRequestRef","Update");
+			iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+			if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLTxnRequestRef:: Update Failure!!\n"));
+ERRLOG("OflComChannel:: UpdateTxnReqRef:: Call DBOLTxnRequestRef:: Update Failure!!\n");	
+			}
+		}
+	}
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+DEBUGLOG(("UpdateTxnReqRef:: iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int     AddNonTxnMsgLog(const hash_t *hContext, 
+			const hash_t* hRequest)
+{
+	int     iRet = PD_OK;
+
+        int	iNonTxn = PD_FALSE;
+	int	i = 0, j = 0;
+	int	iListCnt = 0;
+	int	iCnt = 0;
+	int     iPtr = 0;
+
+        char    *csPtr = NULL;
+        char    *csTag = NULL;
+
+	char    csListKey[PD_TMP_BUF_LEN +1];
+	char    csKey[PD_TMP_BUF_LEN +1];
+	char    csVal[PD_TMP_BUF_LEN +1];
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("AddNonTxnMsgLog:: begin\n"));
+
+/* is_non_txn */
+        GetField_Int(hContext,"is_non_txn",&iNonTxn);
+DEBUGLOG(("AddNonTxnMsgLog:: is non txn = [%d]\n", iNonTxn));
+
+        if (iNonTxn !=  PD_TRUE) {
+                return iRet;
+        }
+
+/* txn_seq */
+        if (GetField_CString(hContext,"txn_seq",&csPtr)) {
+DEBUGLOG(("txn_seq = [%s]\n",csPtr));
+                PutField_CString(hTxn,"txn_seq",csPtr);
+
+/* channel_code */
+                if (GetField_CString(hContext,"channel_code",&csPtr)) {
+DEBUGLOG(("channel_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"channel_code",csPtr);
+                }
+
+/* txn_code */
+                if (GetField_CString(hContext,"txn_code",&csPtr)) {
+DEBUGLOG(("txn_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"txn_code",csPtr);
+                }
+
+/* version */
+                if (GetField_CString(hRequest,"version",&csPtr)) {
+DEBUGLOG(("version = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"version",csPtr);
+                }
+	
+/* add_user */
+                if (GetField_CString(hContext,"add_user",&csPtr)) {
+DEBUGLOG(("add_user = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"add_user",csPtr);
+                } else {
+DEBUGLOG(("add_user = [%s]\n",PD_UPDATE_USER));
+                        PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+                }
+
+                // status
+                PutField_Char(hTxn,"status",PD_PROCESSING);
+DEBUGLOG(("status = [%c]\n",PD_PROCESSING));
+
+                // Add OLNonTxnMsgHeader
+DEBUGLOG(("Call DBOLNonTxnMsgHeader:: Add \n"));
+                DBObjPtr = CreateObj(DBPtr,"DBOLNonTxnMsgHeader","Add");
+                iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+                if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLNonTxnMsgHeader:: Add Failure!!\n"));
+ERRLOG("OflComChannel:: AddNonTxnMsgLog:: Call DBOLNonTxnMsgHeader:: Add Failure!!\n");
+			iRet = INT_ERR;
+                }
+
+		if (iRet == PD_OK) {
+
+/* direction */
+			PutField_Char(hTxn, "direction", PD_TXN_REQUEST);
+
+/* baid */
+                	if (GetField_CString(hRequest, "baid", &csPtr)) {
+//DEBUGLOG(("baid = [%s]\n", csPtr));
+				sprintf(csKey, "tag_%d", iCnt);
+                        	PutField_CString(hTxn, csKey, "baid");
+				sprintf(csKey, "value_%d", iCnt);
+                        	PutField_CString(hTxn, csKey, csPtr);
+				iCnt++;
+                	}					
+
+/* rec_date */
+			if (GetField_CString(hRequest, "rec_date", &csPtr)) {
+//DEBUGLOG(("rec_date = [%s]\n", csPtr));
+                                sprintf(csKey, "tag_%d", iCnt);
+                                PutField_CString(hTxn, csKey, "rec_date");
+                                sprintf(csKey, "value_%d", iCnt);
+                                PutField_CString(hTxn, csKey, csPtr);
+                                iCnt++;
+                        }
+
+/* auto_upload_ind */
+                        if (GetField_CString(hRequest, "auto_upload_ind", &csPtr)) {
+//DEBUGLOG(("auto_upload_ind = [%s]\n", csPtr));
+				sprintf(csKey, "tag_%d", iCnt);
+                                PutField_CString(hTxn, csKey, "auto_upload_ind");
+                                sprintf(csKey, "value_%d", iCnt);
+                                PutField_CString(hTxn, csKey, csPtr);
+				iCnt++;
+                        }
+
+/* p_list */
+                	if (GetField_Int(hRequest, "p_list", &iListCnt)) {
+//DEBUGLOG(("p_list = [%d]\n", iListCnt));
+
+                        	for (i= 0; i < iListCnt; i++) {
+	
+					sprintf(csListKey, "p_list.%d.baid", i);
+					if (GetField_CString(hRequest, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+						sprintf(csKey, "tag_%d", iCnt);
+                                        	PutField_CString(hTxn, csKey, csListKey);
+                                        	sprintf(csKey, "value_%d", iCnt);
+                                        	PutField_CString(hTxn, csKey, csPtr);	
+						iCnt++;
+                                        }	
+				}
+                	}
+
+			for(j = 0; j < iCnt; j++){
+
+				if (iRet == PD_OK) {
+					sprintf(csKey, "tag_%d", j);
+					if (GetField_CString(hTxn, csKey, &csTag)) {
+//DEBUGLOG(("[%d][tag] = [%s]\n", j, csTag));
+						PutField_CString(hTxn, "tag", csTag);
+					} else {
+DEBUGLOG(("[%d] tag not found!!\n", j));
+ERRLOG("OflComChannel::AddNonTxnMsgLog:: tag not found!!\n");
+                                		iRet = INT_ERR;
+					}
+				}
+
+				if (iRet == PD_OK) {
+					sprintf(csKey, "value_%d", j);
+
+					// CString
+					if (GetField_CString(hTxn, csKey, &csPtr)) {
+						sprintf(csVal, "%s", csPtr);
+//DEBUGLOG(("[%d][value] = [%s]\n", j, csVal));
+						PutField_CString(hTxn, "value", csVal);
+					}
+
+					// Integer
+					if (GetField_Int(hTxn, csKey, &iPtr)) {
+                                                sprintf(csVal, "%d", iPtr);
+//DEBUGLOG(("[%d][value] = [%s]\n", j, csVal));
+                                            	PutField_CString(hTxn, "value", csVal);
+                                    	}
+				}				
+
+				// Add OLNonTxnMsgDetail
+				if (iRet == PD_OK) {
+DEBUGLOG(("[%d] Call DBOLNonTxnMsgDetail:: Add [%s] = [%s]\n", j, csTag, csVal));
+                			DBObjPtr = CreateObj(DBPtr,"DBOLNonTxnMsgDetail","Add");
+                			iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+                			if (iRet != PD_OK) {
+DEBUGLOG(("[%d] Call DBOLNonTxnMsgDetail:: Add Failure!!\n", j));
+ERRLOG("OflComChannel:: AddNonTxnMsgLog:: Call DBOLNonTxnMsgDetail:: Add Failure!!\n");
+						iRet = INT_ERR;
+                			}
+				}
+			}
+		}
+        }
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+DEBUGLOG(("AddNonTxnMsgLog:: iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int     UpdateNonTxnMsgLog(const hash_t *hContext,
+			   const hash_t *hRequest,  
+	 		   hash_t *hResponse)
+{	
+        int     iRet = PD_OK;
+
+        int     iNonTxn = PD_FALSE;
+	int     i = 0, j = 0;
+        int     iListCnt = 0;
+        int     iCnt = 0;
+	int     iPtr = 0;
+	
+        char    cPtr;
+
+        char    *csPtr = NULL;
+	char    *csTag = NULL;
+
+	char    csListKey[PD_TMP_BUF_LEN +1];
+        char    csKey[PD_TMP_BUF_LEN +1];
+        char    csVal[PD_TMP_BUF_LEN +1];
+
+        hash_t  *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn, 0);
+
+DEBUGLOG(("UpdateNonTxnMsgLog:: begin\n"));
+
+	if (GetField_Int(hContext, "is_non_txn", &iNonTxn)) {
+DEBUGLOG(("UpdateNonTxnMsgLog:: is non txn = [%d]\n",iNonTxn));
+        }
+ 	
+	// Update Log
+        if (iNonTxn == PD_TRUE) {
+
+/* direction */
+               	PutField_Char(hTxn, "direction", PD_TXN_RESPONSE);
+DEBUGLOG(("direction = [%c]\n", PD_TXN_RESPONSE));
+
+/* txn_seq */
+                if (GetField_CString(hContext, "txn_seq", &csPtr)) {
+DEBUGLOG(("txn_seq = [%s]\n", csPtr));
+                        PutField_CString(hTxn, "txn_seq", csPtr);
+		}
+
+/* status */
+                if (GetField_Char(hContext, "status", &cPtr)) {
+DEBUGLOG(("status = [%c]\n", cPtr));
+                        PutField_Char(hTxn, "status", cPtr);
+                }
+
+/* internal_code */
+                if (GetField_Int(hContext, "internal_code", &iPtr)) {
+DEBUGLOG(("internal_code = [%d]\n", iPtr));
+                        PutField_Int(hTxn, "ret_code", iPtr);
+                }
+
+/* add_user */
+                if (GetField_CString(hContext,"add_user",&csPtr)) {
+DEBUGLOG(("add_user = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"add_user",csPtr);
+                } else {
+DEBUGLOG(("add_user = [%s]\n",PD_UPDATE_USER));
+                        PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+                }
+
+/* update_user */
+                if (GetField_CString(hContext,"update_user",&csPtr)) {
+DEBUGLOG(("update_user = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"update_user",csPtr);
+                } else {
+DEBUGLOG(("update_user = [%s]\n",PD_UPDATE_USER));
+                        PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+                }
+
+/* baid */
+             	if (GetField_CString(hResponse, "baid", &csPtr)) {
+//DEBUGLOG(("baid = [%s]\n", csPtr));
+                   	sprintf(csKey, "tag_%d", iCnt);
+                      	PutField_CString(hTxn, csKey, "baid");
+                     	sprintf(csKey, "value_%d", iCnt);
+                      	PutField_CString(hTxn, csKey, csPtr);
+                     	iCnt++;
+                }
+
+/* prov_id */
+              	if (GetField_CString(hResponse, "prov_id", &csPtr)) {
+//DEBUGLOG(("prov_id = [%s]\n", csPtr));
+                    	sprintf(csKey, "tag_%d", iCnt);
+                      	PutField_CString(hTxn, csKey, "prov_id");
+                       	sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                       	iCnt++;
+              	}
+
+/* prov_name */
+                if (GetField_CString(hResponse, "prov_name", &csPtr)) {
+//DEBUGLOG(("prov_name = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "prov_name");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* baid_status */
+                if (GetField_CString(hResponse, "baid_status", &csPtr)) {
+//DEBUGLOG(("baid_status = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "baid_status");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* bank_nature */
+		if (GetField_CString(hResponse, "bank_nature", &csPtr)) {
+//DEBUGLOG(("bank_nature = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "bank_nature");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+		}
+
+/* bank_name */
+                if (GetField_CString(hResponse, "bank_name", &csPtr)) {
+//DEBUGLOG(("bank_name = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "bank_name");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* owner_name */
+		if (GetField_CString(hResponse, "owner_name", &csPtr)) {
+//DEBUGLOG(("owner_name = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "owner_name");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* branch_name */
+		if (GetField_CString(hResponse, "branch_name", &csPtr)) {
+//DEBUGLOG(("branch_name = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "branch_name");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* acct_short_name */
+		if (GetField_CString(hResponse, "acct_short_name", &csPtr)) {
+//DEBUGLOG(("acct_short_name = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "acct_short_name");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* acct_num */
+		if (GetField_CString(hResponse, "acct_num", &csPtr)) {
+//DEBUGLOG(("acct_num = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "acct_num");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* acct_status */
+		if (GetField_CString(hResponse, "acct_status", &csPtr)) {
+//DEBUGLOG(("acct_status = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "acct_status");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* merchant_id */
+		if (GetField_CString(hResponse, "merchant_id", &csPtr)) {
+//DEBUGLOG(("merchant_id = [%s]\n", csPtr));
+                        sprintf(csKey, "tag_%d", iCnt);
+                        PutField_CString(hTxn, csKey, "merchant_id");
+                        sprintf(csKey, "value_%d", iCnt);
+                        PutField_CString(hTxn, csKey, csPtr);
+                        iCnt++;
+                }
+
+/* r_list */
+             	if (GetField_Int(hResponse, "r_list", &iListCnt)) {
+//DEBUGLOG(("r_list = [%d]\n", iListCnt));
+
+                      	for (i= 0; i < iListCnt; i++) {
+
+                     		sprintf(csListKey, "r_list.%d.dt_err_code", i);
+                               	if (GetField_Int(hResponse, csListKey, &iPtr)) {
+//DEBUGLOG(("[%s] = [%d]\n", csListKey, iPtr));
+                                     	sprintf(csKey, "tag_%d", iCnt);
+                                     	PutField_CString(hTxn, csKey, csListKey);
+                                      	sprintf(csKey, "value_%d", iCnt);
+                                       	PutField_Int(hTxn, csKey, iPtr);
+                                      	iCnt++;
+                               	}
+
+				sprintf(csListKey, "r_list.%d.baid", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.prov_id", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.prov_name", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.baid_status", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.pid_nature", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.bank_nature", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.bank_name", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.owner_name", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.branch_name", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.acct_short_name", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.acct_num", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.acct_status", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.merchant_id", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.country", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.currency", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.baid_bal", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.acct_bal", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+				
+				sprintf(csListKey, "r_list.%d.create_dt", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+
+				sprintf(csListKey, "r_list.%d.rec_end_ind", i);
+                                if (GetField_CString(hResponse, csListKey, &csPtr)) {
+//DEBUGLOG(("[%s] = [%s]\n", csListKey, csPtr));
+                                        sprintf(csKey, "tag_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csListKey);
+                                        sprintf(csKey, "value_%d", iCnt);
+                                        PutField_CString(hTxn, csKey, csPtr);
+                                        iCnt++;
+                                }
+                     	}
+            	}
+
+		if (iRet == PD_OK) {
+
+			for(j = 0; j < iCnt; j++){
+
+				if (iRet == PD_OK) {
+                                        sprintf(csKey, "tag_%d", j);
+                                        if (GetField_CString(hTxn, csKey, &csTag)) {
+//DEBUGLOG(("[%d][tag] = [%s]\n", j, csTag));
+                                                PutField_CString(hTxn, "tag", csTag);
+                                        } else {
+DEBUGLOG(("[%d] tag not found!!\n", j));
+ERRLOG("OflComChannel::UpdateNonTxnMsgLog:: tag not found!!\n");
+                                                iRet = INT_ERR;
+                                        }
+                                }
+
+                                if (iRet == PD_OK) {
+                                        sprintf(csKey, "value_%d", j);
+
+					// CString
+                                        if (GetField_CString(hTxn, csKey, &csPtr)) {
+						sprintf(csVal, "%s", csPtr);
+//DEBUGLOG(("[%d][value] = [%s]\n", j, csVal));
+                                                PutField_CString(hTxn, "value", csVal);
+                                        }
+
+					// Integer
+					if (GetField_Int(hTxn, csKey, &iPtr)) {
+						sprintf(csVal, "%d", iPtr);
+//DEBUGLOG(("[%d][value] = [%s]\n", j, csVal));
+                                                PutField_CString(hTxn, "value", csVal);
+                                        }
+                                }
+	
+				// Add OLNonTxnMsgDetail
+				if (iRet == PD_OK) {		
+DEBUGLOG(("[%d] Call DBOLNonTxnMsgDetail:: Add [%s] = [%s]\n", j, csTag, csVal));
+                            		DBObjPtr = CreateObj(DBPtr,"DBOLNonTxnMsgDetail","Add");
+                              		iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+                             		if (iRet != PD_OK) {
+DEBUGLOG(("[%d] Call DBOLNonTxnMsgDetail:: Add Failure!!\n", j));
+ERRLOG("OflComChannel:: UpdateNonTxnMsgLog:: Call DBOLNonTxnMsgDetail:: Add Failure!!\n");
+                                     		iRet = INT_ERR;
+					}
+                     		}
+			}
+		}
+
+		// Update OLNonTxnMsgHeader
+                if (iRet == PD_OK) {
+DEBUGLOG(("Call DBOLNonTxnMsgHeader:: Update\n"));
+                        DBObjPtr = CreateObj(DBPtr,"DBOLNonTxnMsgHeader","Update");
+                        iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+                        if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLNonTxnMsgHeader:: Update Failure!!\n"));
+ERRLOG("OflComChannel:: UpdateNonTxnMsgLog:: Call DBOLNonTxnMsgHeader:: Update Failure!!\n");
+				iRet = INT_ERR;
+                        }
+                }
+        }
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+DEBUGLOG(("UpdateNonTxnMsgLog:: iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+
+int     AddTxnLog(const hash_t *hContext,
+		  const hash_t* hRequest)
+{
+	int     iRet = PD_OK;
+
+	int	iPtr = 0;
+
+	int     iDoLog = PD_FALSE;
+
+	char    *csTxnSeq = NULL;
+	char    *csPtr = NULL;
+ 	char    csTxnDateTime[PD_DATETIME_LEN + 1];
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("AddTxnLog:: begin\n"));
+
+/* do_logging */
+	if(GetField_Int(hContext,"do_logging",&iDoLog)){	
+DEBUGLOG(("AddTxnLog do_log = [%d]\n", iDoLog));
+
+		if (iDoLog != PD_ADD_LOG) {
+			return iRet;
+		}
+	}
+
+/* txn_seq */
+	if (GetField_CString(hContext, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("txn_seq = [%s]\n", csTxnSeq));
+		PutField_CString(hTxn, "txn_seq", csTxnSeq);
+
+/* add_user */
+		if (GetField_CString(hContext, "add_user", &csPtr)) {
+DEBUGLOG(("add_user = [%s]\n", csPtr));
+			PutField_CString(hTxn, "add_user", csPtr);
+			PutField_CString(hTxn, "update_user", csPtr);
+		} else {
+			PutField_CString(hTxn, "add_user", PD_UPDATE_USER);
+			PutField_CString(hTxn, "update_user", PD_UPDATE_USER);
+		}
+
+/* db_commit */
+		if (GetField_Int(hContext, "db_commit", &iPtr)) {
+DEBUGLOG(("db_commit = [%d]\n", iPtr));
+			PutField_Int(hTxn, "db_commit", iPtr);
+		}
+
+/* org_txn_seq */
+		if (GetField_CString(hContext, "org_txn_seq", &csPtr)) {
+DEBUGLOG(("org_txn_seq = [%s]\n", csPtr));
+			PutField_CString(hTxn, "org_txn_seq", csPtr);
+		}
+
+/* channel_code */
+		if (GetField_CString(hContext, "channel_code", &csPtr)) {
+DEBUGLOG(("channel_code = [%s]\n", csPtr));
+			PutField_CString(hTxn, "channel_code", csPtr);
+		}
+
+/* txn_code */
+		if (GetField_CString(hContext, "txn_code", &csPtr)) {
+DEBUGLOG(("txn_code = [%s]\n", csPtr));
+			PutField_CString(hTxn, "txn_code", csPtr);
+		}
+
+/* process_code */
+		if (GetField_CString(hContext, "process_code", &csPtr)) {
+DEBUGLOG(("process_code = [%s]\n", csPtr));
+			PutField_CString(hTxn, "process_code", csPtr);
+		}
+
+/* process_type */
+		if (GetField_CString(hContext, "process_type", &csPtr)) {
+DEBUGLOG(("process_type = [%s]\n", csPtr));
+			PutField_CString(hTxn, "process_type", csPtr);
+		}
+
+/* client_ip */
+		if (GetField_CString(hRequest, "ip_addr", &csPtr)) {
+DEBUGLOG(("ip_addr = [%s]\n", csPtr));
+			PutField_CString(hTxn, "ip_addr", csPtr);
+		}
+
+/* client_id */
+		if (GetField_CString(hRequest, "client_id", &csPtr)) {
+DEBUGLOG(("client id = [%s]\n" ,csPtr));
+			PutField_CString(hTxn, "client_id", csPtr);
+		}
+
+/* merchant_ref */
+		if (GetField_CString(hRequest, "merchant_ref", &csPtr)) {
+DEBUGLOG(("merchant ref = [%s]\n", csPtr));
+			PutField_CString(hTxn, "merchant_ref", csPtr);
+		}
+
+/* merchant_id */
+		if (GetField_CString(hRequest, "merchant_id", &csPtr)) {
+DEBUGLOG(("merchant_id = [%s]\n", csPtr));
+			PutField_CString(hTxn, "merchant_id", csPtr);
+		}
+
+/* service_code */
+		if (GetField_CString(hRequest, "service_code", &csPtr)) {
+DEBUGLOG(("service_code = [%s]\n", csPtr));
+			PutField_CString(hTxn, "service_code", csPtr);
+		}
+
+/* net_ccy */
+		if (GetField_CString(hRequest, "net_ccy", &csPtr)) {
+DEBUGLOG(("net_ccy = [%s]\n", csPtr));
+			PutField_CString(hTxn, "net_ccy", csPtr);
+		}
+
+/* PHDATE */
+                if (GetField_CString(hContext, "PHDATE", &csPtr)) {
+DEBUGLOG(("host_posting_date = [%s]\n", csPtr));
+			PutField_CString(hTxn,"host_posting_date",csPtr);
+		}
+
+/* transmission_datetime */
+                if (GetField_CString(hContext, "transmission_datetime", &csPtr)) {
+DEBUGLOG(("transmission_datetime = [%s]\n", csPtr));
+			PutField_CString(hTxn, "transmission_datetime", csPtr);
+		}
+
+		// Check Later!!!
+/* local_tm_date */
+		if (GetField_CString(hContext, "local_tm_date", &csPtr)) {
+DEBUGLOG(("local_tm_date = [%s]\n", csPtr));
+			PutField_CString(hTxn, "local_tm_date", csPtr);
+
+			strcpy(csTxnDateTime, csPtr);
+                        PutField_CString(hTxn,"transmission_datetime",csTxnDateTime);
+
+                        PutField_CString(hTxn,"tm_date",csPtr);
+		}
+
+/* local_tm_time */
+		if (GetField_CString(hContext, "local_tm_time", &csPtr)) {
+DEBUGLOG(("local_tm_time = [%s]\n", csPtr));
+			PutField_CString(hTxn, "local_tm_time", csPtr);
+
+			strcat(csTxnDateTime, csPtr);
+                        PutField_CString(hTxn,"transmission_datetime",csTxnDateTime);
+		}
+
+		// **** Add into OL_TXN_REQUEST_REF?
+/*
+                if (GetField_CString(hRequest, "version_no", &csPtr)) {
+DEBUGLOG(("version_no = [%s]\n", csPtr));
+			PutField_CString(hTxn, "version_no", csPtr);
+		}
+*/
+
+/* tm_date */
+		if (GetField_CString(hRequest, "tm_date", &csPtr)) {
+DEBUGLOG(("tm_date = [%s]\n", csPtr));
+			PutField_CString(hTxn, "tm_date", csPtr);
+		}
+
+/* tm_time */
+		if (GetField_CString(hRequest, "tm_time", &csPtr)) {
+DEBUGLOG(("tm_time = [%s]\n", csPtr));
+			PutField_CString(hTxn, "tm_time", csPtr);
+		}
+
+/* txn_ccy */
+		if (GetField_CString(hRequest, "txn_ccy", &csPtr)) {
+DEBUGLOG(("txn_ccy = [%s]\n", csPtr));
+			PutField_CString(hTxn, "txn_ccy", csPtr);
+		}
+
+/* txn_country */
+		if (GetField_CString(hRequest, "txn_country", &csPtr)) {
+DEBUGLOG(("txn_country = [%s]\n", csPtr));
+			PutField_CString(hTxn, "txn_country", csPtr);
+		}
+
+/* user_agent */
+		if (GetField_CString(hRequest, "user_agent", &csPtr)) {
+DEBUGLOG(("user_agent = [%s]\n", csPtr));
+			PutField_CString(hTxn, "user_agent", csPtr);
+		}
+
+/* remark */
+		if (GetField_CString(hRequest, "remark", &csPtr)) {
+DEBUGLOG(("remark = [%s]\n", csPtr));
+			PutField_CString(hTxn, "remark", csPtr);
+		}
+
+		// status
+                PutField_Char(hTxn,"status",PD_PROCESSING);
+DEBUGLOG(("status = [%c]\n", PD_PROCESSING));
+
+		// Add Txn Header
+		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","Add");
+                	iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+			if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLTransaction::Add Failure!!\n"));
+ERRLOG("OflComChannel::AddTxnLog::Call DBOLTransaction::Add Failure!!\n");
+                	        iRet = INT_ERR;
+                	}
+		}
+
+		// Add Txn Detail
+		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","AddDetail");
+			iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+			if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLTransaction::AddDetail Failure!!\n"));
+ERRLOG("OflComChannel::AddTxnLog::Call DBOLTransaction::AddDetail Failure!!\n");
+				iRet = INT_ERR;
+			}
+		}
+	} 
+	else {
+DEBUGLOG(("txn_seq not found!!\n"));
+ERRLOG("OflComChannel::AddTxnLog::txn_seq not found!!\n");
+		iRet = PD_ERR;
+	}
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+DEBUGLOG(("AddTxnLog:: iRet = [%d]\n",iRet));
+	return  iRet;
+}
+
+
+int     UpdateTxnLog(const hash_t *hContext, const hash_t* hRequest,  hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	int     iNotUpdate = PD_FALSE;
+	int     iSetRefundTime = PD_FALSE;
+	int     iPtr;	
+
+	double  dPtr;
+
+	char    cPtr;
+
+	char    *csTxnCodePtr;
+	char    *csTxnSeqPtr;
+	char    *csPtr;
+        char    *csTag = (char*) malloc (PD_TMP_BUF_LEN + 1);
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("UpdateTxnLog:: begin\n"));
+
+/* not_update_log */
+        if(GetField_Int(hContext,"not_update_log",&iNotUpdate)){
+DEBUGLOG(("UpdateTxnLog:: not update log = [%d]\n",iNotUpdate));
+        }
+
+/* txn_code */
+        if (GetField_CString(hContext,"txn_code",&csTxnCodePtr)) {
+DEBUGLOG(("txn_code = [%s]\n",csTxnCodePtr));
+                if (!strcmp(csTxnCodePtr,PD_INITIAL_REQ_TXN_CODE))
+                        strcpy(csTag,"from_txn_seq");
+                else
+                        strcpy(csTag,"txn_seq");
+        }
+        else {
+                strcpy(csTag,"txn_seq");
+        }
+
+        if (GetField_CString(hContext,csTag,&csTxnSeqPtr) && !iNotUpdate) {
+DEBUGLOG(("txn_seq = [%s]\n",csTxnSeqPtr));
+                PutField_CString(hTxn,"txn_seq",csTxnSeqPtr);
+
+		// update_user
+                PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+
+/* org_txn_seq */
+                if (GetField_CString(hContext,"org_txn_seq",&csPtr)) {
+DEBUGLOG(("org_txn_seq = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"org_txn_seq",csPtr);
+                }
+
+/* process_code */
+                if (GetField_CString(hContext,"process_code",&csPtr)) {
+DEBUGLOG(("process_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"process_code",csPtr);
+                }
+
+/* process_type */
+                if (GetField_CString(hContext,"process_type",&csPtr)) {
+DEBUGLOG(("process_type = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"process_type",csPtr);
+                }
+
+/* status */
+                if (GetField_Char(hContext,"status",&cPtr)) {
+DEBUGLOG(("status = [%c]\n",cPtr));
+                        PutField_Char(hTxn,"status",cPtr);
+                }
+
+/* ar_ind */
+                if (GetField_Char(hContext,"ar_ind",&cPtr)) {
+DEBUGLOG(("ar_ind = [%c]\n",cPtr));
+                        PutField_Char(hTxn,"ar_ind",cPtr);
+                }
+
+/* sub_status */
+                if (GetField_CString(hContext,"sub_status",&csPtr)) {
+DEBUGLOG(("sub_status = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"sub_status",csPtr);
+                }
+
+/* internal_code */
+		if (GetField_Int(hContext,"internal_code",&iPtr)) {
+DEBUGLOG(("internal_code = [%d]\n",iPtr));
+                        PutField_Int(hTxn,"internal_code",iPtr);
+                }
+
+/* merchant_client_id */
+                if (GetField_CString(hContext,"merchant_client_id",&csPtr)) {
+DEBUGLOG(("merchant_client_id = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"client_id",csPtr);
+                }
+
+/* response_code */
+                if (GetField_CString(hResponse,"response_code",&csPtr)) {
+DEBUGLOG(("response_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"response_code",csPtr);
+                }
+
+/* net_ccy */
+              	if (GetField_CString(hContext,"net_ccy",&csPtr)) {
+DEBUGLOG(("net_ccy = [%s]\n",csPtr));
+                  	PutField_CString(hTxn,"net_ccy",csPtr);
+                }
+
+/* net_fee */
+                if (GetField_Double(hContext,"net_fee",&dPtr)) {
+DEBUGLOG(("service_fee = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"service_fee",dPtr);
+                }
+
+/* net_amt */
+                if (GetField_Double(hContext,"net_amt",&dPtr)) {
+DEBUGLOG(("net_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"net_amt",dPtr);
+                }
+
+/* txn_amt */
+                if (GetField_Double(hContext,"txn_amt",&dPtr)) {
+DEBUGLOG(("txn_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"txn_amt",dPtr);
+                }
+
+/* ex_rate */
+                if (GetField_Double(hContext,"ex_rate",&dPtr)) {
+DEBUGLOG(("ex_rate = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"ex_rate",dPtr);
+                }
+
+/* ex_party */
+                if (GetField_Char(hContext,"ex_party",&cPtr)) {
+DEBUGLOG(("ex_supplier = [%f]\n",cPtr));
+                        PutField_Char(hTxn,"ex_supplier",cPtr);
+                }
+
+/* markup ccy */
+                if(GetField_CString(hContext,"markup_ccy",&csPtr)){
+DEBUGLOG(("markup_ccy = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"markup_ccy",csPtr);
+                }
+
+/* markup_rate */
+              	if (GetField_Double(hContext,"markup_rate",&dPtr)) {
+DEBUGLOG(("markup_rate = [%f]\n",dPtr));
+                      	PutField_Double(hTxn,"markup_rate",dPtr);
+           	}
+
+/* markup_amt */
+                if (GetField_Double(hContext,"markup_amt",&dPtr)) {
+DEBUGLOG(("markup_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"markup_amt",dPtr);
+                }
+
+/* dst_txn_amt */
+                if(GetField_Double(hContext,"dst_txn_amt",&dPtr)){
+DEBUGLOG(("dst_txn_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"dst_txn_amt",dPtr);
+                }
+
+/* reserve_amt */
+                if (GetField_Double(hRequest,"reserve_amt",&dPtr)) {
+DEBUGLOG(("UpdateRespTxnLog:: reserve_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"reserve_amt",dPtr);
+                }
+
+/* settlement_txn_amt */
+                if(GetField_Double(hContext,"settlement_txn_amt",&dPtr)){
+DEBUGLOG(("settlement_txn_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"settlement_txn_amt",dPtr);
+                }
+
+/* display_amt */
+                if (GetField_Double(hContext,"display_amt",&dPtr)) {
+DEBUGLOG(("display_amt = [%f]\n",dPtr));
+                        PutField_Double(hTxn,"display_amt",dPtr);
+                }
+
+/* merchant_id */
+                if (GetField_CString(hContext,"merchant_id",&csPtr)) {
+DEBUGLOG(("merchant_id = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"merchant_id",csPtr);
+                }
+
+/* merchant_ref */
+                if (GetField_CString(hContext,"merchant_ref",&csPtr)) {
+DEBUGLOG(("merchant_ref = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"merchant_ref",csPtr);
+                }
+
+/* service_code */
+                if (GetField_CString(hContext,"service_code",&csPtr)) {
+DEBUGLOG(("service_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"service_code",csPtr);
+                }
+
+/* approval_date */
+                if (GetField_CString(hContext,"approval_date",&csPtr)) {
+DEBUGLOG(("approval_date = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"approval_date",csPtr);
+                }
+
+/* approval_timestamp */
+                if (GetField_CString(hContext,"approval_timestamp",&csPtr)) {
+DEBUGLOG(("approval_timestamp = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"approval_timestamp",csPtr);
+                }
+
+/* new_txn_code */
+                if (GetField_CString(hContext,"new_txn_code",&csPtr)) {
+DEBUGLOG(("new_txn_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"txn_code",csPtr);
+                }
+
+/* user_agent */
+                if (GetField_CString(hRequest,"user_agent",&csPtr)) {
+DEBUGLOG(("user_agent = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"user_agent",csPtr);
+                }
+
+/* recon_status */
+                if (GetField_Char(hContext,"recon_status",&cPtr)) {
+DEBUGLOG(("recon_status = [%c]\n",cPtr));
+                        PutField_Char(hTxn,"recon_status",cPtr);
+                }
+
+/* recon_date */
+                if (GetField_CString(hContext,"recon_date",&csPtr)) {
+DEBUGLOG(("recon_date = [%c]\n",csPtr));
+                        PutField_CString(hTxn,"recon_date",csPtr);
+                }
+
+/* recon_time */
+                if (GetField_CString(hContext,"recon_time",&csPtr)) {
+DEBUGLOG(("recon_time = [%c]\n",csPtr));
+                        PutField_CString(hTxn,"recon_time",csPtr);
+                }
+
+		// Update Txn Header
+                if (iRet == PD_OK) {
+
+/* is_approved */
+			if (GetField_Int(hContext,"is_approved",&iPtr)) {
+DEBUGLOG(("is_approved = [%d]\n",iPtr));
+                        	PutField_Int(hTxn,"is_approved",iPtr);
+                	}
+
+/* set_refund_time */ 
+			if (GetField_Int(hContext,"set_refund_time",&iSetRefundTime)) {
+DEBUGLOG(("set_refund_time = [%d]\n", iSetRefundTime));
+			}
+
+                        DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","Update");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+			if (iRet == PD_OK && iSetRefundTime == PD_TRUE ) {
+
+                        	long    lPtr;
+			
+				// Get Txn Header
+                        	DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+                        	if ((*DBObjPtr)(csTxnSeqPtr, hTxn) == PD_OK) {
+
+/* unix_approval_timestamp */
+                                	if (GetField_Long(hTxn,"unix_approval_timestamp",&lPtr)) {
+DEBUGLOG(("unix_approval_timestamp = [%ld]\n",lPtr));
+                                        	PutField_Long(hResponse,"refund_time",lPtr);
+                                	}
+                        	}
+                	}
+                }
+
+		// Update Txn Detail
+                if (iRet == PD_OK) {
+
+/* transfer_mode */
+			if (GetField_CString(hContext,"transfer_mode",&csPtr)) {
+DEBUGLOG(("transfer_mode = [%s]\n",csPtr));
+				PutField_CString(hTxn,"transfer_mode",csPtr);
+			}
+
+/* acct_id */
+			if (GetField_CString(hContext,"acct_id",&csPtr)) {
+DEBUGLOG(("member_id = [%s]\n",csPtr));
+				PutField_CString(hTxn,"member_id",csPtr);
+			}
+
+                        DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","UpdateDetail");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Call DBOLTransaction::UpdateDetail Failure!!\n"));
+ERRLOG("OflComChannel::UpdateTxnLog::Call DBOLTransaction::UpdateDetail Failure!!\n");
+      	                  	iRet = INT_ERR;
+        		}
+        	}
+        }
+        else{
+                if(!iNotUpdate){
+DEBUGLOG(("UpdateTxnLog:: cannot get [%s]\n",csTag));
+                        iRet = PD_ERR;
+                }
+                else{
+                        iRet = PD_SKIP_OK;
+                }
+        }
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+        FREE_ME(csTag);
+
+DEBUGLOG(("UpdateTxnLog:: iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int     UpdateContext(hash_t* hContext)
+{
+        int     iRet = PD_OK;
+
+        char csTmpDate[PD_DATETIME_LEN +1];
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","FindCode");
+
+        if ((unsigned long)(*DBObjPtr)("CTPHDATE",csTmpDate) == PD_FOUND) {
+DEBUGLOG(("UpdateContext:Current Processor Hub Date= [%s]\n",csTmpDate));
+                PutField_CString(hContext,"PHDATE",csTmpDate);
+        }
+        else {
+DEBUGLOG(("UpdateContext:NO RECORD\n"));
+                iRet = PD_ERR;
+ERRLOG("UpdateContext::Internal Error:OflComChannel:SystemControl Record Not Found\n");
+        }
+
+        if (iRet == PD_OK) {
+                char*   csValueTmp;
+                csValueTmp = (char*) malloc (128);
+                DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+                if ((unsigned long)(DBObjPtr)(PD_BASED_CCY,csValueTmp) == PD_FOUND) {
+DEBUGLOG(("UpdateContext::based ccy  = [%s]\n",csValueTmp));
+                        PutField_CString(hContext,"based_ccy",csValueTmp);
+                }
+                else {
+                        iRet = PD_ERR;
+ERRLOG("UpdateContext::Unable to find based ccy\n");
+		}
+
+                FREE_ME(csValueTmp);
+        }
+
+DEBUGLOG(("UpdateContext:: iRet  = [%d]\n",iRet));
+        return iRet;
+}
+

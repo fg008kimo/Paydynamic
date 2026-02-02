@@ -1,0 +1,17 @@
+CREATE OR REPLACE VIEW CRR_WRITE_OFF_PSP_ADJ_VIEW
+(
+      TXN_DATE               VARCHAR2 (8 BYTE),
+      CR_COUNTRY_ID          CHAR (2 BYTE),
+      CR_PRODUCT_CODE        CHAR (3 BYTE),
+      CR_JNL_TYPE_ID         INTEGER,
+      CR_JNL_ENTRY_TYPE_ID   VARCHAR2 (20 BYTE),
+      CR_PARTY_TYPE          CHAR (1 BYTE),
+      CR_PARTY_ID            VARCHAR (15 BYTE),
+      CR_CURRENCY_ID         CHAR (3 BYTE),
+      GL_ID                  INTEGER,
+      CR_IND                 CHAR (1 BYTE),
+      TXN_AMT                NUMBER (14, 2),
+      TXN_COUNT              INTEGER,
+      REF_NO                 VARCHAR (100 BYTE)
+)
+AS

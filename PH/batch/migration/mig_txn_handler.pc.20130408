@@ -1,0 +1,665 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/03/12              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "../batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "mig_txn_handler.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+
+#include "mig_funct.h" 
+#include "mig_deposit_handler.h"
+#include "mig_adjustment_handler.h"
+#include "mig_deposit_reserved_handler.h"
+#include "mig_payout_handler.h"
+#include "mig_payout_reversal_handler.h"
+#include "mig_settlement_handler.h"
+
+/*
+#include "pr_bo_funct.h"
+#include "pr_par_funct.h"
+*/
+
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	","
+#define	PD_MY_TOKEN	'"'
+
+/*
+#define	PD_MY_QS_TOEKN	'	'
+#define	PD_MY_QE_TOEKN	'	'
+#define	PD_MY_DAY_TOKEN	"-"
+*/
+
+#define	PD_CHAR		0x0D
+
+/*
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+*/
+
+char    cDebug;
+
+
+char    cs_inputfile[PD_MAX_FILE_LEN + 1];
+
+char	cOATEnv;
+char	cChkMigPeriod;
+
+int start_process();
+int parse_txn(hash_t *hMyHash);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet;
+	
+	char	csOATEnv[PD_SP_VALUE_LEN + 1];
+	char	csChkMigPeriod[PD_SP_VALUE_LEN + 1];
+
+
+	if (mf_DefMisc_GetValue(MIG_OAT_ENV, csOATEnv) == FOUND) {
+		cOATEnv = csOATEnv[0];
+DEBUGLOG(("batch_proc OAT_Env = [%c]\n", cOATEnv));
+	} else {
+DEBUGLOG(("batch_proc: ParDefMisc_GetValue FAIL (OAT_ENV)!!\n"));
+		iRet = FAILURE;
+	}
+
+	if (mf_DefMisc_GetValue(MIG_CHK_MIG_PERIOD, csChkMigPeriod) == FOUND) {
+		cChkMigPeriod = csChkMigPeriod[0];
+DEBUGLOG(("batch_proc ChkMigPeriod = [%c]\n", cChkMigPeriod));
+	} else {
+DEBUGLOG(("batch_proc: ParDefMisc_GetValue FAIL (CHK_MIG_PERIOD)!!\n"));
+		iRet = FAILURE;
+	}
+
+
+	iRet = start_process();
+
+	return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+                        
+int start_process() 
+{
+	int	iRet = SUCCESS;
+
+	char	csDate[PD_DATE_LEN + 1];
+	char	csDateTime[PD_DATE_LEN + PD_TIME_LEN + 1];
+	char	csTmp[MIG_TXN_NOTE_LEN + 1];
+	
+	int	iCnt;
+	hash_t	*myHash;
+
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+
+
+        EXEC SQL WHENEVER SQLERROR GOTO get_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                SQL_CURSOR      c_cursor_txn_data;
+
+		short		hv_return_value;
+
+		int		v_txn_seq;
+		varchar		v_post_date[PD_DATE_LEN + PD_TIME_LEN + 1];
+		varchar		v_txn_date[MIG_TXN_DATETIMESTAMP_LEN + 1];
+		varchar		v_txn_merch_nmb[MIG_TXN_MERCH_NMB_LEN + 1];
+		varchar		v_txn_nmb[MIG_TXN_NMB_LEN + 1];
+		varchar		v_merch_ref[PD_MERCHANT_REF_LEN + 1];
+		varchar		v_txn_type[MIG_TXN_TYPE_LEN + 1];
+		varchar		v_txn_status[MIG_TXN_STATUS_LEN + 1];
+		varchar		v_txn_status_grp[MIG_TXN_STATUS_GRP_LEN + 1];
+		varchar		v_to_ccy[PD_CURRENCY_ID_LEN + 1];
+		double		v_to_amount;
+		varchar		v_ccy[PD_CURRENCY_ID_LEN + 1];
+		double		v_amount;
+		double		v_fee;
+		double		v_ex_rate;
+		double		v_markup_amt;
+		varchar		v_psp_type_code[MIG_PSP_TYPE_CODE_LEN + 1];
+		varchar		v_psp_order_id[MIG_PSP_TYPE_CODE_LEN + 1];
+		varchar		v_gate_id[MIG_GATE_ID_LEN + 1];
+		varchar		v_client_ip[MIG_CLIENT_IP_LEN + 1];
+		varchar		v_txn_note[MIG_TXN_NOTE_LEN + 1];
+		varchar		v_psp_txn_id[MIG_PSP_TXN_ID_LEN + 1];
+		varchar		v_psp_txn_date[MIG_PSP_TXN_DATE_LEN + 1];
+		varchar		v_mobile_nmb[PD_CUSTOMER_TEL_LEN + 1];
+		varchar		v_user_agent[PD_REMARK_LEN + 1];
+
+		short		ind_txn_seq = -1;
+		short		ind_post_date = -1;
+		short		ind_txn_date = -1;
+		short		ind_txn_merch_nmb = -1;
+		short		ind_txn_nmb = -1;
+		short		ind_merch_ref = -1;
+		short		ind_txn_type = -1;
+		short		ind_txn_status = -1;
+		short		ind_txn_status_grp = -1;
+		short		ind_to_ccy = -1;
+		short		ind_to_amount = -1;
+		short		ind_ccy = -1;
+		short		ind_amount = -1;
+		short		ind_fee = -1;
+		short		ind_ex_rate = -1;
+		short		ind_markup_amt = -1;
+		short		ind_psp_type_code = -1;
+		short		ind_psp_order_id = -1;
+		short		ind_gate_id = -1;
+		short		ind_client_ip = -1;
+		short		ind_txn_note = -1;
+		short		ind_psp_txn_id = -1;
+		short		ind_psp_txn_date = -1;
+		short		ind_mobile_nmb = -1;
+		short		ind_user_agent = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE :c_cursor_txn_data;
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_par_mig_txn_data(:c_cursor_txn_data);	
+		END;
+	END-EXEC;
+
+	if (hv_return_value == 1) {
+DEBUGLOG(("start_process:get_txn no more record to be processed!\n"));
+	}
+	else if (hv_return_value == SP_OK) {
+		iCnt = 0;
+
+                for (;;) {
+			hash_init(myHash,0);
+
+			ind_txn_seq = -1;
+			ind_post_date = -1;
+			ind_txn_date = -1;
+			ind_txn_merch_nmb = -1;
+			ind_txn_nmb = -1;
+			ind_merch_ref = -1;
+			ind_txn_type = -1;
+			ind_txn_status = -1;
+			ind_txn_status_grp = -1;
+			ind_to_ccy = -1;
+			ind_to_amount = -1;
+			ind_ccy = -1;
+			ind_amount = -1;
+			ind_fee = -1;
+			ind_ex_rate = -1;
+			ind_markup_amt = -1;
+			ind_psp_type_code = -1;
+			ind_psp_order_id = -1;
+			ind_gate_id = -1;
+			ind_client_ip = -1;
+			ind_txn_note = -1;
+			ind_psp_txn_id = -1;
+			ind_psp_txn_date = -1;
+			ind_mobile_nmb = -1;
+			ind_user_agent= -1;
+	
+			EXEC SQL WHENEVER NOTFOUND DO break;
+                        EXEC SQL FETCH :c_cursor_txn_data		
+			INTO	:v_txn_seq:ind_txn_seq,
+				:v_post_date:ind_post_date,
+				:v_txn_date:ind_txn_date,
+				:v_txn_merch_nmb:ind_txn_merch_nmb,
+		  		:v_txn_nmb:ind_txn_nmb,
+				:v_merch_ref:ind_merch_ref,
+				:v_txn_type:ind_txn_type,
+				:v_txn_status:ind_txn_status,
+				:v_txn_status_grp:ind_txn_status_grp,
+				:v_to_ccy:ind_to_ccy,
+				:v_to_amount:ind_to_amount,
+				:v_ccy:ind_ccy,
+				:v_amount:ind_amount,
+				:v_fee:ind_fee,
+				:v_ex_rate:ind_ex_rate,
+				:v_markup_amt:ind_markup_amt,
+				:v_psp_type_code:ind_psp_type_code,
+				:v_psp_order_id:ind_psp_order_id,
+				:v_gate_id:ind_gate_id,
+				:v_client_ip:ind_client_ip,
+				:v_txn_note:ind_txn_note,
+				:v_psp_txn_id:ind_psp_txn_id,
+				:v_psp_txn_date:ind_psp_txn_date,
+				:v_mobile_nmb:ind_mobile_nmb,
+				:v_user_agent:ind_user_agent 
+			;
+
+                        if (SQLCODE == SQL_NOT_FOUND) {
+                                break;
+                        }
+
+DEBUGLOG(("start_process >>>>>>>>>>>>>>>>>>>>>>>>>\n"));
+
+			if (ind_txn_seq >= 0) {
+DEBUGLOG(("start_process: [%d] sort_txn_seq = [%d]\n", iCnt, v_txn_seq));
+				PutField_Int(myHash, "sort_txn_seq", v_txn_seq);
+			}
+
+			if (ind_post_date >= 0) {
+				v_post_date.arr[v_post_date.len] = '\0';
+DEBUGLOG(("start_process: [%d] post_date = [%.*s]\n",iCnt, v_post_date.len,v_post_date.arr));
+	
+				strncpy(csDate, (const char *)v_post_date.arr, PD_DATE_LEN);
+				csDate[PD_DATE_LEN] = '\0';
+DEBUGLOG(("start_process: [%d] re-format post_date = [%s]\n",iCnt, csDate));
+
+				PutField_CString(myHash, "post_date", (const char *) csDate);
+				PutField_CString(myHash, "post_datetime", (const char*)v_post_date.arr);
+			}
+			
+
+			if (ind_txn_date >= 0) {
+				v_txn_date.arr[v_txn_date.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_date = [%.*s]\n",iCnt, v_txn_date.len,v_txn_date.arr));
+
+				strncpy(csDate, (const char*) v_txn_date.arr, PD_DATE_LEN);
+				csDate[PD_DATE_LEN] = '\0';
+
+				strncpy(csDateTime, (const char *)v_txn_date.arr, PD_DATE_LEN + PD_TIME_LEN);
+				csDateTime[PD_DATE_LEN + PD_TIME_LEN] = '\0';
+
+DEBUGLOG(("start_process: [%d] re-format txn_date [%s] txn_date_time = [%s]\n",iCnt, csDate, csDateTime));
+
+				PutField_CString(myHash, "txn_date", (const char*) csDate);
+				PutField_CString(myHash, "txn_datetime", (const char*) csDateTime);
+				PutField_CString(myHash, "txn_datetimestamp", (const char *) v_txn_date.arr);
+
+			}
+
+			if (ind_txn_merch_nmb >= 0) {
+				v_txn_merch_nmb.arr[v_txn_merch_nmb.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_merch_nmb = [%.*s]\n",iCnt, v_txn_merch_nmb.len,v_txn_merch_nmb.arr));
+				PutField_CString(myHash, "txn_merch_nmb", (const char *) v_txn_merch_nmb.arr);
+			}
+
+			if (ind_txn_nmb >= 0) {
+				v_txn_nmb.arr[v_txn_nmb.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_nmb = [%.*s]\n",iCnt, v_txn_nmb.len,v_txn_nmb.arr));
+				PutField_CString(myHash, "txn_nmb", (const char *) v_txn_nmb.arr);
+			}
+
+			if (ind_merch_ref >=0) {
+				v_merch_ref.arr[v_merch_ref.len] = '\0';
+DEBUGLOG(("start_process: [%d] merch_ref = [%.*s]\n",iCnt, v_merch_ref.len, v_merch_ref.arr));
+				PutField_CString(myHash, "merch_ref", (const char *) v_merch_ref.arr);
+			}
+		
+			if (ind_txn_type >=0) {
+				v_txn_type.arr[v_txn_type.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_type = [%.*s]\n",iCnt, v_txn_type.len, v_txn_type.arr));
+				PutField_CString(myHash, "txn_type", (const char *) v_txn_type.arr);
+			}
+
+			if (ind_txn_status >=0) {
+				v_txn_status.arr[v_txn_status.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_status = [%.*s]\n",iCnt, v_txn_status.len, v_txn_status.arr));
+				PutField_CString(myHash, "txn_status", (const char *) v_txn_status.arr);
+			}
+
+			if (ind_txn_status_grp >=0) {
+				v_txn_status_grp.arr[v_txn_status_grp.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_status_grp = [%.*s]\n",iCnt, v_txn_status_grp.len, v_txn_status_grp.arr));
+				PutField_CString(myHash, "txn_status_grp", (const char *) v_txn_status_grp.arr);
+			}
+
+			if (ind_to_ccy >=0) {
+				v_to_ccy.arr[v_to_ccy.len] = '\0';
+DEBUGLOG(("start_process: [%d] to_ccy = [%.*s]\n",iCnt, v_to_ccy.len, v_to_ccy.arr));
+				PutField_CString(myHash, "to_ccy", (const char *) v_to_ccy.arr);
+			}
+
+			if (ind_to_amount >=0) {
+DEBUGLOG(("start_process: [%d] to_amount = [%lf]\n",iCnt, v_to_amount));
+				PutField_Double(myHash, "to_amount", v_to_amount);
+			}
+
+			if (ind_ccy >=0) {
+				v_ccy.arr[v_ccy.len] = '\0';
+DEBUGLOG(("start_process: [%d] ccy = [%.*s]\n",iCnt, v_ccy.len, v_ccy.arr));
+				PutField_CString(myHash, "ccy", (const char *) v_ccy.arr);
+			}
+
+			if (ind_amount >=0) {
+DEBUGLOG(("start_process: [%d] amount = [%lf]\n",iCnt, v_amount));
+				PutField_Double(myHash, "amount", v_amount);
+			}
+
+			if (ind_fee >=0) {
+DEBUGLOG(("start_process: [%d] fee = [%lf]\n",iCnt, v_fee));
+				PutField_Double(myHash, "fee", v_fee);
+			}
+
+			if (ind_ex_rate >= 0) {
+DEBUGLOG(("start_process: [%d] ex_rate = [%lf]\n",iCnt, v_ex_rate));
+				PutField_Double(myHash, "ex_rate", v_ex_rate);
+			}
+
+			if (ind_markup_amt >= 0) {
+DEBUGLOG(("start_process: [%d] markup_amt = [%lf]\n",iCnt, v_markup_amt));
+				PutField_Double(myHash, "markup_amt", v_markup_amt);
+			}
+
+
+			if (ind_psp_type_code >= 0) {
+				v_psp_type_code.arr[v_psp_type_code.len] = '\0';
+DEBUGLOG(("start_process: [%d] psp_type_code = [%.*s]\n",iCnt, v_psp_type_code.len, v_psp_type_code.arr));
+				PutField_CString(myHash, "psp_type_code", (const char *) v_psp_type_code.arr);
+			}
+		
+			if (ind_psp_order_id >= 0) {
+				v_psp_order_id.arr[v_psp_order_id.len] = '\0';
+DEBUGLOG(("start_process: [%d] psp_order_id = [%.*s]\n",iCnt, v_psp_order_id.len, v_psp_order_id.arr));
+				PutField_CString(myHash, "psp_order_id", (const char *) v_psp_order_id.arr);
+			}
+
+			if (ind_gate_id >= 0) {
+				v_gate_id.arr[v_gate_id.len] = '\0';
+DEBUGLOG(("start_process: [%d] gate_id = [%.*s]\n",iCnt, v_gate_id.len, v_gate_id.arr));
+				PutField_CString(myHash, "gate_id", (const char *) v_gate_id.arr);
+			}
+			
+			if (ind_client_ip >= 0) {
+				v_client_ip.arr[v_client_ip.len] = '\0';
+DEBUGLOG(("start_process: [%d] client_ip = [%.*s]\n",iCnt, v_client_ip.len, v_client_ip.arr));
+				PutField_CString(myHash, "client_ip", (const char *) v_client_ip.arr);
+			}	
+
+			if (ind_txn_note >= 0) {
+				v_txn_note.arr[v_txn_note.len] = '\0';
+DEBUGLOG(("start_process: [%d] txn_note = [%.*s]\n",iCnt, v_txn_note.len, v_txn_note.arr));
+				strncpy(csTmp, (const char *) v_txn_note.arr, PD_REMARK_LEN);
+				csTmp[PD_REMARK_LEN] = '\0';
+	
+				PutField_CString(myHash, "remark", (const char *) csTmp);
+			}	
+			
+			if (ind_psp_txn_id >= 0) {
+				v_psp_txn_id.arr[v_psp_txn_id.len] = '\0';
+DEBUGLOG(("start_process: [%d] psp_txn_id = [%.*s]\n",iCnt, v_psp_txn_id.len, v_psp_txn_id.arr));
+				PutField_CString(myHash, "psp_tid", (const char *) v_psp_txn_id.arr);
+			}	
+
+			if (ind_psp_txn_date >= 0) {
+				v_psp_txn_date.arr[v_psp_txn_date.len] = '\0';
+DEBUGLOG(("start_process: [%d] psp_txn_date = [%.*s]\n",iCnt, v_psp_txn_date.len, v_psp_txn_date.arr));
+
+				PutField_CString(myHash, "psp_txn_datetime", (const char *) v_psp_txn_date.arr);
+
+				strncpy(csDate, (const char *)v_psp_txn_date.arr, PD_DATE_LEN);
+				csDate[PD_DATE_LEN] = '\0';
+
+				PutField_CString(myHash, "psp_txn_date", (const char *) csDate);
+			}	
+
+			if (ind_mobile_nmb >= 0) {
+				v_mobile_nmb.arr[v_mobile_nmb.len] = '\0';
+DEBUGLOG(("start_process: [%d] mobile_nmb = [%.*s]\n",iCnt, v_mobile_nmb.len, v_mobile_nmb.arr));
+				PutField_CString(myHash, "mobile_nmb", (const char *) v_mobile_nmb.arr);
+			}
+
+			if (ind_user_agent >= 0) {
+				v_user_agent.arr[v_user_agent.len] = '\0';
+DEBUGLOG(("start_process: [%d] user_agenet= [%.*s]\n",iCnt, v_user_agent.len, v_user_agent.arr));
+				PutField_CString(myHash, "user_agent", (const char *) v_user_agent.arr);
+			}
+
+
+			iRet=parse_txn(myHash);
+			if (iRet != SUCCESS) {
+				break;
+			}
+
+			iCnt++;
+
+			hash_destroy(myHash);
+	
+		}
+		EXEC SQL CLOSE :c_cursor_txn_data;
+ 	        EXEC SQL FREE :c_cursor_txn_data; 
+
+
+	} else if (hv_return_value == SP_OTHER_ERR) {
+		EXEC SQL CLOSE :c_cursor_txn_data;
+                EXEC SQL FREE :c_cursor_txn_data;
+DEBUGLOG(("start_process: exit with error\n"));
+ERRLOG("start_process: exit with error\n");
+                iRet = FAILURE;
+	
+	}
+	
+	//EXEC SQL CLOSE :c_cursor_txn_data;
+        //EXEC SQL FREE :c_cursor_txn_data;
+DEBUGLOG(("start_process: FINAL RET = [%d]\n", iRet));
+
+	FREE_ME(myHash);
+
+
+	return iRet;
+
+get_error:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+
+ERRLOG("start_process: error_code %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE :c_cursor_txn_data;
+    EXEC SQL FREE :c_cursor_txn_data;
+    FREE_ME(myHash);
+
+    return PD_ERR;
+}
+
+
+int parse_txn (hash_t *hMyHash) {
+
+	int 	iRet=SUCCESS;
+	int	iTmpRet;
+
+	char	*csTxnStatus;
+	char	*csTmp;
+	char	*csPreTxnType = NULL;
+	char	*csCategory = NULL; 
+
+	char	csDate[PD_DATE_LEN + 1];
+	char	csTime[PD_TIME_LEN + 1];
+
+	//char	csAutoRecon[PD_SP_VALUE_LEN + 1];
+	//char	cTmp;
+
+	char	*csMerchNmb;
+	char	*csTxnDate;
+
+	int	iMigPeriod = PD_FALSE;
+
+	
+DEBUGLOG(("parse_txn: BEGIN\n"));
+	// Check need to process
+
+	if (cChkMigPeriod == PD_YES) {
+		GetField_CString(hMyHash, "txn_merch_nmb", &csMerchNmb);
+		GetField_CString(hMyHash, "txn_date", &csTxnDate);
+
+		iTmpRet = mf_ChkValidMigPeriod(csMerchNmb, csTxnDate);
+
+		if (iTmpRet == PD_FOUND) {
+DEBUGLOG(("MerchNmb [%s] TxnDate [%s] in migration period!\n", csMerchNmb, csTxnDate));
+			iMigPeriod = PD_TRUE;
+		}
+		else if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("MerchNmb [%s] TxnDate [%s] NOT in migration period, ignore!\n", csMerchNmb, csTxnDate));
+			iMigPeriod = PD_FALSE;
+			
+		} else {
+DEBUGLOG(("Error on mf_ChkValidMigPeriod...\n"));
+			iRet = FAILURE;
+		}
+	
+	}
+
+	if (iRet == SUCCESS) {
+		if (iMigPeriod == PD_FALSE) {
+			iRet = mf_UpdateProcessResult(hMyHash, "NOT_MIG");
+		}  else {
+DEBUGLOG(("In Migration Period and start..\n"));
+			GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+			if (strcmp(csTxnStatus, "NEW") == 0) {
+DEBUGLOG(("parse_txn: NEW case --> skip\n"));
+				iRet = mf_UpdateProcessResult(hMyHash, "NEW-SKIP");
+			} else {
+
+				//GetField_CString(hMyHash, "txn_datetime", &csTmp);
+				GetField_CString(hMyHash, "post_datetime", &csTmp);
+
+				strncpy(csDate, csTmp, PD_DATE_LEN);
+				csDate[PD_DATE_LEN] = '\0';
+				strncpy(csTime, csTmp + PD_DATE_LEN, PD_TIME_LEN);
+				csTime[PD_TIME_LEN] = '\0';
+
+DEBUGLOG(("parse_txn: Txn Date [%s] Txn Time [%s]\n", csDate, csTime));
+
+       		 		PutField_CString(hMyHash, "local_tm_date", csDate);
+		        	PutField_CString(hMyHash, "local_tm_time", csTime);
+
+				/*
+				if (mf_DefMisc_GetValue(MIG_AUTO_RECON, csAutoRecon) == FOUND) {
+					cTmp = csAutoRecon[0];
+DEBUGLOG(("parse_txn: Auto_recon [%c]\n", cTmp));
+					PutField_Char(hMyHash, "auto_recon", cTmp);
+				} else {
+DEBUGLOG(("parse_txn: ParDefMisc_GetValue FAIL (Auto-Recon)!!\n"));
+					iRet = FAILURE;
+				}
+				*/
+				PutField_Char(hMyHash, "auto_recon", PD_YES);
+
+				if (iRet == SUCCESS) {
+					if (GetField_CString(hMyHash, "txn_type", &csPreTxnType)) {
+DEBUGLOG(("parse_txn: txn_type [%s]\n", csPreTxnType));
+						if (mf_Category_GetCategory(csPreTxnType, hMyHash) == PD_OK) {
+
+							if (GetField_CString(hMyHash, "category", &csCategory)) {
+DEBUGLOG(("parse_txn: category [%s]\n", csCategory));
+							}
+							if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+DEBUGLOG(("parse_txn: txn_code [%s]\n", csTmp));
+							}
+							if (GetField_CString(hMyHash, "reversal_txn_code", &csTmp)) {
+DEBUGLOG(("parse_txn: reversal_txn_code [%s]\n", csTmp));
+							}
+							if (GetField_CString(hMyHash, "reversal_fee_txn_code", &csTmp)) {
+DEBUGLOG(("parse_txn: reversal_fee_txn_code [%s]\n", csTmp));
+							}
+						}
+						else {
+DEBUGLOG(("parse_txn: ParCategory:GetCategory FAIL!\n"));
+							iRet = FAILURE;
+						}
+					}
+				}
+
+				if (iRet == SUCCESS) {
+					if (cOATEnv == PD_YES) {
+						char *csPSPTypeCode;
+
+						if (GetField_CString(hMyHash, "psp_type_code", &csPSPTypeCode)) {
+							if (!strcmp(csPSPTypeCode, "PROCHUB")) {
+								PutField_CString(hMyHash, "psp_type_code", "PROCHUB");
+DEBUGLOG(("parse_txn: Assign PROCHUB to replace [%s]\n", csPSPTypeCode));
+							} else if (!strcmp(csPSPTypeCode, "PROCHUB_51EPAY0412")) {
+								PutField_CString(hMyHash, "psp_type_code", "PROCHUB_51EPAY0412");
+DEBUGLOG(("parse_txn: Assign PROCHUB_51EPAY0412 to replace [%s]\n", csPSPTypeCode));
+
+							} else {
+								PutField_CString(hMyHash, "psp_type_code", "HAIPAY2202");
+DEBUGLOG(("parse_txn: Assign HAIPAY2202 to replace [%s]\n", csPSPTypeCode));
+							}
+						}
+					}
+				}
+
+
+				if (iRet == SUCCESS) {
+DEBUGLOG(("will do Category [%s]\n", csCategory));
+					if (!strcmp(csCategory, MIG_CAT_DEPOSIT)) {
+						iRet = mig_deposit_handler(hMyHash);
+					}	 
+					else if (!strcmp(csCategory, MIG_CAT_ADJUSTEMENT)) {
+						iRet = mig_adjustment_handler(hMyHash);
+					}
+					else if (!strcmp(csCategory, MIG_CAT_RESERVE)) {
+						iRet = mig_deposit_reserved_handler(hMyHash);
+					}
+					else if (!strcmp(csCategory, MIG_CAT_PAYOUT)) {
+						iRet = mig_payout_handler(hMyHash);
+					} 
+					else if (!strcmp(csCategory, MIG_CAT_PAYOUT_REVERSAL)) {
+						iRet = mig_payout_reversal_handler(hMyHash);
+					} 
+					else if (!strcmp(csCategory, MIG_CAT_SETTLEMENT)) {
+						iRet = mig_settlement_handler(hMyHash);
+					} 
+					else {
+DEBUGLOG(("parse_txn: not defined category [%s]\n", csCategory));
+						iRet = FAILURE;
+					}
+				}
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		TxnCommit();
+	}
+	else {
+ERRLOG("mig_txn_handler error.....\n");
+		TxnAbort();
+	}
+
+
+	return iRet;
+}
+
+
+

@@ -1,0 +1,727 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   2015/11/24		   LokMan Chow
+For bank, input country can be different from
+   its bank account country.
+   - txn log table log down the input country
+   - update balance by the bank account country    2015/12/04              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMinByUsBAT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+#define	LOOP_FROM_TRANSACTION	1
+#define	LOOP_TO_TRANSACTION 	2
+
+void TxnMinByUsBAT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+		  const hash_t* hRequest,
+		  hash_t* hResponse)
+{
+        int	iRet = PD_OK;
+
+	char	*csTxnId = NULL;
+	char	*csTxnDate = NULL;
+	char	*csTxnCode = NULL;
+	char	*csEntityId = NULL;
+	char	*csEntityType= NULL;
+	char	*csProductCode = NULL;
+	char	*csFrCcy = NULL;
+	char	*csCountry= NULL;
+	char	*csBankCountry= NULL;
+	char	*csPartyId = NULL;
+	char	*csBaseCcy = NULL;
+	double	dFrAmt=0.0;
+	double	dFrCostAmt=0.0;
+	int	iIsACRBank = PD_FALSE;
+
+	char	*csToTxnCode = NULL;
+	char	*csToEntityId = NULL;
+	char	*csToEntityType= NULL;
+	char	*csToProductCode = NULL;
+	char	*csToCcy = NULL;
+	char	*csToBankCountry= NULL;
+	char	*csToPartyId = NULL;
+	char	*csToBaseCcy = NULL;
+	double	dToAmt=0.0;
+	double	dToCostAmt=0.0;
+	int	iIsToACRBank = PD_FALSE;
+
+	char	*csTmp = NULL;
+	char	*csUpdateUser = NULL;  
+	int	iDoLogging = PD_FALSE;
+	int	iSkipTolCheck = PD_FALSE;
+	int	iBalanceTransfer = PD_TRUE;
+	char	csBatchId[PD_TXN_SEQ_LEN + 1];
+	unsigned char   csTmpTxnSeq[PD_TXN_SEQ_LEN + 1];
+
+	hash_t *hAcr;
+	hAcr = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hAcr,0);
+
+	hash_t      *hFrContext;
+	hFrContext = (hash_t *)malloc(sizeof(hash_t));
+	hash_init(hFrContext, 0);
+
+	hash_t      *hToContext;
+	hToContext = (hash_t *)malloc(sizeof(hash_t));
+	hash_init(hToContext, 0);
+
+	hash_t      *hToReq;
+	hToReq = (hash_t *)malloc(sizeof(hash_t));
+	hash_init(hToReq, 0);
+
+	hash_t *hMiBatch;
+	hMiBatch = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMiBatch,0);
+
+
+DEBUGLOG(("Authorize::Start\n"));
+
+/* skip_tol_check */
+        if(GetField_Int(hContext,"skip_tol_check",&iSkipTolCheck)){
+DEBUGLOG(("Authorize::skip_tol_check = [%d]\n", iSkipTolCheck)); 
+	}
+
+/* txn_date */
+	if(GetField_CString(hContext,"txn_date",&csTxnDate)){
+		PutField_CString(hFrContext,"txn_date",csTxnDate);
+		PutField_CString(hToContext,"txn_date",csTxnDate);
+DEBUGLOG(("Authorize::txn_date = [%s]\n", csTxnDate)); 
+	}
+
+/* txn_country */
+	if(GetField_CString(hContext,"txn_country",&csCountry)){
+DEBUGLOG(("Authorize::txn_country = [%s]\n",csCountry));
+	}
+
+/* add/update_user*/
+	if(GetField_CString(hContext,"add_user",&csUpdateUser)){
+		PutField_CString(hFrContext,"add_user",csUpdateUser);
+		PutField_CString(hFrContext,"update_user",csUpdateUser);
+
+		PutField_CString(hToContext,"add_user",csUpdateUser);
+                PutField_CString(hToContext,"update_user",csUpdateUser);
+DEBUGLOG(("Authorize::add/update_user = [%s]\n",csUpdateUser)); 
+	}
+
+/* do_logging */
+	if(GetField_Int(hContext,"do_logging",&iDoLogging)){
+DEBUGLOG(("Authorize::do_logging [%d]\n", iDoLogging));
+	}
+
+DEBUGLOG(("Authorize::Call TxnSeq:: GetNextMiActionBatchSeq\n"));
+	DBObjPtr = CreateObj(DBPtr, "DBTxnSeq", "GetNextMiActionBatchSeq");
+	strcpy(csBatchId, (*DBObjPtr)());
+DEBUGLOG(("Authorize::Call TxnSeq:: GetNextMiActionBatchSeq: [%s]\n",csBatchId));
+
+//---------------------------Sender Information------------------------------
+DEBUGLOG(("Authorize::===========Sender Information===========\n"));
+/* txn_seq */
+        if(GetField_CString(hContext,"txn_seq",&csTxnId)){
+		//PutField_CString(hResponse,"txn_seq_tf",csTxnId);
+		PutField_CString(hFrContext,"txn_seq",csTxnId);
+		//PutField_CString(hToContext,"org_txn_seq",csTxnId);
+DEBUGLOG(("Authorize::txn_seq = [%s]\n",csTxnId));
+	}
+
+/* txn_code*/
+        if(GetField_CString(hContext,"txn_code",&csTxnCode)){
+		PutField_CString(hFrContext,"txn_code",csTxnCode);
+DEBUGLOG(("Authorize::txn_code = [%s]\n",csTxnCode));
+	}
+
+/* entity_id */
+        if(GetField_CString(hContext,"entity_id",&csEntityId)){
+		PutField_CString(hFrContext,"entity_id",csEntityId);
+DEBUGLOG(("Authorize::entity_id = [%s]\n",csEntityId));
+        }
+
+/* entity_type */
+	if(GetField_CString(hContext,"entity_type",&csEntityType)){
+		PutField_CString(hFrContext,"entity_type",csEntityType);
+		PutField_CString(hFrContext,"party_type",csEntityType);
+DEBUGLOG(("Authorize::entity_type = [%s]\n",csEntityType));
+	}
+
+/* party_id */
+	if(GetField_CString(hContext,"party_id",&csPartyId)){
+		PutField_CString(hFrContext,"party_id",csPartyId);
+DEBUGLOG(("Authorize::party_id = [%s]\n",csPartyId));
+	}
+
+/* is_acr_bank */
+	if(GetField_Int(hContext,"is_acr_bank",&iIsACRBank)){
+DEBUGLOG(("Authorize::is_acr_bank = [%d]\n",iIsACRBank));
+	}
+
+/* bank_base_country */
+	if(GetField_CString(hContext,"bank_base_country",&csBankCountry)){
+		PutField_CString(hFrContext,"txn_country",csBankCountry);
+DEBUGLOG(("Authorize::bank_base_country = [%s]\n",csBankCountry));
+	}
+
+/* bank_base_ccy*/
+	if(GetField_CString(hContext,"bank_base_ccy",&csBaseCcy)){
+DEBUGLOG(("Authorize::bank_base_ccy = [%s]\n",csBaseCcy));
+	}
+
+/* product_code */
+        if(GetField_CString(hContext,"product_code",&csProductCode)){
+		PutField_CString(hFrContext,"product_code",csProductCode);
+		PutField_CString(hFrContext,"txn_product",csProductCode);
+DEBUGLOG(("Authorize::product_code = [%s]\n",csProductCode));
+	}
+
+/* fr_ccy */
+        if(GetField_CString(hContext,"fr_ccy",&csFrCcy)){
+		PutField_CString(hContext,"net_ccy",csFrCcy);
+		PutField_CString(hFrContext,"txn_ccy",csFrCcy);
+		PutField_CString(hFrContext,"entity_ccy",csFrCcy);
+DEBUGLOG(("Authorize::fr_ccy = [%s]\n",csFrCcy));
+        }
+
+/* fr_amt */
+        if(GetField_Double(hContext,"fr_amt",&dFrAmt)){
+		PutField_Double(hFrContext,"txn_amt",dFrAmt);
+		PutField_Double(hFrContext,"entity_txn_amount",dFrAmt);
+DEBUGLOG(("Authorize::fr_amt= [%lf]\n",dFrAmt));
+        }
+
+/* cost_amt */
+	if(GetField_Double(hContext,"cost_amt",&dFrCostAmt)){
+		PutField_Double(hFrContext,"cost_amt",dFrCostAmt);
+		PutField_Double(hFrContext,"actual_cost",dFrCostAmt);
+DEBUGLOG(("Authorize: cost_amt = [%lf]\n",dFrCostAmt));
+	}
+
+/*net amount*/
+	PutField_Double(hFrContext,"net_amt",dFrAmt+dFrCostAmt);
+	PutField_Double(hContext,"net_amt",dFrAmt+dFrCostAmt);
+DEBUGLOG(("Authorize: net_amt = [%lf]\n",dFrAmt+dFrCostAmt));
+
+/* report_date*/
+        if(GetField_CString(hContext,"report_date",&csTmp)){
+		PutField_CString(hFrContext,"report_date",csTmp);
+DEBUGLOG(("Authorize::report_date = [%s]\n", csTmp)); 
+        }
+
+/* remark */
+        if(GetField_CString(hContext,"remark",&csTmp)){
+		PutField_CString(hFrContext,"remark",csTmp);
+DEBUGLOG(("Authorize::remark = [%s]\n",csTmp));
+        }
+
+DEBUGLOG(("Authorize::===========================================\n"));
+//-------------------------Sender Information End----------------------------
+
+//-------------------------Recipient Information-----------------------------
+
+DEBUGLOG(("Authorize::===========Recipient Information===========\n"));
+/* to_txn_code*/
+        if(GetField_CString(hContext,"to_txn_code",&csToTxnCode)){
+		PutField_CString(hToContext,"txn_code",csToTxnCode);
+DEBUGLOG(("Authorize::to_txn_code = [%s]\n",csToTxnCode));
+	}
+
+/* to_entity_id */
+        if(GetField_CString(hContext,"to_entity_id",&csToEntityId)){
+		PutField_CString(hToContext,"entity_id",csToEntityId);
+DEBUGLOG(("Authorize::to_entity_id = [%s]\n",csToEntityId));
+        }
+
+/* to_entity_type */
+	if(GetField_CString(hContext,"to_entity_type",&csToEntityType)){
+		PutField_CString(hToContext,"entity_type",csToEntityType);
+		PutField_CString(hToContext,"party_type",csEntityType);
+DEBUGLOG(("Authorize::to_entity_type = [%s]\n",csToEntityType));
+	}
+
+/* to_party_id */
+	if(GetField_CString(hContext,"to_party_id",&csToPartyId)){
+		PutField_CString(hToContext,"party_id",csToPartyId);
+DEBUGLOG(("Authorize::to_party_id = [%s]\n",csToPartyId));
+	}
+
+/* to_is_acr_bank */
+	if(GetField_Int(hContext,"to_is_acr_bank",&iIsToACRBank)){
+DEBUGLOG(("Authorize::to_is_acr_bank = [%d]\n",iIsToACRBank));
+	}
+
+/* bank_base_country */
+	if(GetField_CString(hContext,"to_bank_base_country",&csToBankCountry)){
+		PutField_CString(hToContext,"txn_country",csToBankCountry);
+DEBUGLOG(("Authorize::to_bank_base_country = [%s]\n",csToBankCountry));
+	}
+
+/* bank_base_ccy*/
+	if(GetField_CString(hContext,"to_bank_base_ccy",&csToBaseCcy)){
+DEBUGLOG(("Authorize::to_bank_base_ccy = [%s]\n",csToBaseCcy));
+	}
+
+/* to_product_code */
+        if(GetField_CString(hContext,"to_product_code",&csToProductCode)){
+		PutField_CString(hToContext,"product_code",csToProductCode);
+		PutField_CString(hToContext,"txn_product",csProductCode);
+DEBUGLOG(("Authorize::to_product_code = [%s]\n",csToProductCode));
+        } 
+
+/* to_ccy */
+        if(GetField_CString(hContext,"to_ccy",&csToCcy)){
+		PutField_CString(hToContext,"txn_ccy",csToCcy);
+		PutField_CString(hToContext,"net_ccy",csToCcy);
+		PutField_CString(hToContext,"entity_ccy",csToCcy);
+DEBUGLOG(("Authorize::to_ccy= [%s]\n",csToCcy));
+        }
+
+/* to_txnamt */
+	if(GetField_Double(hContext,"to_txnamt",&dToAmt)){
+		PutField_Double(hToContext,"entity_txn_amount",dToAmt);
+DEBUGLOG(("Authorize: to_txnamt = [%lf]\n",dToAmt));
+	}
+
+/* to_cost_amt */
+	if(GetField_Double(hContext,"to_cost_amt",&dToCostAmt)){
+		PutField_Double(hToContext,"cost_amt",dToCostAmt);
+		PutField_Double(hToContext,"actual_cost",dToCostAmt);
+DEBUGLOG(("Authorize: to_cost_amt = [%lf]\n",dToCostAmt));
+	}
+
+/*net amount*/
+	PutField_Double(hToContext,"net_amt",dToAmt-dToCostAmt);
+DEBUGLOG(("Authorize: net_amt = [%lf]\n",dToAmt-dToCostAmt));
+
+/* to_report_date*/
+        if(GetField_CString(hContext,"to_report_date",&csTmp)){
+		PutField_CString(hToContext,"report_date",csTmp);
+DEBUGLOG(("Authorize::to_report_date = [%s]\n", csTmp)); 
+        }
+
+/* to_remark */
+        if(GetField_CString(hContext,"to_remark",&csTmp)){
+		PutField_CString(hToContext,"remark",csTmp);
+DEBUGLOG(("Authorize::to_remark = [%s]\n",csTmp));
+        }
+
+DEBUGLOG(("Authorize::===========================================\n"));
+//-----------------------Recipient Information End-----------------------------
+
+//Validation//
+	//check entity type
+	if(strcmp(csEntityType,PD_MI_ENTITY_OPBANK) ||
+	   strcmp(csToEntityType,PD_MI_ENTITY_OPBANK)){
+		iRet = INT_MMS_ENTITY_TYPE_NOT_MATCH;
+DEBUGLOG(("Authorize::Invalid entity_type From[%s], To[%s]\n",csEntityType,csToEntityType));
+ERRLOG("TxnMinByUsBAT:Authorize::Invalid entity_type From[%s], To[%s]\n",csEntityType,csToEntityType);
+	}
+
+	//check entity id
+	if(!strcmp(csEntityId,csToEntityId)){
+DEBUGLOG(("Authorize::Same entity_id From[%s], To[%s]\n",csEntityId,csToEntityId));
+ERRLOG("TxnMinByUsBAT:Authorize::Same entity_id From[%s], To[%s]\n",csEntityId,csToEntityId);
+		iRet = INT_INVALID_TXN;
+	}
+
+	//check ccy
+	if(iRet == PD_OK){
+		if(strcmp(csBaseCcy,csFrCcy)){
+			iRet = INT_CURRENCY_ID_NOT_MATCH;
+DEBUGLOG(("Authorize::Currency not match: From[%s], Base[%s]\n",csFrCcy,csBaseCcy));
+ERRLOG("TxnMinByUsBAT:Authorize::Currency not match: From[%s],Base [%s]\n",csFrCcy,csBaseCcy);
+		}
+		if(strcmp(csToBaseCcy,csToCcy)){
+			iRet = INT_CURRENCY_ID_NOT_MATCH;
+DEBUGLOG(("Authorize::Currency not match: To[%s], Base[%s]\n",csToCcy,csBaseCcy));
+ERRLOG("TxnMinByUsBAT:Authorize::Currency not match: To[%s],Base [%s]\n",csToCcy,csBaseCcy);
+		}
+	}
+
+	//check product
+	if(iRet == PD_OK){
+		/*
+		if(strcmp(csBankCountry,csToBankCountry)){
+			iRet = INT_NOT_ALLOW_DIFF_COUNTRY;
+DEBUGLOG(("Authorize::Country not match: From[%s], To[%s]\n",csBankCountry,csBankCountry));
+ERRLOG("TxnMinByUsBAT:Authorize::Country not match: From[%s], To[%s]\n",csBankCountry,csToBankCountry);
+		}
+		*/
+		if(strcmp(csProductCode,csToProductCode)){
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::Product Code not match: From[%s], To[%s]\n",csProductCode,csToProductCode));
+ERRLOG("TxnMinByUsBAT:Authorize::Product Code not match: From[%s], To[%s]\n",csProductCode,csToProductCode);
+		}
+	}
+
+//-----------------------handle sender side balance, ACR and txn log details------------------//
+//Debit Sender Side Entity balance// 
+	if(iRet == PD_OK){
+		PutField_Int(hFrContext, "balance_transfer", iBalanceTransfer);
+		PutField_CString(hFrContext, "amt_type", PD_DR);
+		PutField_Char(hFrContext,"bal_type",PD_MI_ENTITY_POOL_ACCT_BAL);
+
+DEBUGLOG(("Authorize::Call BOMiAdjustment:ProcessPartyBalance\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMiAdjustment","ProcessPartyBalance");
+		iRet = (unsigned long)((*BOObjPtr)(hFrContext));
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::BOMiAdjustment:ProcessPartyBalance Failed Ret [%d]\n", iRet));
+ERRLOG("TxnMinByUsBAT::BOMiADjustment::ProcesspartyBalance Failed [%d]\n", iRet);
+		}
+	}
+
+//Debit Sender Side ACR //
+	if(iRet == PD_OK && iIsACRBank){
+DEBUGLOG(("Authorize::Call Calculate ACR\n"));
+
+		PutField_CString(hAcr,"batch_id",csBatchId);
+		PutField_Int(hAcr,"is_acr_bank",iIsACRBank);
+		PutField_CString(hAcr,"update_user",csUpdateUser);
+		PutField_Int(hAcr,"is_void",PD_FALSE);
+		PutField_Int(hAcr,"txn_cnt",1);
+		PutField_CString(hAcr,"txn_id",csTxnId);
+		PutField_CString(hAcr,"txn_date",csTxnDate);
+		PutField_CString(hAcr,"bank_id",csPartyId);
+		PutField_CString(hAcr,"base_ccy",csFrCcy);
+		PutField_CString(hAcr,"entity_id",csEntityId);
+		PutField_CString(hAcr,"entity_type",csEntityType);
+		PutField_CString(hAcr,"txn_code", csTxnCode);
+		PutField_Char(hAcr,"fund_type", PD_FUNDS_OUT);
+		PutField_CString(hAcr,"bank_ccy", csFrCcy);
+		PutField_Double(hAcr,"bank_amt", dFrAmt);
+		PutField_Int(hAcr,"is_prorata",PD_TRUE);
+
+		if(iRet==PD_OK){
+			BOObjPtr = CreateObj(BOPtr,"BOMiAcr","CalculateACR");
+			iRet = (unsigned long) ((*BOObjPtr)(hAcr));
+		}
+		hash_destroy(hAcr);
+	}
+
+//Update txn_detail, insert txn_mi_detail
+	if(iRet == PD_OK){
+		if(iDoLogging!=PD_ADD_LOG) {
+			/* nothing */
+		}
+		else {
+			PutField_Char(hContext,"ex_party",PD_INT_EX);
+			PutField_Double(hContext,"ex_rate",1.0);
+			PutField_CString(hContext, "sub_status", PD_APPROVED);
+			PutField_Int(hFrContext,"acr_prorata",PD_TRUE);
+			PutField_CString(hFrContext, "txn_country", csCountry);
+
+			if (GetField_CString(hFrContext, "approval_date", &csTmp)) {
+				PutField_CString(hContext, "approval_date", csTmp);
+			}
+			if (GetField_CString(hFrContext, "approval_timestamp", &csTmp)) {
+				PutField_CString(hContext, "approval_timestamp", csTmp);
+			}
+
+DEBUGLOG(("Authorize::Call DBTransaction:UpdateDetail\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+			if((unsigned long) ((*DBObjPtr)(hFrContext))!=PD_OK) {
+				iRet = INT_ERR;
+			}
+
+DEBUGLOG(("Authorize::Call DBTxnMiDetail:Add\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTxnMiDetail","Add");
+			if((unsigned long) ((*DBObjPtr)(hFrContext))!=PD_OK){
+				iRet = INT_ERR;
+			}
+		}
+	}
+		
+
+//-----------------------handle recipient side balance, ACR and txn log details------------------//
+//Add Recipient Side Transaction Log
+	if(iRet == PD_OK){
+		if(iDoLogging!=PD_ADD_LOG) {
+			/* nothing */
+		}
+		else {
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+			strcpy((char*)csTmpTxnSeq,(*DBObjPtr)());
+
+			PutField_CString(hResponse, "txn_seq_tt", (const char *)csTmpTxnSeq);
+			PutField_CString(hToContext, "txn_seq", (const char *)csTmpTxnSeq);
+DEBUGLOG(("Authorize::to_txn_seq = [%s]\n",csTmpTxnSeq));
+
+/* local_tm_date */
+			if (GetField_CString(hContext,"local_tm_date",&csTmp)) {
+				PutField_CString(hToContext,"local_tm_date",csTmp);
+			}
+
+/* local_tm_time */
+			if (GetField_CString(hContext,"local_tm_time",&csTmp)) {
+				PutField_CString(hToContext,"local_tm_time",csTmp);
+			}
+
+/* host_posting_date */
+			if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+				PutField_CString(hToContext,"PHDATE",csTmp);
+			}
+
+			PutField_Double(hToContext,"txn_amt",dFrAmt);
+			PutField_CString(hToContext,"channel_code",PD_CHANNEL_MGT);
+			PutField_CString(hToContext,"process_code",PD_PROCESS_CODE_DEF);
+			PutField_CString(hToContext,"process_type",PD_PROCESS_TYPE_DEF);
+
+/* Update Context */
+DEBUGLOG(("Authorize:: Call MGTChannel: UpdateContext\n"));
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateContext");
+			iRet = (unsigned long)(*ChannelObjPtr)(hToContext);		
+
+/* txn_ccy */
+			if (GetField_CString(hFrContext, "txn_ccy", &csTmp)) {
+				PutField_CString(hToReq, "txn_ccy", csTmp);
+			}
+
+/* txn_country */
+			if (GetField_CString(hToContext, "txn_country", &csTmp)) {
+				PutField_CString(hToReq, "txn_country", csTmp);
+			}
+
+/* remark */
+			if (GetField_CString(hToContext, "remark", &csTmp)) {
+				PutField_CString(hToReq, "remark", csTmp);
+			}
+
+/* ip_addr */
+			if (GetField_CString(hRequest,"ip_addr",&csTmp)) {
+				PutField_CString(hToReq,"ip_addr",csTmp);
+			}
+
+DEBUGLOG(("Authorize: Call MGTChannel: AddTxnLog\n"));
+			PutField_Int(hToContext,"db_commit",PD_FALSE);
+			PutField_Int(hToContext,"do_logging",iDoLogging);
+			ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+			iRet = (unsigned long)(*ChannelObjPtr)(hToContext,hToReq);	
+
+			if(iRet==PD_OK){
+DEBUGLOG(("Authorize() DBTransaction:AddMiTxnLog\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddMiTxnLog");
+				if((unsigned long) (*DBObjPtr)(csTmpTxnSeq)!=PD_OK){
+					iRet = INT_ERR;
+				}
+			}
+		}
+	}
+
+//Credit Recipient Side Entity balance// 
+	if(iRet == PD_OK){
+		PutField_Int(hToContext, "balance_transfer", iBalanceTransfer);
+		PutField_CString(hToContext, "amt_type", PD_CR);
+		PutField_Char(hToContext,"bal_type",PD_MI_ENTITY_POOL_ACCT_BAL);
+		PutField_Double(hToContext,"txn_amt",dToAmt);
+		PutField_CString(hToContext,"txn_ccy",csToCcy);
+
+DEBUGLOG(("Authorize::Call BOMiAdjustment:ProcessPartyBalance\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMiAdjustment","ProcessPartyBalance");
+		iRet = (unsigned long)((*BOObjPtr)(hToContext));
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::BOMiAdjustment:ProcessPartyBalance Failed Ret [%d]\n", iRet));
+ERRLOG("TxnMinByUsBAT::BOMiADjustment::ProcesspartyBalance Failed [%d]\n", iRet);
+		}
+	}
+
+//Credit Recipient Side ACR //
+	if(iRet == PD_OK && iIsToACRBank){
+
+		//if skip tolerance check = TRUE, call 'CHK' again and send email
+		if(iRet==PD_OK && iSkipTolCheck){
+DEBUGLOG(("Authorize::Call ACR Tolerance Checking and send email\n"));
+			double  dThreshold = 0.0;
+			double  dDiff = 0.0;
+			char    csCmd[PD_TMP_BUF_LEN*2 + 1];
+
+			hash_t *hChk;
+			hChk = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hChk,0);
+
+			PutField_CString(hChk,"entity_id",csToEntityId);
+			PutField_CString(hChk,"fr_ccy", csFrCcy);
+			PutField_Double(hChk,"fr_txnamt", dFrAmt);
+			PutField_CString(hChk,"txn_ccy", csToCcy);
+			PutField_Double(hChk,"txn_amt", dToAmt);
+			
+			TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsCHK","Authorize");
+			iRet = (unsigned long) ((*TxnObjPtr)(hChk,hChk,hChk));
+
+			if(iRet==INT_LARGE_DIFF_NEW_RATE ||
+			   iRet==INT_LARGE_DIFF_OANDA_NEW_RATE){
+
+				GetField_Double(hChk,"acr_tol_threshold",&dThreshold);
+				GetField_Double(hChk,"acr_input_diff",&dDiff);
+
+				sprintf(csCmd,"fundin_alert.sh %s %s %d %d %.2f %.2f %.2f %s %s",
+						csTmpTxnSeq,csUpdateUser,iRet,iSkipTolCheck,
+						dDiff,dThreshold,dThreshold,
+						csFrCcy,csToCcy);
+
+				system(csCmd);
+				iRet = PD_OK;
+DEBUGLOG(("Authorize:: csCmd = [%s]\n",csCmd));
+			}
+
+			FREE_ME(hChk);
+		}
+
+
+DEBUGLOG(("Authorize::Call Calculate ACR\n"));
+		hash_init(hAcr,0);
+
+		PutField_CString(hAcr,"batch_id",csBatchId);
+		PutField_Int(hAcr,"is_acr_bank",iIsToACRBank);
+		PutField_CString(hAcr,"update_user",csUpdateUser);
+		PutField_Int(hAcr,"is_void",PD_FALSE);
+		PutField_Int(hAcr,"txn_cnt",1);
+		PutField_CString(hAcr,"txn_id",(const char *)csTmpTxnSeq);
+		PutField_CString(hAcr,"txn_date",csTxnDate);
+		PutField_CString(hAcr,"bank_id",csToPartyId);
+		PutField_CString(hAcr,"base_ccy",csToCcy);
+		PutField_CString(hAcr,"entity_id",csToEntityId);
+		PutField_CString(hAcr,"entity_type",csToEntityType);
+		PutField_CString(hAcr,"txn_code", csToTxnCode);
+		PutField_Char(hAcr,"fund_type", PD_FUNDS_IN);
+		PutField_CString(hAcr,"from_ccy", csFrCcy);
+		PutField_Double(hAcr,"from_amt", dFrAmt);
+		PutField_CString(hAcr,"bank_ccy", csToCcy);
+		PutField_Double(hAcr,"bank_amt", dToAmt);
+		PutField_Int(hAcr,"is_prorata",PD_FALSE);
+
+		if(iRet==PD_OK){
+			BOObjPtr = CreateObj(BOPtr,"BOMiAcr","CalculateACR");
+			iRet = (unsigned long) ((*BOObjPtr)(hAcr));
+		}
+
+	}
+
+//Update txn_header, insert txn_mi_detail
+	if(iRet == PD_OK){
+		if(iDoLogging!=PD_ADD_LOG) {
+			/* nothing */
+		}
+		else {
+			PutField_Char(hToContext,"ex_party",PD_INT_EX);
+			PutField_Double(hToContext,"ex_rate",1.0);
+			PutField_Int(hToContext,"acr_prorata",PD_FALSE);
+			PutField_Double(hToContext,"txn_amt",dFrAmt);
+			PutField_CString(hToContext, "txn_country", csCountry);
+			PutField_CString(hToContext, "txn_ccy", csFrCcy);
+
+			char* csBuf = (char*) malloc (128);
+			sprintf(csBuf, "%d", iRet);
+			PutField_CString(hToContext, "response_code", csBuf);
+			PutField_Int(hToContext, "internal_code", iRet);
+			FREE_ME(csBuf);
+
+			PutField_Char(hToContext, "status", PD_COMPLETE);
+			PutField_CString(hToContext, "sub_status", PD_APPROVED);
+			PutField_Char(hToContext, "ar_ind", PD_ACCEPT);
+
+DEBUGLOG(("Authorize:: Call MGTChannel: UpdateTxnLog\n"));
+			ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel", "UpdateTxnLog");
+			iRet = (unsigned long)(*ChannelObjPtr)(hToContext, hToReq, hResponse);
+			if (iRet != PD_OK) {
+				iRet = INT_ERR;
+			}
+			else{
+DEBUGLOG(("Authorize::Call DBTransaction:UpdateDetail\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+				if((unsigned long) ((*DBObjPtr)(hToContext))!=PD_OK) {
+					iRet = INT_ERR;
+				}
+
+DEBUGLOG(("Authorize::Call DBTxnMiDetail:Add\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTxnMiDetail","Add");
+				if((unsigned long) ((*DBObjPtr)(hToContext))!=PD_OK){
+					iRet = INT_ERR;
+				}
+			}
+		}
+	}
+
+//Add batch information 
+	if(iRet == PD_OK){
+		PutField_CString(hMiBatch,"batch_id",csBatchId);
+		PutField_CString(hMiBatch,"process_type",PD_MI_TXN_TYPE_BANK_BALTFR);
+		PutField_Char(hMiBatch,"status",PD_MI_BATCH_STATUS_NORMAL);
+		PutField_CString(hMiBatch,"add_user",csUpdateUser);
+
+DEBUGLOG(("Authorize::Call MiBatchHeader:: Add\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMiBatchHeader","Add");
+		iRet = (unsigned long)(*DBObjPtr)(hMiBatch);
+		if (iRet != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::Call MiBatchHeader:: Add Failed\n"));
+		}
+	}
+
+
+	if(iRet == PD_OK){
+		int i = LOOP_FROM_TRANSACTION;
+		for(i=LOOP_FROM_TRANSACTION; i<=LOOP_TO_TRANSACTION; i++){
+			PutField_Int(hMiBatch,"seq",i);
+			PutField_Char(hMiBatch,"txn_oper_ind",PD_MI_BATCH_TXN_OPER_INSERT);
+
+			if(i==LOOP_FROM_TRANSACTION){ 
+				PutField_CString(hMiBatch,"entity_id",csEntityId);
+				PutField_CString(hMiBatch,"party_type",csEntityType);
+				PutField_CString(hMiBatch,"party_id",csPartyId);
+				PutField_CString(hMiBatch,"txn_id",csTxnId);
+			}
+			else{
+				PutField_CString(hMiBatch,"entity_id",csToEntityId);
+				PutField_CString(hMiBatch,"party_type",csToEntityType);
+				PutField_CString(hMiBatch,"party_id",csToPartyId);
+				PutField_CString(hMiBatch,"txn_id",(const char *)csTmpTxnSeq);
+			}
+
+DEBUGLOG(("AddBatchDetail::Call MiBatchDetail: Add (%s)\n",csTmpTxnSeq));
+			DBObjPtr = CreateObj(DBPtr, "DBMiBatchDetail", "Add");
+			iRet = (unsigned long)(*DBObjPtr)(hMiBatch);
+			if (iRet != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("AddBatchDetail::Call MiBatchDetail:: Add Failed\n"));
+				break;
+			}
+		}
+	}
+
+	hash_destroy(hMiBatch);
+	FREE_ME(hMiBatch);
+	hash_destroy(hAcr);
+	FREE_ME(hAcr);
+	hash_destroy(hFrContext);
+	FREE_ME(hFrContext);
+	hash_destroy(hToContext);
+	FREE_ME(hToContext);
+	hash_destroy(hToReq);
+	FREE_ME(hToReq);
+
+DEBUGLOG(("TxnMinByUsBAT Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

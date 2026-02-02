@@ -1,0 +1,20 @@
+#ifndef _BOPSPPAIDAMOUNT_H_
+#define _BOPSPPAIDAMOUNT_H_
+#include "myhash.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int IsAllowAmtDiff(hash_t *hContext);
+int GetAmtDiffRange(hash_t *hContext);
+int GetTxnFee(hash_t *hContext, const hash_t *hRequest);
+double CalTxnFee(const char* csTxnCcy, double dTxnAmt, double dFeePct, double dFixedFee, double dMinFee, double dMaxFee);
+int UpdateAmtDetails(hash_t *hContext, const hash_t *hRequest);
+int UpdateAmtDetailsByPaidAmt(hash_t *hContext, const hash_t *hRequest);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -1,0 +1,270 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/10/03              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <oraca.h>
+#include <sqlca.h>
+#include "DepositTrace.h"
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+static char    cDebug;
+
+void DepositTrace(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+
+int GetTrace(const char* csTxnId,
+	     const char  cPartyType,
+	     const int   iSeq,
+	     hash_t* hRec)
+{
+	int	iRet = PD_ERR;
+
+        EXEC SQL WHENEVER SQLERROR GOTO get_trace_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar         hv_txn_id[PD_TXN_SEQ_LEN];
+		char		hv_party_type;
+		int		hv_seq;
+
+		varchar		v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar		v_send_mail_time[PD_DATETIME_LEN + 1];
+		char		v_enquiry_status;
+
+		short		ind_merchant_id = -1;
+		short		ind_send_mail_time = -1;
+		short		ind_enquiry_status = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_txn_id.len = strlen(csTxnId);
+        memcpy(hv_txn_id.arr, csTxnId, hv_txn_id.len);
+DEBUGLOG(("GetTrace txn_id = [%d][%.*s]\n", hv_txn_id.len, hv_txn_id.len, hv_txn_id.arr));
+
+	hv_party_type = cPartyType;
+DEBUGLOG(("GetTrace party_type = [%c]\n", hv_party_type));
+
+	hv_seq = iSeq;
+DEBUGLOG(("GetTrace seq = [%d]\n", hv_seq));
+
+
+	EXEC SQL
+                select
+			dtr_merchant_id,
+			to_char(dtr_send_email_timestamp, 'YYYYMMDDHH24MISS'),
+			dtr_enquiry_status
+		into	
+			:v_merchant_id:ind_merchant_id,
+			:v_send_mail_time:ind_send_mail_time,
+			:v_enquiry_status:ind_enquiry_status
+		from   deposit_trace
+		where  dtr_txn_id = :hv_txn_id
+		and    dtr_party_type = :hv_party_type
+		and    dtr_seq = :hv_seq;
+
+
+/* merchant_id */
+		if (ind_merchant_id >= 0) {
+			v_merchant_id.arr[v_merchant_id.len] = '\0';
+			PutField_CString(hRec, "merchant_id", (const char *)v_merchant_id.arr);
+DEBUGLOG(("GetTrace merchant_id = [%s]\n", v_merchant_id.arr));
+
+			iRet = PD_OK;
+		}
+
+/* send_mail_time */
+		if (ind_send_mail_time >= 0) {
+			v_send_mail_time.arr[v_send_mail_time.len] = '\0';
+			PutField_CString(hRec, "send_mail_time", (const char *)v_send_mail_time.arr);
+DEBUGLOG(("GetTrace send_mail_time = [%s]\n", v_send_mail_time.arr));
+		}
+
+/* enquiry_status */
+		if (ind_enquiry_status >= 0) {
+			PutField_Char(hRec, "enquiry_status", v_enquiry_status);
+DEBUGLOG(("GetTrace enquiry_status = [%c]\n", v_enquiry_status));
+		}
+
+DEBUGLOG(("GetTrace Normal Exit\n"));
+        return  iRet;
+
+get_trace_error:
+DEBUGLOG(("get_trace_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("DepositTrace_GetTrace: SP_INTERNAL_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+}
+
+
+
+int UpdateTraceStatus(const char* csTxnId,
+                      const char  cPartyType,
+                      const int   iSeq,
+                      const char  cStatus)
+{
+	char*   csBuf;
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatestatus_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+        varchar         hv_dynstmt[1024];
+
+        EXEC SQL END DECLARE SECTION;
+
+	csBuf = (char*) malloc (PD_TMP_BUF_LEN);
+
+DEBUGLOG(("UpdateTraceStatus: Begin\n"));
+
+DEBUGLOG((" txn_id = [%s]\n", csTxnId));
+DEBUGLOG((" party_type = [%c]\n", cPartyType));
+DEBUGLOG((" seq = [%d]\n", iSeq));
+
+        strcpy((char*)hv_dynstmt.arr, "update deposit_trace set dtr_update_timestamp  = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG((" status = [%c]\n", cStatus));
+	strcat((char*)hv_dynstmt.arr, ", dtr_enquiry_status = '");
+	sprintf(csBuf, "%c", cStatus);
+	strcat((char*)hv_dynstmt.arr, csBuf);
+	strcat((char*)hv_dynstmt.arr, "'");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+	strcat((char *)hv_dynstmt.arr, " WHERE dtr_txn_id = '");
+        strcat((char *)hv_dynstmt.arr, csTxnId);
+        strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        strcat((char *)hv_dynstmt.arr, " AND dtr_party_type = '");
+	sprintf(csBuf, "%c", cPartyType);
+        strcat((char *)hv_dynstmt.arr, csBuf);
+        strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        strcat((char *)hv_dynstmt.arr, " AND dtr_seq = ");
+	sprintf(csBuf, "%d", iSeq);
+        strcat((char *)hv_dynstmt.arr, csBuf);
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+        FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateTraceStatus Normal Exit\n"));
+        return PD_OK;
+
+updatestatus_error:
+DEBUGLOG(("updatestatus_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("DepositTrace_UpdateTraceStatuss: SP_INTERNAL_ERR\n");
+DEBUGLOG(("UpdateTraceStatus: SP_INTERNAL_ERR\n"));
+        return PD_ERR;
+}
+
+
+
+int UpdateTrace(const char* csTxnId,
+                const char  cPartyType,
+                const int   iSeq,
+                hash_t*     hIn
+)
+{
+	char*   csBuf;
+	char    cTmp;
+	char*   csTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatestatus_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+        varchar         hv_dynstmt[1024];
+
+        EXEC SQL END DECLARE SECTION;
+
+	csBuf = (char*) malloc (PD_TMP_BUF_LEN);
+
+DEBUGLOG(("UpdateTraceStatus: Begin\n"));
+
+DEBUGLOG((" txn_id = [%s]\n", csTxnId));
+DEBUGLOG((" party_type = [%c]\n", cPartyType));
+DEBUGLOG((" seq = [%d]\n", iSeq));
+
+        strcpy((char*)hv_dynstmt.arr, "update deposit_trace set dtr_update_timestamp  = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+	if (GetField_Char(hIn, "enquiry_status", &cTmp)) {
+DEBUGLOG((" status = [%c]\n", cTmp));
+		strcat((char*)hv_dynstmt.arr, ", dtr_enquiry_status = '");
+		sprintf(csBuf, "%c", cTmp);
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+	if (GetField_CString(hIn, "fail_reason", &csTmp)) {
+DEBUGLOG((" fail_reason = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", dtr_fail_reason = substr('");
+		strcat((char*)hv_dynstmt.arr, ESC_string(csTmp));
+		strcat((char*)hv_dynstmt.arr, "', 1, 50)");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+	strcat((char *)hv_dynstmt.arr, " WHERE dtr_txn_id = '");
+        strcat((char *)hv_dynstmt.arr, csTxnId);
+        strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        strcat((char *)hv_dynstmt.arr, " AND dtr_party_type = '");
+	sprintf(csBuf, "%c", cPartyType);
+        strcat((char *)hv_dynstmt.arr, csBuf);
+        strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        strcat((char *)hv_dynstmt.arr, " AND dtr_seq = ");
+	sprintf(csBuf, "%d", iSeq);
+        strcat((char *)hv_dynstmt.arr, csBuf);
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+        FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateTraceStatus Normal Exit\n"));
+        return PD_OK;
+
+updatestatus_error:
+DEBUGLOG(("updatestatus_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("DepositTrace_UpdateTraceStatuss: SP_INTERNAL_ERR\n");
+DEBUGLOG(("UpdateTraceStatus: SP_INTERNAL_ERR\n"));
+        return PD_ERR;
+}
+

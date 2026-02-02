@@ -1,0 +1,203 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+char cDebug = 'Y';
+char csCutoffDatetime[PD_DATE_LEN + PD_TIME_LEN + 1];
+char csBankAcctNum[PD_BANK_ACCT_NUM_LEN + 1];
+
+int parse_arg(int argc, char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("Usage: offline_handle_poa_baid_unknown_dr.exec -d cut_off_datetime -a bank_acct_num\n");
+		return (PD_ERR);
+	}
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(myHash, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_cutoff_datetime[PD_DATE_LEN + PD_TIME_LEN];
+		varchar hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+
+		varchar v_baid_txn_id[PD_TXN_SEQ_LEN + 1];
+
+		short ind_baid_txn_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (iRet == PD_OK) {
+		hv_cutoff_datetime.len = strlen(csCutoffDatetime);
+		memcpy(hv_cutoff_datetime.arr, csCutoffDatetime, hv_cutoff_datetime.len);
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: hv_cutoff_datetime = [%.*s]\n", hv_cutoff_datetime.len, hv_cutoff_datetime.arr));
+
+		hv_bank_acct_num.len = strlen(csBankAcctNum);
+		memcpy(hv_bank_acct_num.arr, csBankAcctNum, hv_bank_acct_num.len);
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: hv_bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: ===== ===== ===== ===== =====\n"));
+
+		// get baid txn
+		EXEC SQL DECLARE c_cursor_get_baid_txn CURSOR FOR
+			select obt_txn_id
+			from ol_baid_txn
+			where obt_bank_acct_num = :hv_bank_acct_num
+			and obt_txn_code in ('UBD', 'USO')
+			and obt_status = 'C'
+			and obt_ar_ind = 'A'
+			and obt_sub_status = '118'
+			and obt_txn_id not in (select baid_txn_id from tmp_exclude_mr_payout_list)
+			order by obt_approval_timestamp;
+
+		EXEC SQL OPEN c_cursor_get_baid_txn;
+		for (;;) {
+			hash_destroy(myHash);
+			hash_init(myHash, 0);
+
+			EXEC SQL FETCH c_cursor_get_baid_txn
+			INTO	:v_baid_txn_id:ind_baid_txn_id;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			// baid_txn_id
+			if (ind_baid_txn_id >= 0) {
+				v_baid_txn_id.arr[v_baid_txn_id.len] = '\0';
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: baid_txn_id = [%s]\n", (const char*)v_baid_txn_id.arr));
+			} else {
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: baid_txn_id is empty\n"));
+				continue;
+			}
+
+			// activity
+			PutField_CString(myHash, "activity", "RECON");
+
+			// bank_stmt_type
+			PutField_CString(myHash, "bank_stmt_type", "MR_PAYOUT");
+
+			// trigger_type
+			PutField_CString(myHash, "trigger_type", "manual");
+
+			// input_channel
+			PutField_CString(myHash, "input_channel", "OMT");
+
+			// recon_type
+			PutField_CString(myHash, "recon_type", "SAME");
+
+			// use_pf
+			PutField_CString(myHash, "use_pf", "0");
+
+			// have_charge
+			PutField_CString(myHash, "have_charge", "0");
+
+			// have_interest
+			PutField_CString(myHash, "have_interest", "0");
+
+			// add_user
+			PutField_CString(myHash, "add_user", PD_UPDATE_USER);
+
+			// txn_cnt
+			PutField_CString(myHash, "txn_cnt", "0");
+
+			// stmt_cnt
+			PutField_CString(myHash, "stmt_cnt", "1");
+
+			// stmt_txnid_1
+			PutField_CString(myHash, "stmt_txnid_1", (const char*)v_baid_txn_id.arr);
+
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: call TxnOmtByUsREC:Authorize\n"));
+			TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsREC", "Authorize");
+			iTmpRet = (unsigned long)(*TxnObjPtr)(myHash, myHash, myHash);
+			if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: TxnOmtByUsREC:Authorize [%s] Failed\n", (const char*)v_baid_txn_id.arr));
+ERRLOG("offline_handle_poa_baid_unknown_dr: TxnOmtByUsREC:Authorize [%s] Failed\n", (const char*)v_baid_txn_id.arr);
+			}
+
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: ===== ===== ===== ===== =====\n"));
+		}
+
+		EXEC SQL CLOSE c_cursor_get_baid_txn;
+	}
+
+	hash_destroy(myHash);
+	FREE_ME(myHash);
+
+DEBUGLOG(("offline_handle_poa_baid_unknown_dr: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+
+sql_error:
+DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("offline_handle_poa_baid_unknown_dr:: sql error\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+EXEC SQL CLOSE c_cursor_get_baid_txn;
+	EXEC SQL ROLLBACK RELEASE;
+	FREE_ME(myHash);
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+	strcpy(csCutoffDatetime, "");
+	strcpy(csBankAcctNum, "");
+
+	while ((c = getopt(argc, argv, "d:a:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(csCutoffDatetime, optarg);
+				break;
+			case 'a':
+				strcpy(csBankAcctNum, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csCutoffDatetime, "") || !strcmp(csBankAcctNum, "")) {
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}

@@ -1,0 +1,1129 @@
+
+CREATE OR REPLACE PACKAGE REPORT_PKG is
+
+	TYPE   RPT001_type is REF cursor return report_rpt001_view%rowtype;
+	TYPE   RPT002_type is REF cursor return report_rpt002_view%rowtype;
+	TYPE   RPT003_type is REF cursor return report_rpt003_view%rowtype;
+	TYPE   RPT004_type is REF cursor return report_rpt004_view%rowtype;
+	TYPE   RPT005_type is REF cursor return report_rpt005_view%rowtype;
+	TYPE   RPT006_type is REF cursor return report_rpt006_view%rowtype;
+	TYPE   RPT007_type is REF cursor return report_rpt007_view%rowtype;
+	TYPE   RPT008_type is REF cursor return report_rpt008_view%rowtype;
+	TYPE   RPT009_type is REF cursor return report_rpt009_view%rowtype;
+	TYPE   RPT010_type is REF cursor return report_rpt010_view%rowtype;
+	TYPE   RPT011_type is REF cursor return report_rpt011_view%rowtype;
+	TYPE   RPT012_type is REF cursor return report_rpt011_view%rowtype;
+	TYPE   RPT013_type is REF cursor return report_rpt013_view%rowtype;
+	TYPE   RPT014_type is REF cursor return report_rpt013_view%rowtype;
+
+	function F_RPT001(in_approval_date_from  txn_header.th_approval_timestamp%type,
+                    in_approval_date_to  txn_header.th_approval_timestamp%type,
+                    in_merchant_id   txn_header.th_merchant_id%type,
+                    in_country       txn_detail.td_txn_country%type,
+                    in_service_code  txn_header.th_service_code%type,
+                    in_ccy           txn_detail.td_txn_ccy%type
+                  ) return rpt001_tab;
+	procedure open_cur_rpt001(
+       	    in_host_posting_date in     txn_header.th_host_posting_date%type,
+            in_merchant_id       in     txn_header.th_merchant_id%type,
+            in_country           in     txn_detail.td_txn_country%type,
+            in_service_code      in     txn_header.th_service_code%type,
+            in_ccy               IN     txn_detail.td_txn_ccy%type,
+            cursor_rpt001        IN OUT RPT001_type);
+
+	PROCEDURE open_cur_rpt002 (
+      	    in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+            in_client_id           IN     clients.client_id%TYPE,
+            in_merchant_id         IN     TXN_HEADER.TH_MERCHANT_ID%TYPE,
+            in_psp_id              IN     PSP_DETAIL.PSP_ID%TYPE,
+            cursor_rpt002          IN OUT RPT002_type);
+
+	procedure open_cur_rpt003 (
+            in_approval_date       IN     txn_header.th_approval_date%type,
+      	    in_report_type         IN     varchar2,
+	    cursor_rpt003          IN OUT RPT003_type);
+
+	procedure open_cur_rpt004 (
+	    in_approval_date       IN     txn_header.th_approval_date%type,
+      	    in_merchant_type       IN     merch_detail.merchant_type%type,
+	    cursor_rpt004          IN OUT RPT004_type);
+
+	procedure open_cur_rpt005 (
+	    in_approval_date       IN     txn_header.th_approval_date%type,
+	    cursor_rpt005          IN OUT RPT005_type);
+
+	procedure open_cur_rpt006 (
+	    in_approval_date       IN     txn_header.th_approval_date%type,
+	    cursor_rpt006          IN OUT RPT006_type);
+
+	procedure open_cur_rpt007 (
+	    in_host_posting_date   IN     txn_header.th_host_posting_date%type,
+	    cursor_rpt007          IN OUT RPT007_type);
+
+	procedure open_cur_rpt008 (
+	    in_host_posting_date   IN     txn_header.th_host_posting_date%type,
+	    cursor_rpt008          IN OUT RPT008_type);
+
+        function F_RPT009(in_approval_date  txn_header.th_approval_timestamp%type
+		) return rpt009_tab;
+
+	procedure open_cur_rpt009(
+       	    in_approval_date       IN     txn_header.th_approval_date%type,
+            cursor_rpt009          IN OUT RPT009_type);
+
+	procedure open_cur_rpt010(
+            in_approval_date       IN     txn_header.th_approval_date%type,
+            in_dc_ind              IN     adjustment_type.at_dc_ind%type,
+            cursor_rpt010          IN OUT RPT010_type);
+
+	procedure open_cur_rpt011 (
+	    in_txn_date            IN     txn_psp_detail.tp_txn_date%type,
+	    cursor_rpt011          IN OUT RPT011_type);
+
+	procedure open_cur_rpt012 (
+	    in_txn_date            IN     txn_psp_detail.tp_txn_date%type,
+	    cursor_rpt012          IN OUT RPT012_type);
+
+	procedure open_cur_rpt013 (
+	    in_host_posting_date   IN	  txn_header.th_host_posting_date%type,
+	    cursor_rpt013          IN OUT RPT013_type);
+
+	procedure open_cur_rpt014 (
+	    in_host_posting_date   IN	  txn_header.th_host_posting_date%type,
+	    cursor_rpt014          IN OUT RPT014_type);
+end REPORT_PKG;
+/
+
+CREATE OR REPLACE PACKAGE BODY REPORT_PKG
+IS
+   FUNCTION F_RPT001 (
+      in_approval_date_from    txn_header.th_approval_timestamp%TYPE,
+      in_approval_date_to      txn_header.th_approval_timestamp%TYPE,
+      in_merchant_id           txn_header.th_merchant_id%TYPE,
+      in_country               txn_detail.td_txn_country%TYPE,
+      in_service_code          txn_header.th_service_code%TYPE,
+      in_ccy                   txn_detail.td_txn_ccy%TYPE)
+      RETURN rpt001_tab
+   IS
+      Result                    rpt001_tab := rpt001_tab ();
+      n                         INTEGER := 0;
+      dBal                      NUMBER := 0.0;
+      dOpeningBal               NUMBER := 0.0;
+      lTxnId                    txn_header.th_txn_id%TYPE;
+
+      v_txn_id                  txn_header.th_txn_id%TYPE;
+      v_merchant_ref            txn_header.th_merchant_ref%TYPE;
+      v_txn_code                txn_header.th_txn_code%TYPE;
+      v_txn_code_desc           txn_code.tc_desc%TYPE;
+      v_open_bal                txn_elements.te_amount%TYPE;
+      v_current_bal             txn_elements.te_amount%TYPE;
+      v_txn_element_type        txn_elements.te_txn_element_type%TYPE;
+      v_txn_element_type_desc   def_element_type.dt_desc%TYPE;
+      v_exec_seq                txn_elements.te_exec_seq%TYPE;
+      v_amount                  txn_elements.te_amount%TYPE;
+      v_ccy                     txn_elements.te_ccy%TYPE;
+      v_amt_type                txn_elements.te_amt_type%TYPE;
+      v_approval_date           txn_header.th_approval_timestamp%TYPE;
+      v_void_txn_id             txn_header.th_org_txn_id%TYPE;
+
+
+      CURSOR rpt001_cur
+      IS
+           SELECT te_txn_id,
+                  th_merchant_ref,
+                  th_txn_code,
+                  tc_desc,
+                  NVL (td_open_bal, 0),
+                  td_current_bal,
+                  te_txn_element_type,
+                  dt_desc,
+                  te_exec_seq,
+                  te_amount,
+                  te_ccy,
+                  te_amt_type,
+                  th_approval_timestamp,
+                  void_txn_id
+             FROM txn_detail,
+                  (SELECT /*+ LEADING (TXN_ELEMENTS) */
+                         te_txn_id,
+                          txn_header.th_merchant_ref,
+                          te_txn_element_type,
+                          dt_desc,
+                          te_exec_seq,
+                          te_amount,
+                          te_ccy,
+                          te_amt_type,
+                          txn_header.th_txn_code,
+                          tc_desc,
+                          txn_header.th_approval_timestamp,
+                          void_th.th_txn_id void_txn_id
+                     FROM txn_elements,
+                          (SELECT th_txn_id,
+                                  th_txn_code,
+                                  th_approval_timestamp,
+                                  th_merchant_ref
+                             FROM txn_header
+                            WHERE     th_approval_timestamp >=
+                                         in_approval_date_from
+                                  AND th_approval_timestamp <
+                                         in_approval_date_to
+                                  AND th_merchant_id = in_merchant_id
+                                  AND th_ar_ind = 'A'
+                                  AND th_service_code = in_service_code) txn_header,
+                          def_element_type,
+                          txn_code,
+                          (select th_txn_id, th_org_txn_id from txn_header where th_merchant_id IS NOT NULL) void_th
+                    WHERE     te_txn_element_type IN ('TAMT', 'TFEE')
+                          AND te_party_type = 'M'
+                          AND te_ccy = in_ccy
+                          AND te_txn_id = txn_header.th_txn_id
+                          AND te_txn_element_type = dt_type
+                          AND txn_header.th_txn_code = tc_code
+                          AND txn_header.th_txn_id = void_th.th_org_txn_id(+))
+            WHERE td_txn_id = te_txn_id AND td_txn_country = in_country
+         ORDER BY th_approval_timestamp, te_exec_seq;
+   BEGIN
+      OPEN rpt001_cur;
+
+      LOOP
+         FETCH rpt001_cur
+         INTO v_txn_id,
+              v_merchant_ref,
+              v_txn_code,
+              v_txn_code_desc,
+              v_open_bal,
+              v_current_bal,
+              v_txn_element_type,
+              v_txn_element_type_desc,
+              v_exec_seq,
+              v_amount,
+              v_ccy,
+              v_amt_type,
+              v_approval_date,
+              v_void_txn_id;
+
+         EXIT WHEN rpt001_cur%NOTFOUND;
+
+         IF (n = 0)
+         THEN
+            lTxnId := v_txn_id;
+            dBal := v_open_bal;
+         END IF;
+
+         IF (lTxnId != v_txn_id)
+         THEN
+            dBal := v_open_bal;
+         END IF;
+
+         dOpeningBal := dBal;
+
+         IF (v_amt_type = 'DR')
+         THEN
+            dBal := dBal - v_amount;
+         ELSE
+            dBal := dBal + v_amount;
+         END IF;
+
+         Result.EXTEND;
+         n := n + 1;
+
+         result (n) :=
+            RPT001_OBj (v_txn_id,
+                        v_merchant_ref,
+                        v_txn_code,
+                        v_txn_code_desc,
+                        dOpeningBal,
+                        v_current_bal,
+                        v_txn_element_type,
+                        v_txn_element_type_desc,
+                        v_exec_seq,
+                        v_amount,
+                        v_ccy,
+                        v_amt_type,
+                        dBal,
+                        v_approval_date,
+                        v_void_txn_id);
+         lTxnId := v_txn_id;
+      END LOOP;
+
+      CLOSE rpt001_cur;
+
+      RETURN (Result);
+   END;
+
+   PROCEDURE open_cur_rpt001 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      in_merchant_id         IN     txn_header.th_merchant_id%TYPE,
+      in_country             IN     txn_detail.td_txn_country%TYPE,
+      in_service_code        IN     txn_header.th_service_code%TYPE,
+      in_ccy                 IN     txn_detail.td_txn_ccy%TYPE,
+      cursor_rpt001          IN OUT RPT001_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt001 FOR
+         SELECT *
+           FROM TABLE (report_pkg.F_rpt001 (
+                          TO_DATE (in_host_posting_date, 'yyyymmdd'),
+                          TO_DATE (in_host_posting_date, 'yyyymmdd') + 1,
+                          in_merchant_id,
+                          in_country,
+                          in_service_code,
+                          in_ccy));
+   END open_cur_rpt001;
+
+   PROCEDURE open_cur_rpt002 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      in_client_id           IN     clients.client_id%TYPE,
+      in_merchant_id         IN     txn_header.th_merchant_id%TYPE,
+      in_psp_id              IN     psp_detail.psp_id%TYPE,
+      cursor_rpt002          IN OUT RPT002_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt002 FOR
+         SELECT th_txn_id,
+                tc_desc,
+                th_client_id,
+                client_name,
+                th_merchant_id,
+                name AS merchant_name,
+                th_merchant_ref,
+                tp_psp_id,
+                psp_name,
+                th_host_posting_date,
+                th_transmission_datetime,
+                td_txn_country,
+                td_txn_ccy,
+                th_transaction_amount,
+                th_net_amount,
+                th_reserve_amount,
+                th_ex_rate,
+                dm_status_desc,
+                ds_name,
+                to_char(th_create_timestamp,'YYYYMMDDHH24MISS') as create_date,
+                to_char(th_update_timestamp,'YYYYMMDDHH24MISS') as update_date,
+                sc_desc,
+                th_approval_date
+           FROM (SELECT th_txn_id,
+                        th_txn_code,
+                        th_status,
+                        th_ar_ind,
+                        th_internal_code,
+                        th_response_code,
+                        th_merchant_id,
+                        th_merchant_ref,
+                        th_transaction_amount,
+                        th_net_amount,
+                        th_reserve_amount,
+                        th_ex_rate,
+                        th_sub_status,
+                        th_transmission_datetime,
+                        th_local_tm_date,
+                        th_local_tm_time,
+                        th_host_posting_date,
+                        th_client_id,
+                        th_service_code,
+                        th_create_timestamp,
+                        th_update_timestamp,
+                        th_approval_date
+                   FROM txn_header
+                  WHERE     txn_header.th_host_posting_date =
+                               in_host_posting_date
+                        AND (   th_merchant_id = in_merchant_id
+                             OR in_merchant_id IS NULL)
+                        AND (   th_client_id = in_client_id
+                             OR in_client_id IS NULL)
+                        AND th_status <> 'P') txn_header,
+                txn_detail,
+                txn_psp_detail,
+                txn_code,
+                psp_detail,
+                clients,
+                merch_detail,
+                def_sub_status,
+                def_txn_status_map,
+                def_service_code
+          WHERE     th_txn_id = td_txn_id
+                AND th_txn_id = tp_txn_id
+                AND th_txn_code = tc_code
+                AND (  psp_id = in_psp_id
+                             OR in_psp_id IS NULL)
+                AND psp_id = tp_psp_id
+                AND th_client_id = clients.client_id
+                AND th_merchant_id = merchant_id
+                AND th_sub_status = ds_sub_status
+                AND dm_type = 'A'
+                AND th_status = dm_status
+                AND th_ar_ind = dm_ar_ind
+                AND th_txn_code = dm_txn_code
+                AND th_service_code = sc_code;
+   END open_cur_rpt002;
+
+
+   PROCEDURE open_cur_rpt003 (
+      in_approval_date       IN     txn_header.th_approval_date%TYPE,
+      in_report_type         IN     varchar2,
+      cursor_rpt003          IN OUT RPT003_type)
+   IS
+      v_fr_approval_date   txn_header.th_approval_date%type;
+      v_to_approval_date   txn_header.th_approval_date%type;
+
+   BEGIN
+      IF UPPER (in_report_type) = 'D'
+      THEN
+         v_fr_approval_date := in_approval_date;
+         v_to_approval_date := in_approval_date;
+      ELSIF UPPER (in_report_type) = 'W'
+      THEN
+         v_fr_approval_date := to_char(TO_DATE (in_approval_date, 'YYYYMMDD') - 7 + 1, 'YYYYMMDD');
+         v_to_approval_date := in_approval_date;
+      ELSIF UPPER (in_report_type) = 'M'
+      THEN
+         --v_fr_posting_date := to_char(LAST_DAY(ADD_MONTHS(to_date(in_host_posting_date, 'yyyyMMdd'), -2)) +1, 'yyyymmdd');
+         --v_to_posting_date := to_char(LAST_DAY(ADD_MONTHS(to_date(in_host_posting_date, 'yyyyMMdd'), -1)), 'yyyymmdd');
+
+         v_fr_approval_date := to_char(LAST_DAY(ADD_MONTHS(to_date(in_approval_date, 'YYYYMMDD'), -1)) +1, 'YYYYMMDD');
+         v_to_approval_date := to_char(LAST_DAY(to_date(in_approval_date, 'YYYYMMDD')), 'YYYYMMDD');
+
+      END IF;
+
+      OPEN cursor_rpt003 FOR
+           SELECT th_approval_date,
+                  tc_desc,
+                  sc_desc,
+                  psp_name,
+                  tp_txn_ccy,
+                  SUM (tp_txn_amount) AS total_transaction_amount,
+                  COUNT (*) AS transaction_count,
+                  AVG (tp_txn_amount) AS average_transaction_amount
+             FROM txn_psp_detail,
+                  def_service_code,
+                  txn_code,
+                  psp_detail,
+                  (SELECT th_approval_date,
+                          th_txn_id,
+                          th_service_code,
+                          th_txn_code
+                     FROM txn_header
+                    WHERE     th_approval_date >= v_fr_approval_date
+                          AND th_approval_date <= v_to_approval_date
+                          AND th_ar_ind = 'A'
+                          AND th_txn_code IN ('DSI', 'DSP', 'VDS'))
+            WHERE     th_txn_id = tp_txn_id
+                  AND sc_code = th_service_code
+                  AND tc_code = th_txn_code
+                  AND psp_id = tp_psp_id
+         GROUP BY th_approval_date,
+                  tc_desc,
+                  sc_desc,
+                  psp_name,
+                  tp_txn_ccy
+         ORDER BY th_approval_date,
+                  tc_desc,
+                  sc_desc,
+                  psp_name,
+                  tp_txn_ccy;
+   END open_cur_rpt003;
+
+
+   PROCEDURE open_cur_rpt004 (
+      in_approval_date       IN     txn_header.th_approval_date%TYPE,
+      in_merchant_type       IN     merch_detail.merchant_type%type,
+      cursor_rpt004          IN OUT RPT004_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt004 FOR
+         SELECT th_merchant_id,
+                name,
+                sc_desc,
+                te_ccy,
+                te_amt_type,
+                sum(te_amount) as total_amount
+         FROM def_service_code,
+              merch_detail,
+              txn_elements,
+              (SELECT th_txn_id,
+                      th_merchant_id,
+                      th_service_code
+               FROM txn_header
+               WHERE th_approval_date = in_approval_date
+               AND th_ar_ind = 'A'
+               AND th_txn_code in ('DSI','DSP'))
+         WHERE te_txn_id = th_txn_id
+         AND  te_txn_element_type = 'TFEE'
+         AND  te_party_type = 'M'
+         AND  merchant_id = th_merchant_id
+         AND  (  merchant_type = in_merchant_type
+               OR in_merchant_type IS NULL)
+         AND  sc_code = th_service_code
+         GROUP BY th_merchant_id, name, sc_desc, te_ccy, te_amt_type
+         ORDER BY th_merchant_id, name, sc_desc, te_ccy, te_amt_type;
+   END open_cur_rpt004;
+
+
+/*
+   PROCEDURE open_cur_rpt005 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      cursor_rpt005          IN OUT RPT005_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt005 FOR
+         SELECT tc_desc,
+                dm_status_desc,
+                COUNT (*) as transaction_count,
+                te_amt_type,
+                te_ccy,
+                SUM (te_amount) as markup_amount
+         FROM txn_code,
+              def_txn_status_map,
+              (SELECT te_txn_id,
+                      te_amt_type,
+                      te_ccy,
+                      te_amount,
+                      th_status,
+                      th_txn_code
+               FROM txn_elements,
+                    (SELECT th_txn_id, th_txn_code, th_status
+                     FROM txn_header
+                     WHERE th_host_posting_date = in_host_posting_date
+                     AND  th_ar_ind = 'A')
+               WHERE     te_txn_element_type = 'MAMT'
+                     AND te_party_type = 'R'
+                     AND te_txn_id = th_txn_id)
+         WHERE     tc_code = th_txn_code
+               AND dm_type = 'A'
+               AND dm_status = th_status
+               AND dm_ar_ind = 'A'
+               AND dm_txn_code = th_txn_code
+      GROUP BY tc_desc,
+               dm_status_desc,
+               te_amt_type,
+               te_ccy
+      ORDER BY tc_desc,
+               dm_status_desc,
+               te_amt_type,
+               te_ccy;
+   END open_cur_rpt005;
+*/
+
+   PROCEDURE open_cur_rpt005 (
+      in_approval_date       IN     txn_header.th_approval_date%TYPE,
+      cursor_rpt005          IN OUT RPT005_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt005 FOR
+         select tc_desc,
+                dm_status_desc,
+                COUNT (*) as transaction_count,
+                te_amt_type,
+                te_ccy,
+                NVL(SUM (te_amount), 0) as markup_amount
+         from txn_code,
+              def_txn_status_map,
+              ( SELECT te_txn_id,
+                       te_amt_type,
+                       te_ccy,
+                       te_amount,
+                       th_status,
+                       th_txn_code,
+                       th_ar_ind
+                FROM ( SELECT th_txn_id, 
+                              th_txn_code, 
+                              th_status,
+                              th_ar_ind
+                       FROM txn_header
+                       WHERE th_approval_date = in_approval_date 
+                       AND  th_ar_ind = 'A'
+                     ) txn_header
+               LEFT JOIN txn_elements
+               ON te_txn_id = th_txn_id
+               AND te_txn_element_type = 'MAMT'
+               AND te_party_type = 'R')
+         where th_txn_code = tc_code
+         and dm_type = 'A'
+         and dm_status = th_status
+         and dm_ar_ind = NVL(th_ar_ind, ' ')
+         and dm_txn_code = th_txn_code
+         GROUP BY tc_desc,
+                  dm_status_desc,
+                  te_amt_type,
+                  te_ccy
+         ORDER BY tc_desc,
+                  dm_status_desc,
+                  te_amt_type,
+                  te_ccy;
+   END open_cur_rpt005;
+
+   PROCEDURE open_cur_rpt006 (
+      in_approval_date       IN     txn_header.th_approval_date%TYPE,
+      cursor_rpt006          IN OUT RPT006_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt006 FOR
+           SELECT COUNT (*) AS Txn_count,
+                  memeber_amt_type,
+                  member_ccy,
+                  SUM (member_amount),
+                  merchant_amt_type,
+                  merchant_ccy,
+                  SUM (merchant_amount)
+           FROM (SELECT txn_header.th_txn_id,
+                        b.te_amount AS merchant_amount,
+                        b.te_ccy AS merchant_ccy,
+                        b.te_amt_type AS merchant_amt_type,
+                        c.te_amount AS member_amount,
+                        c.te_ccy AS member_ccy,
+                        c.te_amt_type AS memeber_amt_type
+                   FROM (SELECT a.th_txn_id
+                          FROM  txn_header a
+                         WHERE  a.th_approval_date = in_approval_date
+                           AND  a.th_txn_code = 'POU'
+                           AND  a.th_ar_ind = 'A') txn_header
+                        LEFT JOIN txn_elements b
+                           ON     b.te_txn_id = txn_header.th_txn_id
+                              AND b.te_txn_element_type = 'TFEE'
+                              AND B.TE_PARTY_TYPE = 'M'
+                        LEFT JOIN txn_elements c
+                           ON     c.te_txn_id = txn_header.th_txn_id
+                              AND c.te_txn_element_type = 'TFEE'
+                              AND c.te_party_type = 'R')
+         WHERE (merchant_amount IS NOT NULL OR member_amount IS NOT NULL)
+      GROUP BY member_ccy,
+               memeber_amt_type,
+               merchant_ccy,
+               merchant_amt_type
+      ORDER BY member_ccy,
+               memeber_amt_type,
+               merchant_ccy,
+               merchant_amt_type;
+   END open_cur_rpt006;
+
+
+   PROCEDURE open_cur_rpt007 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      cursor_rpt007          IN OUT RPT007_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt007 FOR
+         SELECT to_char(th_create_timestamp,'YYYYMMDDHH24MISS') as create_date,
+                to_char(th_update_timestamp,'YYYYMMDDHH24MISS') as update_date,
+                to_char(th_approval_timestamp,'YYYYMMDDHH24MISS') as approval_date,
+                th_txn_id,
+                psp_name,
+                tp_tid,
+                th_merchant_ref,
+                th_merchant_id,
+                name AS merchant_name,
+                dm_status_desc,
+                ds_name AS sub_status_desc,
+                tp_txn_amount,
+                tp_txn_ccy,
+                th_net_amount,
+                th_ex_rate,
+                fee,
+                DECODE(th_ar_ind, 'A', NVL(fee_elements_ccy, td_txn_ccy), NULL) AS fee_ccy,
+                th_transaction_amount,
+                td_txn_ccy,
+		markup_amt,
+		markup_ccy
+           FROM def_sub_status,
+                def_txn_status_map,
+                merch_detail,
+                psp_detail,
+                txn_psp_detail,
+                txn_detail,
+                (SELECT th_create_timestamp,
+                        th_update_timestamp,
+                        th_approval_timestamp,
+                        th_txn_id,
+                        th_merchant_ref,
+                        th_merchant_id,
+                        th_status,
+                        th_ar_ind,
+                        th_sub_status,
+                        th_transaction_amount,
+                        DECODE(th_ar_ind, 'A', th_net_amount, NULL) AS th_net_amount,
+                        th_ex_rate,
+                        DECODE(th_ar_ind, 'A', NVL(fee_elements.te_amount, 0), NULL) AS fee,
+                        fee_elements.te_ccy as fee_elements_ccy,
+                        th_txn_code,
+			markup_elements.te_amount as markup_amt,
+			markup_elements.te_ccy as markup_ccy
+                   FROM    (SELECT th_create_timestamp,
+                                   th_update_timestamp,
+                                   th_approval_timestamp,
+                                   th_txn_id,
+                                   th_merchant_ref,
+                                   th_merchant_id,
+                                   th_status,
+                                   th_ar_ind,
+                                   th_sub_status,
+                                   th_transaction_amount,
+                                   th_net_amount,
+                                   th_ex_rate,
+                                   th_txn_code
+                              FROM txn_header
+                             WHERE th_host_posting_date = in_host_posting_date
+                               AND th_txn_code IN ('DSI', 'DSP')) txn_header
+                        LEFT JOIN
+                           txn_elements fee_elements
+                        ON     fee_elements.te_txn_id = th_txn_id
+                           AND fee_elements.TE_TXN_ELEMENT_TYPE = 'TFEE'
+                           AND fee_elements.te_party_type = 'M'
+                           AND th_ar_ind = 'A'
+			LEFT JOIN
+			   txn_elements markup_elements
+			ON	markup_elements.te_txn_id = th_txn_id
+			   AND  markup_elements.te_txn_element_type = 'MAMT'
+			   AND  markup_elements.te_party_type = 'R'
+			)
+          WHERE     tp_txn_id = th_txn_id
+                AND th_txn_id = td_txn_id
+                AND tp_psp_id = psp_id
+                AND th_merchant_id = merchant_id
+                AND dm_type = 'A'
+                AND th_txn_code = dm_txn_code
+                AND th_status = dm_status
+                AND NVL (th_ar_ind, ' ') = dm_ar_ind
+                AND th_sub_status = ds_sub_status
+          order by create_date desc, update_date desc;
+   END open_cur_rpt007;
+
+
+   PROCEDURE open_cur_rpt008 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      cursor_rpt008          IN OUT RPT008_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt008 FOR
+         SELECT to_char(th_create_timestamp,'YYYYMMDDHH24MISS') as create_date,
+                to_char(th_update_timestamp,'YYYYMMDDHH24MISS') as update_date,
+                to_char(th_approval_timestamp,'YYYYMMDDHH24MISS') as approval_date,
+                th_txn_id,
+                th_merchant_ref,
+                tc_desc,
+                th_merchant_id,
+                name AS merchant_name,
+                dm_status_desc,
+                ds_name AS sub_status_desc,
+                tp_txn_amount,
+                tp_txn_ccy,
+                th_net_amount,
+                th_ex_rate,
+                fee,
+                fee_ccy,
+                th_transaction_amount,
+                td_txn_ccy
+           FROM def_sub_status,
+                def_txn_status_map,
+                merch_detail,
+                txn_detail,
+                (SELECT th_create_timestamp,
+                        th_update_timestamp,
+                        th_approval_timestamp,
+                        th_txn_id,
+                        th_merchant_ref,
+                        th_merchant_id,
+                        th_status,
+                        th_ar_ind,
+                        th_sub_status,
+                        th_transaction_amount,
+                        decode(th_ar_ind, 'A', th_net_amount, NULL) AS th_net_amount,
+                        th_ex_rate,
+                        te_amount AS fee,
+                        te_ccy AS fee_ccy,
+                        th_txn_code,
+                        tp_txn_amount,
+                        tp_txn_ccy,
+                        tc_desc
+                   FROM (SELECT th_create_timestamp,
+                                th_update_timestamp,
+                                th_approval_timestamp,
+                                th_txn_id,
+                                th_merchant_ref,
+                                th_merchant_id,
+                                th_status,
+                                th_ar_ind,
+                                th_sub_status,
+                                th_transaction_amount,
+                                th_net_amount,
+                                th_ex_rate,
+                                th_txn_code,
+                                tc_desc
+                           FROM txn_header, txn_code
+                          WHERE   th_host_posting_date = in_host_posting_date
+                              AND tc_code = th_txn_code
+                              AND tc_fe_display = 1) txn_header
+                        LEFT JOIN txn_elements
+                           ON     te_txn_id = th_txn_id
+                              AND TE_TXN_ELEMENT_TYPE = 'TFEE'
+                              AND te_party_type = 'M'
+                              AND th_ar_ind = 'A'
+                        LEFT JOIN txn_psp_detail
+                           ON tp_txn_id = th_txn_id)
+          WHERE     th_txn_id = td_txn_id
+                AND th_merchant_id = merchant_id
+                AND dm_type = 'A'
+                AND th_txn_code = dm_txn_code
+                AND th_status = dm_status
+                AND NVL (th_ar_ind, ' ') = dm_ar_ind
+                AND th_sub_status = ds_sub_status
+          order by create_date desc, update_date desc;
+   END open_cur_rpt008;
+
+
+   FUNCTION F_RPT009 (in_approval_date txn_header.th_approval_timestamp%TYPE)
+      RETURN rpt009_tab
+   IS
+      Result                    rpt009_tab := rpt009_tab ();
+      n                         INTEGER := 0;
+
+      v_merchant_id             merch_detail.merchant_id%TYPE;
+      v_merchant_name           merch_detail.name%TYPE;
+      v_currency                merchant_bal_acct.mb_ccy_id%TYPE;
+      v_status                  def_status.ds_desc%TYPE;
+      v_service_desc            DEF_SERVICE_CODE.SC_DESC%TYPE;
+      v_service_code            MERCHANT_BAL_ACCT.MB_SERVICE_CODE%TYPE;
+
+      v_current_bal             txn_detail.td_current_bal%TYPE;
+      v_total_float             txn_detail.td_total_float%TYPE;
+      v_total_reserve_amount    txn_detail.td_total_reserved_amount%TYPE;
+      v_total_hold              txn_detail.td_total_hold%TYPE;
+      v_settlement_in_transit   txn_detail.td_settlement_in_transit%TYPE;
+      v_approval_date           txn_header.th_approval_timestamp%TYPE;
+
+      CURSOR rpt009_cur
+      IS
+           SELECT merchant_id,
+                  name AS merchant_name,
+                  sc_desc AS service_desc,
+                  ds_desc AS status,
+                  mb_service_code,
+                  mb_ccy_id AS currency
+             FROM def_service_code,
+                  def_status,
+                  merch_detail,
+                  merchant_bal_acct
+            WHERE     merchant_id = mb_merchant_id
+                  AND mb_status = ds_type
+                  AND sc_code = mb_service_code
+         ORDER BY merchant_id, mb_service_code, mb_ccy_id;
+   BEGIN
+      OPEN rpt009_cur;
+
+      LOOP
+         FETCH rpt009_cur
+         INTO v_merchant_id,
+              v_merchant_name,
+              v_service_desc,
+              v_status,
+              v_service_code,
+              v_currency;
+
+         EXIT WHEN rpt009_cur%NOTFOUND;
+
+         BEGIN
+            SELECT th_approval_timestamp,
+                   td_current_bal,
+                   td_total_float,
+                   td_total_reserved_amount,
+                   td_total_hold,
+                   td_settlement_in_transit
+              INTO v_approval_date,
+                   v_current_bal,
+                   v_total_float,
+                   v_total_reserve_amount,
+                   v_total_hold,
+                   v_settlement_in_transit
+              FROM txn_detail, txn_header
+             WHERE     th_merchant_id = v_merchant_id
+                   AND th_ar_ind = 'A'
+                   AND th_approval_timestamp =
+                       (SELECT MAX (th_approval_timestamp)
+                          FROM txn_detail, txn_header
+                         WHERE     th_merchant_id = v_merchant_id
+                               AND th_txn_id = td_txn_id
+                               AND td_txn_ccy = v_currency  
+                               AND th_ar_ind = 'A'
+                               AND th_service_code = v_service_code 
+                               AND th_approval_timestamp < in_approval_date +1)
+                   AND td_txn_id = th_txn_id;
+         EXCEPTION
+            WHEN NO_DATA_FOUND
+            THEN
+               v_approval_date := NULL;
+               v_current_bal := 0;
+               v_total_float := 0;
+               v_total_reserve_amount := 0;
+               v_total_hold := 0;
+               v_settlement_in_transit := 0;
+         END;
+
+         Result.EXTEND;
+         n := n + 1;
+
+         result (n) :=
+            RPT009_OBj (v_merchant_id,
+                        v_merchant_name,
+                        v_service_desc,
+                	to_char(v_approval_date,'YYYYMMDDHH24MISS'),
+                        v_current_bal,
+                        v_total_float,
+                        v_total_reserve_amount,
+                        v_total_hold,
+                        v_settlement_in_transit,
+                        v_currency,
+                        v_status);
+      END LOOP;
+   
+      CLOSE rpt009_cur;
+
+      RETURN (Result);
+   END;
+
+
+   PROCEDURE open_cur_rpt009 (
+      in_approval_date   IN     txn_header.th_approval_date%TYPE,
+      cursor_rpt009      IN OUT RPT009_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt009 FOR
+         SELECT *
+           FROM TABLE (
+                   report_pkg.F_rpt009 (TO_DATE (in_approval_date, 'yyyymmdd')));
+   END open_cur_rpt009;
+
+
+   PROCEDURE open_cur_rpt010 (
+      in_approval_date       IN     txn_header.th_approval_date%TYPE,
+      in_dc_ind              IN     adjustment_type.at_dc_ind%type,
+      cursor_rpt010          IN OUT RPT010_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt010 FOR
+         SELECT to_char(th_approval_timestamp,'YYYYMMDDHH24MISS') as approval_date,
+                th_txn_id,
+                th_merchant_id,
+                name AS merchant_name,
+                at_desc AS transaction_type,
+                dm_status_desc,
+                ds_name AS sub_status_desc,
+                th_transaction_amount,
+                td_txn_ccy,
+                te_amount,
+                te_ccy
+           FROM def_sub_status,
+                def_txn_status_map,
+                merch_detail,
+                txn_detail,
+                (SELECT th_txn_id,
+                        th_merchant_id,
+                        th_txn_code,
+                        th_status,
+                        th_ar_ind,
+                        th_sub_status,
+                        th_transaction_amount,
+                        th_approval_timestamp,
+                        at_desc,
+                        te_ccy,
+                        te_amount
+                   FROM    (SELECT th_txn_id,
+                                   th_merchant_id,
+                                   th_txn_code,
+                                   th_status,
+                                   th_ar_ind,
+                                   th_sub_status,
+                                   th_transaction_amount,
+                                   th_approval_timestamp,
+                                   at_desc
+                              FROM adjustment_type, txn_header
+                             WHERE     th_approval_date =
+                                          in_approval_date 
+                                   AND th_ar_ind = 'A'
+                                   AND th_txn_code = at_code
+                                   AND at_party_type = 'M'
+                                   AND at_dc_ind = in_dc_ind)
+                        LEFT JOIN
+                           txn_elements
+                        ON     te_txn_id = th_txn_id
+                           AND te_txn_element_type = 'TFEE'
+                           AND te_party_type = 'M')
+          WHERE     dm_type = 'A'
+                AND dm_status = th_status
+                AND dm_ar_ind = NVL (th_ar_ind, ' ')
+                AND dm_txn_code = th_txn_code
+                AND ds_sub_status = th_sub_status
+                AND td_txn_id = th_txn_id
+                AND merchant_id = th_merchant_id
+          order by th_approval_timestamp;
+   END open_cur_rpt010;
+
+
+   PROCEDURE open_cur_rpt011 (
+      in_txn_date            IN     txn_psp_detail.tp_txn_date%TYPE,
+      cursor_rpt011          IN OUT RPT011_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt011 FOR
+         SELECT th_txn_id,
+                th_txn_code,
+                tc_desc,
+                tp_txn_date,
+                tp_psp_id,
+                psp_name,
+                tp_txn_ccy,
+                tp_txn_amount,
+                tp_service_fee
+           FROM txn_code,
+                psp_detail,
+                (SELECT th_txn_id,
+                        th_txn_code,
+                        tp_txn_date,
+                        tp_psp_id,
+                        tp_txn_ccy,
+                        tp_txn_amount,
+                        tp_service_fee,
+                        th_approval_timestamp
+                   FROM txn_psp_detail, txn_header
+                  WHERE     th_txn_code IN ('DSI', 'DSP')
+                        AND th_ar_ind = 'A'
+                        AND th_txn_id = tp_txn_id
+                        AND tp_txn_date = in_txn_date
+                        AND NVL(tp_service_fee, 0) > 0 )
+          WHERE psp_id = tp_psp_id AND tc_code = th_txn_code
+          order by th_approval_timestamp;
+   END open_cur_rpt011;
+
+
+   PROCEDURE open_cur_rpt012 (
+      in_txn_date            IN     txn_psp_detail.tp_txn_date%TYPE,
+      cursor_rpt012          IN OUT RPT012_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt012 FOR
+         SELECT th_txn_id,
+                th_txn_code,
+                tc_desc,
+                tp_txn_date,
+                tp_psp_id,
+                psp_name,
+                tp_txn_ccy,
+                tp_txn_amount,
+                tp_service_fee
+           FROM txn_code,
+                psp_detail,
+                (SELECT th_txn_id,
+                        th_txn_code,
+                        tp_txn_date,
+                        tp_psp_id,
+                        tp_txn_ccy,
+                        tp_txn_amount,
+                        tp_service_fee,
+                        th_approval_timestamp
+                   FROM txn_psp_detail, txn_header
+                  WHERE     th_txn_code IN ('POG')
+                        AND th_ar_ind = 'A'
+                        AND th_txn_id = tp_txn_id
+                        AND tp_txn_date = in_txn_date
+                        AND NVL(tp_service_fee, 0) > 0 )
+          WHERE psp_id = tp_psp_id AND tc_code = th_txn_code
+          order by th_approval_timestamp;
+   END open_cur_rpt012;
+
+
+   PROCEDURE open_cur_rpt013 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      cursor_rpt013          IN OUT RPT013_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt013 FOR
+           SELECT tc_desc,
+                  th_service_code,
+                  sc_desc,
+                  dm_status_desc,
+                  SUM (txn_count) AS transaction_count
+             FROM def_service_code,
+                  def_txn_status_map,
+                  (  SELECT tc_desc,
+                            th_txn_code,
+                            th_service_code,
+                            th_status,
+                            th_ar_ind,
+                            th_sub_status,
+                            COUNT (*) AS txn_count
+                       FROM txn_code, txn_header
+                      WHERE     th_update_timestamp >= to_date(in_host_posting_date, 'YYYYMMDD')
+                            AND th_update_timestamp < to_date(in_host_posting_date, 'YYYYMMDD') + 1
+                            AND th_txn_code = tc_code
+                            AND tc_fe_display = 1
+                   GROUP BY tc_desc,
+                            th_txn_code,
+                            th_service_code,
+                            th_status,
+                            th_ar_ind,
+                            th_sub_status)
+            WHERE     dm_type = 'A'
+                  AND dm_status = th_status
+                  AND dm_ar_ind = NVL (th_ar_ind, ' ')
+                  AND dm_txn_code = th_txn_code
+                  AND sc_code = th_service_code
+         GROUP BY tc_desc,
+                  th_service_code,
+                  sc_desc,
+                  dm_status_desc
+         ORDER BY tc_desc,
+                  th_service_code,
+                  sc_desc,
+                  dm_status_desc;
+   END open_cur_rpt013;
+
+
+   PROCEDURE open_cur_rpt014 (
+      in_host_posting_date   IN     txn_header.th_host_posting_date%TYPE,
+      cursor_rpt014          IN OUT RPT014_type)
+   IS
+   BEGIN
+      OPEN cursor_rpt014 FOR
+           SELECT tc_desc,
+                  th_service_code,
+                  sc_desc,
+                  dm_status_desc,
+                  SUM (txn_count) AS transaction_count
+             FROM def_service_code,
+                  def_txn_status_map,
+                  (  SELECT tc_desc,
+                            th_txn_code,
+                            th_service_code,
+                            th_status,
+                            th_ar_ind,
+                            th_sub_status,
+                            COUNT (*) AS txn_count
+                       FROM txn_code, txn_header, eod_status_snapshot
+                      WHERE     es_create_timestamp >=
+                                   TO_DATE (in_host_posting_date, 'YYYYMMDD') + 1
+                            AND es_create_timestamp <
+                                   TO_DATE (in_host_posting_date, 'YYYYMMDD') + 2
+                            AND th_txn_id = es_txn_id
+                            AND th_txn_code = tc_code
+                            AND tc_fe_display = 1
+                   GROUP BY tc_desc,
+                            th_txn_code,
+                            th_service_code,
+                            th_status,
+                            th_ar_ind,
+                            th_sub_status)
+            WHERE     dm_type = 'A'
+                  AND dm_status = th_status
+                  AND dm_ar_ind = NVL (th_ar_ind, ' ')
+                  AND dm_txn_code = th_txn_code
+                  AND sc_code = th_service_code
+         GROUP BY tc_desc,
+                  th_service_code,
+                  sc_desc,
+                  dm_status_desc
+         ORDER BY tc_desc,
+                  th_service_code,
+                  sc_desc,
+                  dm_status_desc;
+   END open_cur_rpt014;
+END REPORT_PKG;
+/

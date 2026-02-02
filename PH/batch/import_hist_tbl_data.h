@@ -1,0 +1,178 @@
+#ifndef _IMPORT_CRR_OFL_TXN_DATE_H
+#define _IMPORT_CRR_OFL_TXN_DATE_H
+#include "common.h"
+
+#define IMPORT_MAX_FIELD       		24 
+#define IMPORT_FIELD_LEN        	50
+
+#define	IDX_BATCH_ID			0
+#define	IDX_START_TS			1
+#define	IDX_END_TS			2
+#define	IDX_DISABLED			3	
+#define	IDX_CREATE_TS			4
+#define	IDX_CREATE_USER			5
+
+
+#define	IDX_HOFSD_BATCH_ID		0
+#define IDX_HOFSD_CLIENT_ID		1
+#define	IDX_HOFSD_CLIENT_NAME		2
+#define	IDX_HOFSD_MERCHANT_ID		3
+#define	IDX_HOFSD_MERCHANT_NAME		4
+#define	IDX_HOFSD_COUNTRY		5
+#define	IDX_HOFSD_SERVICE_CODE		6
+#define	IDX_HOFSD_CCY			7
+#define	IDX_HOFSD_TXN_CODE		8
+#define	IDX_HOFSD_AMT			9
+#define	IDX_HOFSD_AMT_HKD		10
+#define	IDX_HOFSD_AMT_HKD_RATE		11
+#define	IDX_HOFSD_AMT_USD		12
+#define	IDX_HOFSD_AMT_USD_RATE		13
+#define	IDX_HOFSD_TXN_COUNT		14
+#define	IDX_HOFSD_IS_FEE		15
+#define	IDX_HOFSD_IS_MARKUP		16
+
+
+#define IDX_HOBISB_BATCH_ID            0
+#define IDX_HOBISB_START_TS            1
+#define IDX_HOBISB_END_TS              2
+#define IDX_HOBISB_DISABLED            3
+#define IDX_HOBISB_CREATE_TS           4
+#define IDX_HOBISB_CREATE_USER         5
+
+
+#define IDX_HOBISD_BATCH_ID		0
+#define IDX_HOBISD_CCY			1
+#define IDX_HOBISD_PRODUCT		2
+#define IDX_HOBISD_COUNT		3
+#define IDX_HOBISD_ACCUM_REQ_AMT	4
+#define IDX_HOBISD_ACCUM_VOID_AMT	5
+#define IDX_HOBISD_ACCUM_NET_AMT	6
+#define IDX_HOBISD_ACCUM_NET_AMT_HKD	7
+#define IDX_HOBISD_HKD_RATE		8
+#define IDX_HOBISD_ACCUM_NET_AMT_USD	9
+#define IDX_HOBISD_USD_RATE		10
+
+
+#define IDX_HOCSB_BATCH_ID            0
+#define IDX_HOCSB_START_TS            1
+#define IDX_HOCSB_END_TS              2
+#define IDX_HOCSB_DISABLED            3
+#define IDX_HOCSB_CREATE_TS           4
+#define IDX_HOCSB_CREATE_USER         5
+
+
+#define IDX_HOCSD_BATCH_ID			0
+#define IDX_HOCSD_PARTY_TYPE			1
+#define IDX_HOCSD_ENTITY_ID			2
+#define IDX_HOCSD_ENTITY_NAME			3
+#define IDX_HOCSD_CLIENT_NAME			4
+#define IDX_HOCSD_CCY				5
+#define IDX_HOCSD_COUNTRY			6
+#define IDX_HOCSD_PRODUCT			7
+#define IDX_HOCSD_TXN_TYPE			8
+#define IDX_HOCSD_COUNT				9
+#define IDX_HOCSD_ACCUM_COST_AMT		10
+#define IDX_HOCSD_ACCUM_REFUND_AMT		11
+#define IDX_HOCSD_ACCUM_VOID_AMT		12
+#define IDX_HOCSD_ACCUM_TOTAL_AMT		13
+#define IDX_HOCSD_ACCUM_COST_AMT_HKD		14
+#define IDX_HOCSD_ACCUM_REFUND_AMT_HKD		15
+#define IDX_HOCSD_ACCUM_VOID_AMT_HKD		16
+#define IDX_HOCSD_ACCUM_TOTAL_AMT_HKD		17
+#define IDX_HOCSD_ACCUM_COST_AMT_HKD_RATE	18
+#define IDX_HOCSD_ACCUM_COST_AMT_USD		19
+#define IDX_HOCSD_ACCUM_REFUND_AMT_USD		20
+#define IDX_HOCSD_ACCUM_VOID_AMT_USD		21
+#define IDX_HOCSD_ACCUM_TOTAL_AMT_USD		22
+#define IDX_HOCSD_ACCUM_COST_AMT_USD_RATE	23
+
+
+#define IDX_HOMBB_BATCH_ID            0
+#define IDX_HOMBB_START_TS            1
+#define IDX_HOMBB_END_TS              2
+#define IDX_HOMBB_DISABLED            3
+#define IDX_HOMBB_CREATE_TS           4
+#define IDX_HOMBB_CREATE_USER         5
+
+
+#define IDX_HOMBD_BATCH_ID	0
+#define IDX_HOMBD_CLIENT_ID	1
+#define IDX_HOMBD_MID_ID	2
+#define IDX_HOMBD_SERVICE_CODE	3
+#define IDX_HOMBD_CCY		4
+#define IDX_HOMBD_COUNTRY	5
+#define IDX_HOMBD_TXN_ID	6
+#define IDX_HOMBD_CURRENT_BAL	7
+#define IDX_HOMBD_HOLD_BAL	8
+#define IDX_HOMBD_LIEN		9
+#define IDX_HOMBD_MERCHANT_BAL	10
+#define IDX_HOMBD_BAL		11
+#define IDX_HOMBD_BAL_HKD	12
+#define IDX_HOMBD_BAL_HKD_RATE	13
+#define IDX_HOMBD_BAL_USD	14
+#define IDX_HOMBD_BAL_USD_RATE	15
+
+
+#define IDX_OHBB_BATCH_ID            0
+#define IDX_OHBB_START_TS            1
+#define IDX_OHBB_END_TS              2
+#define IDX_OHBB_DISABLED            3
+#define IDX_OHBB_CREATE_TS           4
+#define IDX_OHBB_CREATE_USER         5
+
+
+#define IDX_OHBD_BATCH_ID	0
+#define IDX_OHBD_MI_ID		1
+#define IDX_OHBD_ENTITY_TYPE	2
+#define IDX_OHBD_CCY		3
+#define IDX_OHBD_COUNTRY	4
+#define IDX_OHBD_TXN_ID		5
+#define IDX_OHBD_ACCT_BAL	6
+#define IDX_OHBD_INTRANSIT	7
+#define IDX_OHBD_AR_BAL		8
+#define IDX_OHBD_BAL		9
+#define IDX_OHBD_BAL_HKD	10
+#define IDX_OHBD_BAL_HKD_RATE	11
+#define IDX_OHBD_BAL_USD	12
+#define IDX_OHBD_BAL_USD_RATE	13
+
+
+#define IDX_HBBB_BATCH_ID            0
+#define IDX_HBBB_START_TS            1
+#define IDX_HBBB_END_TS              2
+#define IDX_HBBB_DISABLED            3
+#define IDX_HBBB_CREATE_TS           4
+#define IDX_HBBB_CREATE_USER         5
+
+
+#define IDX_HBBD_BATCH_ID	0
+#define IDX_HBBD_PID_ID		1
+#define IDX_HBBD_BAID		2
+#define IDX_HBBD_CCY		3
+#define IDX_HBBD_TXN_ID		4
+#define IDX_HBBD_IN_TRANSIT	5
+#define IDX_HBBD_LIEN		6
+#define IDX_HBBD_AVAILABLE_BAL	7
+#define IDX_HBBD_BAL		8
+#define IDX_HBBD_BAL_HKD	9
+#define IDX_HBBD_BAL_HKD_RATE	10
+#define IDX_HBBD_BAL_USD	11
+#define IDX_HBBD_BAL_USD_RATE	12
+#define IDX_HBBD_CAT		13
+#define IDX_HBBD_CAT_DESC	14
+#define IDX_HBBD_ACCT_TYPE	15
+#define IDX_HBBD_IN_BALANCE	16
+
+
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

@@ -1,0 +1,27 @@
+#ifndef _OL_PSP_DETAIL_H_
+#define _OL_PSP_DETAIL_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int Add(const hash_t *hPspDetail);
+int Delete(const char* csPspId, const char* csClientId);
+int GetPspDetail(const char* csPspId, hash_t* hRec);
+int Update(const hash_t *hRls);
+int GetPspPayoutSplitAmt(const char* csPspId,
+                hash_t* hRec);
+int GetPayoutTmpAcct(const char* csPspId, hash_t* hRec);
+int GetPspIdByPspName(const char* csPspName, char* csPspId);
+int GetNextPIDCode(int *iNextCodeInNum);
+int GetPspIdByClientId(const char* csClientId, const char* csAcctType, const char* csCcy, hash_t* hRec);
+int GetPspIdByClientIdAcctType(const char* csClientId, const char* csAcctType, hash_t* hRec);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

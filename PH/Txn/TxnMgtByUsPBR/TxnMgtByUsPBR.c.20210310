@@ -1,0 +1,235 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/12/01              [MSN]
+Add field paid_amt                                 2020/11/18              [WMC]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPBR.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsPBR(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+        int     iRet = PD_OK;
+
+        char    *csTmp;
+        char    *csTxnSeq;
+	char	csUser[PD_CREATE_USER_LEN+1];
+	char	csTag[PD_TAG_LEN +1];
+	int	iTxn=0;
+	double	dTmp;
+	double	dInputFee = 0.0;
+
+	hash_t  *hPsp, *hOrgTxn;
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	hOrgTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hOrgTxn,0);
+
+	if(GetField_CString(hRequest,"org_txn_seq",&csTxnSeq)){
+		PutField_CString(hContext,"org_txn_seq",csTxnSeq);
+		PutField_CString(hOrgTxn,"txn_seq",csTxnSeq);
+                PutField_Char(hOrgTxn,"status",PD_REVERSED);
+DEBUGLOG(("Authorize::txn_id= [%s]\n",csTxnSeq));
+	}
+	else{
+DEBUGLOG(("Authorize::txn_id not found!!\n"));
+ERRLOG("TxnMgtByUsPBR::Authorize::txn_id not found!!\n");
+		iRet=INT_ERR;
+	}
+
+	if(GetField_Double(hContext,"service_fee",&dInputFee)){
+DEBUGLOG(("Authorize::service_fee= [%lf]\n",dInputFee));
+        }
+
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		strcpy(csUser,csTmp);
+	}
+	else{
+		strcpy(csUser,PD_UPDATE_USER);
+	}
+	csUser[strlen(csUser)]='\0';
+
+	if(GetField_CString(hContext,"txn_code",&csTmp)){
+		if(!strcmp(csTmp,PD_VOID_TXN_CODE)){
+			PutField_CString(hContext,"txn_code","PBR");
+			PutField_CString(hContext,"org_txn_code",csTmp);
+		}
+	}
+
+	if(iRet == PD_OK){
+DEBUGLOG(("Authorize::Call BOPsp:GetPspReconTxnDetail\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOPsp","GetPspReconTxnDetail");
+		if((unsigned long) ((*BOObjPtr)(hContext,hRequest,hResponse)!=PD_OK)){
+			iRet = INT_ERR;
+		}
+	}
+
+
+	if(iRet == PD_OK){
+		if(GetField_Int(hContext,"total_txn_cnt",&iTxn)){
+DEBUGLOG(("Authorize::total_cnt = [%d]\n",iTxn));
+                }
+		if(GetField_Double(hContext,"total_txn_amt",&dTmp)){
+			PutField_Double(hContext,"txn_amt",dTmp);
+DEBUGLOG(("Authorize::total_txn_amt = [%lf]\n",dTmp));
+                }
+		if(GetField_Double(hContext,"total_paid_amt",&dTmp)){
+                        PutField_Double(hContext,"paid_amt",dTmp);
+DEBUGLOG(("Authorize::total_paid_amt = [%lf]\n",dTmp));
+                }
+		if(GetField_Double(hContext,"total_txn_fee",&dTmp)){
+DEBUGLOG(("Authorize::total_txn_fee = [%lf]\n",dTmp));
+                }
+		hPsp = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hPsp,0);
+DEBUGLOG(("Authorize::Call BOBalance:TransferPspBalance\n"));
+		if(GetField_CString(hContext,"txn_ccy",&csTmp)){
+			PutField_CString(hPsp,"txn_ccy",csTmp);
+		}
+		if(GetField_CString(hContext,"txn_country",&csTmp)){
+			PutField_CString(hPsp,"txn_country",csTmp);
+		}
+		if(GetField_CString(hContext,"psp_id",&csTmp)){
+			PutField_CString(hPsp,"psp_id",csTmp);
+		}
+
+DEBUGLOG(("Authorize::Call DBTxnPspDetail:Update\n"));
+		if(GetField_CString(hContext,"PHDATE",&csTmp)){
+			//PutField_CString(hPsp,"recon_id","");
+			PutField_CString(hContext,"txn_date",csTmp);
+
+			PutField_Char(hPsp,"transfer_from",PD_PSP_BAL);
+			/*
+			if(GetField_Double(hContext,"total_txn_amt",&dTmp)){
+				PutField_Double(hPsp,"txn_amt",dTmp);
+			}
+			*/
+			if(GetField_Double(hContext,"total_paid_amt",&dTmp)){
+                                PutField_Double(hPsp,"txn_amt",dTmp);
+                        }
+			if(dInputFee>0.0){
+				PutField_Double(hPsp,"service_fee",dInputFee);
+			}
+			else{
+				if(GetField_Double(hContext,"total_txn_fee",&dTmp)){
+					PutField_Double(hPsp,"service_fee",dTmp);
+					PutField_Double(hContext,"service_fee",dTmp);
+				}
+			}
+			BOObjPtr = CreateObj(BOPtr,"BOBalance","TransferPspBalance");
+			if((unsigned long) ((*BOObjPtr)(hPsp,hRequest))!=PD_OK){
+				iRet = INT_ERR;
+			}
+			else{
+				if (GetField_Double(hPsp,"psp_balance",&dTmp)) {
+					PutField_Double(hContext,"bal",dTmp);
+DEBUGLOG(("TxnPspDetail::Update: psp_balance = [%f]\n",dTmp));
+				}
+				if (GetField_Double(hPsp,"psp_total_float",&dTmp)) {
+					PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("TxnPspDetail::Update: psp_total_float = [%f]\n",dTmp));
+				}
+				if (GetField_Double(hPsp,"psp_total_hold",&dTmp)) {
+					PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("TxnPspDetail::Update: psp_total_hold = [%f]\n",dTmp));
+				}
+			}
+
+			if(iRet==PD_OK){
+                                int i;
+                                for(i=1; i<=iTxn; i++){
+                                        hash_init(hPsp,0);
+                                        sprintf(csTag,"txn_seq_%d",i);
+                                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                                PutField_CString(hPsp,"txn_seq",csTmp);
+                                        }
+
+                                        PutField_CString(hPsp,"recon_date","");
+                                        PutField_Int(hPsp,"recon_ind",PD_FALSE);
+
+                                        DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+                                        if((unsigned long) ((*DBObjPtr)(hPsp))!=PD_OK){
+DEBUGLOG(("TxnPspDetail:Update Failed[%s]\n",csTmp));
+                                        }
+                                }
+                        }
+		}
+		else{
+DEBUGLOG(("TxnPspDetail:PHDATE not found!!!!!\n"));
+ERRLOG("TxnMgtByUsPBR:Authorize::PHDATE not found!!!!!\n");
+			iRet = INT_ERR;
+		}
+		FREE_ME(hPsp);
+	}
+
+	if(iRet == PD_OK){
+		PutField_CString(hContext,"desc","Reverse Psp Balance Transfer");
+
+		DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Add");
+		if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("TxnPspDetail:Add Failed\n"));
+		}
+	}
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+		if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("TxnPspDetail:Update Failed\n"));
+		}
+	}
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBPspReconHistory","Delete");
+		if((unsigned long) ((*DBObjPtr)(csTxnSeq))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("PspReconHistory:Delete\n"));
+		}
+	}
+
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hContext,"org_txn_code",&csTmp)){
+		PutField_CString(hContext,"txn_code",csTmp);
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet); 
+	FREE_ME(hOrgTxn);
+
+DEBUGLOG(("TxnMgtByUsPBR Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

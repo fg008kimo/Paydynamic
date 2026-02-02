@@ -1,0 +1,453 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/09/23              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOExchange.h"
+
+char    cDebug;
+
+OBJPTR(DB);
+OBJPTR(BO);
+void BOExchange(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+double	CalExAmt(double dFromAmt,double dRate,const char* csDstCcy);
+int GetExternalExchangeInfo(hash_t *hContext,
+		const hash_t	*hRequest,
+                const char* csFromCcy,
+		const char* csToCcy,
+		double	dTxnAmt);
+
+int GetExchangeInfo(hash_t *hContext,
+                const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+	char*	csTxnCcy;
+	char*	csPspCcy;
+	double	dAmt,dDspBal,dRatio,dRate;
+	hash_t	*hRec;
+
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BOExchange:GetExchangeInfo()\n"));
+
+	if (GetField_Double(hContext,"src_psp_txn_amt",&dAmt)) {
+DEBUGLOG(("BOExchange:GetExchangeInfo src_psp_psp_txn_amt = [%f]\n",dAmt));
+	}
+	else {
+DEBUGLOG(("BOExchange:GetExchangeInfo src_psp_psp_txn_amt is missing!!!\n"));
+	}
+
+	if (!GetField_CString(hContext,"txn_ccy",&csTxnCcy) && iRet == PD_OK) {
+		if (!GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOExchange:GetExchangeInfo txn_ccy is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+	if (!GetField_CString(hContext,"psp_ccy",&csPspCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExchangeInfo psp_ccy is missing!!!\n"));
+		iRet = PD_OK;
+	}
+	else {
+		PutField_CString(hContext,"psp_txn_ccy",csPspCcy);
+DEBUGLOG(("BOExchange:GetExchangeInfo psp_ccy  = [%s]\n",csPspCcy));
+	}
+
+	if (!strcmp(csTxnCcy,csPspCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetExhcangeInfo same currency!!!\n"));
+		PutField_CString(hContext,"psp_txn_ccy",csTxnCcy);
+		PutField_Double(hContext,"psp_txn_amt",dAmt);
+		PutField_Double(hContext,"ex_rate",1);
+		PutField_Char(hContext,"ex_party",PD_INT_EX);
+	}
+	else {
+DEBUGLOG(("BOExchange:GetExhcangeInfo do Exchange!!!\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBalanceByCcy");
+		if ((*DBObjPtr)(csTxnCcy,
+                                csPspCcy,
+				hRec) == PD_OK) {
+/* dsp bal */
+			if (GetField_Double(hRec,"dsp_bal",&dDspBal)) {
+DEBUGLOG(("BOExchange:GetExhcangeInfo dsp bal = [%lf]\n",dDspBal));
+			}
+			else {
+DEBUGLOG(("BOExchange:GetExhcangeInfo dsp bal not found\n"));
+				iRet = PD_ERR;
+			}
+			if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("BOExchange:GetExhcangeInfo ex rate = [%lf]\n",dRate));
+			}
+			else {
+DEBUGLOG(("BOExchange:GetExhcangeInfo ex rate not found\n"));
+				iRet = PD_ERR;
+			}
+			if (GetField_Double(hRec,"raito",&dRatio)) {
+DEBUGLOG(("BOExchange:GetExhcangeInfo ratio = [%lf]\n",dRatio));
+			}
+			else {
+DEBUGLOG(("BOExchange:GetExhcangeInfo ratio not found\n"));
+				iRet = PD_ERR;
+			}
+			if (iRet == PD_OK) {
+				double dNewAmt;
+				dNewAmt = CalExAmt(dAmt,dRate,csPspCcy);
+DEBUGLOG(("BOExchange:GetExhcangeInfo new psp_txn_amt in [%s] = [%lf]\n",csPspCcy,dNewAmt));
+				if (dNewAmt > dDspBal) {
+DEBUGLOG(("BOExchange:GetExhcangeInfo  don't have enought bal, try to get from External Rate\n"));
+					iRet = GetExternalExchangeInfo(hContext,hRequest,csTxnCcy,csPspCcy,dAmt);
+				}
+				else {
+DEBUGLOG(("BOExchange:GetExhcangeInfo  psp_txn_amt = [%lf]\n",dNewAmt));
+					PutField_Double(hContext,"psp_txn_amt",dNewAmt);
+					PutField_Double(hContext,"ex_rate",dRate);
+					PutField_Char(hContext,"ex_party",PD_INT_EX);
+				}
+			}
+		}
+		else {
+DEBUGLOG(("BOExchange:GetExhcangeInfo no SebBalance Record Found\n"));
+			iRet = GetExternalExchangeInfo(hContext,hRequest,csTxnCcy,csPspCcy,dAmt);
+		}
+	}
+
+	
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+DEBUGLOG(("BOExchange:GetExchangeInfo exit Ret = [%d]\n",iRet));
+	return iRet;
+}
+double	CalExAmt(double dFromAmt,double dRate,const char* csDstCcy)
+{
+	double	dTmp = 0.0;
+	dTmp = dFromAmt * dRate;
+DEBUGLOG(("CalExAtm: from[%lf] * rate = [%lf] = [%lf] DST CCY = [%s] \n",dFromAmt,dRate,dTmp,csDstCcy));
+	DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+	if ((unsigned long)((*DBObjPtr)(csDstCcy)) == PD_TRUE) {
+DEBUGLOG(("CalExAmt: Support Decimal\n"));
+		dTmp =  newround(dTmp, PD_DECIMAL_LEN);
+	}
+	else {
+DEBUGLOG(("CalExAmt: Doesn't Support Decimal\n"));
+		dTmp =  newround(dTmp, 0);
+	}
+	return dTmp;
+}
+int GetExternalExchangeInfo(hash_t *hContext,
+		const hash_t	*hRequest,
+                const char* csFromCcy,
+		const char* csToCcy,
+		double	dTxnAmt)
+{
+	int iRet = PD_OK;
+	hash_t	*hRec;
+	double	dNewTxnAmt = dTxnAmt;
+	double	dRate = 0;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("GetExternalExchangeInfo from [%s] to [%s] = [%lf]\n",csFromCcy,csToCcy,dTxnAmt));
+
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+	if ((unsigned long)((*DBObjPtr)(csFromCcy,csToCcy,hRec)) == PD_OK) {
+		
+		if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("GetExternalExchangeInfo rate = [%lf]\n",dRate));
+/* apply Exchange Markup Fee */
+			PutField_Double(hContext,"new_txn_amt",dTxnAmt);
+			BOObjPtr = CreateObj(DBPtr,"BOFee","GetXUFee");
+			if ((*BOObjPtr)(hContext,hRequest) == PD_OK) {
+				if (GetField_Double(hContext,"src_psp_txn_amt",&dNewTxnAmt)) {
+DEBUGLOG(("GetExternalExchangeInfo  new src_psp_txn_amt = [%f]\n",dNewTxnAmt));
+				}
+		        }	
+			else {
+DEBUGLOG(("GetExternalExchangeInfo  Exchgange Markup Rate error!!!\n"));
+ERRLOG("GetExternalExchangeInfo  Exchgange Markup Rate error!!!\n");
+			}
+
+			double dNewAmt =  CalExAmt(dNewTxnAmt,dRate,csToCcy);
+DEBUGLOG(("GetExternalExchangeInfo new amt in [%s] = [%lf]\n",csToCcy,dNewAmt));
+			PutField_Double(hContext,"psp_txn_amt",dNewAmt);
+			PutField_Double(hContext,"ex_rate",dRate);
+			PutField_Char(hContext,"ex_party",PD_EXT_EX);
+		}
+		else 
+			iRet = INT_EX_RATE_ERROR;
+	}
+	else  {
+		iRet = INT_EX_RATE_ERROR;
+	}
+
+DEBUGLOG(("GetExternalExchangeInfo::() = [%d]\n",iRet));
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+	return iRet;
+}
+int GetExternalExchangeRate(const char* csFromCcy,
+		const char* csToCcy,
+		double	dTxnAmt,
+		double	*dExRate,
+		double	*dExAmt)
+{
+	int iRet = PD_OK;
+	hash_t	*hRec;
+	double	dNewTxnAmt = dTxnAmt;
+	double	dRate = 0;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("GetExternalExchangeRate from [%s] to [%s] = [%lf]\n",csFromCcy,csToCcy,dTxnAmt));
+
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+	if ((unsigned long)((*DBObjPtr)(csFromCcy,csToCcy,hRec)) == PD_OK) {
+		
+		if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("GetExternalExchangeRate rate = [%lf]\n",dRate));
+/* apply Exchange Markup Fee */
+			double dNewAmt =  CalExAmt(dNewTxnAmt,dRate,csToCcy);
+DEBUGLOG(("GetExternalExchangeRate new amt in [%s] = [%lf]\n",csToCcy,dNewAmt));
+			*dExRate = dRate;
+			*dExAmt = dNewAmt;
+		}
+		else 
+			iRet = INT_EX_RATE_ERROR;
+	}
+	else  {
+		iRet = INT_EX_RATE_ERROR;
+	}
+
+DEBUGLOG(("GetExternalExchangeRate::() = [%d]\n",iRet));
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+	return iRet;
+}
+
+int GetCommonExternalExchangeInfo(hash_t *hContext,
+		const hash_t	*hRequest,
+                const char* csFromCcy,
+		const char* csToCcy,
+		double	dTxnAmt)
+{
+	int iRet = PD_OK;
+	hash_t	*hRec;
+	double	dNewTxnAmt = dTxnAmt;
+	double	dRate = 0;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("GetCommonExternalExchangeInfo from [%s] to [%s] = [%lf]\n",csFromCcy,csToCcy,dTxnAmt));
+
+	if (!strcmp(csFromCcy,csToCcy)) {
+DEBUGLOG(("BOExchange:GetCommonExternalExchangeInfo same currency!!!\n"));
+                PutField_Double(hContext,"to_txn_amt",dTxnAmt);
+                PutField_Double(hContext,"ex_rate",1);
+                PutField_Char(hContext,"ex_party",PD_INT_EX);
+        }
+	else{
+
+		DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRate");
+		if ((unsigned long)((*DBObjPtr)(csFromCcy,csToCcy,hRec)) == PD_OK) {
+		
+			if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("GetCommonExternalExchangeInfo rate = [%lf]\n",dRate));
+///apply Exchange Markup Fee
+				PutField_Double(hContext,"new_txn_amt",dTxnAmt);
+				BOObjPtr = CreateObj(DBPtr,"BOFee","GetCommonXUFee");
+				if ((*BOObjPtr)(hContext,hRequest) == PD_OK) {
+					if (GetField_Double(hContext,"src_txn_amt",&dNewTxnAmt)) {
+						if(dNewTxnAmt<0){
+							dNewTxnAmt = 0;
+							PutField_Double(hContext,"src_txn_amt",dNewTxnAmt);
+						}
+DEBUGLOG(("GetCommonExternalExchangeInfo  new src_txn_amt = [%f]\n",dNewTxnAmt));
+					}
+		        	}	
+				else {
+DEBUGLOG(("GetCommonExternalExchangeInfo  Exchgange Markup Rate error!!!\n"));
+ERRLOG("BOExchange::GeCommontExternalExchangeInfo  Exchgange Markup Rate error!!!\n");
+				}
+
+				double dNewAmt =  CalExAmt(dNewTxnAmt,dRate,csToCcy);
+DEBUGLOG(("GetCommonExternalExchangeInfo new amt in [%s] = [%lf]\n",csToCcy,dNewAmt));
+				PutField_Double(hContext,"to_txn_amt",dNewAmt);
+				PutField_Double(hContext,"ex_rate",dRate);
+				PutField_Char(hContext,"ex_party",PD_EXT_EX);
+			}
+			else 
+				iRet = INT_EX_RATE_ERROR;
+		}
+		else  {
+			iRet = INT_EX_RATE_ERROR;
+		}
+
+	}
+DEBUGLOG(("GetCommonExternalExchangeInfo::() = [%d]\n",iRet));
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+	return iRet;
+}
+
+int GetExternalExchangeRateByDate(const char* csEffectDate,
+		const char* csFromCcy,
+		const char* csToCcy,
+		double	dTxnAmt,
+		double	*dExRate,
+		double	*dExAmt)
+{
+	int iRet = PD_OK;
+	hash_t	*hRec;
+	double	dNewTxnAmt = dTxnAmt;
+	double	dRate = 0;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+  hash_init(hRec,0);
+
+	DEBUGLOG(("GetExternalExchangeRateByDate from [%s] to [%s] = [%lf]\n",csFromCcy,csToCcy,dTxnAmt));
+
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","GetExchangeRateByDate");
+	if ((unsigned long)((*DBObjPtr)(csEffectDate,csFromCcy,csToCcy,hRec)) == PD_OK) {
+		
+		if (GetField_Double(hRec,"rate",&dRate)) {
+			DEBUGLOG(("GetExternalExchangeRateByDate rate = [%lf]\n",dRate));
+			/* apply Exchange Markup Fee */
+			double dNewAmt =  CalExAmt(dNewTxnAmt,dRate,csToCcy);
+			DEBUGLOG(("GetExternalExchangeRate new amt in [%s] = [%lf]\n",csToCcy,dNewAmt));
+			*dExRate = dRate;
+			*dExAmt = dNewAmt;
+		}
+		else 
+			iRet = INT_EX_RATE_ERROR;
+	}
+	else  {
+		iRet = INT_EX_RATE_ERROR;
+	}
+
+DEBUGLOG(("GetExternalExchangeRateByDate::() = [%d]\n",iRet));
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+	return iRet;
+}
+
+int GetCommonExchangeInfo(hash_t *hContext,
+                const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+	char*	csTxnCcy;
+	char*	csToTxnCcy;
+	double	dAmt,dDspBal,dRatio,dRate;
+	hash_t	*hRec;
+
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo()\n"));
+
+	if (GetField_Double(hContext,"txn_amt",&dAmt)) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo txn_amt = [%f]\n",dAmt));
+	}
+	else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo txn_amt is missing!!!\n"));
+	}
+
+	if (!GetField_CString(hContext,"txn_ccy",&csTxnCcy) && iRet == PD_OK) {
+		if (!GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo txn_ccy is missing!!!\n"));
+			iRet = PD_ERR;
+		}
+	}
+	if (!GetField_CString(hContext,"to_txn_ccy",&csToTxnCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo to_txn_ccy is missing!!!\n"));
+		iRet = PD_OK;
+	}
+
+	if (!strcmp(csTxnCcy,csToTxnCcy) && iRet == PD_OK) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo same currency!!!\n"));
+		PutField_CString(hContext,"to_txn_ccy",csTxnCcy);
+		PutField_Double(hContext,"to_txn_amt",dAmt);
+		PutField_Double(hContext,"ex_rate",1);
+		PutField_Char(hContext,"ex_party",PD_INT_EX);
+	}
+	else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo do Exchange!!!\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBalanceByCcy");
+		if ((*DBObjPtr)(csTxnCcy,
+                                csToTxnCcy,
+				hRec) == PD_OK) {
+//// dsp bal 
+			if (GetField_Double(hRec,"dsp_bal",&dDspBal)) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo dsp bal = [%lf]\n",dDspBal));
+			}
+			else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo dsp bal not found\n"));
+				iRet = PD_ERR;
+			}
+			if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo ex rate = [%lf]\n",dRate));
+			}
+			else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo ex rate not found\n"));
+				iRet = PD_ERR;
+			}
+			if (GetField_Double(hRec,"raito",&dRatio)) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo ratio = [%lf]\n",dRatio));
+			}
+			else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo ratio not found\n"));
+				iRet = PD_ERR;
+			}
+			if (iRet == PD_OK) {
+				double dNewAmt;
+				dNewAmt = CalExAmt(dAmt,dRate,csToTxnCcy);
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo new to_txn_amt in [%s] = [%lf]\n",csToTxnCcy,dNewAmt));
+				if (dNewAmt > dDspBal) {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo  don't have enought bal, try to get from External Rate\n"));
+					iRet = GetCommonExternalExchangeInfo(hContext,hRequest,csTxnCcy,csToTxnCcy,dAmt);
+				}
+				else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo  psp_txn_amt = [%lf]\n",dNewAmt));
+					PutField_Double(hContext,"to_txn_amt",dNewAmt);
+					PutField_Double(hContext,"ex_rate",dRate);
+					PutField_Char(hContext,"ex_party",PD_INT_EX);
+				}
+			}
+		}
+		else {
+DEBUGLOG(("BOExchange:GetCommonExchangeInfo no SebBalance Record Found\n"));
+			iRet = GetCommonExternalExchangeInfo(hContext,hRequest,csTxnCcy,csToTxnCcy,dAmt);
+		}
+	}
+
+	
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+DEBUGLOG(("BOExchange:GetSettlementExchangeInfo exit Ret = [%d]\n",iRet));
+	return iRet;
+}

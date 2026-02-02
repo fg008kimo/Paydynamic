@@ -1,0 +1,592 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/08/31              Cody Chan
+Add ESKYPAY support				   2011/01/10		   Cody Chan
+call DBService,DBTxnBeUrl->FindURL		   2011/02/14		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnWebOnUsCOM.h"
+#include "myrecordset.h"
+
+char cDebug;
+
+void TxnWebOnUsCOM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+OBJPTR(BO);
+OBJPTR(DB);
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	csVal[PD_VALUE_LEN +1];
+	char	*csTmp;
+	char	*csPtr;
+	char	*csBuf;
+	char	*csTxnCode;
+	char	*csOrgTxnCode;
+	char	*csTxnCcy = strdup("");
+	char	*csChannelCode;
+	char	*csTxnCountry;
+	char*	csServiceCode=strdup("");
+	char*	csPspId;
+	char	cTmp;
+	double	dTmp;
+	long	lTmp;
+
+
+DEBUGLOG(("TxnWebOnUsCOM: Authroize()\n"));	
+/* field checking */
+
+	GetField_CString(hContext,"txn_code",&csTxnCode);
+DEBUGLOG(("Authorize::txn_code Context[%s]\n",csTxnCode));
+
+	if (GetField_CString(hResponse,"org_txn_code",&csOrgTxnCode)) {
+DEBUGLOG(("Authorize::org_txn_code [%s]\n",csOrgTxnCode));
+	}
+
+
+	GetField_CString(hContext,"channel_code",&csChannelCode);
+DEBUGLOG(("Authorize::channel_code Context[%s]\n",csChannelCode));
+
+	
+	if (strcmp(csTxnCode,PD_INITIAL_REQ_TXN_CODE)) {
+        	if (GetField_CString(hRequest,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("Authorize:: txn_country = [%s]\n",csTxnCountry));
+        	}
+		else 
+			csTxnCountry = strdup("");
+
+/*check currency code*/
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+				DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+				if ((unsigned long)(DBObjPtr)(csTxnCcy,csVal) == FOUND) {
+DEBUGLOG(("Authorize() DBCurrency->FindCurrency [%s]success\n",csTxnCcy));
+				}
+				else{
+					iRet = INT_INVALID_CURRENCY_CODE;
+					PutField_Int(hContext,"internal_error",INT_INVALID_CURRENCY_CODE);
+DEBUGLOG(("Authorize() Currency code invalid [%s]\n",csTxnCcy));
+ERRLOG("TxnWebOnUsCOM:Authorize() Currency code invalid\n");
+				}
+			}
+			else{
+				iRet = INT_CURRENCY_CODE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_CURRENCY_CODE_NOT_FOUND);
+DEBUGLOG(("Authorize() Currency code not found\n"));
+ERRLOG(("TxnWebOnUsCOM:Authorize() Currency code not found\n"));
+			}
+		}
+
+/*check pay amount*/
+		if (iRet == PD_OK) {
+			if(GetField_CString(hRequest,"txn_amt",&csTmp))
+			{
+				int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize()txn_amt from request[%s]\n",csTmp));
+				iCheck = is_numeric(csTmp);
+				if(iCheck==PD_FALSE){
+					iRet =	INT_INVALID_PAY_AMOUNT;
+					PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+DEBUGLOG(("Authorize()txn_amt Invalid[%s]\n",csTmp));
+ERRLOG("TxnWebOnUsCOM::Authorize() txn_amt Invalid\n");
+				}	
+				else {
+					dTmp = myctod(csTmp,strlen(csTmp) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+					PutField_Double(hContext,"txn_amt",dTmp);
+DEBUGLOG(("Authorize() txn_amt = [%f]\n",dTmp));
+				}
+/* if TWD */
+				if (!strcmp(csTxnCcy,"TWD")) {
+					lTmp = (long) dTmp;
+					if (dTmp > lTmp) {
+						iRet = INT_UNSUPPORTED_PAY_AMOUNT;
+						PutField_Int(hContext,"internal_error",INT_UNSUPPORTED_PAY_AMOUNT);
+ERRLOG("TxnWebOnUsCOM::Authorize() unsupported transaction amount [%f]\n",dTmp);
+					}
+				}
+/*************************/
+			}
+			else {
+				iRet = INT_PAY_AMOUNT_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_PAY_AMOUNT_NOT_FOUND);
+DEBUGLOG(("Authorize() txn_amt not found\n"));
+ERRLOG(("TxnWebOnUsCOM:Authorize() txn_amt not found\n"));
+			}	
+		}
+
+/* check txn control */
+		if (iRet == PD_OK) {
+			double dTxnAmt;
+			double dLimit;
+			if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+				DBObjPtr = CreateObj(DBPtr,"DBTxnControl","FindTxnControl");
+				if ((unsigned long) (DBObjPtr)(csChannelCode,
+					csTxnCode,
+					csTxnCountry,
+					csTxnCcy,
+					&dLimit) == PD_FOUND) {
+DEBUGLOG(("TxnWebOnUsCOM:Authorize() txn control limit = [%f]\n",dLimit));
+					if (dLimit > 0.0) {
+						if (dLimit > dTxnAmt) {
+DEBUGLOG(("TxnWebOnUsCOM:Authorize() INT_INVALID_PAY_AMOUNT too small [%f] > Txn Amt[%f]\n",dLimit,dTxnAmt)); 
+ERRLOG("TxnWebOnUsCOM:Authorize() INT_INVALID_PAY_AMOUNT too small [%f] > [%f]\n",dLimit,dTxnAmt); 
+							iRet = INT_INVALID_PAY_AMOUNT;
+							PutField_Int(hContext,"internal_error",INT_INVALID_PAY_AMOUNT);
+						}
+					}
+				}
+			}
+		}
+
+/*check reference*/
+
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"merchant_ref",&csTmp)){
+DEBUGLOG(("Authorize() merchant_ref = [%s]\n",csTmp));
+				}
+			else{
+				iRet = INT_REFERENCE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_REFERENCE_NOT_FOUND);
+DEBUGLOG(("Authorize()reference not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() reference not found\n"));
+			}
+		}
+
+/*check time*/
+
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"transmission_datetime",&csTmp)){
+DEBUGLOG(("Authorize()transmission_datetime = [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_TRASMISSION_TIME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_TRASMISSION_TIME_NOT_FOUND);
+DEBUGLOG(("Authorize()transmission_datetime not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() transmission_datetime not found\n"));
+			}
+		}
+
+	}
+
+	if (!strcmp(csTxnCode,PD_DEPOSIT_TXN_CODE) ||
+	    !strcmp(csTxnCode,PD_INITIAL_TXN_CODE)) {
+/*check pay method*/
+
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"pay_method",&csTmp)){
+DEBUGLOG(("Authorize() pay_method =[%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_PAYMETHOD_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_PAYMETHOD_NOT_FOUND);
+DEBUGLOG(("Authorize()  pay_method not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() pay_method not found\n"));
+			}
+		}
+
+/*check show paypage*/
+		if(iRet == PD_OK){
+			if(GetField_Char(hRequest,"show_paypage",&cTmp)){
+				if((cTmp='N') || (cTmp='Y')){
+DEBUGLOG(("Authorize() show paypage = [%c]\n",cTmp));
+				}
+				else{
+					iRet = INT_INVALID_SHOW_PAYPAGE;
+					PutField_Int(hContext,"internal_error",INT_INVALID_SHOW_PAYPAGE);
+DEBUGLOG(("Authorize() show paypage invalid [%c]\n", cTmp));
+ERRLOG("TxnWebOnUsCOM::Authorize() show paypage invalid\n");
+				}
+			}
+			else{
+				iRet = INT_SHOW_PAYPAGE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_SHOW_PAYPAGE_NOT_FOUND);
+DEBUGLOG(("Authorize() show paypage not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() show paypage not found\n"));
+			}
+		}
+	}
+	else if (!strcmp(csTxnCode,PD_WITHDRAW_TXN_CODE)) {
+/*check bank code*/
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"bank_code",&csTmp)){
+DEBUGLOG(("TxnWebOnUsCOM::Authorize() bank_code = [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_BANK_CODE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_BANK_CODE_NOT_FOUND);
+DEBUGLOG(("Authorize() bank_code not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() bank_code not found\n"));
+			}
+		}
+/* bank branch name */
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"branch_name",&csTmp)){
+DEBUGLOG(("Authorize() branch_name = [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_BRANCH_NAME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_BRANCH_NAME_NOT_FOUND);
+DEBUGLOG(("Authorize() branch_name not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() branch_name not found\n"));
+			}
+		}
+/* bank account id */
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"account_id",&csTmp)){
+DEBUGLOG(("Authorize() account_id = [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_BANK_AC_ID_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_BANK_AC_ID_NOT_FOUND);
+DEBUGLOG(("Authorize() account_id not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() account_id not found\n"));
+			}
+		}
+/* bank account name */
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"account_name",&csTmp)){
+DEBUGLOG(("Authorize() account_name =[%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_BANK_AC_NAME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_BANK_AC_NAME_NOT_FOUND);
+DEBUGLOG(("Authorize() account_NAME not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() account_NAMEid not found\n"));
+			}
+		}
+/* identity id */
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"identity_id",&csTmp)){
+DEBUGLOG(("Authorize() identity_id = [%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_IDENTITY_ID_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_IDENTITY_ID_NOT_FOUND);
+DEBUGLOG(("Authorize() identity_id not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() identity_id not found\n"));
+			}
+		}
+	}
+
+/*check language*/
+/////TODO://////
+	if(GetField_CString(hRequest,"language",&csTmp)){
+DEBUGLOG(("Authorize() language =[%s]\n",csTmp));
+		PutField_CString(hResponse,"language",csTmp);
+	}
+
+	if (strcmp(csTxnCode,PD_WITHDRAW_BATCH_TXN_CODE) &&
+	    strcmp(csTxnCode,PD_INITIAL_REQ_TXN_CODE)) {
+/*check url*/
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"success_url",&csTmp)){
+DEBUGLOG(("Authorize() success_url =[%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_SUCC_URL_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_SUCC_URL_NOT_FOUND);
+DEBUGLOG(("Authorize() success_url not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() success_url not found\n"));
+			}
+		}
+
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"failure_url",&csTmp)){
+DEBUGLOG(("Authorize() failure_url =[%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_FAIL_URL_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_FAIL_URL_NOT_FOUND);
+DEBUGLOG(("Authorize() failure_url not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() failure_url not found\n"));
+			}
+		}
+
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"success_callback_url",&csTmp)){
+DEBUGLOG(("Authorize() success_callback_url =[%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_SUCC_CB_URL_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_SUCC_CB_URL_NOT_FOUND);
+DEBUGLOG(("Authorize() success_callback_url not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() success_callback_url not found\n"));
+		}
+		}
+
+		if(iRet == PD_OK){
+			if(GetField_CString(hRequest,"failure_callback_url",&csTmp)){
+DEBUGLOG(("Authorize() failure_callback_url =[%s]\n",csTmp));
+			}
+			else{
+				iRet = INT_FAIL_CB_URL_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",INT_FAIL_CB_URL_NOT_FOUND);
+DEBUGLOG(("Authorize() failure_callback_url not found\n"));
+ERRLOG(("TxnWebOnUsCOM::Authorize() failure_callback_url not found\n"));
+			}
+		}
+
+	}
+
+
+/*******************/
+
+	if (strcmp(csTxnCode,PD_INITIAL_REQ_TXN_CODE)) {
+		if ( iRet == PD_OK) {
+/* Check Merchant */
+DEBUGLOG(("Authorize() call BOMerchant->GetMerchantDetail\n"));
+ 			BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("Authorize() BOMerchant->GetMerchantDetail = [%d]\n",iRet));
+	
+		}
+/* Check PSP */
+		if (iRet == PD_OK) {
+ 			BOObjPtr = CreateObj(BOPtr,"BOPsp","GetTxnPsp");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("Authorize() BOPsp->GetTxnPsp = [%d]\n",iRet));
+		}
+
+/* skipcheck for WTB */
+
+
+
+/* check limit */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call BOTxnLimit->TxnLimit\n"));
+ 			BOObjPtr = CreateObj(BOPtr,"BOTxnLimit","TxnLimit");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("Authorize() BOTxnLimit->TxnLimit = [%d]\n",iRet));
+
+		}
+
+		if (iRet == PD_OK) {
+			if (strcmp(csTxnCode,PD_WITHDRAW_BATCH_TXN_CODE)) {
+			
+				GetField_CString(hContext,"psp_id",&csPspId);
+DEBUGLOG(("Authorize() psp_id = [%s]\n",csPspId));
+
+				if (GetField_CString(hContext,"service_code",&csTmp)) {
+DEBUGLOG(("Authorize() service_code = [%s]\n",csTmp));
+				}
+				else {
+					csTmp =strdup("");
+DEBUGLOG(("Authorize() service_code = [%s]\n",csTmp));
+				}
+
+				DBObjPtr = CreateObj(DBPtr,"DBService","FindURL");
+				if ((unsigned long)(DBObjPtr)(csTmp,csVal) == FOUND) {
+					csServiceCode = strdup(csTmp);
+DEBUGLOG(("Authorize() Return url domain: = [%s]\n",csVal));
+				}
+				else{
+					 csServiceCode = strdup(PD_DEFAULT_SERVICE);
+DEBUGLOG(("Authorize() service_code[%s] not valid, use default one[%s]\n",csTmp, csServiceCode));
+				}
+
+
+//find BE url
+				if (strcmp(csTxnCode,PD_INITIAL_TXN_CODE)) {
+					DBObjPtr = CreateObj(DBPtr,"DBTxnBeUrl","FindURL");
+					if ((unsigned long)(DBObjPtr)(csTxnCode,csServiceCode,csPspId,csVal) == FOUND) {
+DEBUGLOG(("Authorize() Return url: = [%s]\n",csVal));
+						csBuf = (char*)  malloc (PD_VALUE_LEN * 2 + 1);
+						if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+							sprintf(csBuf,"%s?order_num=%s",csVal,csTmp);
+							PutField_CString(hContext,"return_url",csBuf);
+							PutField_CString(hContext,"return_url_only",csVal);
+DEBUGLOG(("Authorize() Return url     : = [%s]\n",csBuf));
+DEBUGLOG(("Authorize() Return url only: = [%s]\n",csVal));
+						}
+						FREE_ME(csBuf);
+					}
+					else {
+/* try to find default */
+						if ((unsigned long)(DBObjPtr)(csTxnCode,csServiceCode,PD_DEFAULT_PSP,csVal) == FOUND) {
+DEBUGLOG(("Authorize() Return url: = [%s]\n",csVal));
+							csBuf = (char*)  malloc (PD_VALUE_LEN * 2 + 1);
+							if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+								sprintf(csBuf,"%s?order_num=%s",csVal,csTmp);
+								PutField_CString(hResponse,"return_url",csBuf);
+								PutField_CString(hResponse,"return_url_only",csVal);
+DEBUGLOG(("Authorize() Return url     : = [%s]\n",csBuf));
+DEBUGLOG(("Authorize() Return url only: = [%s]\n",csVal));
+							}
+							FREE_ME(csBuf);
+						}
+						else {
+							iRet = INT_ERR;
+ERRLOG("TxnWebOnUsCOM::Authorize() Unable to find return BE URL for PSP ID[%s]\n",csPspId);
+						}
+					}
+
+				}
+
+//find FE url
+				hash_t  *hRec;
+       		 		recordset_t     *rRecordSet;
+       		 		rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+       		 		recordset_init(rRecordSet,0);
+				char cDirection;
+
+DEBUGLOG(("Authorize() try to call find FE URL\n"));
+	
+				if (strcmp(csTxnCode,PD_INITIAL_TXN_CODE))
+					cDirection='R';
+				else
+					cDirection='r';
+
+				DBObjPtr = CreateObj(DBPtr,"DBTxnFeUrl","GetFeUrl");
+				if ((unsigned long)(DBObjPtr)(csTxnCode,csServiceCode,cDirection,rRecordSet) == PD_OK) {
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while(hRec){
+						if (GetField_CString(hRec,"fe_url",&csPtr)) {
+DEBUGLOG(("Authorize() GetFeUrl - url only = [%s]\n",csPtr));
+							PutField_CString(hResponse,"fe_url_only",csPtr);
+
+							csBuf = (char*)  malloc (PD_VALUE_LEN * 2 + 1);
+							if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+								sprintf(csBuf,"%s?order_num=%s",csPtr,csTmp);
+								PutField_CString(hResponse,"fe_url",csBuf);
+DEBUGLOG(("Authorize() GetFeUrl - url = [%s]\n",csBuf));
+							}
+       	        	                         	iRet = PD_OK;
+							FREE_ME(csBuf);
+       	        	                 	}
+       	        	                 	hRec = RecordSet_GetNext(rRecordSet);
+					}
+				}
+				else{
+					iRet = INT_ERR;
+ERRLOG("TxnWebOnUsCOM::Authorize() Unable to find FE URL for [%s][%s] Direction[%c]\n",csTxnCode,csServiceCode,cDirection);
+				}
+			
+				RecordSet_Destroy(rRecordSet);
+       				FREE_ME(rRecordSet);
+			}
+		}
+
+		if ( iRet == PD_OK) {
+/* GetExchangeInfo */
+ 			BOObjPtr = CreateObj(BOPtr,"BOExchange","GetExchangeInfo");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo = [%d]\n",iRet));
+		}
+
+	}
+	else {
+/************************************ DSR */
+		if (!GetField_CString(hResponse,"service_code",&csServiceCode)) {
+DEBUGLOG(("Authorize() service code not found\n"));
+DEBUGLOG(("TxnWebOnUsCOM [%s]Authorize() service code not found\n",csTxnCode));
+			iRet = PD_ERR;
+		}
+		if (!GetField_CString(hResponse,"psp_id",&csPspId)) {
+DEBUGLOG(("Authorize() psp_id not found\n"));
+DEBUGLOG(("TxnWebOnUsCOM [%s]Authorize() psp not found\n",csTxnCode));
+			iRet = PD_ERR;
+		}
+		if (iRet == PD_OK) {
+ 			BOObjPtr = CreateObj(BOPtr,"BOPsp","GetTxnPspByPspId");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,csPspId,csOrgTxnCode);
+		}
+/* fine FE */
+		if (iRet == PD_OK) {
+			hash_t  *hRec;
+                        recordset_t     *rRecordSet;
+                        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+                        recordset_init(rRecordSet,0);
+                        char cDirection;
+                                
+DEBUGLOG(("try to call find FE URL\n"));
+        
+                      	cDirection='R';
+                                
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnFeUrl","GetFeUrl");
+                        if ((unsigned long)(DBObjPtr)(csOrgTxnCode,csServiceCode,cDirection,rRecordSet) == PD_OK) {
+                       		hRec = RecordSet_GetFirst(rRecordSet);
+                                while(hRec){
+                               		if (GetField_CString(hRec,"fe_url",&csPtr)) {
+DEBUGLOG(("DBTxnFeUrl:: GetFeUrl - url only = [%s]\n",csPtr));
+                                       		PutField_CString(hResponse,"fe_url_only",csPtr);
+
+                                                csBuf = (char*)  malloc (PD_VALUE_LEN * 2 + 1);
+                                                if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+                                               		sprintf(csBuf,"%s?order_num=%s",csPtr,csTmp);
+                                                        PutField_CString(hResponse,"fe_url",csBuf);
+DEBUGLOG(("DBTxnFeUrl:: GetFeUrl - url = [%s]\n",csBuf));
+                                                }
+                                                iRet = PD_OK;
+                                                FREE_ME(csBuf);
+                                        }
+                                        hRec = RecordSet_GetNext(rRecordSet);
+                                }
+                        }
+                        else{
+                       		iRet = INT_ERR;
+ERRLOG("TxnWebOnUsCOM::Authorize() Unable to find FE URL for [%s][%s] Direction[%c]\n",csOrgTxnCode,csServiceCode,cDirection);
+                        }
+
+                        RecordSet_Destroy(rRecordSet);
+                        FREE_ME(rRecordSet);
+		}
+
+/* find BE */
+		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"DBTxnBeUrl","FindURL");
+               		if ((unsigned long)(DBObjPtr)(csOrgTxnCode,csServiceCode,csPspId,csVal) == FOUND) {
+DEBUGLOG(("Authorize() Return url: = [%s]\n",csVal));
+                		csBuf = (char*)  malloc (PD_VALUE_LEN * 2 + 1);
+                       	 	if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+                       			sprintf(csBuf,"%s?order_num=%s",csVal,csTmp);
+                                	PutField_CString(hContext,"return_url",csBuf);
+                                	PutField_CString(hContext,"return_url_only",csVal);
+DEBUGLOG(("Authorize() Return url     : = [%s]\n",csBuf));
+DEBUGLOG(("Authorize() Return url only: = [%s]\n",csVal));
+                       		}
+                       		FREE_ME(csBuf);
+                 	}
+                 	else {
+/* try to find default */
+                		if ((unsigned long)(DBObjPtr)(csOrgTxnCode,csServiceCode,PD_DEFAULT_PSP,csVal) == FOUND) {
+DEBUGLOG(("Authorize() Return url: = [%s]\n",csVal));
+                       			csBuf = (char*)  malloc (PD_VALUE_LEN * 2 + 1);
+                                	if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+                               			sprintf(csBuf,"%s?order_num=%s",csVal,csTmp);
+                                        	PutField_CString(hResponse,"return_url",csBuf);
+                                       		PutField_CString(hResponse,"return_url_only",csVal);
+DEBUGLOG(("Authorize() Return url     : = [%s]\n",csBuf));
+DEBUGLOG(("Authorize() Return url only: = [%s]\n",csVal));
+                                	}
+                                	FREE_ME(csBuf);
+                 		}
+                        	else {
+                       			iRet = INT_ERR;
+ERRLOG("TxnWebOnUsCOM::Authorize() Unable to find return BE URL for PSP ID[%s][%s]\n",csPspId,csOrgTxnCode);
+                       		}
+             		}
+		}
+	}
+
+	FREE_ME(csTxnCode);
+	FREE_ME(csTxnCcy);
+	FREE_ME(csServiceCode);
+DEBUGLOG(("TxnWebOnUsCOM:: exit = [%d]\n",iRet));
+	return iRet;
+}

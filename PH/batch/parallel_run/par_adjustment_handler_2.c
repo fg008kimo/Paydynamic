@@ -1,0 +1,583 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[28];
+};
+static struct sqlcxp sqlfpn =
+{
+    27,
+    "par_adjustment_handler_2.pc"
+};
+
+
+static unsigned int sqlctx = 1712578203;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/01/02              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "../batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "par_txn_handler.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "par_adjustment_handler_2.h"
+#include "pr_bo_funct.h"
+#include "pr_par_funct.h"
+#include "pr_par_funct_2.h"
+#include "pr_log_funct.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_CHAR		0x0D
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+
+char    cDebug;
+
+int  CreateNewAdjustmentTxn (hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int  process_adjustment_approve(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+
+
+int	adjustment_handler_2(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+	//int iTmpRet;
+	//int iRecExists = PD_TRUE;
+
+	hash_t  *hTxnHeader;
+
+
+
+	char	*csTxnStatus;
+
+	hash_t 	*hContext, *hRequest, *hResponse;
+
+	hTxnHeader = (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxnHeader, 0);
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+	hash_init (hContext, 0);
+	hash_init (hRequest, 0);
+	hash_init (hResponse, 0);
+
+DEBUGLOG(("par_adjustment_handler_2: START\n"));
+	
+	iRet = AssignTxnRecordDetail(hMyHash);
+DEBUGLOG(("par_adjustment_handler_2::AssignTxnRecordDetail Ret [%d]\n", iRet));
+
+
+	if (iRet == SUCCESS) {
+		iRet = CreateNewAdjustmentTxn(hMyHash, hContext, hRequest, hResponse);
+	}
+
+
+	if (iRet == SUCCESS) {
+		GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+		if (!strcmp(csTxnStatus, "ADJUSTMENT_MERCHANT_CREDIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_MERCHANT_DEBIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_COMMISSION_CREDIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_FRAUDULENT_DEBIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_FUND_TRANSFER_CREDIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_PAYOUT_DEBIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_INTERNAL_BALANCE_FEE_DEBIT_APPROVED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_FUND_TRANSFER_NBA_DEBIT_APPROVED")) {
+		
+			iRet = process_adjustment_approve(hMyHash, hContext, hRequest, hResponse);
+		}
+
+
+		if (!strcmp(csTxnStatus, "ADJUSTMENT_MERCHANT_CREDIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_MERCHANT_DEBIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_COMMISSION_CREDIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_FRAUDULENT_DEBIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_FUND_TRANSFER_CREDIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_PAYOUT_DEBIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_INTERNAL_BALANCE_FEE_DEBIT_REVERSED") ||
+			!strcmp(csTxnStatus, "ADJUSTMENT_FUND_TRANSFER_NBA_DEBIT_REVERSED")) {
+
+			//iRet = process_adjustment_reverse(hMyHash, hContext, hRequest, hResponse);
+			iRet = FAILURE;
+DEBUGLOG(("par_adjuestment_handler_2::Unexpected reversal [%s]!\n", csTxnStatus));
+ERRLOG("par_adjuestment_handler_2::Unexpected reversal [%s]!\n", csTxnStatus);
+		}
+
+		if (iRet == SUCCESS) {
+			//Update to "COMPLETE"
+			iRet = UpdateProcessResult(hMyHash, "COMPLETE");
+		}
+	}
+	else {
+		//Update to "SKIP"
+		iRet = UpdateProcessResult(hMyHash, "SKIP");
+	}
+	
+	
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+
+	return iRet;
+}
+
+
+
+int CreateNewAdjustmentTxn (hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTxnSeq = strdup("");
+	char	*csVNCRefNum;
+
+	int iRecExists = PD_TRUE;
+
+	char	*csTmp;
+	//double	dTmp = 0.0;
+	//int	iTmp;
+
+        char    csDate[PD_DATE_LEN + 1];
+        char    csTime[PD_TIME_LEN + 1];
+
+	
+	GetField_Int(hMyHash, "record_exists", &iRecExists);
+	PutField_Int(hContext, "db_commit", PD_FALSE);	
+
+	// ***** Txn Seq ******
+	if (iRecExists == PD_TRUE) {
+		iRet = FAILURE;
+DEBUGLOG(("par_adjusment_handler_2::CreateNewAdjustmentTxn iRecExists!!!!\n"));
+		//GetField_CString(hMyHash, "org_txn_id", &csTxnSeq);
+//DEBUGLOG(("par_adjusment_handler_2:: CreateNewAdjustmentTxn org_txn_id [%s]\n", csTxnSeq));
+	}
+
+	if (iRecExists == PD_FALSE) {
+		DBObjPtr = CreateObj(DBPtr, "DBTxnSeq", "GetNextMgtTxnSeq");
+		strcpy(csTxnSeq, (*DBObjPtr)());
+DEBUGLOG(("par_adjusment_handler_2:: CreateNewAdjustmentTxn Create a new txn seq [%s]\n", csTxnSeq));
+	}
+
+	PutField_CString(hContext, "txn_seq", csTxnSeq);
+	PutField_CString(hContext, "channel_code", PD_CHANNEL_MGT);
+
+	if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+		PutField_CString(hContext, "txn_code", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+		PutField_CString(hContext, "PHDATE", csTmp);
+	}
+
+        if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+                PutField_CString(hRequest, "transmission_datetime",csTmp);
+
+                strncpy(csDate, csTmp, PD_DATE_LEN);
+                csDate[PD_DATE_LEN] = '\0';
+                strncpy(csTime, csTmp + PD_DATE_LEN, PD_TIME_LEN);
+DEBUGLOG(("par_adjustment_handler_2::CreateNewSettlementTxn: tm_date [%s] tm_time[%s]\n", csDate, csTime));
+
+                PutField_CString(hRequest, "tm_date", csDate);
+                PutField_CString(hRequest, "tm_time", csTime);
+        }
+
+
+	if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+		PutField_CString(hContext, "local_tm_date", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+		PutField_CString(hContext, "local_tm_time", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "remark", &csTmp)) {
+		PutField_CString(hRequest, "remark", csTmp);
+	}
+
+	PutField_CString(hRequest, "process_type", PD_PROCESS_TYPE_DEF);
+	PutField_CString(hRequest, "process_code", PD_PROCESS_CODE_DEF);
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+                PutField_CString(hRequest, "merchant_id", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "service", &csTmp)) {
+		PutField_CString(hRequest, "service_code", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+		PutField_CString(hRequest, "txn_ccy", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "country", &csTmp)) {
+		PutField_CString(hRequest, "txn_country", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+                PutField_CString(hRequest, "ip_addr", csTmp);
+	}
+
+	PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+
+
+	//if (GetField_Double(hMyHash, "amount", &dTmp)) {
+	//	PutField_Double(hRquest, "txn_amt", dTmp);
+	//}
+
+
+	if (iRet == SUCCESS) {
+		ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","AddTxnLog");
+
+		if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest)) == PD_OK) {
+DEBUGLOG(("par_adjustment_handler_2::CreateNewSettlementTxn: call MGTChannel.AddTxnLog  SUCC!\n"));
+		}
+		else {
+			iRet = FAILURE;
+DEBUGLOG(("par_adjustment_handler_2::CreateNewSettlementTxn: call MGTChannel.AddTxnLog FAILED!\n"));
+		}
+	}
+
+
+	if (iRet == SUCCESS) {
+		// for transmission_datetime, tm_date
+		hash_t *hDateTxn;
+		hDateTxn= (hash_t *)malloc(sizeof(hash_t));
+		hash_init (hDateTxn, 0);
+
+		PutField_CString(hDateTxn, "txn_seq", csTxnSeq);
+
+		if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+			PutField_CString(hDateTxn, "transmission_datetime",csTmp);
+
+			strncpy(csDate, csTmp, PD_DATE_LEN);
+			csDate[PD_DATE_LEN] = '\0';
+
+			PutField_CString(hDateTxn, "tm_date", csDate);
+		}
+
+DEBUGLOG(("par_adjustment_handler_2:: special cater transmission_datetime!\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBTransaction","Update");
+
+		if ((unsigned long)((*DBObjPtr)(hDateTxn)) == PD_OK) {
+DEBUGLOG(("par_adjustment_handler_2::CreateNewSettlementTxn: call DBTransaction.Update SUCC!\n"));
+		}
+		else {
+			iRet = FAILURE;
+DEBUGLOG(("par_adjustment_handler_2::CreateNewSettlementTxn: call DBTransaction.Update FAILED!\n"));
+		}
+
+		hash_destroy(hDateTxn);
+		FREE_ME(hDateTxn);
+	}
+
+	if (iRet == SUCCESS) {
+		/* Check Merchant */
+DEBUGLOG(("par_adjustment_handler_2::call BOMerchant.GetMerchantTxnInfo\n"));
+
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+
+DEBUGLOG(("par_adjustment_handler_2::BOMerchant.GetMerchantTxnInfo return [%d]\n",iRet));
+		if (iRet == SUCCESS) {
+			if (GetField_CString(hContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("par_adjustment_handler_2::BOMerchant.GetMerchantTxnInfo merchant_client_id [%s]\n", csTmp));
+			}
+		}
+	}
+
+
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+                        PutField_CString(hContext, "vnc_ref_num", csVNCRefNum);
+
+                        if (UpdateHeaderVNCRef(hContext) == PD_OK) {
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num succ!\n"));
+                        }
+                        else {  
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num fail!\n"));
+                                iRet = FAILURE; 
+                        }               
+                }
+	}
+
+
+	FREE_ME(csTxnSeq);
+
+	return iRet;	
+}
+
+
+int  process_adjustment_approve(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp = NULL;
+	double	dTmp = 0.0;
+	char	cTmp;
+	//int	iTmp;
+
+	//char	*csTxnCode = NULL;
+	char	*csAdjTxnCode;
+
+	
+	char	csDate[PD_DATE_LEN + 1];
+
+	int	iBalTransfer= PD_FALSE;
+
+DEBUGLOG(("process_adjusment_approve start!\n"));
+
+	GetField_CString(hContext, "txn_code", &csAdjTxnCode);
+
+	cTmp = csAdjTxnCode[0];
+	if (islower(csAdjTxnCode[0])) {
+		PutField_CString(hRequest, "txn_code", PD_MERCHANT_ADJUSTMENT);
+		PutField_CString(hRequest, "code", csAdjTxnCode);
+		iBalTransfer = PD_FALSE;
+	}
+	else {
+		PutField_CString(hRequest, "txn_code", csAdjTxnCode);
+		iBalTransfer = PD_TRUE;
+	}
+
+
+        if (GetField_Double(hMyHash, "amount", &dTmp)) {
+                PutField_Double(hContext, "txn_amt", dTmp);
+        }
+
+        if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+
+		strncpy(csDate, csTmp, PD_DATE_LEN);
+		csDate[PD_DATE_LEN] = '\0';
+
+                PutField_CString(hRequest, "approval_date", csDate);
+        }
+
+        PutField_Int(hContext, "do_logging", PD_ADD_LOG);
+
+
+	if (iRet == SUCCESS) {
+		if (iBalTransfer == PD_FALSE) {
+DEBUGLOG(("par_adjustment_handler_2::approve: call TxnParByUsMAD.Authorize\n"));
+
+			TxnObjPtr = CreateObj(TxnPtr,"TxnParByUsMAD","Authorize");
+			iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+			if (iRet == SUCCESS) {
+DEBUGLOG(("par_adjustment_handler_2::approve: Call TxnParByUsMAD.Authorize SUCC\n"));
+			} else {
+DEBUGLOG(("par_adjustment_handler_2::approve: Call TxnParByUsMAD.Authorize FAIL\n"));
+			}
+		} else {
+			if (!strcmp(csAdjTxnCode, PD_MERCH_BAL_TRF_OTH_SYS)) {
+				TxnObjPtr = CreateObj(TxnPtr,"TxnParByUsMTO","Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+				if (iRet == SUCCESS) {
+DEBUGLOG(("par_adjustment_handler_2::approve: Call TxnParByUsMTO.Authorize SUCC\n"));
+				} else {
+DEBUGLOG(("par_adjustment_handler_2::approve: Call TxnParByUsMTO.Authorize FAIL\n"));
+                        	}
+
+			} else if (!strcmp(csAdjTxnCode, PD_OTH_SYS_2_MERCH_BAL_TRF)) {
+				GetField_CString(hMyHash, "ccy", &csTmp);
+				PutField_CString(hRequest, "dst_txn_ccy", csTmp);
+
+				TxnObjPtr = CreateObj(TxnPtr,"TxnParByUsOTM","Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+				if (iRet == SUCCESS) {
+DEBUGLOG(("par_adjustment_handler_2::approve: Call TxnParByUsOTM.Authorize SUCC\n"));
+				} else {
+DEBUGLOG(("par_adjustment_handler_2::approve: Call TxnParByUsOTM.Authorize FAIL\n"));
+                        	}
+
+			} else {
+				iRet = FAILURE;
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Char(hContext, "status", PD_COMPLETE);
+		PutField_Char(hContext, "ar_ind", PD_ACCEPT);
+
+DEBUGLOG(("par_adjustment_handler_2::adj: call MGTChannel.UpdateTxnLog...!\n"));
+
+                ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnLog");
+
+                if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) == PD_OK) {
+DEBUGLOG(("par_adjustment_handler_2::adj: call MGTChannel.UpdateTxnLog  SUCC!\n"));
+                }
+                else {
+                        iRet = FAILURE;
+DEBUGLOG(("par_adjustment_handler_2::adj: call MGTChannel.UpdateTxnLog FAILED!\n"));
+                }
+		
+	}
+
+
+        if (iRet == SUCCESS) {
+		iRet = UpdateApprovalTimestamp(hContext);
+        }
+
+
+
+
+	return iRet;
+}
+
+

@@ -1,0 +1,17 @@
+#ifndef _PID_BANK_GROUP_MAPPING_H_
+#define _PID_BANK_GROUP_MAPPING_H_
+
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int GetNGPidGroup(const char* csServiceCode);
+int GetPidGroup(const char* csServiceCode);
+int CheckPidGroup(const char* csPspId, const char* csServiceCode);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

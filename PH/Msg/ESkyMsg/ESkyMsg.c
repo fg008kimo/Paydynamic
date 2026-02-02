@@ -1,0 +1,1391 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   20110110                LokMan Chow
+Add e_depositTime				   20180806		   David Wong
+Add deposit trace function			   20190617		   David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "ESkyMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include <zlib.h>
+#include "b64.h"
+#include "internal.h"
+#include "ObjPtr.h"
+#include <json-c/json.h>
+
+static char	cDebug;
+
+OBJPTR(DB);
+
+void	ESkyMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+void remove_quote(const char *csValue, const int iType, char *csOut);
+
+
+int FormatMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int	iRet = PD_OK;
+	char*   csTmp = NULL;
+	char*   csPtr = NULL;
+	char*   csBuf;
+	double  dTmp;
+	char*   csMethod = NULL;
+	int	iOpt = INT_ERR;
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+	memset(outMsg,0,sizeof(outMsg));
+	if (GetField_CString(hIn,"redirect_url",&csPtr)) {
+DEBUGLOG(("FormatMsg here\n"));
+		strcat((char *)outMsg,csPtr);
+		strcat((char *)outMsg,"?");
+		if (GetField_CString(hIn,"fe_url",&csTmp)) {
+			strcat((char*)outMsg,"e_url");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_url = [%s]\n",csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: *** fe_url is missing\n"));
+		}
+		if (GetField_CString(hIn,"return_url_only",&csTmp)) {
+			strcat((char*)outMsg,"e_backend_url");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_backend_url = [%s]\n",csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: *** return_url_only is missing\n"));
+		}
+
+		if (GetField_CString(hIn,"txn_seq",&csTmp)) {
+			strcat((char*)outMsg,"e_orderno");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_orderno = [%s]\n",csTmp));
+		}
+		if (GetField_CString(hIn,"psp_merchant_id",&csTmp)) {
+			strcat((char*)outMsg,"e_no");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_no = [%s]\n",csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: ***psp_merchant_id is missing\n"));
+		}
+		if (GetField_CString(hIn,"bank_code",&csTmp)) {
+			//strcat((char*)outMsg,"e_Bankco");
+			strcat((char*)outMsg,"e_bank");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			DBObjPtr = CreateObj(DBPtr, "DBMobBankMap", "IsMobileOption");
+			iOpt = (unsigned long)(*DBObjPtr)(csTmp);
+			if (iOpt == PD_FALSE && iOpt != INT_ERR) {
+				strcat((char*)outMsg,csTmp);
+			} else if (iOpt && iOpt != INT_ERR) {
+				strcat((char*)outMsg,PD_MOB_EC);
+			}
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_Bankco = [%s]\n",csTmp));
+		}
+/* hard code  - requested by esky */
+		strcat((char*)outMsg,"e_storename");
+		strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_ESKY_TOKEN);
+/* psp txn ccy */
+		if (GetField_CString(hIn,"psp_txn_ccy",&csTmp)) {
+			char*   csCcyId = NULL;
+			if(strncmp(csTmp,"CNY",PD_CCY_ID_LEN)==0)
+				csCcyId = strdup("RMB");
+			else if(strncmp(csTmp,"TWD",PD_CCY_ID_LEN)==0)
+				csCcyId = strdup("NTD");
+			else
+				csCcyId = strdup(csTmp);
+			//strcat((char*)outMsg,"e_Currency_Type");
+			strcat((char*)outMsg,"e_Cur");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csCcyId);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_Currency_Type = [%s]\n",csCcyId));
+			FREE_ME(csCcyId);
+		}
+
+/* gateway type */
+/*
+		if (GetField_CString(hIn,"gateway_type",&csTmp)) {
+			strcat((char*)outMsg,"e_Gateway_Type");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_Gateway_Type = [%s]\n",csTmp));
+		}
+		else{
+			strcat((char*)outMsg,"e_Gateway_Type");
+DEBUGLOG(("FormatMsg:: Defualt Gateway Type[01]\n"));
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,"01");
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+		}
+*/
+/* language */
+		if (GetField_CString(hIn,"language",&csTmp)) {
+			strcat((char*)outMsg,"e_Lang");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_Lang = [%s]\n",csTmp));
+		}
+/* txn amt */
+		if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+
+			char    csTmpAmt[PD_TMP_BUF_LEN +1];
+			sprintf(csTmpAmt,"%.2f",dTmp);
+			strcat((char*)outMsg,"e_money");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmpAmt);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_money = [%s]\n",csTmpAmt));
+		}
+		else {
+DEBUGLOG(("FormatMsg:: psp_txn_amt is missing!!!\n"));
+		}
+
+/* sign */
+		if (GetField_CString(hIn,"sign",&csTmp)) {
+			strcat((char*)outMsg,"str_check");
+			strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: str_check = [%s]\n",csTmp));
+		}
+
+/* e_depositTime */
+		if (GetField_CString(hIn,"local_tm_date",&csTmp)) {
+			char *csTmp2 = NULL;
+			char csDateTime[PD_DATETIME_LEN * 2];
+			if (GetField_CString(hIn,"local_tm_time",&csTmp2)) {
+				sprintf(csDateTime,"%s%s",csTmp,csTmp2);
+				strcat((char*)outMsg,"e_depositTime");
+				strcat((char*)outMsg,MY_ESKY_FIELD_TOKEN);
+				strcat((char*)outMsg,csDateTime);
+				strcat((char*)outMsg,MY_ESKY_TOKEN);
+DEBUGLOG(("FormatMsg:: e_depositTime = [%s]\n",csDateTime));
+			}
+			else {
+DEBUGLOG(("FormatMsg:: local_tm_time is missing!!!\n"));
+			}
+		}
+		else {
+DEBUGLOG(("FormatMsg:: local_tm_date is missing!!!\n"));
+		}
+
+/* url_method */
+		if (GetField_CString(hIn,"url_method",&csMethod)) {
+DEBUGLOG(("FormatMsg:: url_method = [%s]\n",csMethod));
+		}
+		else 
+			csMethod = strdup("");
+
+DEBUGLOG(("FormatMsg:: outmsg = [%s]\n",outMsg));
+		base64_encode(outMsg,strlen((char *)outMsg),csBuf,PD_MAX_BUFFER);
+DEBUGLOG(("FormatMsg:: after encode\n"));
+                outMsg[0] = '\0';
+                strcat((char*)outMsg,"redirect_url");
+                strcat((char*)outMsg,"=");
+                strcat((char*)outMsg,csBuf);
+                strcat((char*)outMsg,MY_ESKY_TOKEN);
+		strcat((char*)outMsg,"url_method");
+		strcat((char*)outMsg,"=");
+		strcat((char*)outMsg,csMethod);
+                strcat((char*)outMsg,MY_ESKY_TOKEN);
+		strcat((char*)outMsg,"ret_status=0");
+DEBUGLOG(("FormatMsg:: outMsg = [%s]\n",outMsg));
+
+		*outLen = strlen((const char*)outMsg);
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: Redirct url not found\n"));
+	}
+
+
+DEBUGLOG(("FormatMsg:: normal exit iret =[%d]\n",iRet));
+	FREE_ME(csBuf);
+	return 	iRet;
+}
+
+
+
+int BreakDownMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	double   dTmp;
+	char	csDateTime[PD_DATETIME_LEN +1];
+	char    csTmp[PD_MAX_BUFFER + 1];
+	hash_t  *hRec;
+
+        hRec = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n",inMsg,inLen));
+
+	if (Str2Cls(hRec,(char *)inMsg,MY_ESKY_TOKEN, MY_ESKY_FIELD_TOKEN) == PD_OK) {
+
+/* str_ok */
+		if (GetField_CString(hRec,"str_ok",&csPtr)) {
+			PutField_CString(hOut,"status",csPtr);
+			if(strncmp(csPtr,"1",1)){
+				PutField_CString(hOut,"error_code",csPtr);
+			}
+DEBUGLOG(("BreakDownMsg:: status = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: status not found\n"));
+		}
+
+/* str_no */
+		if (GetField_CString(hRec,"str_no",&csPtr)) {
+			PutField_CString(hOut,"tid",csPtr);
+DEBUGLOG(("BreakDownMsg:: tid = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: tid not found\n"));
+		}
+
+/* e_ntmoney */
+		if (GetField_CString(hRec,"e_ntmoney",&csPtr)) {
+			PutField_CString(hOut,"e_ntmoney",csPtr);
+DEBUGLOG(("BreakDownMsg:: e_ntmoney = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: e_ntmoney not found\n"));
+		}
+
+/* e_rate */
+		if (GetField_CString(hRec,"e_rate",&csPtr)) {
+			PutField_CString(hOut,"rate",csPtr);
+DEBUGLOG(("BreakDownMsg:: rate = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: rate not found\n"));
+		}
+
+/* e_money */
+		if (GetField_CString(hRec,"e_money",&csPtr)) {
+			PutField_CString(hOut,"txn_amt",csPtr);
+DEBUGLOG(("BreakDownMsg:: txn_amt = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: txn_amt not found\n"));
+		}
+
+/* e_orderno */
+		if (GetField_CString(hRec,"e_orderno",&csPtr)) {
+			PutField_CString(hOut,"txn_seq",csPtr);
+DEBUGLOG(("BreakDownMsg:: txn_seq = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: txn_seq not found\n"));
+		}
+
+/* e_no */
+		if (GetField_CString(hRec,"e_no",&csPtr)) {
+			PutField_CString(hOut,"psp_merchant_id",csPtr);
+DEBUGLOG(("BreakDownMsg:: psp_merchant_id = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: psp_merchant_id not found\n"));
+		}
+
+/* e_date */
+		if (GetField_CString(hRec,"e_date",&csPtr)) {
+			strcpy(csTmp,TrimAll((const unsigned char *)csPtr,strlen(csPtr)));
+			PutField_CString(hOut,"txn_date",csTmp);
+			PutField_CString(hOut,"tm_date",csTmp);
+			strcpy(csDateTime,csTmp);
+DEBUGLOG(("BreakDownMsg:: txn_date[tm_date] = [%s]\n",csTmp));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: txn_date not found\n"));
+		}
+
+/* e_time */
+		if (GetField_CString(hRec,"e_time",&csPtr)) {
+			strcpy(csTmp,TrimAll((const unsigned char *)csPtr,strlen(csPtr)));
+DEBUGLOG(("BreakDownMsg:: time = [%s]\n",csTmp));
+			char* pPtr;
+			pPtr = strdup(deleteCharacters(csTmp,":"));
+			PutField_CString(hOut,"tm_time",pPtr);
+DEBUGLOG(("BreakDownMsg:: time = [%s]\n",pPtr));
+			FREE_ME(pPtr);
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: txn_time not found\n"));
+		}
+
+/* service_fee */
+		if (GetField_CString(hRec,"e_outlay",&csPtr)) {
+			sscanf(csPtr,"%lf",&dTmp);
+			PutField_Double(hOut,"service_fee",dTmp);
+DEBUGLOG(("BreakDownMsg:: service_fee = [%lf]\n",dTmp));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: service_fee not found\n"));
+		}
+
+
+/* str_check */
+		if (GetField_CString(hRec,"str_check",&csPtr)) {
+			PutField_CString(hOut,"sign",csPtr);
+DEBUGLOG(("BreakDownMsg:: sign = [%s]\n",csPtr));
+		}
+		else{
+                	PutField_CString(hOut,"sign"," ");
+DEBUGLOG(("BreakDownMsg:: sign = [%s]\n"," "));
+        	}
+
+/* str_msg */
+		if (GetField_CString(hRec,"str_msg",&csPtr)) {
+			PutField_CString(hOut,"error_msg",csPtr);
+DEBUGLOG(("BreakDownMsg:: error_msg = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: error_msg not found\n"));
+		}
+/* bstr_msg */
+		if (GetField_CString(hRec,"bstr_msg",&csPtr)) {
+			PutField_CString(hOut,"bank_error_msg",csPtr);
+DEBUGLOG(("BreakDownMsg:: bank_error_msg = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: bank_error_msg not found\n"));
+		}
+
+	}
+	else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+                iRet = PD_ERR;
+        }
+        
+        hash_destroy(hRec);
+	FREE_ME(hRec);
+
+DEBUGLOG(("BreakDownMsg Exit\n"));
+	return	iRet;
+}
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	return iRet;
+}
+
+
+int BuildAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csPtr;
+        char    csTmp[PD_MAX_BUFFER + 1];
+        char*   csBuf;
+        double  dTmp;
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+	int	iForEnquiry = PD_FALSE;
+	int	iForEnquiryRsp = PD_FALSE;
+	int	iForEnquiryCallback = PD_FALSE;
+
+DEBUGLOG(("BuildAuthData()\n"));
+
+	GetField_Int(hIn, "for_enquiry_use", &iForEnquiry);
+	if (iForEnquiry) {
+		return BuildInqAuthData(hIn);
+	}
+
+	GetField_Int(hIn, "for_enquiry_rsp_use", &iForEnquiryRsp);
+
+	GetField_Int(hIn, "for_enquiry_callback_use", &iForEnquiryCallback);
+	if (iForEnquiryCallback) {
+		return BuildCallbackAuthData(hIn);
+	}
+
+	memset(csBuf,0,MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+	
+
+	if (!iForEnquiryRsp) {
+/* status */    
+		if (GetField_CString(hIn,"status",&csPtr)) {
+DEBUGLOG(("ESkyMsg BuildAuthData[str_ok] = [%s]\n",csPtr));
+			strcat(csBuf,csPtr);
+		}
+		else {
+DEBUGLOG(("ESkyMsg:BuildAuthData status[str_ok] Not FOUND!!!\n"));
+		}
+	}
+
+/* e_oderno */
+        if (GetField_CString(hIn,"txn_seq",&csPtr)) {
+DEBUGLOG(("ESkyMsg:BuildAuthData() txn_seq= [%s]\n",csPtr));
+                strcat(csBuf,csPtr);
+        }
+        else {
+DEBUGLOG(("ESkyMsg:BuildAuthData() txn_seq is missing***\n"));
+        }
+
+/* psp_merchant_id */
+        if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+DEBUGLOG(("ESkyMsg:BuildAuthData() psp_merchant_id= [%s]\n",csPtr));
+                strcat(csBuf,csPtr);
+        }
+        else {
+DEBUGLOG(("ESkyMsg:BuildAuthData() psp_merchant_id is missing***\n"));
+        }
+
+/* txn amount */
+        if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+DEBUGLOG(("ESkyMsg:BuildAuthData() txn_amt= [%f]\n",dTmp));
+                sprintf(csTmp,"%.2f",dTmp);
+                strcat(csBuf,csTmp);
+DEBUGLOG(("ESkyMsg:BuildAuthData() txn_amt= [%s]\n",csTmp));
+        }
+	else if (GetField_CString(hIn,"txn_amt",&csPtr)) {
+                strcat(csBuf,csPtr);
+DEBUGLOG(("ESkyMsg:BuildAuthData() txn_amt= [%s]\n",csPtr));
+	}
+        else {
+DEBUGLOG(("ESkyMsg:BuildAuthData() txn_amt is missing***\n"));
+        }
+
+	if (!iForEnquiryRsp) {
+/* tid */
+		if (GetField_CString(hIn,"tid",&csPtr)) {
+DEBUGLOG(("ESkyMsg:BuildAuthData tid[str_no] = [%s]\n",csPtr));
+			strcat(csBuf,csPtr);
+		}
+		else {
+DEBUGLOG(("ESkyMsg tid[str_no] Not Found!!!\n"));
+		}
+	}
+
+	PutField_CString(hIn,"auth_data",csBuf);
+DEBUGLOG(("BuildAuthData:: auth_data = [%s]\n",csBuf));
+	FREE_ME(csBuf);
+        
+DEBUGLOG(("BuildAuthData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int FormatInqMsg(const hash_t* hIn, unsigned char *outMsg, int *outLen)
+{
+	int	iRet = PD_OK;
+	char	*csBuf;
+	char	*csURL = NULL;
+	char	*csPtr = NULL;
+	char	*csTmp = NULL;
+	double	dTmp = 0.0;
+
+DEBUGLOG(("FormatInqMsg() Start\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	memset(outMsg,0,sizeof(outMsg));
+
+	if (GetField_CString(hIn, "psp_url", &csURL)) {
+		if (GetField_CString(hIn, "request_function", &csPtr)) {
+			strcpy((char*)csBuf, "url");
+			strcat((char*)csBuf, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csBuf, csURL);
+			strcat((char*)csBuf, "/");
+			strcat((char*)csBuf, csPtr);
+
+			/* added for gw to identify the request */
+			strcat((char*)csBuf, MY_ESKY_TOKEN);
+			strcat((char*)csBuf, "enq");
+			strcat((char*)csBuf, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csBuf, "1");
+
+			strcat((char*)csBuf, MY_ESKY_TOKEN);
+			strcat((char*)csBuf, "METHOD");
+			strcat((char*)csBuf, MY_ESKY_FIELD_TOKEN);
+			if (GetField_CString(hIn, "url_method", &csPtr)) {
+				strcat((char*)csBuf, csPtr);
+			}
+			else {
+				strcat((char*)csBuf, PD_DEFAULT_METHOD);
+			}
+		}
+
+		sprintf((char*)outMsg, "%0*d", PD_WEB_HEADER_LEN_LEN, (int)strlen(csBuf));
+		strcat((char*)outMsg, csBuf);
+DEBUGLOG(("outMsg = [%s]\n", outMsg));
+
+// e_orderno
+		if (GetField_CString(hIn, "txn_seq", &csTmp)) {
+			strcat((char*)outMsg, "e_orderno");
+			strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_ESKY_TOKEN);
+DEBUGLOG(("e_orderno = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***txn_seq is missing\n"));
+		}
+
+// e_url
+		if (GetField_CString(hIn, "fe_url", &csTmp)) {
+			strcat((char*)outMsg, "e_url");
+			strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_ESKY_TOKEN);
+DEBUGLOG(("e_url = [%s]\n", csTmp));
+		}
+		else {
+DEBUGLOG(("***fe_url is missing\n"));
+			strcat((char*)outMsg, "e_url");
+			strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg, "not_applicable");
+			strcat((char*)outMsg, MY_ESKY_TOKEN);
+DEBUGLOG(("***default e_url\n"));
+		}
+
+// e_no
+                if (GetField_CString(hIn, "psp_merchant_id", &csTmp)) {
+			strcat((char*)outMsg, "e_no");
+			strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_ESKY_TOKEN);
+DEBUGLOG(("e_no = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***psp_merchant_id is missing\n"));
+		}
+
+// e_money
+		if (GetField_Double(hIn, "txn_amt", &dTmp)) {
+			char csTmpAmt[PD_TMP_BUF_LEN + 1];
+			sprintf((char*)csTmpAmt, "%.2f", dTmp);
+			strcat((char*)outMsg, "e_money");
+			strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmpAmt);
+			strcat((char*)outMsg, MY_ESKY_TOKEN);
+DEBUGLOG(("e_money = [%s]\n", csTmpAmt));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***txn_amt is missing\n"));
+		}
+
+// str_check
+		if (GetField_CString(hIn, "sign", &csTmp)) {
+			strcat((char*)outMsg, "str_check");
+			strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			//strcat((char*)outMsg, MY_ESKY_TOKEN);
+DEBUGLOG(("str_check = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***sign is missing\n"));
+		}
+	}
+	else {
+DEBUGLOG(("***psp_url is missing\n"));
+		iRet = PD_ERR;
+	}
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInqMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatInqMsg() Exit iRet = [%d]\n", iRet));
+	FREE_ME(csBuf);
+	return iRet;
+}
+
+
+int BuildInqAuthData(hash_t *hIn)
+{
+	int	iRet = PD_OK;
+	char	*csBuf;
+	char	*csPtr = NULL;
+	double dTmp = 0.0;
+
+DEBUGLOG(("BuildInqAuthData() Start\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+// e_orderno
+	if (GetField_CString(hIn, "txn_seq", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("e_orderno = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("txn_seq is missing\n"));
+	}
+
+// e_no
+	if (GetField_CString(hIn, "psp_merchant_id", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("e_no = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("psp_merchant_id is missing\n"));
+	}
+
+// e_money
+	if (GetField_Double(hIn, "txn_amt", &dTmp)) {
+		char csTmpAmt[PD_TMP_BUF_LEN + 1];
+		sprintf((char*)csTmpAmt, "%.2f", dTmp);
+		strcat((char*)csBuf, csTmpAmt);
+DEBUGLOG(("e_money = [%s]\n", csTmpAmt));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("txn_amt is missing\n"));
+	}
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("BuildInqAuthData() auth_data = [%s]\n", csBuf));
+DEBUGLOG(("BuildInqAuthData() Exit iRet = [%d]\n", iRet));
+	FREE_ME(csBuf);
+	return iRet;
+}
+
+
+int BreakDownInqRspMsg(hash_t *hContext, hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int iRet = PD_OK;
+	char *csTmp = NULL;
+	char csTag[PD_TAG_LEN + 1];
+	char csOrigMsg[PD_MAX_BUFFER + 1];
+	char csMsg[PD_MAX_BUFFER + 1];
+	hash_t *hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec, 0);
+
+	csOrigMsg[0] = '\0';
+	csMsg[0] = '\0';
+
+DEBUGLOG(("BreakDownInqRspMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n", inMsg, inLen));
+
+	struct json_object *jobj;
+	enum json_type type;
+
+	jobj = json_tokener_parse((const char *)inMsg);
+	if (jobj != NULL) {
+		json_object_object_foreach(jobj, key, val) {
+			type = json_object_get_type(val);
+			switch (type) {
+				case json_type_string:
+					if (!strcmp(key, "str_ok")) {
+						strcat((char*)csOrigMsg, key);
+						strcat((char*)csOrigMsg, MY_ESKY_FIELD_TOKEN);
+						if (strlen(json_object_get_string(val)) == 0) {
+							strcat((char*)csOrigMsg, MY_ESKY_PENDING_STATUS);
+						} else {
+							strcat((char*)csOrigMsg, json_object_get_string(val));
+						}
+						strcat((char*)csOrigMsg, MY_ESKY_TOKEN);
+					} else if (!strcmp(key, "str_check")) {
+						PutField_CString(hOut, "str_check", json_object_get_string(val));
+						PutField_CString(hOut, "sign", json_object_get_string(val));
+					} else {
+						strcat((char*)csOrigMsg, key);
+						strcat((char*)csOrigMsg, MY_ESKY_FIELD_TOKEN);
+						strcat((char*)csOrigMsg, json_object_get_string(val));
+						strcat((char*)csOrigMsg, MY_ESKY_TOKEN);
+					}
+				break;
+				default:
+DEBUGLOG(("unsupported type\n"));
+				break;
+			}
+		}
+	}
+
+	PutField_CString(hOut, "in_msg", (const char *)csOrigMsg);
+
+	if (Str2Cls(hRec, (const char *)csOrigMsg, MY_ESKY_TOKEN, MY_ESKY_FIELD_TOKEN) == PD_OK) {
+
+		sprintf(csTag, "e_url");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_url", csTmp);
+		} else {
+DEBUGLOG(("e_url not found\n"));
+		}
+
+		sprintf(csTag, "str_ok");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "str_ok", csTmp);
+			PutField_CString(hOut, "status", csTmp);
+		} else {
+DEBUGLOG(("str_ok not found\n"));
+		}
+
+		sprintf(csTag, "str_no");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "str_no", csTmp);
+			PutField_CString(hOut, "tid", csTmp);
+		} else {
+DEBUGLOG(("str_no not found\n"));
+		}
+
+		sprintf(csTag, "e_Cur");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_Cur", csTmp);
+		} else {
+DEBUGLOG(("e_Cur not found\n"));
+		}
+
+		sprintf(csTag, "e_money");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_money", csTmp);
+			PutField_CString(hOut, "txn_amt", csTmp);
+			PutField_CString(hOut, "psp_txn_amt", csTmp);
+		} else {
+DEBUGLOG(("e_money not found\n"));
+		}
+
+		sprintf(csTag, "e_rmbrate");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_rmbrate", csTmp);
+		} else {
+DEBUGLOG(("e_rmbrate not found\n"));
+		}
+
+		sprintf(csTag, "e_rmbmoney");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_rmbmoney", csTmp);
+		} else {
+DEBUGLOG(("e_rmbmoney not found\n"));
+		}
+
+		sprintf(csTag, "e_orderno");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_orderno", csTmp);
+			PutField_CString(hOut, "txn_seq", csTmp);
+			PutField_CString(hOut, "order_num", csTmp);
+		} else {
+DEBUGLOG(("e_orderno not found\n"));
+		}
+
+		sprintf(csTag, "e_no");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_no", csTmp);
+			PutField_CString(hOut, "psp_merchant_id", csTmp);
+		} else {
+DEBUGLOG(("e_no not found\n"));
+		}
+
+		sprintf(csTag, "e_date");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_date", csTmp);
+		} else {
+DEBUGLOG(("e_date not found\n"));
+		}
+
+		sprintf(csTag, "e_time");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_time", csTmp);
+		} else {
+DEBUGLOG(("e_time not found\n"));
+		}
+
+		sprintf(csTag, "re_date");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "re_date", csTmp);
+		} else {
+DEBUGLOG(("re_date not found\n"));
+		}
+
+		sprintf(csTag, "re_time");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "re_time", csTmp);
+		} else {
+DEBUGLOG(("re_time not found\n"));
+		}
+
+		sprintf(csTag, "e_outlay");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_outlay", csTmp);
+		} else {
+DEBUGLOG(("e_outlay not found\n"));
+		}
+
+		sprintf(csTag, "str_msg");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "str_msg", csTmp);
+		} else {
+DEBUGLOG(("str_msg not found\n"));
+		}
+
+		sprintf(csTag, "bstr_msg");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "bstr_msg", csTmp);
+		} else {
+DEBUGLOG(("bstr_msg not found\n"));
+		}
+
+		sprintf(csTag, "rstr_msg");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "rstr_msg", csTmp);
+		} else {
+DEBUGLOG(("rstr_msg not found\n"));
+		}
+
+		sprintf(csTag, "e_Remark");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_Remark", csTmp);
+		} else {
+DEBUGLOG(("e_Remark not found\n"));
+		}
+
+		sprintf(csTag, "e_bank");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+DEBUGLOG(("%s = [%s]\n", csTag, csTmp));
+			PutField_CString(hOut, "e_bank", csTmp);
+		} else {
+DEBUGLOG(("e_bank not found\n"));
+		}
+	} else {
+DEBUGLOG(("BreakDownInqRspMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	json_object_put(jobj);
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+DEBUGLOG(("BreakDownInqRspMsg Exit\n"));
+	return iRet;
+}
+
+
+int BreakDownInqRspMsg_Old(hash_t *hContext, hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int iRet = PD_OK;
+	char *csDATA = malloc (PD_MAX_BUFFER + 1);
+	char *csPara = malloc (PD_MAX_BUFFER + 1);
+	char *csTmp;
+	char csTag[PD_TAG_LEN + 1];
+	char csMsg[PD_MAX_BUFFER + 1];
+	csMsg[0] = '\0';
+
+	hash_t *hRec;
+	hRec = (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hRec, 0);
+
+	memcpy(csDATA, inMsg, inLen);
+	csDATA[inLen] = '\0';
+
+DEBUGLOG(("BreakDownInqRspMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n", inMsg, inLen));
+
+	// remove '{'
+	csPara[0] = '\0';
+	remove_quote(csDATA, PD_OPEN_BRACKET_H, csPara);
+	csPara[strlen(csPara)] = '\0';
+	strcpy(csDATA, csPara);
+
+	// remove '}'
+	csPara[0] = '\0';
+	remove_quote(csDATA, PD_CLOSE_BRACKET_H, csPara);
+	csPara[strlen(csPara)] = '\0';
+	strcpy(csDATA, csPara);
+
+	if (Str2Cls(hRec, (const char *)csDATA, MY_ESKY_JSON_TOKEN, MY_ESKY_JSON_FIELD_TOKEN) == PD_OK) {
+
+		sprintf(csTag, "\"e_url\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+                        remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+                        csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_url = [%s]\n", csPara));
+			PutField_CString(hOut, "e_url", csPara);
+
+			strcat((char*)csMsg, "e_url");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_url not found\n"));
+		}
+
+		sprintf(csTag, "\"str_ok\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+
+			if (strlen(csPara) == 0) {
+				strcpy(csPara, MY_ESKY_PENDING_STATUS);
+DEBUGLOG(("str_ok is empty, default pending\n"));
+			}
+
+DEBUGLOG(("str_ok = [%s]\n", csPara));
+			PutField_CString(hOut, "str_ok", csPara);
+			PutField_CString(hOut, "status", csPara);
+
+			strcat((char*)csMsg, "str_ok");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("str_ok not found\n"));
+		}
+
+		sprintf(csTag, "\"str_no\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("str_no = [%s]\n", csPara));
+			PutField_CString(hOut, "str_no", csPara);
+			PutField_CString(hOut, "tid", csPara);
+
+			strcat((char*)csMsg, "str_no");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("str_no not found\n"));
+		}
+
+		sprintf(csTag, "\"e_Cur\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_Cur = [%s]\n", csPara));
+			PutField_CString(hOut, "e_Cur", csPara);
+
+			strcat((char*)csMsg, "e_Cur");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_Cur not found\n"));
+		}
+
+		sprintf(csTag, "\"e_money\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_money = [%s]\n", csPara));
+			PutField_CString(hOut, "e_money", csPara);
+			PutField_CString(hOut, "txn_amt", csPara);
+
+			strcat((char*)csMsg, "e_money");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_money not found\n"));
+		}
+
+		sprintf(csTag, "\"e_rmbrate\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_rmbrate = [%s]\n", csPara));
+			PutField_CString(hOut, "e_rmbrate", csPara);
+
+			strcat((char*)csMsg, "e_rmbrate");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_rmbrate not found\n"));
+		}
+
+		sprintf(csTag, "\"e_rmbmoney\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_rmbmoney = [%s]\n", csPara));
+			PutField_CString(hOut, "e_rmbmoney", csPara);
+
+			strcat((char*)csMsg, "e_rmbmoney");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_rmbmoney not found\n"));
+		}
+
+		sprintf(csTag, "\"e_orderno\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_orderno = [%s]\n", csPara));
+			PutField_CString(hOut, "e_orderno", csPara);
+			PutField_CString(hOut, "txn_seq", csPara);
+
+			strcat((char*)csMsg, "e_orderno");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_orderno not found\n"));
+		}
+
+		sprintf(csTag, "\"e_no\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_no = [%s]\n", csPara));
+			PutField_CString(hOut, "e_no", csPara);
+			PutField_CString(hOut, "psp_merchant_id", csPara);
+
+			strcat((char*)csMsg, "e_no");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_no not found\n"));
+		}
+
+		sprintf(csTag, "\"e_date\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_date = [%s]\n", csPara));
+			PutField_CString(hOut, "e_date", csPara);
+
+			strcat((char*)csMsg, "e_date");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_date not found\n"));
+		}
+
+		sprintf(csTag, "\"e_time\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_time = [%s]\n", csPara));
+			PutField_CString(hOut, "e_time", csPara);
+
+			strcat((char*)csMsg, "e_time");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_time not found\n"));
+		}
+
+		sprintf(csTag, "\"re_date\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("re_date = [%s]\n", csPara));
+			PutField_CString(hOut, "re_date", csPara);
+
+			strcat((char*)csMsg, "re_date");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("re_date not found\n"));
+		}
+
+		sprintf(csTag, "\"re_time\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("re_time = [%s]\n", csPara));
+			PutField_CString(hOut, "re_time", csPara);
+
+			strcat((char*)csMsg, "re_time");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("re_time not found\n"));
+		}
+
+		sprintf(csTag, "\"e_outlay\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_outlay = [%s]\n", csPara));
+			PutField_CString(hOut, "e_outlay", csPara);
+
+			strcat((char*)csMsg, "e_outlay");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_outlay not found\n"));
+		}
+
+		sprintf(csTag, "\"str_check\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("str_check = [%s]\n", csPara));
+			PutField_CString(hOut, "str_check", csPara);
+			PutField_CString(hOut, "sign", csPara);
+
+//			strcat((char*)csMsg, "str_check");
+//			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+//			strcat((char*)csMsg, csPara);
+//			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("str_check not found\n"));
+		}
+
+		sprintf(csTag, "\"str_msg\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("str_msg = [%s]\n", csPara));
+			PutField_CString(hOut, "str_msg", csPara);
+
+			strcat((char*)csMsg, "str_msg");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("str_msg not found\n"));
+		}
+
+		sprintf(csTag, "\"bstr_msg\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("bstr_msg = [%s]\n", csPara));
+			PutField_CString(hOut, "bstr_msg", csPara);
+
+			strcat((char*)csMsg, "bstr_msg");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("bstr_msg not found\n"));
+		}
+
+		sprintf(csTag, "\"rstr_msg\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("rstr_msg = [%s]\n", csPara));
+			PutField_CString(hOut, "rstr_msg", csPara);
+
+			strcat((char*)csMsg, "rstr_msg");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("rstr_msg not found\n"));
+		}
+
+		sprintf(csTag, "\"e_Remark\"");
+		if (GetField_CString(hRec, csTag, &csTmp)) {
+			csPara[0] = '\0';
+			remove_quote(csTmp, PD_DOUBLE_QUOTE, csPara);
+			csPara[strlen(csPara)] = '\0';
+DEBUGLOG(("e_Remark = [%s]\n", csPara));
+			PutField_CString(hOut, "e_Remark", csPara);
+
+			strcat((char*)csMsg, "e_Remark");
+			strcat((char*)csMsg, MY_ESKY_FIELD_TOKEN);
+			strcat((char*)csMsg, csPara);
+			strcat((char*)csMsg, MY_ESKY_TOKEN);
+		} else {
+DEBUGLOG(("e_Remark not found\n"));
+		}
+
+		PutField_CString(hOut, "in_msg", csMsg);
+	} else {
+DEBUGLOG(("BreakDownInqRspMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	FREE_ME(csDATA);
+	FREE_ME(csPara);
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+DEBUGLOG(("BreakDownInqRspMsg Exit\n"));
+	return iRet;
+}
+
+
+int BuildInqRspAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+
+DEBUGLOG(("BuildInqRspAuthData() Start\n"));
+DEBUGLOG(("BuildInqRspAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildCallbackAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+	char *csPtr;
+	char *csBuf;
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+DEBUGLOG(("BuildCallbackAuthData() Start\n"));
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+// str_ok
+	if (GetField_CString(hIn, "status", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("str_ok = [%s]\n", csPtr));
+	}
+
+// e_orderno
+	if (GetField_CString(hIn, "order_num", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("e_orderno = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("order_num is missing\n"));
+	}
+
+// e_no
+	if (GetField_CString(hIn, "psp_merchant_id", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("e_no = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("psp_merchant_id is missing\n"));
+	}
+
+// e_money
+	if (GetField_CString(hIn, "psp_txn_amt", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("e_money = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("psp_txn_amt is missing\n"));
+	}
+
+// str_no
+	if (GetField_CString(hIn, "tid", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+DEBUGLOG(("str_no = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("tid is missing\n"));
+	}
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("auth_data = [%s]\n", csBuf));
+	FREE_ME(csBuf);
+
+DEBUGLOG(("BuildCallbackAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int FormatCallbackMsg(hash_t *hContext, hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int iRet = PD_OK;
+	char *csPtr = NULL;
+
+DEBUGLOG(("FormatCallbackMsg() Start\n"));
+
+	memset(outMsg, 0, sizeof(outMsg));
+
+	if (GetField_CString(hIn, "in_msg", &csPtr)) {
+		strcat((char*)outMsg, csPtr);
+	}
+
+	if (GetField_CString(hIn, "sign", &csPtr)) {
+		strcat((char*)outMsg, "str_check");
+		strcat((char*)outMsg, MY_ESKY_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+	}
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatCallbackMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatCallbackMsg() Exit\n"));
+	FREE_ME(csPtr);
+	return iRet;
+}
+
+
+void remove_quote(const char *csValue, const int iType, char *csOut)
+{
+	int i = 0;
+	int cnt = 0;
+	for (i = 0; i < strlen(csValue); i++) {
+		if (csValue[i] != iType) {
+			csOut[cnt] = csValue[i];
+			cnt++;
+		} else {
+		}
+	}
+	csOut[cnt] = '\0';
+}
+

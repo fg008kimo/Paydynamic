@@ -1,0 +1,332 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/05/18              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtOnUsSTP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtOnUsSTP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csTxnSeq;
+	char	*csTxnCcy;
+	char	*csToCcy;
+	char	*csTxnCountry;
+	char	*csServiceCode;
+	char	*csMerchantId;
+	char	*csTmp;
+	char	cTmp;
+	double	dTmp;
+	double	dAmt;
+	double	dNetAmt;
+	double	dSrcAmt;
+	double	dSettlementBal;
+	//double	dExRate;
+	//double	dExAmt;
+	hash_t	*hVal, *hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+	hash_t  *hReq;
+	hReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hReq,0);
+
+	if(GetField_CString(hRequest,"org_txn_seq",&csTxnSeq)){
+DEBUGLOG(("Authorize::txn_seq= [%s]\n",csTxnSeq));
+		PutField_CString(hReq,"txn_seq",csTxnSeq);
+		PutField_CString(hContext,"txn_seq",csTxnSeq);
+		PutField_CString(hContext,"from_txn_seq",csTxnSeq);
+	}
+	else{
+DEBUGLOG(("Authorize::txnid not found!!\n"));
+		iRet=PD_INTERNAL_ERR;
+	}
+
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		PutField_CString(hContext,"update_user",csTmp);
+		PutField_CString(hReq,"update_user",csTmp);
+	}
+	else{
+		PutField_CString(hContext,"update_user",PD_UPDATE_USER);
+		PutField_CString(hReq,"update_user",PD_UPDATE_USER);
+	}
+
+
+	if(GetField_CString(hRequest,"to_ccy",&csToCcy)){
+DEBUGLOG(("Authorize::to_ccy= [%s]\n",csToCcy));
+		PutField_CString(hReq,"deliver_ccy",csToCcy);
+		PutField_CString(hContext,"org_txn_ccy",csToCcy);
+	}
+	else{
+DEBUGLOG(("Authorize::to_ccy not found!!\n"));
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnHeader::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"merchant_id",&csMerchantId)) {
+        	        		//PutField_CString(hContext,"merchant_id",csMerchantId);
+        	        		PutField_CString(hRequest,"merchant_id",csMerchantId);
+DEBUGLOG(("GetTxnHeader::merchant_id = [%s]\n",csMerchantId));
+				}
+				if (GetField_CString(hRec,"service_code",&csServiceCode)) {
+        	        		PutField_CString(hRequest,"service_code",csServiceCode);
+DEBUGLOG(("GetTxnHeader::service_code= [%s]\n",csServiceCode));
+				}
+				if (GetField_Double(hRec,"txn_amt",&dAmt)) {
+					//PutField_Double(hReq,"txn_amt",dAmt);
+DEBUGLOG(("GetTxnHeader::txn_amt = [%lf]\n",dAmt));
+				}
+				if (GetField_Double(hRec,"net_amt",&dNetAmt)) {
+					PutField_Double(hReq,"txn_amt",dNetAmt);
+DEBUGLOG(("GetTxnHeader::net_amt = [%lf]\n",dNetAmt));
+				}
+				if (GetField_Char(hRec,"status",&cTmp)) {
+DEBUGLOG(("GetTxnHeader::status = [%c]\n",cTmp));
+					if(cTmp!=PD_PROCESSING){
+						iRet=INT_INVALID_TXN;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("GetTxnHeader::Invalid status\n"));
+					}
+					else{
+						if (GetField_Char(hRec,"ar_ind",&cTmp)) {
+DEBUGLOG(("GetTxnHeader::ar_ind = [%c]\n",cTmp));
+							if(cTmp==PD_REJECT){
+								iRet=INT_INVALID_TXN;
+								PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("GetTxnHeader::Error in previous state\n"));
+							}
+						}
+					}
+
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetTxnHeader:: not found record for [%s]\n",csTxnSeq));
+			iRet=INT_NOT_RECORD;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+	}
+	RecordSet_Destroy(rRecordSet);
+
+	if (iRet == PD_OK) {
+        	recordset_init(rRecordSet,0);
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+        	if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnDetail::found record = [%s]\n",csTxnSeq));
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                        	if (GetField_CString(hRec,"txn_ccy",&csTxnCcy)) {
+        	        		PutField_CString(hRequest,"txn_ccy",csTxnCcy);
+					PutField_CString(hReq,"txn_ccy",csTmp);
+DEBUGLOG(("GetTxnDetail::txn_ccy = [%s]\n",csTxnCcy));
+                        	}
+                        	if (GetField_CString(hRec,"txn_country",&csTxnCountry)) {
+        	        		PutField_CString(hRequest,"txn_country",csTxnCountry);
+DEBUGLOG(("GetTxnDetail::txn_country = [%s]\n",csTxnCountry));
+                        	}
+                        	hRec = RecordSet_GetNext(rRecordSet);
+                	}
+        	}
+        	else {
+DEBUGLOG(("GetTxnDetail:: not found record for [%s]\n",csTxnSeq));
+               		iRet = INT_NOT_RECORD;
+        	        PutField_Int(hContext,"internal_error",iRet);
+        	}
+        	RecordSet_Destroy(rRecordSet);
+	}
+
+	if(iRet==PD_OK){
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+	}
+
+	if(iRet==PD_OK){
+		double dSrcMarkup, dExRate, dRate, dExAmt, dOrgDestAmt, dMarkupAmt;
+//////////////////calculate fx and markup
+		///use [STR] to find markup fee///
+		PutField_CString(hContext,"txn_code",PD_SETTLEMENT_REQUEST);
+
+		BOObjPtr = CreateObj(DBPtr,"BOExchange","GetSettlementExternalExchangeInfo");
+		if ((*BOObjPtr)(hContext,hRequest,csTxnCcy,csToCcy,dAmt) == PD_OK) {
+DEBUGLOG(("GetExternalExchangeRate Success\n"));
+			if(GetField_Double(hContext,"src_psp_txn_amt",&dSrcAmt)){
+				dSrcMarkup = dAmt - dSrcAmt;
+DEBUGLOG(("Source markup=[%lf]\n",dSrcMarkup));
+			}
+
+			if(GetField_Double(hContext,"ex_rate",&dExRate)){
+DEBUGLOG(("Org Exchange rate=[%lf]\n",dExRate));
+
+				dOrgDestAmt = dAmt * dExRate;
+DEBUGLOG(("Destination Amount without markup=[%lf]\n",dOrgDestAmt));
+			}
+			if(GetField_Double(hContext,"psp_txn_amt",&dExAmt)){
+				dMarkupAmt = dOrgDestAmt - dExAmt;
+DEBUGLOG(("Destination Amount with markup=[%lf]\n",dExAmt));
+DEBUGLOG(("Markup Amount=[%s][%lf]\n",csToCcy,dMarkupAmt));
+
+				dRate = dExAmt/dAmt;
+                                PutField_Double(hContext,"ex_rate",dRate);
+                                PutField_Double(hContext,"ex_supplier",PD_EXT_EX);
+DEBUGLOG(("Final Exchange rate=[%lf]\n",dRate));
+
+                                PutField_Double(hReq,"deliver_amt",dExAmt);
+                                //PutField_Double(hReq,"mark_up",dMarkupAmt);
+				PutField_Double(hContext,"merchant_mu_fee",dMarkupAmt);
+				
+			}
+
+			ChannelObjPtr = CreateObj(ChannelPtr,"WEBChannel","AddTxnFeeChgLog");
+                	iRet = (unsigned long)((*ChannelObjPtr)(hContext));
+		}
+
+		PutField_CString(hContext,"txn_code",PD_SETTLEMENT_PROCESS);
+	}
+
+
+	
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetAviBalanceForSettlement");
+                if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,&dSettlementBal)==PD_ERR){
+DEBUGLOG(("GetAviBalanceForSettlement Error!!\n"));
+                        iRet = INT_ERR;
+                }
+		else{
+DEBUGLOG(("GetAviBalanceForSettlement=[%f]\n",dSettlementBal));
+			if(dSettlementBal<dNetAmt){
+				iRet=INT_EXCEED_LIMIT_MER_AMT;
+DEBUGLOG(("Settlement Bal[%f] < Request Net Amt=[%f]\n",dSettlementBal,dNetAmt));
+			}
+			else{
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","Settlement2InTransit");
+				if ((*DBObjPtr)(csMerchantId,
+						csTxnCountry,
+						csTxnCcy,
+						csServiceCode,
+						dNetAmt,
+						PD_S2I,
+						PD_UPDATE_USER) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance::Settlement2InTransit() Failed\n"));
+				}
+				else{
+DEBUGLOG(("BOBalance:DBMerchantBalance::Settlement2InTransit() Success\n"));
+				}
+			}
+		}	
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	if(iRet==PD_OK){
+		hVal = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hVal,0);
+
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+                if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+                        if(GetField_Double(hVal,"payout_bal",&dTmp)){
+                                PutField_Double(hReq,"payout_bal",dTmp);
+DEBUGLOG(("MerchantBalance: payout_bal= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"settlement_bal",&dTmp)){
+                                PutField_Double(hReq,"settlement_bal",dTmp);
+DEBUGLOG(("MerchantBalance: settlement_bal= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_float",&dTmp)){
+                                PutField_Double(hReq,"total_float",dTmp);
+DEBUGLOG(("MerchantBalance: total_float= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+                                PutField_Double(hReq,"total_reserved_amount",dTmp);
+DEBUGLOG(("MerchantBalance: total_reserved_amount= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_tfr_hold",&dTmp)){
+                                PutField_Double(hReq,"total_tfr_hold",dTmp);
+DEBUGLOG(("MerchantBalance: total_tfr_hold= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_payout_hold",&dTmp)){
+                                PutField_Double(hReq,"total_payout_hold",dTmp);
+DEBUGLOG(("MerchantBalance: total_payout_hold= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_settlement_hold",&dTmp)){
+                                PutField_Double(hReq,"total_settlement_hold",dTmp);
+DEBUGLOG(("MerchantBalance: total_settlement_hold= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"payout_in_transit",&dTmp)){
+                                PutField_Double(hReq,"payout_in_transit",dTmp);
+DEBUGLOG(("MerchantBalance: payout_in_transit= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"settlement_in_transit",&dTmp)){
+                                PutField_Double(hReq,"settlement_in_transit",dTmp);
+DEBUGLOG(("MerchantBalance: settlement_in_transit= [%f]\n",dTmp));
+                        }
+                }
+	}
+
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                        iRet = (unsigned long) ((*DBObjPtr)(hReq));
+	}
+
+
+	if(iRet==PD_OK){
+                PutField_Char(hReq,"status",PD_TO_PSP);
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","Update");
+                        iRet = (unsigned long) ((*DBObjPtr)(hReq));
+        }
+
+	if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",INT_ERR);
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+DEBUGLOG(("TxnMgtOnUsSTP Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

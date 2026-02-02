@@ -1,0 +1,472 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/10/31              LokMan Chow
+add one promote requirement			   2014/10/31		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "batchcommon.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cs_mode[PD_DATE_LEN + 1];
+char	cDebug = 'Y';
+
+OBJPTR(DB);
+
+int find_promo_rule(hash_t* hTxn);
+int find_promo_group(hash_t* hTxn);
+int find_promo_customer(hash_t* hTxn,recordset_t *myRec);
+int process_promotion(recordset_t *rRecordSet);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+	int iRuleCnt = 0;
+	int i = 0;
+	int iTmp = 0;
+	double	dTmp;
+	char *csMerchantId;
+	char csTag[PD_TAG_LEN+1];
+
+	hash_t* hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	hash_t* hPromo;
+	hPromo = (hash_t*)  malloc (sizeof(hash_t));
+	hash_init(hPromo,0);
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	if(iRet==SUCCESS){
+		iRet = find_promo_rule(hTxn);
+	}
+	if(iRet==SUCCESS){
+		GetField_Int(hTxn,"rule_count",&iRuleCnt);
+		for(i=0; i<iRuleCnt; i++){
+			hash_init(hPromo,0);
+			sprintf(csTag,"merchant_id_%d",i);
+			if(GetField_CString(hTxn,csTag,&csMerchantId)){
+				PutField_CString(hPromo,"merchant_id",csMerchantId);
+				iRet = find_promo_group(hPromo);
+
+				if(iRet==SUCCESS){
+					sprintf(csTag,"min_count_%d",i);
+					GetField_Int(hTxn,csTag,&iTmp);
+					PutField_Int(hPromo,"min_count",iTmp);
+
+					sprintf(csTag,"min_amount_%d",i);
+					GetField_Double(hTxn,csTag,&dTmp);
+					PutField_Double(hPromo,"min_amount",dTmp);
+
+					sprintf(csTag,"min_day_%d",i);
+					GetField_Int(hTxn,csTag,&iTmp);
+					PutField_Int(hPromo,"min_day",iTmp);
+
+					iRet = find_promo_customer(hPromo,rRecordSet);
+					if(iRet == PD_SKIP_OK)
+						iRet=SUCCESS;
+				}
+				if(iRet==SUCCESS){
+					iRet = process_promotion(rRecordSet);
+				}
+			}
+			if(iRet!=SUCCESS)
+				break;
+		}
+	}
+	FREE_ME(hTxn);
+	FREE_ME(hPromo);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	return iRet;
+}
+
+int find_promo_rule(hash_t* hTxn)
+{
+	int	iCnt = 0;
+	char csTag[PD_TAG_LEN+1];
+
+DEBUGLOG(("find_promo_rule: Begin\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO find_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		int	v_min_count;
+		double	v_min_amount;
+		int	v_min_day;
+
+		short   ind_merchant_id= -1;
+		short   ind_min_count = -1;
+		short   ind_min_amount = -1;
+		short   ind_min_day = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE c_cursor_getallcodes CURSOR FOR
+		SELECT  cpr_merchant_id,
+			cpr_min_count,
+			cpr_min_amount,
+			cpr_min_day
+		FROM    customer_group_promo_rule
+		WHERE   cpr_disabled = 0;
+
+	EXEC SQL OPEN c_cursor_getallcodes;
+	do {
+
+		EXEC SQL FETCH c_cursor_getallcodes
+		INTO
+			:v_merchant_id:ind_merchant_id,
+			:v_min_count:ind_min_count,
+			:v_min_amount:ind_min_amount,
+			:v_min_day:ind_min_day;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_merchant_id>= 0) {
+			v_merchant_id.arr[v_merchant_id.len] ='\0';
+			sprintf(csTag,"merchant_id_%d",iCnt);
+			PutField_CString(hTxn,csTag,(const char*)v_merchant_id.arr);
+DEBUGLOG(("find_promo_rule :[%d] merchant_id = [%s]\n",iCnt,v_merchant_id.arr));
+		}
+
+		if(ind_min_count<0)
+			v_min_count = 0;
+		sprintf(csTag,"min_count_%d",iCnt);
+		PutField_Int(hTxn,csTag,v_min_count);
+DEBUGLOG(("find_promo_rule :[%d] min_count = [%d]\n",iCnt,v_min_count));
+
+		if(ind_min_amount<0)
+			v_min_amount = 0;
+		sprintf(csTag,"min_amount_%d",iCnt);
+		PutField_Double(hTxn,csTag,v_min_amount);
+DEBUGLOG(("find_promo_rule :[%d] min_amount = [%lf]\n",iCnt,v_min_amount));
+
+		if(ind_min_day<0)
+			v_min_day = 0;
+		sprintf(csTag,"min_day_%d",iCnt);
+		PutField_Int(hTxn,csTag,v_min_day);
+DEBUGLOG(("find_promo_rule :[%d] min_day = [%d]\n",iCnt,v_min_day));
+
+		iCnt ++;
+		PutField_Int(hTxn,"rule_count",iCnt);
+	}
+	while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getallcodes;
+
+
+	if(iCnt==0){
+DEBUGLOG(("find_promo_rule Record Not Found!\n"));
+		return PD_SKIP_OK;
+	}
+	else{
+DEBUGLOG(("find_promo_rule Record Found!\n"));
+		return SUCCESS;
+	}
+
+find_error:
+DEBUGLOG(("find_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("switch_service::find_error code %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getallcodes;
+    return FAILURE;
+}
+
+
+int find_promo_group(hash_t* hTxn)
+{
+	char	*csTmp;
+
+DEBUGLOG(("find_promo_group: Begin\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO findg_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar v_from_group[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+		int	v_to_group_cnt;
+
+		short   ind_from_group = -1;
+		short   ind_to_group_cnt = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hTxn,"merchant_id",&csTmp)) {
+		hv_merchant_id.len = strlen(csTmp);
+		memcpy(hv_merchant_id.arr,csTmp,hv_merchant_id.len);
+DEBUGLOG(("find_promo_group: merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+        }
+
+	EXEC SQL DECLARE c_cursor_getgrp CURSOR FOR
+		SELECT  
+			cgr_from_group_code,
+			count(cgr_group_code)
+		FROM    customer_group_rules
+		WHERE   cgr_disabled = 0
+		AND	cgr_merchant_id = :hv_merchant_id
+		AND	cgr_from_group_code is not NULL
+		GROUP BY cgr_from_group_code;
+
+	EXEC SQL OPEN c_cursor_getgrp;
+	do {
+
+		EXEC SQL FETCH c_cursor_getgrp
+		INTO
+			:v_from_group:ind_from_group,
+			:v_to_group_cnt:ind_to_group_cnt;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_from_group>= 0) {
+			v_from_group.arr[v_from_group.len] ='\0';
+			PutField_CString(hTxn,"from_group",(const char*)v_from_group.arr);
+DEBUGLOG(("find_promo_group :from_group = [%s]\n",v_from_group.arr));
+		}
+
+		if (ind_to_group_cnt < 0)
+			v_to_group_cnt = 0;
+DEBUGLOG(("find_promo_group :to_group_cnt = [%d]\n",v_to_group_cnt));
+
+	}
+	while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getgrp;
+
+
+	if(v_to_group_cnt==0){
+DEBUGLOG(("find_promo_group Record Not Found!\n"));
+		return PD_SKIP_OK;
+	}
+	else{
+DEBUGLOG(("find_promo_group Record Found!\n"));
+		return SUCCESS;
+	}
+
+findg_error:
+DEBUGLOG(("findg_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("customer_group_promo::findg_error code %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getgrp;
+    return FAILURE;
+}
+
+
+int find_promo_customer(hash_t* hTxn,recordset_t *myRec)
+{
+	int	iCnt = 0;
+	hash_t *myHash;
+	char	*csTmp;
+	int	iTmp;
+	double	dTmp;
+
+DEBUGLOG(("find_promo_customer: Begin\n"));
+	recordset_init(myRec,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO findc_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar hv_from_group[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+		int	hv_min_count;
+		double	hv_min_amount;
+		int	hv_min_day;
+
+		varchar v_customer_id[PD_CUSTOMER_TAG_LEN+ 1];
+
+		short   ind_customer_id= -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hTxn,"merchant_id",&csTmp)) {
+		hv_merchant_id.len = strlen(csTmp);
+		memcpy(hv_merchant_id.arr,csTmp,hv_merchant_id.len);
+		hv_merchant_id.arr[hv_merchant_id.len] = '\0';
+DEBUGLOG(("find_promo_customer: merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+        }
+
+	if (GetField_CString(hTxn,"from_group",&csTmp)) {
+		hv_from_group.len = strlen(csTmp);
+		memcpy(hv_from_group.arr,csTmp,hv_from_group.len);
+		hv_from_group.arr[hv_from_group.len] = '\0';
+DEBUGLOG(("find_promo_customer: from_group = [%.*s]\n",hv_from_group.len,hv_from_group.arr));
+        }
+
+	if (GetField_Int(hTxn,"min_count",&iTmp)) {
+		hv_min_count= iTmp;
+DEBUGLOG(("find_promo_customer: min_count = [%d]\n",hv_min_count));
+        }
+
+	if (GetField_Double(hTxn,"min_amount",&dTmp)) {
+		hv_min_amount= dTmp;
+DEBUGLOG(("find_promo_customer: min_amount = [%lf]\n",hv_min_amount));
+        }
+
+	if (GetField_Int(hTxn,"min_day",&iTmp)) {
+		hv_min_day= iTmp;
+DEBUGLOG(("find_promo_customer: min_day = [%d]\n",hv_min_day));
+        }
+
+	EXEC SQL DECLARE c_cursor_getcust CURSOR FOR
+		select	td_customer_tag
+		from	customer_group_detail,
+			(SELECT	td_customer_tag, 
+				count(th_txn_id) as count, 
+				sum(th_transaction_amount) as amount
+			FROM (SELECT th_txn_id, th_transaction_amount, td_customer_tag 
+                    		FROM customer_group_detail,
+                 	     	    (SELECT th_txn_id,
+                         	     	    th_transaction_amount,
+					    td_customer_tag
+				     FROM txn_header, txn_detail
+				     WHERE th_txn_code = 'DSI'
+				     AND th_ar_ind = 'A'
+				     AND th_merchant_id = :hv_merchant_id
+				     AND th_txn_id = td_txn_id
+				     AND td_customer_group = :hv_from_group)
+                    	 	WHERE cgd_cust_id = td_customer_tag
+			 	AND  cgd_code = :hv_from_group
+			 	AND  cgd_merchant_id = :hv_merchant_id
+				and (select cgl_cust_id from customer_group_promo_list where cgl_cust_id = td_customer_tag) is NULL
+			      )
+ 			group by td_customer_tag)
+ 		where	count >= :hv_min_count
+ 		and	amount >= :hv_min_amount
+		and	cgd_cust_id = td_customer_tag
+		and	to_date((select min(th_host_posting_date)
+				from txn_header, txn_detail
+				where th_txn_id = td_txn_id 
+				and th_txn_code = 'DSI'
+				and th_ar_ind = 'A'
+				AND td_customer_group = :hv_from_group
+				and td_customer_tag = cgd_cust_id), 'YYYYMMDD') + :hv_min_day <= to_date((select sys_val from system_control where sys_code = 'CTPHDATE'),'YYYYMMDD')
+		;
+
+	EXEC SQL OPEN c_cursor_getcust;
+	do {
+
+		EXEC SQL FETCH c_cursor_getcust
+		INTO
+			:v_customer_id:ind_customer_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+		PutField_CString(myHash,"merchant_id",(const char*)hv_merchant_id.arr);
+		PutField_CString(myHash,"from_group",(const char*)hv_from_group.arr);
+
+		if (ind_customer_id>= 0) {
+			v_customer_id.arr[v_customer_id.len] ='\0';
+			PutField_CString(myHash,"customer_id",(const char*)v_customer_id.arr);
+DEBUGLOG(("find_promo_customer : customer_id = [%s]\n",v_customer_id.arr));
+		}
+
+		iCnt ++;
+		RecordSet_Add(myRec,myHash);
+	}
+	while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getcust;
+
+
+	if(iCnt==0){
+DEBUGLOG(("find_promo_customer Record Not Found!\n"));
+		return PD_SKIP_OK;
+	}
+	else{
+DEBUGLOG(("find_promo_customer Record Found!\n"));
+		return SUCCESS;
+	}
+
+findc_error:
+DEBUGLOG(("findc_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("customer_group_promo::findc_error code %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getcust;
+    return FAILURE;
+}
+
+
+int process_promotion(recordset_t *rRecordSet)
+{
+	char *csMerchantId;
+	char *csCustId;
+	char *csFromGroup;
+	hash_t* hRec, *hTxn;
+	
+DEBUGLOG(("process_promotion\n"));
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	hRec = RecordSet_GetFirst(rRecordSet);
+	while (hRec) {
+		hash_init(hTxn,0);
+		if(GetField_CString(hRec,"merchant_id",&csMerchantId)){
+			PutField_CString(hTxn,"merchant_id",csMerchantId);
+		}
+		if(GetField_CString(hRec,"customer_id",&csCustId)){
+			PutField_CString(hTxn,"customer_tag",csCustId);
+		}
+		if(GetField_CString(hRec,"from_group",&csFromGroup)){
+			PutField_CString(hTxn,"from_group",csFromGroup);
+		}
+
+		PutField_CString(hTxn,"create_user",PD_UPDATE_USER);
+
+		//insert to promo table
+DEBUGLOG(("process_promotion: Call DBCustomerGroupPromoList:Add [%s][%s][%s]\n",csMerchantId,csCustId,csFromGroup));
+		DBObjPtr = CreateObj(DBPtr,"DBCustomerGroupPromoList","Add");
+                if ((unsigned long)(DBObjPtr)(hTxn) != PD_OK) {
+DEBUGLOG(("process_promotion: DBCustomerGroupPromoList: Add Failed!!!!\n"));
+		}
+
+		hRec = RecordSet_GetNext(rRecordSet);
+	}
+
+
+	FREE_ME(hTxn);
+DEBUGLOG(("process_promotion Normal Exit\n"));
+	return SUCCESS;
+}

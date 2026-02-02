@@ -1,0 +1,395 @@
+CREATE OR REPLACE FUNCTION sp_txn_fe_url_geturl_new_ui(
+  in_txn_code                   txn_fe_url.txn_code%type,
+  in_service_code               service.code%type,
+  in_merchant_id                service_consumer_url.cu_merchant_id%type,
+  in_country                    service_consumer_url.cu_country%type,
+  in_language                   txn_fe_url.language%type,
+  in_route_type                 service.route_type%type,
+  in_direction                  txn_fe_url.direction%type,
+  out_cursor            out     sys_refcursor)
+
+RETURN NUMBER Is
+        iCnt         integer := 0;
+        v_ui_url    service_consumer_url.cu_url%type := NULL;
+        v_ui_path   service_consumer_path.cp_path%type := NULL;
+        v_ui_method service_consumer_path.cp_method%type := NULL;
+Begin
+
+    -- URL
+    --check new ui indicator
+    begin
+        select cu_url
+        into v_ui_url
+        from(select cu_url
+            from   service_consumer_url 
+            where cu_service_code = in_service_code
+            and cu_merchant_id = in_merchant_id
+            and cu_country = in_country
+            and cu_new_ui = 1
+            and cu_disabled = 0
+            and cu_for_backup = 0
+	    and cu_effect_date <= sysdate
+            ORDER BY DBMS_RANDOM.VALUE)
+        WHERE ROWNUM = 1;
+
+    exception when no_data_found then
+        v_ui_url := NULL;
+    end;
+    
+    if v_ui_url is null then
+    --when all normal new url disabled, use the backup new url (dr site)
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = in_merchant_id
+                and cu_country = in_country
+                and cu_new_ui = 1
+                and cu_disabled = 0
+                and cu_for_backup = 1
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+
+    if v_ui_url is null then
+    --when new ui indicator, select the normal url in service level
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = '000'
+                and cu_country = in_country
+                and cu_new_ui = 1
+                and cu_disabled = 0
+                and cu_for_backup = 0
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+    
+    if v_ui_url is null then
+    --when no normal url , use backup url (dr site)
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = '000'
+                and cu_country = in_country
+                and cu_new_ui = 1
+                and cu_disabled = 0
+                and cu_for_backup = 1
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+
+    if v_ui_url is null then
+    --when no new ui indicator, select the normal url
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = in_merchant_id
+                and cu_country = in_country
+                and cu_new_ui = 0
+                and cu_disabled = 0
+                and cu_for_backup = 0
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+    
+    if v_ui_url is null then
+    --when no normal url , use backup url (dr site)
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = in_merchant_id
+                and cu_country = in_country
+                and cu_new_ui = 0
+                and cu_disabled = 0
+                and cu_for_backup = 1
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+
+    if v_ui_url is null then
+    --when no new ui indicator, select the normal url in service level
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = '000'
+                and cu_country = in_country
+                and cu_new_ui = 0
+                and cu_disabled = 0
+                and cu_for_backup = 0
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+    
+    if v_ui_url is null then
+    --when no normal url , use backup url (dr site)
+        begin
+            select cu_url
+            into v_ui_url
+            from(select cu_url
+                from service_consumer_url 
+                where cu_service_code = in_service_code
+                and cu_merchant_id = '000'
+                and cu_country = in_country
+                and cu_new_ui = 0
+                and cu_disabled = 0
+                and cu_for_backup = 1
+		and cu_effect_date <= sysdate
+                ORDER BY DBMS_RANDOM.VALUE)
+            WHERE ROWNUM = 1;
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+
+    if v_ui_url is null then
+    --no consumer url, use default
+        begin
+            select url
+            into v_ui_url
+            from service
+            where code = in_service_code
+            and route_type = in_route_type
+            and disabled = 0
+            and effect_date = (select max(effect_date)
+                               from service
+                               where code = in_service_code
+                               and route_type = in_route_type
+                               and disabled = 0
+                               and effect_date <= SYSDATE);
+        
+        exception when no_data_found then
+            v_ui_url := NULL;
+        end;
+    end if;
+
+    if v_ui_url is null then
+        return 0;
+    end if;
+    
+    -- PATH, METHOD
+    begin
+        select cp_path, cp_method
+        into v_ui_path, v_ui_method
+        from service_consumer_path 
+        where cp_service_code = in_service_code
+        and cp_merchant_id = in_merchant_id
+        and cp_country = in_country
+        and cp_direction = in_direction
+        and cp_language = in_language
+        and cp_new_ui = 1
+        and cp_disabled = 0
+        and cp_effect_date = (select max(cp_effect_date)
+                              from service_consumer_path 
+                              where cp_service_code = in_service_code
+                              and cp_merchant_id = in_merchant_id
+                              and cp_country = in_country
+                              and cp_direction = in_direction
+                              and cp_language = in_language
+                              and cp_new_ui = 1
+                              and cp_disabled = 0
+                              and cp_effect_date <= SYSDATE);
+    exception when no_data_found then
+        v_ui_path := NULL;
+        v_ui_method := NULL;
+    end;
+    
+    if v_ui_path is null then
+        begin
+            select cp_path, cp_method
+            into v_ui_path, v_ui_method
+            from service_consumer_path 
+            where cp_service_code = in_service_code
+            and cp_merchant_id = in_merchant_id
+            and cp_country = in_country
+            and cp_direction = in_direction
+            and cp_language = 'EN'
+            and cp_new_ui = 1
+            and cp_disabled = 0
+            and cp_effect_date = (select max(cp_effect_date)
+                                  from service_consumer_path 
+                                  where cp_service_code = in_service_code
+                                  and cp_merchant_id = in_merchant_id
+                                  and cp_country = in_country
+                                  and cp_direction = in_direction
+                                  and cp_language = 'EN'
+                                  and cp_new_ui = 1
+                                  and cp_disabled = 0
+                                  and cp_effect_date <= SYSDATE);
+        exception when no_data_found then
+            v_ui_path := NULL;
+            v_ui_method := NULL;
+        end;
+    end if;
+    
+    ----
+    if v_ui_path is null then
+        begin
+            select cp_path, cp_method
+            into v_ui_path, v_ui_method
+            from service_consumer_path 
+            where cp_service_code = in_service_code
+            and cp_merchant_id = in_merchant_id
+            and cp_country = in_country
+            and cp_direction = in_direction
+            and cp_language = in_language
+            and cp_new_ui = 0
+            and cp_disabled = 0
+            and cp_effect_date = (select max(cp_effect_date)
+                                  from service_consumer_path 
+                                  where cp_service_code = in_service_code
+                                  and cp_merchant_id = in_merchant_id
+                                  and cp_country = in_country
+                                  and cp_direction = in_direction
+                                  and cp_language = in_language
+                                  and cp_new_ui = 0
+                                  and cp_disabled = 0
+                                  and cp_effect_date <= SYSDATE);
+        exception when no_data_found then
+            v_ui_path := NULL;
+            v_ui_method := NULL;
+        end;
+    end if;
+    
+    if v_ui_path is null then
+        begin
+            select cp_path, cp_method
+            into v_ui_path, v_ui_method
+            from service_consumer_path 
+            where cp_service_code = in_service_code
+            and cp_merchant_id = in_merchant_id
+            and cp_country = in_country
+            and cp_direction = in_direction
+            and cp_language = 'EN'
+            and cp_new_ui = 0
+            and cp_disabled = 0
+            and cp_effect_date = (select max(cp_effect_date)
+                                  from service_consumer_path 
+                                  where cp_service_code = in_service_code
+                                  and cp_merchant_id = in_merchant_id
+                                  and cp_country = in_country
+                                  and cp_direction = in_direction
+                                  and cp_language = 'EN'
+                                  and cp_new_ui = 0
+                                  and cp_disabled = 0
+                                  and cp_effect_date <= SYSDATE);
+        exception when no_data_found then
+            v_ui_path := NULL;
+            v_ui_method := NULL;
+        end;
+    end if;    
+     
+    ----    
+    if v_ui_path is null then
+        begin
+            select path, method
+            into v_ui_path, v_ui_method
+            from txn_fe_url
+            where txn_code = in_txn_code
+            and service_code = in_service_code
+            and direction = in_direction
+            and language = in_language
+            and disabled = 0
+            and effect_date = (select max(effect_date)
+                               from txn_fe_url
+                               where txn_code = in_txn_code
+                               and service_code = in_service_code
+                               and direction = in_direction
+                               and language = in_language
+                               and disabled = 0
+                               and effect_date <= SYSDATE);   
+        exception when no_data_found then
+            v_ui_path := NULL;
+            v_ui_method := NULL;
+        end;
+    end if;
+    
+    if v_ui_path is null then
+        begin
+            select path, method
+            into v_ui_path, v_ui_method
+            from txn_fe_url
+            where txn_code = in_txn_code
+            and service_code = in_service_code
+            and direction = in_direction
+            and language = 'EN'
+            and disabled = 0
+            and effect_date = (select max(effect_date)
+                               from txn_fe_url
+                               where txn_code = in_txn_code
+                               and service_code = in_service_code
+                               and direction = in_direction
+                               and language = 'EN'
+                               and disabled = 0
+                               and effect_date <= SYSDATE);   
+        exception when no_data_found then
+            v_ui_path := NULL;
+            v_ui_method := NULL;
+        end;
+    end if;    
+            
+    if v_ui_path is null then
+        return 0;
+    end if;
+    
+
+    OPEN out_cursor for
+        select v_ui_url ret_url,
+               v_ui_path ret_path,
+               v_ui_method ret_method
+        from dual;
+
+    return 1;
+exception
+   WHEN OTHERS THEN
+     RETURN 0;
+END sp_txn_fe_url_geturl_new_ui;
+/

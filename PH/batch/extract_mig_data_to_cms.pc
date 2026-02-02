@@ -1,0 +1,955 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/04/22              Stan Poon
+*/
+#define _XOPEN_SOURCE
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_OPEN_TAG		"<tr><td>"
+#define PD_OPEN_TAG_CS		"<tr><td style='mso-number-format:\\@'>"
+#define	PD_NEXT_TAG		"</td><td>"
+#define	PD_NEXT_TAG_CS		"</td><td style='mso-number-format:\\@'>"
+#define	PD_END_TAG		"</td></tr>"
+//"<style> .format{ mso-number-format:'\\@';} </style>"
+
+#define PD_MIN_ARGC		7
+char*	csDefaultCcy = "RMB";
+
+char    cs_outfile[PD_MAX_FILE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+char	cs_type[3 + 1];
+
+char    cDebug='Y';
+
+int process_txn_old_dsp(const char* csDate, int* iOldAcceptCount, double* dOldTxnAmt,
+		FILE *fp);
+int process_txn_dsp(const char* csDate,
+		FILE *fp);
+int process_txn_stt(const char* csDate,
+		FILE *fp);
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < PD_MIN_ARGC) {
+		printf("***usage:  -o outputfile -d Date -t <dsp/stt>\n");
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+	strcpy(cs_outfile,"");
+	strcpy(cs_date,"");
+	strcpy(cs_type,"");
+
+	while ((c = getopt(argc,argv,"o:d:t:")) != EOF) {
+		switch (c) {
+			case 'o':
+				strcpy(cs_outfile, optarg);
+				break;
+			case 'd':
+				strcpy(cs_date, optarg);
+				break;
+			case 't':
+				strcpy(cs_type, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_outfile,"") || !strcmp(cs_date,"") || !strcmp(cs_type,""))
+		return FAILURE;
+
+	if (strlen(cs_date) > PD_DATE_LEN)
+		return FAILURE;
+
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = SUCCESS;
+	char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+	FILE    *fp;
+	
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS){
+		printf("usage:  -o outputfile -d Date -t <dsp/stt>\n");
+		return (iRet);
+	}
+
+	CreateReportPathCustomized((unsigned char*)cs_outfile_name,cs_date);
+DEBUGLOG(("batch_proc:path [%s]\n",cs_outfile_name));
+       	sprintf(cs_outfile_name, "%s/%s", cs_outfile_name, cs_outfile);
+DEBUGLOG(("batch_proc:path [%s]\n",cs_outfile_name));
+
+       	fp = fopen(cs_outfile_name,"w");
+       	if (fp == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outfile_name));
+       	} else {
+		if (!strcmp(cs_type,"dsp")) {
+			iRet = process_txn_dsp(cs_date,fp);
+DEBUGLOG(("process_txn_dsp: iRet [%d]\n",iRet));
+		} else if (!strcmp(cs_type,"stt")) {
+			iRet = process_txn_stt(cs_date,fp);
+DEBUGLOG(("process_txn_stt: iRet [%d]\n",iRet));
+		}
+	}
+	
+       	fclose(fp);
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_txn_old_dsp(const char* csDate, int* iOldAcceptCount, double* dOldTxnAmt,
+		FILE *fp)
+{	       
+	int     iRet = SUCCESS;
+	double	dTotalTxnAmt = 0.0;
+	int	iAcceptCount = 0, iFailCount = 0;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_host_date[PD_DATE_LEN];
+
+		varchar	v_req_ref_num[10 +1];
+		varchar	v_txn_ref[10 +1];
+		varchar	v_card_num[0 +1];
+		varchar	v_ewallet_id[PD_AC_NAME_LEN +1];
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN +1];
+		varchar	v_merchant_ref[PD_MERCHANT_REF_LEN +1];
+		varchar	v_req_datetime[19 +1];
+		varchar	v_comp_datetime[19 +1];
+		varchar	v_status[9 +1];
+		varchar v_tp_txn_ccy[PD_CCY_ID_LEN +1];
+		double	v_tp_txn_amount;
+		varchar	v_txn_amt[20 +1];
+		varchar	v_com_amt[20 +1];
+		varchar	v_net_amt[20 +1];
+		varchar	v_markup_amt[20 +1];
+
+		short	ind_req_ref_num = -1;
+		short	ind_txn_ref = -1;
+		short	ind_card_num = -1;
+		short	ind_ewallet_id = -1;
+		short	ind_merchant_id = -1;
+		short	ind_merchant_ref = -1;
+		short	ind_req_datetime = -1;
+		short	ind_comp_datetime = -1;
+		short	ind_status = -1;
+		short	ind_tp_txn_ccy = -1;
+		short	ind_tp_txn_amount = -1;
+		short	ind_txn_amt = -1;
+		short	ind_com_amt = -1;
+		short	ind_net_amt = -1;
+		short	ind_markup_amt = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_host_date.len = strlen(csDate);
+	memcpy(hv_host_date.arr,csDate,hv_host_date.len);
+DEBUGLOG(("process_txn_old_dsp::host_date = [%.*s]\n",hv_host_date.len,hv_host_date.arr));
+
+	EXEC SQL DECLARE c_cursor_gettxn_dsi CURSOR FOR
+		SELECT case when length(di_order_id) <= 10 then th_txn_id
+			else substr(di_order_id,1,4) || substr(di_order_id,-6,6) end req_ref_num,
+			th_txn_id txn_ref,
+			'' card_num,
+			mn_username ewallet_id,
+			th_merchant_id merchant_id,
+			th_merchant_ref merchant_ref,
+			to_char(th_create_timestamp, 'MM/DD/YYYY HH24:MI:SS') req_datetime,
+			to_char(th_approval_timestamp, 'MM/DD/YYYY HH24:MI:SS') comp_datetime,
+			'Completed' status,
+			decode(tp_txn_ccy,'CNY','RMB',tp_txn_ccy) tp_txn_ccy,
+			NVL(tp_txn_amount, 0) tp_txn_amount,
+			decode(tp_txn_ccy,'CNY','RMB',tp_txn_ccy)
+			   || to_char(NVL(tp_txn_amount, 0), 'FM9,999,990.00') txn_amt,
+			decode(NVL(tfee.te_ccy, td_txn_ccy),'CNY','RMB',NVL(tfee.te_ccy, td_txn_ccy))
+			   || to_char(NVL(tfee.te_amount,0), 'FM9,999,990.00') comm_amt,
+			decode(td_txn_ccy,'CNY','RMB',td_txn_ccy)
+			   || to_char(NVL(th_net_amount, 0), 'FM9,999,990.00') net_amt,
+			decode(NVL(tmk.te_ccy, td_txn_ccy),'CNY','RMB',NVL(tmk.te_ccy, td_txn_ccy))
+			   || to_char(NVL(tmk.te_amount, 0), 'FM9,999,990.00') markup_amt
+		FROM
+			(SELECT th_txn_id,
+				th_merchant_id,
+				th_merchant_ref,
+				tp_txn_ccy,
+				tp_txn_amount,
+				td_txn_ccy,
+				th_net_amount,
+				th_create_timestamp,
+				th_approval_timestamp,
+				mn_username
+			FROM
+				(SELECT th_txn_id,
+					th_merchant_id,
+					th_merchant_ref,
+					th_net_amount,
+					th_create_timestamp,
+					th_approval_timestamp
+				FROM txn_header
+				WHERE th_approval_date = :hv_host_date
+				 and th_status in ('C','R')
+				 and th_ar_ind = 'A'
+				 and th_txn_code in ('DSI', 'MSI')
+				 and th_vnc_ref_num is not null),
+				txn_detail,
+				txn_psp_detail,
+				--par_merch_profile,
+				par_def_merch_nmb_map,
+				par_merch_date_map
+			WHERE th_txn_id = td_txn_id
+			 and th_txn_id = tp_txn_id
+			 and th_merchant_id = mn_merchant_id
+			 and th_merchant_id = mdm_merchant_id
+			 and mn_country = 'CN'
+			 and th_approval_timestamp >= to_date(mdm_start_date||mdm_start_time,'YYYYMMDDHH24:MI:SS'))
+		LEFT join txn_elements tfee
+		 on tfee.te_txn_id = th_txn_id
+		 and tfee.te_txn_element_type = 'TFEE'
+		 and tfee.te_party_type = 'M'
+		LEFT join txn_elements tmk
+		 on tmk.te_txn_id = th_txn_id
+		 and tmk.te_txn_element_type = 'MAMT'
+		LEFT join par_dsp_id_map
+		 on di_txn_nmb = th_txn_id;
+
+	EXEC SQL OPEN c_cursor_gettxn_dsi;
+	do {    
+		EXEC SQL FETCH c_cursor_gettxn_dsi
+		INTO
+			:v_req_ref_num:ind_req_ref_num,
+			:v_txn_ref:ind_txn_ref,
+			:v_card_num:ind_card_num,
+			:v_ewallet_id:ind_ewallet_id,
+			:v_merchant_id:ind_merchant_id,
+			:v_merchant_ref:ind_merchant_ref,
+			:v_req_datetime:ind_req_datetime,
+			:v_comp_datetime:ind_comp_datetime,
+			:v_status:ind_status,
+			:v_tp_txn_ccy:ind_tp_txn_ccy,
+			:v_tp_txn_amount:ind_tp_txn_amount,
+			:v_txn_amt:ind_txn_amt,
+			:v_com_amt:ind_com_amt,
+			:v_net_amt:ind_net_amt,
+			:v_markup_amt:ind_markup_amt;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 req_ref_num */
+		if (ind_req_ref_num < 0){
+DEBUGLOG(("process_txn_old_dsp() ind_req_ref_num < 0   FAIL!!!\n"));
+			iFailCount++;
+			continue;
+		}
+
+/* tp_txn_ccy & tp_txn_amount */
+		if (ind_tp_txn_ccy >=0) {
+			v_tp_txn_ccy.arr[v_tp_txn_ccy.len] = '\0';
+		} else {
+			v_tp_txn_ccy.arr[0] = '\0';
+		}
+		if (ind_tp_txn_amount < 0) v_tp_txn_amount = 0.0;
+
+		if (strcmp(csDefaultCcy,(char*)v_tp_txn_ccy.arr) && v_tp_txn_amount != 0.0) {
+DEBUGLOG(("process_txn_old_dsp() NOT [%s]   FAIL!!!\n",csDefaultCcy));
+			iFailCount++;
+			continue;
+		} else {
+			dTotalTxnAmt += v_tp_txn_amount;
+			iAcceptCount++;
+		}
+
+/* Field #0 req_ref_num */
+		fprintf(fp,"%s%.*s%s",PD_OPEN_TAG_CS,v_req_ref_num.len,v_req_ref_num.arr,PD_NEXT_TAG_CS);
+
+/* Field #1 txn_ref*/
+		if (ind_txn_ref >=0 ) {
+			v_txn_ref.arr[v_txn_ref.len] = '\0';
+			fprintf(fp,"%.*s",v_txn_ref.len,v_txn_ref.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #2 card_num*/
+		if (ind_card_num >=0 ) {
+			v_card_num.arr[v_card_num.len] = '\0';
+			fprintf(fp,"%.*s",v_card_num.len,v_card_num.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #3 ewallet_id*/
+		if (ind_ewallet_id >=0 ) {
+			v_ewallet_id.arr[v_ewallet_id.len] = '\0';
+			fprintf(fp,"%.*s",v_ewallet_id.len,v_ewallet_id.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #4 merchant_ref*/
+		if (ind_merchant_ref >=0 ) {
+			v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+			fprintf(fp,"%.*s",v_merchant_ref.len,v_merchant_ref.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #5 req_datetime*/
+		if (ind_req_datetime >=0 ) {
+			v_req_datetime.arr[v_req_datetime.len] = '\0';
+			fprintf(fp,"%.*s",v_req_datetime.len,v_req_datetime.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #6 comp_datetime*/
+		if (ind_comp_datetime >=0 ) {
+			v_comp_datetime.arr[v_comp_datetime.len] = '\0';
+			fprintf(fp,"%.*s",v_comp_datetime.len,v_comp_datetime.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #7 status*/
+		if (ind_status >=0 ) {
+			v_status.arr[v_status.len] = '\0';
+			fprintf(fp,"%.*s",v_status.len,v_status.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #8 txn_amt*/
+		if (ind_txn_amt >=0 ) {
+			v_txn_amt.arr[v_txn_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_txn_amt.len,v_txn_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #9 com_amt*/
+		if (ind_com_amt >=0 ) {
+			v_com_amt.arr[v_com_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_com_amt.len,v_com_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #10 net_amt*/
+		if (ind_net_amt >=0 ) {
+			v_net_amt.arr[v_net_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_net_amt.len,v_net_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #11 markup_amt*/
+		if (ind_markup_amt >=0 ) {
+			v_markup_amt.arr[v_markup_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_markup_amt.len,v_markup_amt.arr);
+		}
+		fprintf(fp,"%s\n",PD_END_TAG);
+
+ 	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	if (iFailCount > 0) {
+		printf("%d records fail",iFailCount);
+DEBUGLOG(("process_txn_old_dsp() Total Fail [%d]\n",iFailCount));
+	}
+
+	*iOldAcceptCount = iAcceptCount;
+	*dOldTxnAmt = dTotalTxnAmt;
+DEBUGLOG(("process_txn_old_dsp() Total records [%d]\n",iAcceptCount));
+DEBUGLOG(("process_txn_old_dsp() Total Amounts [%.2lf]\n",dTotalTxnAmt));
+
+	EXEC SQL CLOSE c_cursor_gettxn_dsi;
+	return iRet;
+sql_error:
+    DEBUGLOG(("process_txn_old_dsp error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn_dsi;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int process_txn_dsp(const char* csDate,
+		FILE *fp)
+{	       
+	int     iRet = SUCCESS;
+	double	dTotalTxnAmt = 0.0;
+	int	iAcceptCount = 0, iFailCount = 0;
+
+	struct	tm tm;
+	char	*sysdatetime = getdatetime();
+	char	csFormatSysDateTime[21];
+	char	csFormatDate[12];
+
+	strptime(csDate, "%Y%m%d", &tm);
+	strftime(csFormatDate, sizeof(csFormatDate), "%Y-%h-%d", &tm);
+	strptime(sysdatetime, "%Y%m%d%H%M%S", &tm);
+	strftime(csFormatSysDateTime, sizeof(csFormatSysDateTime), "%Y-%h-%d %T", &tm);
+
+	//printf("%s to %s\n%s to %s\n",csDate,csFormatDate,sysdatetime,csFormatSysDateTime);
+
+	fprintf(fp,"<html><body><table>\n");
+	fprintf(fp,"%sAd Hoc ChinaPay Purchase Transaction Details Report (PTDR_CP)%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%sFrom%s%s 00:00:00%s\n",PD_OPEN_TAG,PD_NEXT_TAG,csFormatDate,PD_END_TAG);
+	fprintf(fp,"%sTo%s%s 23:59:59%s\n",PD_OPEN_TAG,PD_NEXT_TAG,csFormatDate,PD_END_TAG);
+	fprintf(fp,"%sGenerated On%s%s%s\n",PD_OPEN_TAG,PD_NEXT_TAG,csFormatSysDateTime,PD_END_TAG);
+	fprintf(fp,"%s%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%s%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%s%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%sMerchant Wallet%sAll%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_END_TAG);
+	fprintf(fp,"%sReq. Reference Number%sTransaction Reference%sCard Number%se_Wallet ID%sMerchant Ref.%sRequest Date and Time%sComplete Date and Time%sStatus%sTransaction Amount%sCommission Amount%sNet Amount%sMarkup Amount%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_END_TAG);
+
+	iRet = process_txn_old_dsp(cs_date,&iAcceptCount,&dTotalTxnAmt,fp);
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_host_date[PD_DATE_LEN];
+
+		varchar	v_req_ref_num[10 +1];
+		varchar	v_txn_ref[10 +1];
+		varchar	v_card_num[0 +1];
+		varchar	v_ewallet_id[PD_AC_NAME_LEN +1];
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN +1];
+		varchar	v_merchant_ref[PD_MERCHANT_REF_LEN +1];
+		varchar	v_req_datetime[19 +1];
+		varchar	v_comp_datetime[19 +1];
+		varchar	v_status[9 +1];
+		varchar v_tp_txn_ccy[PD_CCY_ID_LEN +1];
+		double	v_tp_txn_amount;
+		varchar	v_txn_amt[20 +1];
+		varchar	v_com_amt[20 +1];
+		varchar	v_net_amt[20 +1];
+		varchar	v_markup_amt[20 +1];
+
+		short	ind_req_ref_num = -1;
+		short	ind_txn_ref = -1;
+		short	ind_card_num = -1;
+		short	ind_ewallet_id = -1;
+		short	ind_merchant_id = -1;
+		short	ind_merchant_ref = -1;
+		short	ind_req_datetime = -1;
+		short	ind_comp_datetime = -1;
+		short	ind_status = -1;
+		short	ind_tp_txn_ccy = -1;
+		short	ind_tp_txn_amount = -1;
+		short	ind_txn_amt = -1;
+		short	ind_com_amt = -1;
+		short	ind_net_amt = -1;
+		short	ind_markup_amt = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_host_date.len = strlen(csDate);
+	memcpy(hv_host_date.arr,csDate,hv_host_date.len);
+DEBUGLOG(("process_txn_dsp::host_date = [%.*s]\n",hv_host_date.len,hv_host_date.arr));
+
+	EXEC SQL DECLARE c_cursor_gettxn_dsp CURSOR FOR
+		SELECT case when length(th_txn_id) <= 10 then th_txn_id
+			else substr(th_txn_id,-10,10) end req_ref_num,
+			case when length(th_txn_id) <= 10 then th_txn_id
+			else substr(th_txn_id,-10,10) end txn_ref,
+			'' card_num,
+			mn_username ewallet_id,
+			th_merchant_id merchant_id,
+			th_merchant_ref merchant_ref,
+			to_char(th_create_timestamp, 'MM/DD/YYYY HH24:MI:SS') req_datetime,
+			to_char(th_approval_timestamp, 'MM/DD/YYYY HH24:MI:SS') comp_datetime,
+			'Completed' status,
+			decode(tp_txn_ccy,'CNY','RMB',tp_txn_ccy) tp_txn_ccy,
+			NVL(tp_txn_amount, 0) tp_txn_amount,
+			decode(tp_txn_ccy,'CNY','RMB',tp_txn_ccy)
+			   || to_char(NVL(tp_txn_amount, 0), 'FM9,999,990.00') txn_amt,
+			decode(NVL(tfee.te_ccy, td_txn_ccy),'CNY','RMB',NVL(tfee.te_ccy, td_txn_ccy))
+			   || to_char(NVL(tfee.te_amount,0), 'FM9,999,990.00') comm_amt,
+			decode(td_txn_ccy,'CNY','RMB',td_txn_ccy)
+			   || to_char(NVL(th_net_amount, 0), 'FM9,999,990.00') net_amt,
+			decode(NVL(tmk.te_ccy, td_txn_ccy),'CNY','RMB',NVL(tmk.te_ccy, td_txn_ccy))
+			   || to_char(NVL(tmk.te_amount, 0), 'FM9,999,990.00') markup_amt
+		FROM
+			(SELECT th_txn_id,
+				th_merchant_id,
+				th_merchant_ref,
+				tp_txn_ccy,
+				tp_txn_amount,
+				td_txn_ccy,
+				th_net_amount,
+				th_create_timestamp,
+				th_approval_timestamp,
+				mn_username
+			FROM
+				(SELECT th_txn_id,
+					th_merchant_id,
+					th_merchant_ref,
+					th_net_amount,
+					th_create_timestamp,
+					th_approval_timestamp,
+					th_approval_date
+				FROM txn_header
+				WHERE th_approval_date = :hv_host_date
+				 and th_status in ('C','R')
+				 and th_ar_ind = 'A'
+				 and th_txn_code in ('DSI', 'MSI')
+				 and th_vnc_ref_num is null),
+				txn_detail,
+				txn_psp_detail,
+				--par_merch_profile,
+				par_def_merch_nmb_map,
+				par_merch_date_map
+			WHERE th_txn_id = td_txn_id
+			 and th_txn_id = tp_txn_id
+			 and th_merchant_id = mn_merchant_id
+			 and th_merchant_id = mdm_merchant_id
+			 and mn_country = 'CN'
+			 and th_approval_date >= mdm_start_date and th_approval_date <= mdm_end_date)
+		LEFT join txn_elements tfee
+		 on tfee.te_txn_id = th_txn_id
+		 and tfee.te_txn_element_type = 'TFEE'
+		 and tfee.te_party_type = 'M'
+		LEFT join txn_elements tmk
+		 on tmk.te_txn_id = th_txn_id
+		 and tmk.te_txn_element_type = 'MAMT';
+
+	EXEC SQL OPEN c_cursor_gettxn_dsp;
+	do {    
+		EXEC SQL FETCH c_cursor_gettxn_dsp
+		INTO
+			:v_req_ref_num:ind_req_ref_num,
+			:v_txn_ref:ind_txn_ref,
+			:v_card_num:ind_card_num,
+			:v_ewallet_id:ind_ewallet_id,
+			:v_merchant_id:ind_merchant_id,
+			:v_merchant_ref:ind_merchant_ref,
+			:v_req_datetime:ind_req_datetime,
+			:v_comp_datetime:ind_comp_datetime,
+			:v_status:ind_status,
+			:v_tp_txn_ccy:ind_tp_txn_ccy,
+			:v_tp_txn_amount:ind_tp_txn_amount,
+			:v_txn_amt:ind_txn_amt,
+			:v_com_amt:ind_com_amt,
+			:v_net_amt:ind_net_amt,
+			:v_markup_amt:ind_markup_amt;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 req_ref_num */
+		if (ind_req_ref_num < 0){
+DEBUGLOG(("process_txn_dsp() ind_req_ref_num < 0   FAIL!!!\n"));
+			iFailCount++;
+			continue;
+		}
+
+/* tp_txn_ccy & tp_txn_amount */
+		if (ind_tp_txn_ccy >=0) {
+			v_tp_txn_ccy.arr[v_tp_txn_ccy.len] = '\0';
+		} else {
+			v_tp_txn_ccy.arr[0] = '\0';
+		}
+		if (ind_tp_txn_amount < 0) v_tp_txn_amount = 0.0;
+
+		if (strcmp(csDefaultCcy,(char*)v_tp_txn_ccy.arr) && v_tp_txn_amount != 0.0) {
+DEBUGLOG(("process_txn_dsp() NOT [%s]   FAIL!!!\n",csDefaultCcy));
+			iFailCount++;
+			continue;
+		} else {
+			dTotalTxnAmt += v_tp_txn_amount;
+			iAcceptCount++;
+		}
+
+/* Field #0 req_ref_num */
+		fprintf(fp,"%s%.*s%s",PD_OPEN_TAG_CS,v_req_ref_num.len,v_req_ref_num.arr,PD_NEXT_TAG_CS);
+
+/* Field #1 txn_ref*/
+		if (ind_txn_ref >=0 ) {
+			v_txn_ref.arr[v_txn_ref.len] = '\0';
+			fprintf(fp,"%.*s",v_txn_ref.len,v_txn_ref.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #2 card_num*/
+		if (ind_card_num >=0 ) {
+			v_card_num.arr[v_card_num.len] = '\0';
+			fprintf(fp,"%.*s",v_card_num.len,v_card_num.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #3 ewallet_id*/
+		if (ind_ewallet_id >=0 ) {
+			v_ewallet_id.arr[v_ewallet_id.len] = '\0';
+			fprintf(fp,"%.*s",v_ewallet_id.len,v_ewallet_id.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #4 merchant_ref*/
+		if (ind_merchant_ref >=0 ) {
+			v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+			fprintf(fp,"%.*s",v_merchant_ref.len,v_merchant_ref.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #5 req_datetime*/
+		if (ind_req_datetime >=0 ) {
+			v_req_datetime.arr[v_req_datetime.len] = '\0';
+			fprintf(fp,"%.*s",v_req_datetime.len,v_req_datetime.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #6 comp_datetime*/
+		if (ind_comp_datetime >=0 ) {
+			v_comp_datetime.arr[v_comp_datetime.len] = '\0';
+			fprintf(fp,"%.*s",v_comp_datetime.len,v_comp_datetime.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #7 status*/
+		if (ind_status >=0 ) {
+			v_status.arr[v_status.len] = '\0';
+			fprintf(fp,"%.*s",v_status.len,v_status.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #8 txn_amt*/
+		if (ind_txn_amt >=0 ) {
+			v_txn_amt.arr[v_txn_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_txn_amt.len,v_txn_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #9 com_amt*/
+		if (ind_com_amt >=0 ) {
+			v_com_amt.arr[v_com_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_com_amt.len,v_com_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #10 net_amt*/
+		if (ind_net_amt >=0 ) {
+			v_net_amt.arr[v_net_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_net_amt.len,v_net_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #11 markup_amt*/
+		if (ind_markup_amt >=0 ) {
+			v_markup_amt.arr[v_markup_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_markup_amt.len,v_markup_amt.arr);
+		}
+		fprintf(fp,"%s\n",PD_END_TAG);
+
+ 	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	fprintf(fp,"%s%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%sTotal Transaction%s%d%s\n",PD_OPEN_TAG,PD_NEXT_TAG,iAcceptCount,PD_END_TAG);
+	fprintf(fp,"%sTotal Accepted Transaction%s%d%s\n",PD_OPEN_TAG,PD_NEXT_TAG,iAcceptCount,PD_END_TAG);
+	fprintf(fp,"%sTotal Accepted Transaction Amount%s%s%.2lf%s\n",PD_OPEN_TAG,PD_NEXT_TAG,csDefaultCcy,dTotalTxnAmt,PD_END_TAG);
+	fprintf(fp,"</table></body></html>");
+
+	if (iFailCount > 0) {
+		printf("%d records fail",iFailCount);
+DEBUGLOG(("process_txn_dsp() Total Fail [%d]\n",iFailCount));
+	}
+
+DEBUGLOG(("process_txn_dsp() Total records [%d]\n",iAcceptCount));
+DEBUGLOG(("process_txn_dsp() Total Amounts [%.2lf]\n",dTotalTxnAmt));
+
+	EXEC SQL CLOSE c_cursor_gettxn_dsp;
+	return iRet;
+sql_error:
+    DEBUGLOG(("process_txn_dsp error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn_dsp;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int process_txn_stt(const char* csDate,
+		FILE *fp)
+{	       
+	int     iRet = SUCCESS;
+	int	iAcceptCount = 0, iFailCount = 0;
+
+	struct	tm tm;
+	char	*sysdatetime = getdatetime();
+	char	csFormatSysDateTime[21];
+	char	csFormatDate[12];
+
+	strptime(csDate, "%Y%m%d", &tm);
+	strftime(csFormatDate, sizeof(csFormatDate), "%Y-%h-%d", &tm);
+	strptime(sysdatetime, "%Y%m%d%H%M%S", &tm);
+	strftime(csFormatSysDateTime, sizeof(csFormatSysDateTime), "%Y-%h-%d %T", &tm);
+
+	//printf("%s to %s\n%s to %s\n",csDate,csFormatDate,sysdatetime,csFormatSysDateTime);
+
+	fprintf(fp,"<html><body><table>\n");
+	fprintf(fp,"%s%s(Accepted) Settlement Transaction Detail Report%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_END_TAG);
+	fprintf(fp,"%s%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%s%s(complete_date) Start Date:%s%s 00:00:00%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_NEXT_TAG,csFormatDate,PD_END_TAG);
+	fprintf(fp,"%s%s(complete_date) End Date:%s%s 23:59:59%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_NEXT_TAG,csFormatDate,PD_END_TAG);
+	fprintf(fp,"%s%sGenerated Date:%s%s%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_NEXT_TAG,csFormatSysDateTime,PD_END_TAG);
+	fprintf(fp,"%s%s\n",PD_OPEN_TAG,PD_END_TAG);
+	fprintf(fp,"%sReq. Ref.%sWallet ID%s B.O. Amount%s%s(+) Comm.%s%sTot. Amount%s%sTran. Req. Date%sTran. Comp. Date%sMarkup Amount%s%s\n",PD_OPEN_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_NEXT_TAG,PD_END_TAG);
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_deliver_date[PD_DATE_LEN];
+
+		varchar	v_req_ref_num[10 +1];
+		varchar	v_ewallet_id[PD_AC_NAME_LEN +1];
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN +1];
+		varchar v_bo_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_bo_amt[20 +1];
+		varchar v_com_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_com_amt[20 +1];
+		varchar v_tot_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_tot_amt[20 +1];
+		varchar	v_req_datetime[19 +1];
+		varchar	v_comp_datetime[19 +1];
+		varchar v_markup_ccy[PD_CCY_ID_LEN +1];
+		varchar	v_markup_amt[20 +1];
+
+		short	ind_req_ref_num = -1;
+		short	ind_ewallet_id = -1;
+		short	ind_merchant_id = -1;
+		short	ind_bo_ccy= -1;
+		short	ind_bo_amt= -1;
+		short	ind_com_ccy= -1;
+		short	ind_com_amt= -1;
+		short	ind_tot_ccy= -1;
+		short	ind_tot_amt= -1;
+		short	ind_req_datetime = -1;
+		short	ind_comp_datetime = -1;
+		short	ind_markup_ccy= -1;
+		short	ind_markup_amt= -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_deliver_date.len = strlen(csDate);
+	memcpy(hv_deliver_date.arr,csDate,hv_deliver_date.len);
+DEBUGLOG(("process_txn_stt::host_date = [%.*s]\n",hv_deliver_date.len,hv_deliver_date.arr));
+
+	EXEC SQL DECLARE c_cursor_gettxn_stt CURSOR FOR
+		select case when length(sd_txn_id) <= 10 then sd_txn_id
+			else substr(sd_txn_id,1,1) || substr(sd_txn_id,3,9) end req_ref_num,
+			mn_username ewallet_id,
+			th_merchant_id th_merchant_id,
+			decode(sd_deliver_ccy,'CNY','RMB',sd_deliver_ccy) bo_ccy,
+			to_char(NVL(sd_deliver_amt, 0), 'FM9,999,999,990.00') bo_amount,
+			decode(NVL(tfee.te_ccy, sd_request_ccy),'CNY','RMB',NVL(tfee.te_ccy, sd_request_ccy)) com_ccy,
+			to_char(NVL(tfee.te_amount,0), 'FM9,999,990.00') com_amount,
+			decode(sd_request_ccy,'CNY','RMB',sd_request_ccy) tot_ccy,
+			to_char(NVL(sd_request_amt, 0), 'FM9,999,999,990.00') tot_amount,
+			to_char(NVL(th_approval_timestamp,th_create_timestamp), 'MM/DD/YYYY HH24:MI:SS') req_datetime,
+			to_char(to_date(sd_deliver_date, 'YYYYMMDD'), 'MM/DD/YYYY') || ' 00:00:00' com_datetime,
+			decode(NVL(tmk.te_ccy, sd_request_ccy),'CNY','RMB',NVL(tmk.te_ccy, sd_request_ccy)) markup_ccy,
+			to_char(NVL(tmk.te_amount, 0), 'FM9,999,990.00') markup_amount
+		from
+			(select th_merchant_id,
+				sd_txn_id,
+				sd_request_ccy,
+				sd_request_amt,
+				sd_deliver_ccy,
+				sd_deliver_amt,
+				th_create_timestamp,
+				th_approval_timestamp,
+				sd_deliver_date,
+				mn_username
+			from
+				(select th_txn_id,
+					th_merchant_id,
+					th_create_timestamp,
+					th_approval_timestamp
+					from txn_header
+				where th_status in ('C','R')
+				 and th_ar_ind = 'A'
+				 and th_txn_code = 'STR'),
+				merchant_settlement_detail,
+				--par_merch_profile,
+				par_def_merch_nmb_map,
+				par_merch_date_map
+			where th_txn_id = sd_txn_id
+			 and sd_deliver_date = :hv_deliver_date
+			 and th_merchant_id = mn_merchant_id
+			 and th_merchant_id = mdm_merchant_id
+			 and sd_deliver_date >= mdm_start_date and sd_deliver_date <= mdm_end_date)
+		left join txn_elements tfee on
+		 tfee.te_txn_id = sd_txn_id
+		 and tfee.te_txn_element_type = 'TFEE'
+		 and tfee.te_party_type = 'M'
+		left join txn_elements tmk on
+		 tmk.te_txn_id = sd_txn_id
+		 and tmk.te_txn_element_type = 'MAMT';
+
+	EXEC SQL OPEN c_cursor_gettxn_stt;
+	do {    
+		EXEC SQL FETCH c_cursor_gettxn_stt
+		INTO
+			:v_req_ref_num:ind_req_ref_num,
+			:v_ewallet_id:ind_ewallet_id,
+			:v_merchant_id:ind_merchant_id,
+			:v_bo_ccy:ind_bo_ccy,
+			:v_bo_amt:ind_bo_amt,
+			:v_com_ccy:ind_com_ccy,
+			:v_com_amt:ind_com_amt,
+			:v_tot_ccy:ind_tot_ccy,
+			:v_tot_amt:ind_tot_amt,
+			:v_req_datetime:ind_req_datetime,
+			:v_comp_datetime:ind_comp_datetime,
+			:v_markup_ccy:ind_markup_ccy,
+			:v_markup_amt:ind_markup_amt;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 req_ref_num */
+		if (ind_req_ref_num < 0){
+			iFailCount++;
+			continue;
+		}
+		fprintf(fp,"%s%.*s%s",PD_OPEN_TAG_CS,v_req_ref_num.len,v_req_ref_num.arr,PD_NEXT_TAG);
+
+/* Field #1 ewallet_id*/
+		if (ind_ewallet_id >=0 ) {
+			v_ewallet_id.arr[v_ewallet_id.len] = '\0';
+			fprintf(fp,"%.*s",v_ewallet_id.len,v_ewallet_id.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #2 bo_ccy*/
+		if (ind_bo_ccy >=0 ) {
+			v_bo_ccy.arr[v_bo_ccy.len] = '\0';
+			fprintf(fp,"%.*s",v_bo_ccy.len,v_bo_ccy.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #3 bo_amt*/
+		if (ind_bo_amt >=0 ) {
+			v_bo_amt.arr[v_bo_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_bo_amt.len,v_bo_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #4 com_ccy*/
+		if (ind_com_ccy >=0 ) {
+			v_com_ccy.arr[v_com_ccy.len] = '\0';
+			fprintf(fp,"%.*s",v_com_ccy.len,v_com_ccy.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #5 com_amt*/
+		if (ind_com_amt >=0 ) {
+			v_com_amt.arr[v_com_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_com_amt.len,v_com_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #6 tot_ccy*/
+		if (ind_tot_ccy >=0 ) {
+			v_tot_ccy.arr[v_tot_ccy.len] = '\0';
+			fprintf(fp,"%.*s",v_tot_ccy.len,v_tot_ccy.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #7 tot_amt*/
+		if (ind_tot_amt >=0 ) {
+			v_tot_amt.arr[v_tot_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_tot_amt.len,v_tot_amt.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #8 req_datetime*/
+		if (ind_req_datetime >=0 ) {
+			v_req_datetime.arr[v_req_datetime.len] = '\0';
+			fprintf(fp,"%.*s",v_req_datetime.len,v_req_datetime.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG_CS);
+
+/* Field #9 comp_datetime*/
+		if (ind_comp_datetime >=0 ) {
+			v_comp_datetime.arr[v_comp_datetime.len] = '\0';
+			fprintf(fp,"%.*s",v_comp_datetime.len,v_comp_datetime.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #10 markup_ccy*/
+		if (ind_markup_ccy >=0 ) {
+			v_markup_ccy.arr[v_markup_ccy.len] = '\0';
+			fprintf(fp,"%.*s",v_markup_ccy.len,v_markup_ccy.arr);
+		}
+		fprintf(fp,"%s",PD_NEXT_TAG);
+
+/* Field #11 markup_amt*/
+		if (ind_markup_amt >=0 ) {
+			v_markup_amt.arr[v_markup_amt.len] = '\0';
+			fprintf(fp,"%.*s",v_markup_amt.len,v_markup_amt.arr);
+		}
+		fprintf(fp,"%s\n",PD_END_TAG);
+
+		iAcceptCount++;
+
+ 	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	fprintf(fp,"</table></body></html>");
+
+	if (iFailCount > 0) {
+		printf("%d records fail",iFailCount);
+DEBUGLOG(("process_txn_stt() Total Fail [%d]\n",iFailCount));
+	}
+
+DEBUGLOG(("process_txn_stt() Total records [%d]\n",iAcceptCount));
+
+	EXEC SQL CLOSE c_cursor_gettxn_stt;
+	return iRet;
+sql_error:
+    DEBUGLOG(("process_txn_stt error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn_stt;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+

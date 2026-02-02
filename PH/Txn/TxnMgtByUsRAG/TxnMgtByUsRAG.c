@@ -1,0 +1,141 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/09/08              Virginia Yun
+call BO object instead				   2011/11/18		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsRAG.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsRAG(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+        int     iRet = PD_OK;
+
+        char    *csTmp;
+        int     iDayOfWeek;
+	char	cStatusOption;
+
+DEBUGLOG(("TxnMgtByUsRAG::Authorize\n"));
+
+	if(GetField_CString(hRequest,"merchant_id",&csTmp)){
+DEBUGLOG(("Authorize::merchant_id= [%s]\n",csTmp));
+	}
+	else{
+DEBUGLOG(("Authorize::merchant_id not found!!\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::merchant_id not found!!\n");
+		iRet=INT_MERCHANT_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"txn_ccy",&csTmp)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTmp));
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"txn_country",&csTmp)){
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTmp));
+	}
+	else{
+DEBUGLOG(("Authorize::country not found!!\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::country not found!!\n");
+		iRet=INT_TXN_COUNTRY_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"service_code",&csTmp)){
+DEBUGLOG(("Authorize::sevice_code= [%s]\n",csTmp));
+	}
+        else{
+DEBUGLOG(("Authorize::service_code not found!!\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::service_code not found!!\n");
+		iRet=INT_SERVICE_CODE_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+        } 
+
+	if(GetField_CString(hRequest,"option_type",&csTmp)){
+DEBUGLOG(("Authorize::option_type = [%s]\n",csTmp));
+	}
+        else{
+DEBUGLOG(("Authorize::option_type not found!!\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::option_type not found!!\n");
+
+                iRet=INT_OPTION_TYPE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+        } 
+
+	if(GetField_CString(hRequest,"dow",&csTmp)){
+		iDayOfWeek = atoi(csTmp);
+       		PutField_Int(hContext,"dow",iDayOfWeek);
+DEBUGLOG(("Authorize::iDayOfWeek= [%i]\n",iDayOfWeek));
+	}
+        else{
+	        if(GetField_CString(hContext,"PHDATE",&csTmp)){
+DEBUGLOG(("Authorize::phdate= [%s]\n",csTmp));
+
+                        iDayOfWeek = day_of_week((const unsigned char *)csTmp);
+DEBUGLOG(("Authorize::iDayOfWeek= [%i]\n",iDayOfWeek));
+
+       			PutField_Int(hContext,"dow",iDayOfWeek);
+	        }
+	        else{
+DEBUGLOG(("Authorize::phdate not found!!\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::phdate not found!!\n");
+			iRet=INT_PHDATE_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+        	}
+        }
+
+	if (GetField_CString(hRequest, "status_option", &csTmp)) {
+		cStatusOption = csTmp[0];
+DEBUGLOG(("Authorize::status_option = [%c]\n",cStatusOption));
+		PutField_Char(hContext, "status_option", cStatusOption);
+	}
+	
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOMerchant: GetMerchantReservedAmt\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantReservedAmt");
+		if((unsigned long)((*BOObjPtr)(hContext,hRequest,hResponse)!=PD_OK)){
+DEBUGLOG(("Authorize::GetMerchantReservedAmt Failed\n"));
+ERRLOG("TxnMgtByUsRAG::Authorize::GetMerchantReservedAmt Failed\n");
+			iRet=INT_ERR;
+		}
+	}     
+
+
+
+DEBUGLOG(("TxnMgtByUsRAG Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

@@ -1,0 +1,99 @@
+CREATE OR REPLACE FUNCTION sp_rule_lb_mbgetpsp(
+   in_merchant_id       MERCH_DETAIL.MERCHANT_ID%TYPE,
+   in_bank_code		bank_mapping.bm_int_bank_code%TYPE,
+   out_cursor       OUT SYS_REFCURSOR)
+   RETURN NUMBER
+IS
+BEGIN
+   OPEN out_cursor FOR
+      SELECT psp_name,
+             rpp_psp_id,
+	     pm_client_id,
+             currency_id,
+             rpp_limit,
+             remaining_limit
+        FROM (SELECT rm_psp_id
+                  FROM (SELECT rc_channel_code,
+                               rc_service_code,
+                               rc_payment_method,
+                               rc_country,
+                               rc_ccy,
+                               rc_party_type,
+                               rc_party_id,
+                               rc_business_type,
+                               rc_criteria_pool_id,
+                               rc_customer_segment,
+                               rp_criteria_pool_id,
+                               rp_pool_id
+                          FROM rule_psp_lb_criteria, rule_psp_lb_pools
+                         WHERE     RULE_TXN_LIMIT_PKG.FINDSCHEDULE(rc_scheduler_id) = 1
+                               AND rc_criteria_pool_id = rp_criteria_pool_id
+			       AND rc_disabled = 0
+			       and rp_disabled = 0),
+                       (SELECT business_type, merchant_id, clients.client_id
+                          FROM merch_detail, clients
+                         WHERE     merchant_id = in_merchant_id
+                               AND disabled = 0
+                               AND merch_detail.status = 'O'
+                               AND merch_detail.client_id = clients.client_id
+                               AND clients.status = 'O'),
+                       (rule_psp_lb_mapping)
+                 WHERE        rc_business_type = business_type
+                          AND rp_pool_id = rm_pool_id
+			  and rm_disabled = 0
+                          AND 
+                          (rc_party_type = 'M' AND rc_party_id = merchant_id)
+                       OR (rc_party_type = 'C' AND rc_party_id = client_id)
+                       OR (rc_party_type = 'G')
+              GROUP BY rm_psp_id),
+             (SELECT psp_name,
+                     rpp_psp_id,
+                     currency_id,
+		     pm_client_id,
+		     psp_channel_code,
+		     overrided_bank_code_channel,
+                     rpp_limit,
+                     CASE
+                        WHEN rpp_limit = 0 THEN rpp_limit
+                        ELSE rpp_limit - NVL (tc_total_counter, 0)
+                     END
+                        AS remaining_limit
+                FROM (SELECT rpp_psp_id, currency_id, rpp_limit, psp_name, psp_channel_code, overrided_bank_code_channel, pm_client_id
+                        FROM (SELECT rpp_psp_id, rpp_limit
+                                FROM rule_psp_lb_psp
+                               WHERE rpp_disabled = 0),
+                             (SELECT PSP_ID AS r_psp_id, currency_id, psp_name, psp_channel_code, overrided_bank_code_channel, pm_client_id
+                                  FROM psp_detail, psp_master
+                                 WHERE     client_id = pm_client_id
+                                       AND disabled = 0
+                                       AND online_mode = 'Y'
+                                       AND status = 'O'
+                                       AND pm_status = 'O')
+                       WHERE rpp_psp_id = r_psp_id)
+                     LEFT JOIN
+                     (SELECT SUM (tc_total_counter) AS tc_total_counter,
+                               tc_party_id AS party_psp_id
+                          FROM txn_counters
+                         WHERE     tc_party_type = 'P'
+                               AND tc_category = 'AMT'
+                               AND tc_type = 'D'
+                      GROUP BY tc_party_id)
+                        ON rpp_psp_id = party_psp_id),
+		(select bm_psp_channel_id
+                from bank_mapping
+              where BANK_MAPPING.bm_disabled = 0
+              and   BANK_MAPPING.bm_int_bank_code = in_bank_code)
+       WHERE rm_psp_id = rpp_psp_id
+       --AND   bm_psp_channel_id = psp_channel_code;
+       AND   ((overrided_bank_code_channel is not NULL and bm_psp_channel_id = overrided_bank_code_channel)
+              or (overrided_bank_code_channel is NULL and bm_psp_channel_id = psp_channel_code));
+
+   RETURN 0;
+
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+END sp_rule_lb_mbgetpsp;
+/
+

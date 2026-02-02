@@ -1,0 +1,19 @@
+#ifndef _CLIENTS_H_
+#define _CLIENTS_H_
+
+#include "myhash.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int Add(const hash_t *);
+int Delete(const unsigned char* client_id);
+int GetClients(const char* csClientId,
+                hash_t* hRec);
+
+int Update(const hash_t *hRls);
+#ifdef __cplusplus
+}
+#endif
+
+#endif

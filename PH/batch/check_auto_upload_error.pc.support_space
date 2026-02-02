@@ -1,0 +1,410 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+ 
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/01/18              [WWK]
+Empty Provider when err [5040,5042,5062]	   2018/04/03		   [WWK]
+Update						   2018/07/09	      	   [WMC]
+Add mask_bank_acct_num into CreateErrorAlertTpl	   2019/04/23		   [MIC] 
+Update						   2021/06/10		   [WMC]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_nature_path[PD_TMP_BUF_LEN+1];
+char cs_provider_path[PD_TMP_BUF_LEN+1];
+char cs_bank_short_name[PD_TMP_BUF_LEN+1];
+int iBankExclude;
+int iJobSeq;
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+int iCnt=0;
+int iDynCnt=0;
+
+static char    cDebug='Y';
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+int UpdateJobStatus(char cStatus);
+int CreateErrorAlertTpl(char *csNature, char *csProviderName, recordset_t *rErrorLog);
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 11) {
+        	//printf("usage: -s job_seq -n nature_path -p provider_path -b bank_short_name -d bank_exclude\n");
+        	return FAILURE;
+   	} else {
+        	return SUCCESS;
+	}
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = SUCCESS;
+	int	iTmpRet = PD_OK;	
+	int     iErrorLogExist = PD_FALSE;
+
+	char    csNature[PD_ACCT_TYPE_LEN + 1];
+        char    csProviderId[PD_CLIENT_ID_LEN + 1];
+        char    csProviderName[PD_CLIENT_NAME_LEN + 1];
+
+	recordset_t *rErrorLog;
+        rErrorLog = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rErrorLog, 0);
+
+DEBUGLOG(("batch_proc: check_auto_upload_error Start!\n"));
+
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+		//printf("*usage: -s job_seq -n nature_path -p provider_path -b bank_short_name -d bank_exclude\n");
+		return FAILURE;
+	}
+
+	// Get Provider Name
+        if (iRet == SUCCESS) {
+
+		memset(csNature, 0, sizeof(csNature));
+		memset(csProviderId, 0, sizeof(csProviderId));
+		memset(csProviderName, 0, sizeof(csProviderName));        
+
+	        DBObjPtr = CreateObj(DBPtr,"DBOLAutoUploadStmtSetting","GetDetailByPathName");
+                if ((unsigned long)(DBObjPtr)(cs_provider_path,cs_nature_path,csProviderName,csProviderId,csNature) == PD_FOUND) {
+DEBUGLOG(("batch_proc: DBOLAutoUploadStmtSetting: GetDetailByPathName: nature = [%s], provider_id = [%s], provider_name = [%s]\n", csNature, csProviderId, csProviderName));
+                } else {
+DEBUGLOG(("batch_proc: DBOLAutoUploadStmtSetting: GetDetailByPathName Failed!!\n"));
+ERRLOG("check_auto_upload_error: batch_proc: DBOLAutoUploadStmtSetting: GetDetailByPathName Failed!!\n");
+                        iRet = FAILURE;
+                }
+        }
+
+	// Get Error Log
+	if (iRet == SUCCESS) {
+
+DEBUGLOG(("batch_proc: DBOLAutoUploadErrLog: GetErrorLog, job_seq = [%d], nature = [%s], provider_id = [%s]\n", iJobSeq, csNature, csProviderId));
+        	DBObjPtr = CreateObj(DBPtr,"DBOLAutoUploadErrLog","GetErrorLog");
+        	iTmpRet = (unsigned long)(DBObjPtr)(iJobSeq,csNature,csProviderId,rErrorLog);
+        	if (iTmpRet == PD_FOUND) {
+DEBUGLOG(("batch_proc: DBOLAutoUploadErrLog: GetErrorLog Found!!\n"));
+			iErrorLogExist = PD_TRUE;
+        	} else if (iTmpRet == PD_NOT_FOUND) {
+DEBUGLOG(("batch_proc: DBOLAutoUploadErrLog: GetErrorLog Not Found!!\n"));
+        	} else {
+DEBUGLOG(("batch_proc: DBOLAutoUploadErrLog: GetErrorLog Failed!!\n"));
+ERRLOG("check_auto_upload_error: batch_proc: DBOLAutoUploadErrLog: GetErrorLog Failed!!\n");
+        	        iRet = FAILURE;
+        	}
+	}
+
+	// Create Error Email Alert Tpl
+	if ((iRet == SUCCESS) && (iErrorLogExist == PD_TRUE)) { 
+
+		iTmpRet = CreateErrorAlertTpl(csNature, csProviderName, rErrorLog);
+		if (iTmpRet != PD_OK) {
+			iRet = FAILURE;
+		}			
+	}
+	
+	// Update Auto Upload Job Status to [S]
+	if ((iRet == SUCCESS) && (iErrorLogExist == PD_TRUE)) { 
+		
+		iTmpRet = UpdateJobStatus(PD_AUTO_UPL_JOB_STATUS_ALERT_SENT);
+        	if (iTmpRet != PD_OK) {
+        	    	iRet = FAILURE;
+     		}
+	}
+
+	RecordSet_Destroy(rErrorLog);
+        FREE_ME(rErrorLog);
+
+DEBUGLOG(("batch_proc: CheckAutoUploadError normal exit!\n"));
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_nature_path,"");
+        strcpy(cs_provider_path,"");
+        strcpy(cs_bank_short_name,"");
+	iBankExclude = 0;
+	iJobSeq = 0;
+
+	if (argc < 6) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"s:n:p:b:d:")) != EOF) {
+		switch (c) {
+			case 's':
+				iJobSeq = atoi(optarg);
+				break;
+			case 'n':
+				strcpy(cs_nature_path,optarg);
+				break;
+                        case 'p':
+                                strcpy(cs_provider_path, optarg);
+                                break;
+                        case 'b':
+                                strcpy(cs_bank_short_name, optarg);
+                                break;
+                        case 'd':
+                                iBankExclude = atoi(optarg);
+                                break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_nature_path,"") || !strcmp(cs_provider_path,"") || !strcmp(cs_bank_short_name,""))
+		return FAILURE;
+
+        return SUCCESS;
+}
+
+int UpdateJobStatus(char cStatus)
+{        
+        int     iRet = PD_OK;
+        
+	hash_t  *hUpdateJob = NULL;
+        hUpdateJob = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hUpdateJob,0);
+
+        PutField_Int(hUpdateJob, "job_seq", iJobSeq);
+        PutField_CString(hUpdateJob, "nature_path", cs_nature_path);
+        PutField_CString(hUpdateJob, "provider_path", cs_provider_path);
+        PutField_CString(hUpdateJob, "process_bank", cs_bank_short_name);
+        PutField_Int(hUpdateJob, "exclude_mode", iBankExclude);
+        PutField_Char(hUpdateJob, "status", cStatus);
+        PutField_CString(hUpdateJob, "update_user", PD_UPDATE_USER);
+
+        DBObjPtr = CreateObj(DBPtr,"DBOLAutoUploadJobStatus","UpdateStatus");
+        if ((unsigned long)(DBObjPtr)(hUpdateJob) == PD_OK) {
+DEBUGLOG(("UpdateJobStatus: DBOLAutoUploadJobStatus: UpdateStatus to [%c] Success!!\n", PD_AUTO_UPL_JOB_STATUS_ALERT_SENT));
+        } else {
+DEBUGLOG(("UpdateJobStatus: DBOLAutoUploadJobStatus: UpdateStatus Failed!!\n"));
+ERRLOG("check_auto_upload_error: UpdateJobStatus: DBOLAutoUploadJobStatus: UpdateStatus Failed!!\n");
+                iRet = FAILURE;
+        }
+
+        hash_destroy(hUpdateJob);
+        FREE_ME(hUpdateJob);
+
+DEBUGLOG(("UpdateJobStatus: iRet = [%d]\n", iRet));
+        return iRet;
+
+}
+
+int CreateErrorAlertTpl(char *csNature, char *csProviderName, recordset_t *rErrorLog)
+{
+	int iRet = PD_OK;
+
+	hash_t *hErrorLog;
+
+	// Create Error Alert Template 
+	if (iRet == PD_OK) {
+
+		int iCnt = 0;
+		int iErrCode = 0;
+
+		char *csProvider = NULL;
+		char *csBankName = NULL;
+		char *csMaskBankAcctNum = NULL;		
+		char *csBankAcctShortName = NULL;
+		char *csStmtFileName = NULL;
+		char cStatus;
+	
+		hash_t *hTemplate;
+        	hTemplate = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hTemplate,0);
+
+		hErrorLog = RecordSet_GetFirst(rErrorLog);
+                while ((iRet == PD_OK) && (hErrorLog)) {
+
+/* err_code */
+			if (GetField_Int(hErrorLog,"err_code",&iErrCode)) {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]err_code = [%d]\n",iCnt,iErrCode));
+
+/* provider */
+             	   		if (GetField_CString(hErrorLog,"provider",&csProvider)) {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]provider = [%s]\n",iCnt,csProvider));
+
+					sprintf(csTag, "fprovider-%d", iCnt);
+                        		sprintf(csTmp, "%s", csProvider);
+                        		iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+                		} else {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]provider is missing!!\n",iCnt));
+                		}						
+
+/* bank_name */
+				sprintf(csTag, "fbank_name-%d", iCnt);
+                                if (GetField_CString(hErrorLog,"bank_name",&csBankName)) {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]bank_name = [%s]\n",iCnt,csBankName));
+	
+					sprintf(csTmp, "%s", csBankName);	
+                                } else {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]bank_name is missing!!\n",iCnt));
+	
+					sprintf(csTmp, " ");
+                                }
+				iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+
+/* mask_bank_acct_num, bank_acct_short_name*/
+				sprintf(csTag, "fbank_acct_num-%d", iCnt);
+				if ((GetField_CString(hErrorLog,"mask_bank_acct_num",&csMaskBankAcctNum))
+					&& (GetField_CString(hErrorLog,"bank_acct_short_name",&csBankAcctShortName))
+				)
+                                {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]mask_bank_acct_num = [%s]\n",iCnt,csMaskBankAcctNum));
+DEBUGLOG(("CreateErrorAlertTpl: [%d]bank_acct_short_name = [%s]\n",iCnt,csBankAcctShortName));
+
+                                        sprintf(csTmp, "%s (%s)", csBankAcctShortName, csMaskBankAcctNum);
+                                } else {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]mask_bank_acct_num is missing!!\n",iCnt));
+DEBUGLOG(("CreateErrorAlertTpl: [%d]bank_acct_short_name is missing!!\n",iCnt));
+
+                                        sprintf(csTmp, " ");
+                                }
+                                iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+
+
+
+
+/* stmt_filename */
+                                if (GetField_CString(hErrorLog,"stmt_filename",&csStmtFileName)) {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]stmt_filename = [%s]\n",iCnt,csStmtFileName));
+		
+					sprintf(csTag, "fstmt_file_name-%d", iCnt);
+                        		sprintf(csTmp, "%s", csStmtFileName);
+					iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+                                } else {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]stmt_filename is missing!!\n",iCnt));
+                                }
+
+/* status */
+                                if (GetField_Char(hErrorLog,"status",&cStatus)) {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]status = [%c]\n",iCnt,cStatus));
+
+					sprintf(csTag, "fstatus-%d", iCnt);
+					if (cStatus == PD_DEPOSIT_FILE_DECLINED) {
+                                		sprintf(csTmp,"%s",PD_DEPOSIT_FILE_DECLINED_DESC);
+                        		} else if (cStatus == PD_DEPOSIT_FILE_CANCEL) {
+                                		sprintf(csTmp,"%s",PD_DEPOSIT_FILE_CANCEL_DESC);
+                        		} else if (cStatus == PD_DEPOSIT_FILE_PENDING) {
+                                		sprintf(csTmp,"%s",PD_DEPOSIT_FILE_PENDING_DESC);
+                        		}
+					iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+                                } else {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]status is missing!!\n",iCnt));
+                                }
+
+				sprintf(csTag, "ferr_msg-%d", iCnt);
+
+				// Get Internal Messages
+				DBObjPtr = CreateObj(DBPtr,"DBInternalMessages","GetMsg");
+	                        if ((unsigned long)(*DBObjPtr)(iErrCode,csTmp) == FOUND) {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]Call DBInternalMessages: GetMsg: err_msg = [%s]\n",iCnt,csTmp));
+				} else {
+DEBUGLOG(("CreateErrorAlertTpl: [%d]Call DBInternalMessages: GetMsg: Failed!!\n",iCnt));
+					iRet = INT_CODE_ERROR;
+	                        }
+
+        	                iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csTmp);
+			}	
+
+			iCnt++;		
+
+			hErrorLog = RecordSet_GetNext(rErrorLog);
+		}	
+
+		if (iRet == PD_OK) {
+
+			// Record Exists
+			if (iCnt > 0) {
+
+		                // Alert Time
+	                	iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stimestamp-0", "SEC", "stimestamp-0", 0);
+	                	iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, "ftimestamp-0", "STR", "stimestamp-0", write_tpl_timestamp());
+	
+        	        	iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+        	        	iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+        	        	// Email Subject and Function
+        	        	if (!strcmp(csNature, PD_NATURE_DEPOSIT)) {
+					sprintf(csTmp, "[%s] Auto Upload Deposit Bank Statement - Error Occurs", csProviderName);
+                                	iDynCnt = set_tpl_dyn_cstring(hTemplate,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+					PutField_CString(hTemplate, "funct", PD_EML_FUNCT_CHK_AUTO_UPL_ERR);
+        	        	} else if (!strcmp(csNature,PD_NATURE_PAYOUT)) {
+					sprintf(csTmp, "[%s] Auto Upload Payout Bank Statement - Error Occurs", csProviderName);
+                                        iDynCnt = set_tpl_dyn_cstring(hTemplate,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+					PutField_CString(hTemplate, "funct", PD_EML_FUNCT_CHK_AUTO_UPL_POA);
+        	        	} else if (!strcmp(csNature,PD_NATURE_INTERMEDIATE)) {
+					sprintf(csTmp, "[%s] Auto Upload Intermediate Bank Statement - Error Occurs", csProviderName);
+                                        iDynCnt = set_tpl_dyn_cstring(hTemplate,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+					PutField_CString(hTemplate, "funct", PD_EML_FUNCT_CHK_AUTO_UPL_ITM);
+        	        	} else {
+        	        	        iRet = PD_ERR;
+        	        	}
+		
+        	        	PutField_CString(hTemplate, "source", PD_EML_SOURCE_BATCH);
+        	        	PutField_Char(hTemplate, "party_type", PD_TYPE_GLOBAL);
+        	        	PutField_CString(hTemplate, "party_id", PD_EML_PARTY_ID_BATCH);
+
+        	        	PutField_Int(hTemplate, "total_dyn", iDynCnt);
+
+				// Process Alert Email Template
+        	        	BOObjPtr = CreateObj(BOPtr, "BOAlertEmail", "ProcessTpl");
+        	        	if ((unsigned long)((*BOObjPtr)(hTemplate) != PD_OK)){
+DEBUGLOG(("CreateErrorAlertTpl: BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_auto_upload_error: CreateErrorAlertTpl: BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+					PutField_Int(hTemplate, "internal_error", iRet);
+                        	        iRet=INT_CODE_ERROR;
+        	        	} else {
+DEBUGLOG(("CreateErrorAlertTpl: BOAlertEmail:ProcessTpl Success\n"));
+        	       	 	}
+        		}
+		}
+
+        	hash_destroy(hTemplate);
+        	FREE_ME(hTemplate);
+	}
+
+DEBUGLOG(("CreateErrorAlertTpl: iRet = [%d]\n", iRet));
+	return iRet;
+}

@@ -1,0 +1,134 @@
+/*
+Partnerdelight (c)2013. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/09/05              Cody Chan
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "SmsMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "b64.h"
+#include "queue_defs.h"
+#include "internal.h"
+#include <zlib.h>
+#include "ObjPtr.h"
+
+char	cDebug;
+
+OBJPTR(Msg);
+OBJPTR(DB);
+
+void	SmsMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int BreakDownMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	
+	char    *csPtr;
+	char    *csTag;
+	char    *csTmp;
+        hash_t  *hRec;
+
+        hRec = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n",inMsg,inLen));
+
+        if (Str2Cls(hRec,(char*)inMsg,MY_SMS_TOKEN, MY_SMS_FIELD_TOKEN) == PD_OK) {	
+		csTag = (char*) malloc (PD_TMP_BUF_LEN +1);
+		csTmp = (char*) malloc (PD_TMP_BUF_LEN +1);
+/* process type */
+		if (GetField_CString(hRec,"process_type",&csPtr)) {
+                        PutField_CString(hOut,"process_type",csPtr);
+DEBUGLOG(("BreakDownMsg:: process_type = [%s]\n",csPtr));
+                }
+
+/* process code */
+		if (GetField_CString(hRec,"process_code",&csPtr)) {
+                        PutField_CString(hOut,"process_code",csPtr);
+DEBUGLOG(("BreakDownMsg:: process_code = [%s]\n",csPtr));
+                }
+/* sender */
+		if (GetField_CString(hRec,"sender",&csPtr)) {
+                        PutField_CString(hOut,"sender",csPtr);
+DEBUGLOG(("BreakDownMsg:: sender = [%s]\n",csPtr));
+                }
+/* text */
+		if (GetField_CString(hRec,"text",&csPtr)) {
+                        PutField_CString(hOut,"text",csPtr);
+DEBUGLOG(("BreakDownMsg:: text = [%s]\n",csPtr));
+                }
+/* scts */
+		if (GetField_CString(hRec,"scts",&csPtr)) {
+                        PutField_CString(hOut,"scts",csPtr);
+DEBUGLOG(("BreakDownMsg:: scts = [%s]\n",csPtr));
+		}
+/* tag */
+		if (GetField_CString(hRec,"tag",&csPtr)) {
+                        PutField_CString(hOut,"tag",csPtr);
+DEBUGLOG(("BreakDownMsg:: tag = [%s]\n",csPtr));
+		}
+/* has_massing_parts */
+		if (GetField_CString(hRec,"has_missing_parts",&csPtr)) {
+                        PutField_CString(hOut,"has_missing_parts",csPtr);
+DEBUGLOG(("BreakDownMsg:: has_missing_parts = [%s]\n",csPtr));
+		}
+/* smsc */
+		if (GetField_CString(hRec,"smsc",&csPtr)) {
+                        PutField_CString(hOut,"smsc",csPtr);
+DEBUGLOG(("BreakDownMsg:: smsc = [%s]\n",csPtr));
+		}
+/* ref_num */
+		if (GetField_CString(hRec,"ref_num",&csPtr)) {
+                        PutField_CString(hOut,"ref_num",csPtr);
+DEBUGLOG(("BreakDownMsg:: ref_num = [%s]\n",csPtr));
+		}
+/* sender_num_type */
+		if (GetField_CString(hRec,"sender_num_type",&csPtr)) {
+                        PutField_CString(hOut,"sender_num_type",csPtr);
+DEBUGLOG(("BreakDownMsg:: sender_num_type = [%s]\n",csPtr));
+		}
+/* seq_num */
+		if (GetField_CString(hRec,"seq_num",&csPtr)) {
+                        PutField_CString(hOut,"seq_num",csPtr);
+DEBUGLOG(("BreakDownMsg:: seq_num = [%s]\n",csPtr));
+		}
+/* total */
+		if (GetField_CString(hRec,"total",&csPtr)) {
+                        PutField_CString(hOut,"total",csPtr);
+DEBUGLOG(("BreakDownMsg:: sms_total = [%s]\n",csPtr));
+		}
+
+/* ip_address */
+		if (GetField_CString(hRec,"ip_addr",&csPtr)) {
+			PutField_CString(hOut,"ip_addr",csPtr);
+DEBUGLOG(("BreakDownMsg:: ip_address = [%s]\n",csPtr));
+		}
+
+
+		FREE_ME(csTag);
+		FREE_ME(csTmp);
+	}
+	else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+                iRet = PD_ERR;
+        }
+
+        hash_destroy(hRec);
+        FREE_ME(hRec);
+
+DEBUGLOG(("BreakDownMsg Exit\n"));
+
+	return iRet;
+}

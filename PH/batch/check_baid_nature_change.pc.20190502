@@ -1,0 +1,272 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/10/20              Dirk Wong 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char csApprovalDate[PD_DATE_LEN+1];
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+char cDebug;
+int iCnt=0;
+
+int iDynCnt=0;
+
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	hash_t *hContext;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("check_baid_nature_change Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_approval_date[PD_DATE_LEN];
+
+		varchar	v_fr_baid[PD_BAID_LEN+1];
+		varchar	v_fr_baid_name[PD_BAID_NAME_LEN+1];
+		varchar	v_fr_baid_nature[PD_DESC_LEN+1];
+		varchar	v_to_baid[PD_BAID_LEN+1];
+		varchar	v_to_baid_name[PD_BAID_NAME_LEN+1];
+		varchar	v_to_baid_nature[PD_DESC_LEN+1];
+		varchar	v_create_ts[PD_TIMESTAMP_LEN + 1];
+
+		short	ind_fr_baid = -1;
+		short	ind_fr_baid_name = -1;
+		short	ind_fr_baid_nature = -1;
+		short	ind_to_baid = -1;
+		short	ind_to_baid_name = -1;
+		short	ind_to_baid_nature = -1;
+		short	ind_create_ts = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_approval_date.len = strlen(csApprovalDate);
+	memcpy(hv_approval_date.arr,csApprovalDate,hv_approval_date.len);
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		
+		SELECT	a.from_baid,
+			(SELECT	obai_baid_name
+			   FROM	ol_bank_acct_id
+			  WHERE	obai_baid=a.from_baid) from_baid_name,
+			(SELECT	obc_desc
+			   FROM	ol_def_bank_acct_type
+			  WHERE	obc_type = (SELECT opd_bank_acct_type
+					      FROM ol_psp_detail, ol_bank_acct_id
+					     WHERE opd_psp_id = obai_psp_id and obai_baid=a.from_baid)) from_baid_nature,
+			a.to_baid,
+			(SELECT	obai_baid_name
+			   FROM	ol_bank_acct_id
+			  WHERE	obai_baid=a.to_baid) to_baid_name,
+			(SELECT	obc_desc
+			   FROM	ol_def_bank_acct_type
+			  WHERE	obc_type = (SELECT opd_bank_acct_type
+					       FROM ol_psp_detail, ol_bank_acct_id
+					      WHERE opd_psp_id = obai_psp_id and obai_baid=a.to_baid)) to_baid_nature,
+			TO_CHAR(a.approval_ts,'YYYY-MM-DD HH24:MI:SS') approval_ts
+		  FROM	(SELECT	tp1.otp_baid to_baid,
+				tp2.otp_baid from_baid,
+				max(th.oth_approval_timestamp) approval_ts
+			   FROM	ol_txn_header th, ol_txn_psp_detail tp1,ol_txn_psp_detail tp2
+			  WHERE	EXISTS (SELECT	null
+					  FROM	txn_code
+					 WHERE	tc_code in ('BTO','BTI','BOC','BOD','BIC','BID') AND oth_txn_code = tc_code)
+			    AND	oth_approval_date = :hv_approval_date
+			    AND	oth_org_txn_id IS NOT NULL
+			    AND	th.oth_txn_id = tp1.otp_txn_id
+			    AND	th.oth_org_txn_id= tp2.otp_txn_id
+			 GROUP BY
+				tp1.otp_baid,
+				tp2.otp_baid
+			 ORDER BY
+				max(th.oth_create_timestamp) DESC
+			) a;
+
+	EXEC SQL OPEN c_cursor_getinfo;
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_fr_baid:ind_fr_baid,
+			:v_fr_baid_name:ind_fr_baid_name,
+			:v_fr_baid_nature:ind_fr_baid_nature,
+			:v_to_baid:ind_to_baid,
+			:v_to_baid_name:ind_to_baid_name,
+			:v_to_baid_nature:ind_to_baid_nature,
+			:v_create_ts:ind_create_ts;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+DEBUGLOG(("No data found!\n"));
+			}
+			break;
+		}
+
+		if (ind_to_baid >= 0) {
+			sprintf(csTag,"fto_baid-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_to_baid.len,v_to_baid.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_to_baid_name >= 0) {
+			sprintf(csTag,"fto_baid_name-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_to_baid_name.len,v_to_baid_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_to_baid_nature >= 0) {
+			sprintf(csTag,"fto_baid_nature-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_to_baid_nature.len,v_to_baid_nature.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_fr_baid >= 0) {
+			sprintf(csTag,"ffr_baid-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_fr_baid.len,v_fr_baid.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_fr_baid_name >= 0) {
+			sprintf(csTag,"ffr_baid_name-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_fr_baid_name.len,v_fr_baid_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_fr_baid_nature >= 0) {
+			sprintf(csTag,"ffr_baid_nature-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_fr_baid_nature.len,v_fr_baid_nature.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_create_ts >= 0) {
+			sprintf(csTag,"fcreate_ts-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_create_ts.len,v_create_ts.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		iCnt++;
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+	if (iCnt > 0) {
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+		sprintf(csTmp, "BAID Nature Changed on PH Offline on %s",csApprovalDate);
+		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+		iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"stitle-0","SEC","stitle-0",0);
+		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"ftitle-0","STR","stitle-0",csTmp);
+
+		PutField_CString(hContext,"source","BATCH");
+		PutField_CString(hContext,"funct","BAID_CHG_NATURE");
+		PutField_Char(hContext,"party_type",'G');
+		PutField_CString(hContext,"party_id","000");
+
+		PutField_Int(hContext,"total_dyn",iDynCnt);
+
+		BOObjPtr = CreateObj(BOPtr,"BOAlertEmail","ProcessTpl");
+		if((unsigned long)((*BOObjPtr)(hContext) != PD_OK)){
+			iRet=INT_CODE_ERROR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_new_baid_alert BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+		}
+		else
+		{
+DEBUGLOG(("BOAlertEmail:ProcessTpl Success\n"));
+		}
+	}
+
+DEBUGLOG(("check_baid_nature_change normal exit!\n"));
+
+	FREE_ME(hContext);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("check_new_baid_alert error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+
+        char    c;
+	strcpy(csApprovalDate,"");
+
+        if (argc < 2) {
+                return PD_ERR;
+        }
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(csApprovalDate,optarg);
+                                break;
+                        default:
+                                return PD_ERR;
+                }
+        }
+
+	if (!strcmp(csApprovalDate,""))
+		return FAILURE;
+
+        return SUCCESS;
+}

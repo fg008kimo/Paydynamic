@@ -1,0 +1,428 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/10/10              Virginia Yun
+Add Settlement date and remarks(optional)	   2012/07/27		   LokMan Chow
+calaulate cost when MMS absent			   2013/01/29		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPST.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsPST(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char        *csTxnId = NULL;
+        char        *csPspId = NULL;
+        char        *csTxnCountry = NULL;
+        char        *csTxnCcy = NULL;
+        char        *csUpdateUser = NULL;  
+        char        *csTmp = NULL;
+	char        *csDate = NULL;
+        double       dAmt=0.0;
+        double       dFee=0.0;
+
+        //double       dBalance =0.0;
+        //double       dHold=0.0;
+        //char        *csClientId;
+        double       dTmp = 0.0;
+        double       dAvalBal = 0.0;
+
+	int	    iToMMS = PD_FALSE;
+	char	    *csMmsMode;
+
+        hash_t      *hRec,*hTxn,*hDetail;
+        //hTxn = (hash_t*) malloc (sizeof(hash_t));
+        //hash_init(hTxn,0);
+
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+
+        if(GetField_CString(hContext,"txn_seq",&csTxnId)){
+                PutField_CString(hResponse,"org_txn_seq",csTxnId);
+
+		PutField_CString(hContext, "from_txn_seq", csTxnId);
+DEBUGLOG(("Authorize::txn_seq= [%s]\n",csTxnId));
+        }
+        else{
+DEBUGLOG(("Authorize::txnid not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::txnid not found!!\n");
+                iRet=INT_INVALID_TXN;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        if(GetField_CString(hRequest,"add_user",&csUpdateUser)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csUpdateUser));
+                PutField_CString(hContext,"add_user",csUpdateUser);
+                PutField_CString(hContext,"update_user",csUpdateUser);
+        }
+
+        if(GetField_CString(hRequest,"psp_id",&csPspId)){
+DEBUGLOG(("Authorize::psp_id = [%s]\n",csPspId));
+                PutField_CString(hContext,"psp_id",csPspId);
+                PutField_CString(hContext,"org_psp_id",csPspId);
+        }
+        else{
+DEBUGLOG(("Authorize::psp_id not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::psp_id not found!!\n");
+                iRet=INT_PSP_ID_NOT_FOUND;
+
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+	if(GetField_CString(hRequest,"txn_country",&csTxnCountry)){
+                PutField_CString(hContext,"txn_country",csTxnCountry);
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTxnCountry));
+        }
+        else{
+                DBObjPtr = CreateObj(DBPtr,"DBPspCountry","GetPspCountry");
+                if((unsigned long) ((*DBObjPtr)(csPspId,rRecordSet))==PD_OK){
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while(hRec){
+                                if (GetField_CString(hRec,"country",&csTxnCountry)) {
+                                        PutField_CString(hContext,"txn_country",csTxnCountry);
+					PutField_CString(hRequest, "txn_country", csTxnCountry);
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTxnCountry));
+                                }
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                }
+                else{
+DEBUGLOG(("Authorize::txn_country not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::txn_country not found!!\n");
+                        iRet=INT_ERR;
+
+	                PutField_Int(hContext,"internal_error",iRet);
+                }
+                RecordSet_Destroy(rRecordSet);
+        }
+
+        if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTxnCcy));
+                PutField_CString(hContext,"txn_ccy",csTxnCcy);
+                PutField_CString(hContext,"net_ccy",csTxnCcy);
+		PutField_CString(hContext, "org_txn_ccy", csTxnCcy);
+        }
+        else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::ccy not found!!\n");
+                iRet=INT_CURRENCY_CODE_NOT_FOUND;
+
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+
+        if(GetField_Double(hContext,"txn_amt",&dAmt)){
+                PutField_Double(hContext,"txn_amt",dAmt);
+		PutField_Double(hContext, "org_txn_amt", dAmt);
+		PutField_Double(hContext, "org_dst_net_amt", dAmt);
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dAmt));
+        }
+        else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::txn_amt not found!!\n");
+                iRet=INT_PAY_AMOUNT_NOT_FOUND;
+
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* approval_date */
+        if(!GetField_CString(hRequest,"approval_date",&csDate)){
+                if(!GetField_CString(hContext,"PHDATE",&csDate)){
+DEBUGLOG(("Authorize::approval_date not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::approval_date not found!!\n");
+                        iRet=INT_INVALID_TXN;
+
+                	PutField_Int(hContext,"internal_error",iRet);
+                }
+                else {
+                        PutField_CString(hContext, "approval_date", csDate);
+DEBUGLOG(("Authorize::approval_date(phdate) = [%s]\n", csDate));
+                }
+        }
+        else {
+DEBUGLOG(("Authorize::approval_date = [%s]\n", csDate));
+                PutField_CString(hContext, "approval_date", csDate);
+        }
+
+/* settlement_date */
+        if(!GetField_CString(hRequest,"st_date",&csTmp)){
+                if(!GetField_CString(hContext,"PHDATE",&csTmp)){
+DEBUGLOG(("Authorize::settlement_date not found!!\n"));
+ERRLOG("TxnMgtByUsPST::Authorize::settlement_date not found!!\n");
+                        iRet=INT_INVALID_TXN;
+
+                	PutField_Int(hContext,"internal_error",iRet);
+                }
+                else {
+                        PutField_CString(hContext, "settlement_date", csTmp);
+DEBUGLOG(("Authorize::settlement_date(phdate) = [%s]\n", csTmp));
+                }
+        }
+        else {
+DEBUGLOG(("Authorize::settlement_date = [%s]\n", csTmp));
+                PutField_CString(hContext, "settlement_date", csTmp);
+        }
+/* report_date */
+        if(!GetField_CString(hRequest,"report_date",&csTmp)){
+DEBUGLOG(("Authorize::report_date not found!!\n"));
+                if(GetField_CString(hContext,"PHDATE",&csTmp)){
+                        PutField_CString(hContext, "report_date", csTmp);
+DEBUGLOG(("Authorize::report_date (PH date) = [%s]\n", csTmp));
+                }
+        }
+        else {
+                PutField_CString(hContext, "report_date", csTmp);
+DEBUGLOG(("Authorize::report_date = [%s]\n", csTmp));
+        }
+
+
+        if(GetField_CString(hRequest,"remark",&csTmp)){
+DEBUGLOG(("Authorize::remark= [%s]\n",csTmp));
+//                PutField_CString(hContext,"remark",csTmp);
+        }
+
+        PutField_CString(hContext,"process_code","000000");
+        PutField_CString(hContext,"process_type","0000");
+
+        //get Psp balance
+/*
+        if(iRet==PD_OK){
+        	hTxn = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hTxn,0);
+DEBUGLOG(("Authorize::Call DBPspBalance:GetBalance\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+                if ((*DBObjPtr)(csPspId, csTxnCountry, csTxnCcy, hTxn) == PD_OK) {
+
+                        if (GetField_Double(hTxn, "balance", &dBalance)) {
+DEBUGLOG(("GetBalance::balance = [%f]\n",dBalance));
+
+                        	if (GetField_Double(hTxn, "total_hold", &dHold)) {
+DEBUGLOG(("GetBalance::total_hold = [%f]\n",dHold));
+				}
+	
+                                if (((dBalance-dHold) < 0) || ((dBalance-dHold) < dAmt)) {
+DEBUGLOG(("GetBalance::insufficient balance [%f] txn_amt [%f]\n",dBalance-dHold, dAmt));
+                                        iRet=INT_INSUFFICIENT_FUND;
+                                }
+                                else {
+                                        //PutField_Double(hContext, "current_bal", dBalance);
+                                }
+                        }
+                }
+                else {
+ERRLOG("TxnMgtByUsPST::Authorize::GetBalance::Balance for PspId[%s] not found\n",csPspId);
+DEBUGLOG(("GetBalance::Balance for PspId[%s] not found\n", csPspId));
+                        iRet = INT_ERR;
+                }
+        }
+*/
+
+	//check if MMS mode is on
+	if (GetField_CString(hContext, "mms_mode", &csMmsMode)) {
+		if (!strcmp(csMmsMode, PD_ENABLE_MMSMODE)) {
+			iToMMS = PD_TRUE;
+		}
+	}
+
+	//cal psp cost
+	if(iRet==PD_OK  && iToMMS==PD_FALSE){
+		PutField_Char(hContext,"txn_type",PD_TYPE_SETTLEMENT);
+DEBUGLOG(("TxnMgtByUsPST::Call BOPsp CalPspCosts\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOPsp","CalPspCosts");
+		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("TxnMgtByUsPST::CalPspFee() result = [%d]\n",iRet));
+
+		if(iRet==PD_OK){
+			if(GetField_Double(hContext,"precal_fee",&dFee)){
+				PutField_Double(hContext,"service_fee",dFee);
+DEBUGLOG(("TxnMgtByUsPST::CalPspFee() precal_fee = [%lf]\n",dFee));
+			}
+		}
+	}
+
+
+	// select for update, hold record
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBPspBalance:GetAvalPspBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetAvalPspBalance");
+                if ((*DBObjPtr)(csPspId,csTxnCcy, csTxnCountry, &dAvalBal) != PD_OK) {
+
+ERRLOG("TxnMgtByUsPST::Authorize::PspBalance:GetAvalPspBalance::Balance for PspId[%s] not found\n",csPspId);
+DEBUGLOG(("GetAvalPspBalance::Balance for PspId[%s] not found\n", csPspId));
+
+                        iRet = INT_ERR;
+
+                	PutField_Int(hContext,"internal_error",iRet);
+                }
+		else {
+
+DEBUGLOG(("GetAvalPspBalance::Aval balance = [%f]\n",dAvalBal));
+
+			if (dAvalBal < 0 || dAvalBal < (dAmt+dFee)) {
+DEBUGLOG(("GetAvalPspBalance::insufficient balance [%f] < txn_amt [%f] + fee [%f]\n",dAvalBal, dAmt, dFee));
+                                        iRet=INT_INSUFFICIENT_FUND;
+
+                			PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+ 
+       //Update Psp Balance
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBPspBalance:DebitBalance\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+                if ((*DBObjPtr)(csPspId,csTxnCountry, csTxnCcy, PD_PSP_BAL, (dAmt+dFee), csUpdateUser) != PD_OK) {
+DEBUGLOG(("Authorize::DBPspBalance:DebitBalance Failed\n"));
+                        iRet = INT_ERR;
+                } 
+        } 
+
+	//PutField_CString(hRequest, "mms_dc_ind", PD_MMS_DR);  
+
+/*
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBTransaction:AddDetail\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+                if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK)
+                        iRet = INT_ERR;
+        }
+*/
+        if(iRet==PD_OK){
+                hDetail = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hDetail,0);
+		PutField_CString(hDetail,"txn_seq",csTxnId);
+		PutField_CString(hDetail,"txn_country",csTxnCountry);
+DEBUGLOG(("Authorize::Call DBTransaction:UpdateDetail\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                if((unsigned long) ((*DBObjPtr)(hDetail))!=PD_OK)
+                        iRet = INT_ERR;
+
+		FREE_ME(hDetail);
+        }
+
+
+        // for handling TXNPSPDETAIL
+        if(iRet==PD_OK){
+                if (GetField_CString(hContext, "settlement_date", &csTmp)) {
+DEBUGLOG(("Authorize::PHDATE = [%s]\n",csTmp));
+                    PutField_CString(hContext, "txn_date", csTmp);
+                }
+
+DEBUGLOG(("Authorize::Call DBTxnPspDetail:Add\n"));
+		PutField_CString(hContext, "desc", "Psp Settlement");
+
+                DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Add");
+                if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK) {
+                        iRet = INT_ERR;
+                } 
+        }
+
+         
+        if(iRet==PD_OK){
+                // Get Balance again
+                hTxn = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hTxn,0);
+DEBUGLOG(("Authorize::Call DBPspBalance:GetBalance(2)\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+                if ((*DBObjPtr)(csPspId, csTxnCountry, csTxnCcy, hTxn) == PD_OK) {
+
+                        if (GetField_Double(hTxn, "balance", &dTmp)) {
+DEBUGLOG(("GetBalance(2)::balance = [%f]\n",dTmp));
+                                PutField_Double(hContext, "bal", dTmp);
+                        }
+
+                        if (GetField_Double(hTxn, "total_float", &dTmp)) {
+DEBUGLOG(("GetBalance(2)::total_float = [%f]\n",dTmp));
+                                PutField_Double(hContext, "total_float", dTmp);
+                        }
+
+                        if (GetField_Double(hTxn, "total_hold", &dTmp)) {
+DEBUGLOG(("GetBalance(2)::total_hold = [%f]\n",dTmp));
+                                PutField_Double(hContext, "total_hold", dTmp);
+                        }
+
+
+DEBUGLOG(("Authorize::Call DBTxnPspDetail:Update\n"));
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+                        if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK) {
+                                iRet = INT_ERR;
+                        } 
+                }
+                else {
+ERRLOG("TxnMgtByUsPST::Authorize::GetBalance(2)::Balance for PspId[%s] not found\n",csPspId);
+DEBUGLOG(("GetBalance(2)::Balance for PspId[%s] not found\n", csPspId));
+                        iRet = INT_ERR;
+                }
+
+        }
+
+	if (iRet == PD_OK) {
+		PutField_Char(hContext, "party_type", PD_TYPE_PSP);
+		PutField_CString(hContext, "amount_type", PD_DR);
+DEBUGLOG(("Authorize::Call BOTxnElements:AddTxnAmtElement\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+                if ((unsigned long)((*BOObjPtr)(hContext)) != PD_OK) {
+                        iRet = INT_ERR;
+                }
+	}
+	if (iRet==PD_OK && dFee>0.0) {
+		PutField_CString(hContext, "amount_type", PD_DR);
+		PutField_CString(hContext, "src_txn_fee_ccy", csTxnCcy);
+		PutField_Double(hContext, "src_txn_fee", dFee);
+DEBUGLOG(("Authorize::Call BOTxnElements:AddTxnFeeElements\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+                if ((unsigned long)((*BOObjPtr)(hContext)) != PD_OK) {
+                        iRet = INT_ERR;
+                }
+	}
+
+	if(iRet==PD_OK){
+		PutField_CString(hContext,"sub_status",PD_APPROVED);
+	}
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+/*
+        if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+*/
+
+DEBUGLOG(("TxnMgtByUsPST Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

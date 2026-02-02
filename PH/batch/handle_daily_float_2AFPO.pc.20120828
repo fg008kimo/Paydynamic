@@ -1,0 +1,487 @@
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+Init Version                                       2012/08/27              Cody Chan
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+//char    cs_cutoff_date[PD_DATE_LEN + 1];
+char    cDebug = 'Y';
+
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int process_main(const char* csPostingDate);
+int process_bucket(const char* csPostingDate,const char* csServiceCode,int iReleasePeriod);
+int CalReservedAmount(const char* csMerchantId,
+			const char* csCountryId,
+			const char* csCcy,
+			const char* csServiceCode,
+			const char* csDate,
+			double	*dAmt);
+int     GetClientId(const unsigned char* csMerchantId,
+                    unsigned char* csClientId);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+	char	csPostingDate[PD_DATE_LEN +1];
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+       // 	printf("usage:  -d cutoff_date\n");
+                return (iRet);
+        }
+	GetCurrHostPostingDate((unsigned char*)csPostingDate);
+DEBUGLOG(("today is [%s]\n",csPostingDate));
+
+	if (is_weekend(csPostingDate) != PD_TRUE) {
+        	iRet = process_main(csPostingDate);
+	}
+	else {
+DEBUGLOG(("today is weekend.... skip....\n"));
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_main(const char* csPostingDate)
+{
+        int     iRet = SUCCESS;
+
+DEBUGLOG(("process_main\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	v_service_code[PD_SERVICE_CODE_LEN + 1];
+		varchar	v_txn_country[PD_COUNTRY_LEN +1];
+		short	v_release_period;
+
+		short	ind_service_code = -1;
+		short	ind_txn_country = -1;
+		short	ind_release_period = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_get_service CURSOR FOR
+		SELECT 	sc_code,
+			sc_txn_country,
+           		rs_release_period
+ 		  FROM  def_service_code,
+         		rule_service_release_period
+ 		 WHERE sc_code = rs_service_code
+                   AND rs_disabled = 0
+                   AND rs_release_type = 'AVAPO';
+
+        EXEC SQL OPEN c_cursor_get_service;
+        do {    
+                EXEC SQL FETCH c_cursor_get_service
+                INTO
+			v_service_code:ind_service_code,
+			v_txn_country:ind_txn_country,
+			v_release_period:ind_release_period;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+		if (ind_service_code >= 0) {
+			v_service_code.arr[v_service_code.len] = '\0';	
+DEBUGLOG(("service code = [%s]\n",v_service_code.arr));
+		}	
+
+		if (ind_txn_country >= 0) {
+			v_txn_country.arr[v_txn_country.len] = '\0';	
+DEBUGLOG(("txn_country = [%s]\n",v_txn_country.arr));
+		}	
+		if (ind_release_period >= 0) {
+DEBUGLOG(("release period = [%d]\n",v_release_period));
+		}
+
+
+		if (is_holidays((const char*)v_txn_country.arr,csPostingDate) != PD_TRUE) {
+			iRet = process_bucket(csPostingDate,(const char*)v_service_code.arr,v_release_period);
+		}
+		else {
+DEBUGLOG(("today is holiday for %s... skip....\n",v_txn_country.arr));
+		}
+
+	}while(PD_TRUE);
+        EXEC SQL CLOSE c_cursor_get_service;
+
+	return	iRet;
+
+sql_error:
+    DEBUGLOG(("process_main error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_daily_float::process_main sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_service;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int parse_arg(int argc,char **argv)
+{
+        return SUCCESS;
+}
+
+
+
+int process_bucket(const char* csPostingDate,const char* csServiceCode,int iReleasePeriod)
+{
+        int     iRet = SUCCESS;
+        char    csClientId[PD_CLIENT_ID_LEN+1];
+
+        hash_t* hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+DEBUGLOG(("*****Process Bucket Start*****\n"));
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar hv_ph_posting_date[PD_DATE_LEN];
+                varchar hv_service_code[PD_SERVICE_CODE_LEN];
+                short   hv_release_period;
+
+                varchar v_posting_date[PD_DATE_LEN + 1];
+                varchar v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+                varchar v_country_id[PD_COUNTRY_LEN + 1];
+                varchar v_currency_id[PD_CCY_ID_LEN + 1];
+                varchar v_service_code[PD_SERVICE_CODE_LEN + 1];
+                double  v_bal;
+		double	v_total_payout;
+
+                short   ind_posting_date = -1;
+                short   ind_merchant_id = -1;
+                short   ind_bal= -1;
+                short   ind_currency_id= -1;
+                short   ind_country_id= -1;
+                short   ind_service_code= -1;
+		short	ind_total_payout = -1;
+
+
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_ph_posting_date.len = strlen(csPostingDate);
+        memcpy(hv_ph_posting_date.arr,csPostingDate,hv_ph_posting_date.len);
+DEBUGLOG(("process_bucket ph posting date = [%.*s]\n",hv_ph_posting_date.len,hv_ph_posting_date.arr));
+
+        hv_service_code.len = strlen(csServiceCode);
+        memcpy(hv_service_code.arr,csServiceCode,hv_service_code.len);
+DEBUGLOG(("process_bucket service_code  = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+
+        hv_release_period = iReleasePeriod;
+DEBUGLOG(("process_bucket release_period = [%d]\n",hv_release_period));
+
+
+        EXEC SQL DECLARE c_cursor_get_bucket CURSOR FOR
+		  SELECT mb_posting_date,
+         		mb_merchant_id,
+         		mb_country_id,
+         		mb_currency_id,
+         		mb_service_code,
+         		SUM (mb_bal) AS mb_bal
+    		FROM merchant_bucket
+               WHERE mb_service_code = :hv_service_code
+                 AND mb_bucket_type = 'FT'
+                 AND mb_released_to_af = 0
+                 AND mb_released_date <= to_char((to_date(:hv_ph_posting_date,'yyyymmdd') - :hv_release_period ),'YYYYMMDD')
+            GROUP BY mb_posting_date,
+         	     mb_merchant_id,
+                     mb_country_id,
+                     mb_currency_id,
+                     mb_service_code
+           ORDER BY mb_posting_date;
+
+
+        EXEC SQL OPEN c_cursor_get_bucket;
+        do {
+                EXEC SQL FETCH c_cursor_get_bucket
+                INTO
+                        v_posting_date:ind_posting_date,
+                        v_merchant_id:ind_merchant_id,
+                        v_country_id:ind_country_id,
+                        v_currency_id:ind_currency_id,
+                        v_service_code:ind_service_code,
+                        v_bal:ind_bal;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+                iRet = PD_OK;
+
+                hash_init(hTxn,0);
+
+                PutField_CString(hTxn,"cutoff_date",csPostingDate);
+
+/* posting_date */
+                if (ind_posting_date >= 0){
+                        v_posting_date.arr[v_posting_date.len]='\0';
+                        PutField_CString(hTxn,"posting_date",(const char*)v_posting_date.arr);
+DEBUGLOG(("Process Bucket: posting_date =[%.*s]\n",v_posting_date.len,v_posting_date.arr));
+                }
+
+/* merchant_id */
+                if (ind_merchant_id >= 0 ){
+                        v_merchant_id.arr[v_merchant_id.len]='\0';
+                        PutField_CString(hTxn,"merchant_id",(const char*)v_merchant_id.arr);
+DEBUGLOG(("Process Bucket: merchant_id =[%.*s]\n",v_merchant_id.len,v_merchant_id.arr));
+                        if(GetClientId((const unsigned char *)v_merchant_id.arr,( unsigned char *)csClientId)==PD_OK){
+                                PutField_CString(hTxn,"client_id",csClientId);
+                        }
+                }
+
+
+/* country_id */
+                if (ind_country_id >= 0 ){
+                        v_country_id.arr[v_country_id.len]='\0';
+                        PutField_CString(hTxn,"country_id",(const char*)v_country_id.arr);
+DEBUGLOG(("Process Bucket: country_id =[%.*s]\n",v_country_id.len,v_country_id.arr));
+                }
+
+/* currency_id */
+                if (ind_currency_id >= 0 ){
+                        v_currency_id.arr[v_currency_id.len]='\0';
+                        PutField_CString(hTxn,"currency_id",(const char*)v_currency_id.arr);
+DEBUGLOG(("Process Bucket: currency_id =[%.*s]\n",v_currency_id.len,v_currency_id.arr));
+                }
+
+
+/* service_code */
+                if (ind_service_code >= 0 ){
+                        v_service_code.arr[v_service_code.len]='\0';
+                        PutField_CString(hTxn,"service_code",(const char*)v_service_code.arr);
+DEBUGLOG(("Process Bucket: service_code =[%.*s]\n",v_service_code.len,v_service_code.arr));
+                }
+
+/* bal */
+                if (ind_bal >= 0 ){
+DEBUGLOG(("Process Bucket: bal = [%lf]\n",v_bal));
+		}
+		else {
+			v_bal = 0.0;
+		}
+
+		if (v_bal > 0) {
+DEBUGLOG(("Process Bucket: **********************\n"));
+			double	dReleaseAmount = 0.0;
+			double	dDailyReservedAmt = 0.0;
+			double	dTotalReservedAmt = 0.0;
+			double	dCurrentBal = 0.0;
+			double	dTotalHold = 0.0;
+			double	dFinPayout = 0.0;
+			double	dAvalForRelease = 0.0;
+			EXEC SQL EXECUTE
+                	BEGIN
+				release_pkg.merchant_total_payout_amount(:hv_ph_posting_date,:v_merchant_id,:v_service_code,:v_currency_id,:v_country_id,:v_total_payout);
+                	END;
+        		END-EXEC;
+
+			if (ind_total_payout <0 ) {
+				v_total_payout = 0;
+			}
+DEBUGLOG(("total pay out for [%s][%s][%s] = [%f]\n",v_service_code.arr,v_currency_id.arr,v_merchant_id.arr,v_total_payout));
+
+			if (iRet == PD_OK) {
+DEBUGLOG(("process bucket: daily reserved amount for [%s] is [%f]\n",csPostingDate,dDailyReservedAmt));
+                        	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValuesForUpdate");
+                               	iRet = (unsigned long)(DBObjPtr)((const char*) v_merchant_id.arr,
+                               		(const char*)v_currency_id.arr,
+                                       	(const char*)v_country_id.arr,
+                                       	(const char*)v_service_code.arr,
+                                       	hTxn);
+                                if (iRet == PD_OK) {
+                                        if (!GetField_Double(hTxn,"total_reserved_amount",&dTotalReservedAmt)) {
+                                                dTotalReservedAmt = 0.0;
+                                        }
+DEBUGLOG(("proccess bucket: total reserved amt = [%f]\n",dTotalReservedAmt));
+                                        if (!GetField_Double(hTxn,"current_bal",&dCurrentBal)) {
+                                                dCurrentBal = 0.0;
+                                        }
+DEBUGLOG(("proccess bucket: current bal = [%f]\n",dCurrentBal));
+                                        if (!GetField_Double(hTxn,"total_hold",&dTotalHold)) {
+                                                dTotalHold = 0.0;
+                                        }
+DEBUGLOG(("proccess bucket: total hold = [%f]\n",dTotalHold));
+
+                                        if (!GetField_Double(hTxn,"fundin_payout",&dFinPayout)) {
+                                                dFinPayout = 0.0;
+                                        }
+DEBUGLOG(("proccess bucket: Fund in for Payout = [%f]\n",dFinPayout));
+				}
+			}
+
+			dReleaseAmount = v_bal - v_total_payout;
+			if (dReleaseAmount > 0) {
+DEBUGLOG(("trying to release [%f] for [%s][%s][%s]\n",v_service_code.arr,v_currency_id.arr,v_merchant_id.arr,dReleaseAmount));
+				iRet = CalReservedAmount((const char*)v_merchant_id.arr,
+							(const char*)v_country_id.arr,
+							(const char*)v_currency_id.arr,
+							(const char*)v_service_code.arr,
+							csPostingDate,
+							&dDailyReservedAmt);
+
+					dAvalForRelease = dCurrentBal - dTotalHold - dFinPayout;
+DEBUGLOG(("proccess bucket: AvalForRelease [%f] = cBal [%f] - Hold[%f] - FinPO[%f]\n",dAvalForRelease,dCurrentBal,dTotalHold,dFinPayout));
+DEBUGLOG(("proccess bucket: ReleaseAmount[%f] = Yesterday Float [%f] - Total PO [%f]\n",dReleaseAmount,v_bal,v_total_payout));
+				if (dAvalForRelease < dReleaseAmount) {
+					dReleaseAmount = dAvalForRelease;
+				}
+					
+			}
+			else {
+DEBUGLOG(("Do not release float since Float Balance is Zer0\n"));
+			}
+			
+		}
+		else {
+DEBUGLOG(("Process Bucket: float was zer0, skip!!!\n"));
+		}
+
+
+                hash_destroy(hTxn);
+        }
+        while(PD_TRUE && iRet == PD_OK);
+
+ 	EXEC SQL CLOSE c_cursor_get_bucket;
+        if (iRet == PD_OK)  {
+                iRet = SUCCESS;
+                TxnCommit();
+        }
+        else
+                iRet = FAILURE;
+
+        if(iRet==SUCCESS){
+DEBUGLOG(("Process Bucket Normal Exit\n"));
+        }
+        else{
+DEBUGLOG(("Process Bucket Error[%d]\n",iRet));
+        }
+
+        FREE_ME(hTxn);
+        return iRet;
+
+sql_error:
+    DEBUGLOG(("process_bucket error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_daily_float::process_bucket sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_bucket;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int CalReservedAmount(const char* csMerchantId,
+			const char* csCountryId,
+			const char* csCcy,
+			const char* csServiceCode,
+			const char* csDate,
+			double* dAmt)
+{
+	int	iRet = PD_OK;
+	double	dDailyAmt = 0.0;
+
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","GetReservedAmtForDate");
+	iRet = (unsigned long)(DBObjPtr)(csMerchantId,
+                                                csCountryId,
+                                                csCcy,
+                                                csServiceCode,
+						csDate,
+                                                &dDailyAmt);
+DEBUGLOG(("CalReservedAmount Reserved Amt for today is [%f]\n",dDailyAmt));
+
+	return iRet;
+}
+
+int     GetClientId(const unsigned char* csMerchantId,
+                    unsigned char* csClientId)
+{
+        int iRet = PD_ERR;
+        EXEC SQL WHENEVER SQLERROR GOTO getmerchant_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_merchant_id[PD_MERCHANT_ID_LEN];
+
+                varchar         v_client_id[PD_CLIENT_ID_LEN +1];
+                short           ind_client_id = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_merchant_id.len = strlen((const char*)csMerchantId);
+        memcpy(hv_merchant_id.arr,(const char*)csMerchantId,hv_merchant_id.len);
+DEBUGLOG(("GetMerchant merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+
+        EXEC SQL SELECT client_id
+                INTO    :v_client_id:ind_client_id
+                FROM    merch_detail
+                WHERE   merchant_id = :hv_merchant_id;
+
+        if (ind_client_id >= 0) {
+                        v_client_id.arr[v_client_id.len] = '\0';
+                        strcpy((char*)csClientId,(const char*)v_client_id.arr);
+DEBUGLOG(("GetMerchant client_id = [%s]\n",csClientId));
+                        iRet=PD_OK;
+                }
+
+        return iRet;
+
+getmerchant_error:
+DEBUGLOG(("getmerchant_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+}

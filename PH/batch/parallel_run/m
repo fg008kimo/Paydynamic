@@ -1,0 +1,761 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/12/18              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "../batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "par_txn_handler.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "par_settlement_handler_2.h"
+#include "pr_bo_funct.h"
+#include "pr_par_funct.h"
+#include "pr_par_funct_2.h"
+#include "pr_log_funct.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_CHAR		0x0D
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+
+char    cDebug;
+
+int CreateNewSettlementTxn (hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+
+int  process_settlement_approve(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int  process_settlement_declined(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int  process_settlement_adj(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int  process_settlement_deliver(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+
+
+
+int settlement_handler_2(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+
+
+	char	*csTxnStatus;
+
+	hash_t 	*hContext, *hRequest, *hResponse;
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+	hash_init (hContext, 0);
+	hash_init (hRequest, 0);
+	hash_init (hResponse, 0);
+
+
+DEBUGLOG(("par_settlement_handler_2:: START\n"));
+
+	iRet = AssignTxnRecordDetail(hMyHash);
+DEBUGLOG(("par_settlement_handler_2:: AssignTxnRecordDetail Ret [%d]\n", iRet));
+
+	if (iRet == SUCCESS) {
+		GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED")  ||
+		    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+			//iRet = process_settlement_adj(hMyHash, hContext, hRequest, hResponse);
+
+DEBUGLOG(("par_settlement_hanedler_2:: Unexpected status [%s]\n", csTxnStatus));
+		} else {
+		
+			iRet = CreateNewSettlementTxn(hMyHash, hContext, hRequest, hResponse);
+		}
+	}
+
+
+	if (iRet == SUCCESS) {
+		GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_PENDING"))  {
+DEBUGLOG(("par_settlement_handler_2:: Pending (handle by CreateNewSettlementTxn)\n")); 
+		}
+
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_APPROVED")) {
+			iRet = process_settlement_approve(hMyHash, hContext, hRequest, hResponse);
+		}
+
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DECLINED")) {
+			iRet = process_settlement_declined(hMyHash, hContext, hRequest, hResponse);
+		}
+
+		/*
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED")  ||
+		    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+			//iRet = process_settlement_adj(hMyHash, hContext, hRequest, hResponse);
+
+DEBUGLOG(("par_settlement_hanedler_2:: Unexpected status [%s]\n", csTxnStatus));
+		}
+		*/
+
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_DELIVERED")) {
+			iRet = process_settlement_deliver(hMyHash, hContext, hRequest, hResponse);
+		}
+
+		if (iRet == SUCCESS) {
+
+			// cancel and spoiled updated to skip 
+			if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED") ||
+                            !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+				iRet = UpdateProcessResult(hMyHash, "ST_SKIP");
+			} else {
+				//Update to "COMPLETE"
+				iRet = UpdateProcessResult(hMyHash, "COMPLETE");
+			}
+		}
+	}
+	
+	
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+
+	return iRet;
+}
+
+
+
+int CreateNewSettlementTxn (hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTxnSeq = strdup("");
+	char	*csVNCRefNum;
+	char	*csTxnStatus;
+	char	*csTxnCode;
+	char	*csTmp;
+
+        char    csDate[PD_DATE_LEN + 1];
+        char    csTime[PD_TIME_LEN + 1];
+
+	char	*csLocalDate;
+	char	*csLocalTime;
+	char	csLocalDateTime[PD_DATE_LEN + PD_TIME_LEN + 1];
+	
+	int	iNewRecord = PD_FALSE;
+	int	iRecExists = PD_FALSE;
+	
+	double	dAmount = 0.0;
+
+	GetField_Int(hMyHash, "record_exists", &iRecExists);
+	GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+	PutField_Int(hContext, "db_commit", PD_FALSE);
+
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: txn_status [%s]\n", csTxnStatus)); 
+
+	if  (iRecExists == PD_FALSE) {
+		iNewRecord = PD_TRUE;
+	} else {
+		if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED") ||
+		    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+			iNewRecord = PD_TRUE;  // handle as adjustment
+		}
+	}
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn:iNewRecord [%d]\n", iNewRecord));
+
+
+	if (iNewRecord == PD_FALSE) {
+		GetField_CString(hMyHash, "org_txn_id", &csTxnSeq);
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn:org_txn_id [%s]\n", csTxnSeq));
+	} else {
+
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+		strcpy(csTxnSeq, (*DBObjPtr)());
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn:create a new txn seq [%s]\n", csTxnSeq));
+	}
+	PutField_CString(hContext, "txn_seq", csTxnSeq);
+
+	PutField_CString(hContext, "channel_code", PD_CHANNEL_MGT);
+
+	if (!strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_CANCELED") ||
+	    !strcmp(csTxnStatus, "SETTLEMENT_MERCHANT_SPOILED")) {
+		GetField_CString(hMyHash, "reversal_txn_code", &csTxnCode);
+	} else {
+		GetField_CString(hMyHash, "txn_code", &csTxnCode);
+	}
+
+	PutField_CString(hContext, "txn_code", csTxnCode);
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: txn_code [%s]\n", csTxnCode));
+
+
+//        if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+//DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: post_date [%s]\n", csTmp));
+
+		if (iNewRecord == PD_FALSE) {
+			GetField_CString(hMyHash, "txn_date", &csTmp);
+			//PutField_CString(hMyHash, "post_date", csTmp);
+
+			PutField_CString(hContext, "PHDATE", csTmp);
+			PutField_CString(hContext, "host_posting_date", csTmp);
+		} else {
+			GetField_CString(hMyHash, "txn_date", &csTmp);			
+	
+
+			PutField_CString(hContext, "PHDATE", csTmp);
+			PutField_CString(hContext, "host_posting_date", csTmp);
+		}	
+//        }
+
+	/*
+        if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+                //PutField_CString(hRequest, "transmission_datetime",csTmp);
+                PutField_CString(hContext, "transmission_datetime",csTmp);
+
+                strncpy(csDate, csTmp, PD_DATE_LEN);
+                csDate[PD_DATE_LEN] = '\0';
+                strncpy(csTime, csTmp + PD_DATE_LEN, PD_TIME_LEN);
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: tm_date [%s] tm_time[%s]\n", csDate, csTime));
+
+                PutField_CString(hRequest, "tm_date", csDate);
+                PutField_CString(hRequest, "tm_time", csTime);
+        }
+	*/
+
+        if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+                PutField_CString(hContext, "local_tm_date", csTmp);
+	}  
+
+        if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+                PutField_CString(hContext, "local_tm_time", csTmp);
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: local_tm_time [%s]\n", csTmp));
+        }
+
+        if (GetField_CString(hMyHash, "local_tm_date", &csLocalDate) &&
+            GetField_CString(hMyHash, "local_tm_time", &csLocalTime)) {
+
+                PutField_CString(hRequest, "tm_date", csLocalDate);
+                PutField_CString(hRequest, "tm_time", csLocalTime);
+
+		memset(csLocalDateTime, 0, sizeof(csLocalDateTime));
+		sprintf(csLocalDateTime, "%s%s", csLocalDate, csLocalTime);
+
+		PutField_CString(hContext, "transmission_datetime",csLocalDateTime);	
+
+	}
+
+
+        if (GetField_CString(hMyHash, "remark", &csTmp)) {
+                PutField_CString(hRequest, "remark", csTmp);
+        }
+
+        PutField_CString(hContext, "process_type", PD_PROCESS_TYPE_DEF);
+        PutField_CString(hContext, "process_code", PD_PROCESS_CODE_DEF); 
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+                PutField_CString(hRequest, "merchant_id", csTmp);
+                PutField_CString(hContext, "merchant_id", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "service", &csTmp)) {
+                PutField_CString(hRequest, "service_code", csTmp);
+                PutField_CString(hContext, "service_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+                PutField_CString(hRequest, "txn_ccy", csTmp);
+                PutField_CString(hContext, "request_ccy", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "country", &csTmp)) {
+                PutField_CString(hRequest, "txn_country", csTmp);
+                PutField_CString(hContext, "txn_country", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+DEBUGLOG(("client_ip = [%s]\n", csTmp));
+                PutField_CString(hRequest, "ip_addr", csTmp);
+	}
+
+
+	PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+	PutField_CString(hContext, "add_user", PD_UPDATE_USER);
+
+	if (iNewRecord == PD_TRUE) {
+		if (iRet == SUCCESS) {
+
+			ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","AddTxnLog");
+
+			if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: call MGTChannel.AddTxnLog  SUCC!\n"));
+                        }
+                        else {
+                                iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: call MGTChannel.AddTxnLog FAILED!\n"));
+                        }
+
+			if (iRet == SUCCESS) {
+				// for transmission_datetime, tm_date
+				/*
+				hash_t *hDateTxn;
+				hDateTxn= (hash_t *)malloc(sizeof(hash_t));
+				hash_init (hDateTxn, 0);
+
+				PutField_CString(hDateTxn, "txn_seq", csTxnSeq);
+
+				if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+					PutField_CString(hDateTxn, "transmission_datetime",csTmp);
+
+					strncpy(csDate, csTmp, PD_DATE_LEN);
+					csDate[PD_DATE_LEN] = '\0';
+
+                			PutField_CString(hDateTxn, "tm_date", csDate);
+        			}
+
+DEBUGLOG(("par_settlement_handler_2:: special cater transmission_datetime!\n"));
+                        	DBObjPtr = CreateObj(DBPtr, "DBTransaction","Update");
+
+				if ((unsigned long)((*DBObjPtr)(hDateTxn)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: call DBTransaction.Update SUCC!\n"));
+                        	}
+				else {
+					iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: call DBTransaction.Update FAILED!\n"));
+                        	}
+
+
+				hash_destroy(hDateTxn);
+				FREE_ME(hDateTxn);
+				*/
+			}
+
+		}
+
+		if (iRet == SUCCESS) {
+			/* Check Merchant */
+DEBUGLOG(("par_settlement_handler_2::call BOMerchant.GetMerchantTxnInfo\n"));
+
+                        BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantTxnInfo");
+                        iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+
+DEBUGLOG(("par_settlement_handler_2::BOMerchant.GetMerchantTxnInfo return [%d]\n",iRet));
+                        if (iRet == SUCCESS) {
+                                if (GetField_CString(hContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("par_settlement_handler_2::BOMerchant.GetMerchantTxnInfo merchant_client_id [%s]\n", csTmp));
+                                }
+                        }
+                }
+		
+		if (iRet == SUCCESS) {
+			if (GetField_Double(hMyHash, "amount", &dAmount)) {
+				PutField_Double(hRequest, "txn_amt", dAmount);
+				PutField_Double(hContext, "request_amt", dAmount);
+				PutField_Double(hContext, "txn_amt", dAmount);
+			}
+
+			PutField_CString(hRequest, "party", "M");
+			//PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+
+			if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+				PutField_CString(hContext, "request_ccy", csTmp);
+			}
+
+		
+DEBUGLOG(("par_settlement_handler_2::Call BOParSettlement:ProcessSettlementTxn\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOParSettlement","ProcessSettlementTxn");
+			iRet = (unsigned long) (*BOObjPtr)(hContext,hRequest,hResponse);
+		}
+
+		PutField_Char(hContext,"status",PD_PROCESSING);	
+		PutField_Int(hContext, "do_logging", PD_ADD_LOG);
+
+		if (iRet == SUCCESS) {
+
+			ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnLog");
+
+			if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: call MGTChannel.UpdateTxnLog  SUCC!\n"));
+                        }
+                        else {
+                                iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: call MGTChannel.UpdateTxnLog FAILED!\n"));
+                        }
+		}
+
+        	if (iRet == SUCCESS) {
+                	if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+                        	PutField_CString(hContext, "vnc_ref_num", csVNCRefNum);
+
+				if (UpdateHeaderVNCRef(hContext) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::CreateNewSettlementTxn: updated vnc_ref_num succ!\n"));
+        	                }
+				else {
+DEBUGLOG(("par_settlment_handler_2::CreateNewSettlementTxn: updated vnc_ref_num fail!\n"));
+                                	iRet = FAILURE;
+                        	}
+                	}
+        	}		
+	}
+
+	FREE_ME(csTxnSeq);
+
+	return iRet;	
+}
+
+
+
+
+int  process_settlement_approve(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp = NULL;
+	//double	dTmp = 0.0;
+
+	//char	*csMID = NULL;
+	//char	*csCcy = NULL;
+	//char	*csCountry = NULL;
+	//char	*csService = NULL;
+
+	//double	dOpenBal = 0.0;
+	//double	dTxnAmt = 0.0;
+	//double  dMarkupAmt = 0.0;
+	//double  dExRate = 0.0;
+
+	//double	dAmount =0.0;
+	//double	dFee=0.0;
+
+	//char	csDate[PD_DATE_LEN + 1];
+
+
+	PutField_CString(hContext, "txn_code", PD_SETTLEMENT_APPROVAL);
+	//PutField_CString(hRequest, "txn_code", PD_SETTLEMENT_APPROVAL);
+
+	PutField_Int(hContext, "do_logging", PD_UPDATE_LOG_ONLY);
+
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+		PutField_CString(hRequest, "org_txn_seq", csTmp);
+		PutField_CString(hContext, "from_txn_seq", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+		PutField_CString(hRequest, "dst_txn_ccy", csTmp);
+	}
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::(approve) Call BOParSettlement:ProcessSettlementTxn\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOParSettlement","ProcessSettlementTxn");
+		iRet = (unsigned long) (*BOObjPtr)(hContext,hRequest,hResponse);
+	}
+
+	PutField_Char(hContext,"ar_ind",PD_ACCEPT);
+	PutField_Char(hContext,"status",PD_COMPLETE);
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::approve : call MGTChannel.UpdateTxnLog...!\n"));
+
+		if (GetField_CString(hContext, "approval_date", &csTmp)) {
+DEBUGLOG(("par_settlement_handler_2::(approve) approval_date [%s]\n", csTmp));
+		}
+		if (GetField_CString(hContext, "sub_status", &csTmp)) {
+DEBUGLOG(("par_settlement_handler_2::(approve) sub_status [%s]\n", csTmp));
+		}
+
+
+
+		ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnLog");
+
+		if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::approve : call MGTChannel.UpdateTxnLog  SUCC!\n"));
+		}
+		else {
+			iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::approve : call MGTChannel.UpdateTxnLog FAILED!\n"));
+		}
+	}
+
+
+        if (iRet == SUCCESS) {
+		//iRet = UpdateApprovalTimestamp(hContext);
+        }
+
+
+	return iRet;
+}
+
+int  process_settlement_declined(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+	char	*csTmp;
+
+	PutField_CString(hContext, "txn_code", PD_SETTLEMENT_CANCEL);
+	PutField_Int(hContext, "do_logging", PD_UPDATE_LOG_ONLY);
+
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+		PutField_CString(hRequest, "org_txn_seq", csTmp);
+	}
+
+	PutField_Char(hRequest, "action_party", PD_TYPE_MERCHANT);
+	PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::(declined) Call BOParSettlement:ProcessSettlementTxn\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOParSettlement","ProcessSettlementTxn");
+		iRet = (unsigned long) (*BOObjPtr)(hContext,hRequest,hResponse);
+	}
+
+	PutField_Char(hContext,"status",PD_COMPLETE);
+	PutField_Char(hContext,"ar_ind",PD_REJECT);
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::declined : call MGTChannel.UpdateTxnLog...!\n"));
+
+		ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnLog");
+
+		if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::declined : call MGTChannel.UpdateTxnLog  SUCC!\n"));
+		}
+		else {
+			iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::declined : call MGTChannel.UpdateTxnLog FAILED!\n"));
+		}
+	}
+
+
+	return iRet;
+}
+
+int  process_settlement_adj(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+	char	*csTmp;
+
+	char	*csAdjTxnCode;
+	double	dAmt = 0.0;
+	
+	char	csDate[PD_DATE_LEN + 1];
+
+
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+DEBUGLOG(("par_settlement_handler_2::adj:: txn_seq [%s]\n", csTmp));
+	}
+
+	GetField_CString(hContext, "txn_code", &csAdjTxnCode); 
+	PutField_CString(hRequest, "txn_code", PD_MERCHANT_ADJUSTMENT);
+	PutField_CString(hRequest, "code", csAdjTxnCode);
+
+	if (GetField_Double(hMyHash, "amount", &dAmt)) {
+		PutField_Double(hContext, "txn_amt", dAmt);
+	}
+
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+		strncpy(csDate, csTmp, PD_DATE_LEN);
+		csDate[PD_DATE_LEN] = '\0';
+
+		PutField_CString(hRequest, "approval_date", csDate);
+	}
+
+	PutField_Int(hContext, "do_logging", PD_ADD_LOG);
+
+	// call TxnHandler TxnParByUsMAD
+        if (iRet == SUCCESS) {
+
+DEBUGLOG(("par_settlement_handler_2::adj:: call TxnParByUsMAD.Authorize\n"));
+
+                TxnObjPtr = CreateObj(TxnPtr,"TxnParByUsMAD","Authorize");
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+		if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::adj: Call TxnParByUsMAD.Authorize SUCC\n"));
+		} else {
+DEBUGLOG(("par_settlement_handler_2::adj: Call TxnParByUsMAD.Authorize FAIL\n"));
+		}
+
+        }
+
+       if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::adj: call MGTChannel.UpdateTxnLog...!\n"));
+
+                ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnLog");
+
+                if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::adj: call MGTChannel.UpdateTxnLog  SUCC!\n"));
+                }
+                else {
+                        iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::adj: call MGTChannel.UpdateTxnLog FAILED!\n"));
+                }
+        }
+
+
+        if (iRet == SUCCESS) {
+                iRet = UpdateApprovalTimestamp(hContext);
+        }
+
+
+
+	return iRet;
+}
+
+
+
+int  process_settlement_deliver(hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp;
+	char	csDate[PD_DATE_LEN + 1];
+
+	int	iRecExists = PD_TRUE;
+	double	dAmt = 0.0;
+	double	dFee = 0.0;
+	double  dTmp = 0.0;
+
+	hash_t	*hTempTxn;
+
+	hTempTxn= (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTempTxn, 0);
+
+
+	PutField_CString(hContext, "txn_code", PD_SETTLEMENT_DELIVERY);
+	PutField_Int(hContext, "do_logging", PD_UPDATE_LOG_ONLY);
+
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+		PutField_CString(hRequest, "org_txn_seq", csTmp);
+		PutField_CString(hContext, "from_txn_seq", csTmp);
+		
+		PutField_CString(hTempTxn, "txn_seq", csTmp);	
+	}
+
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+                strncpy(csDate, csTmp, PD_DATE_LEN);
+		csDate[PD_DATE_LEN] = '\0';
+
+		PutField_CString(hContext, "PHDATE", csDate);
+	}
+
+	// special handling for status!
+	GetField_Int(hMyHash, "record_exists", &iRecExists);
+
+	if  (iRecExists == PD_FALSE) {
+		PutField_Char(hTempTxn, "status", PD_COMPLETE);
+		PutField_Char(hTempTxn, "ar_ind", PD_ACCEPT);
+
+		if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::deliver call DBTransaction.Update!\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBTransaction","Update");
+			if ((unsigned long)((*DBObjPtr)(hTempTxn)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::deliver call DBTransaction.Update SUCC!\n"));
+			} else {
+				iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::deliver call DBTransaction.Update FAILED!\n"));
+			}
+		}
+
+		if (iRet == SUCCESS) {
+			PutField_Char(hTempTxn, "status", PD_TO_PSP);
+
+			if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+DEBUGLOG(("par_settlement_handler_2::deliver get org data to_ccy [%s]\n", csTmp));
+				PutField_CString(hTempTxn, "deliver_ccy", csTmp);
+			}
+
+			if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+DEBUGLOG(("par_settlement_handler_2::deliver get org data deliver_amt [%lf]\n", dTmp));
+				PutField_Double(hTempTxn, "deliver_amt", dTmp);
+			}
+
+
+DEBUGLOG(("par_settlement_handler_2::deliver call DBMerchantSettlementDetail.Update!\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBMerchantSettlementDetail","Update");
+			if ((unsigned long)((*DBObjPtr)(hTempTxn)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::deliver call DBMerchantSettlementDetail.Update SUCC!\n"));
+			} else {
+				iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::deliver call DBMerchantSettlementDetail.Update FAILED!\n"));
+			}
+		}
+
+
+
+	}
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("par_settlement_handler_2::(deliver) Call BOParSettlement:ProcessSettlementTxn\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOParSettlement","ProcessSettlementTxn");
+		iRet = (unsigned long) (*BOObjPtr)(hContext,hRequest,hResponse);
+	}
+
+
+	PutField_Char(hContext, "status", PD_COMPLETE);
+	PutField_Char(hContext, "ar_ind", PD_ACCEPT);
+
+        if (iRet == SUCCESS) {
+
+		if  (iRecExists == PD_FALSE) {
+			if (GetField_Double(hMyHash, "amount", &dAmt)) {
+DEBUGLOG(("par_settlement_handler_2::deliver get org data amount [%lf]\n", dAmt));
+			}
+			if (GetField_Double(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("par_settlement_handler_2::deliver get org data fee [%lf]\n", dFee));
+			}
+
+			dTmp = dAmt - dFee;
+			PutField_Double(hContext, "net_amt", dTmp);
+
+
+			if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+				PutField_Double(hContext, "settlement_txn_amt", dTmp);
+DEBUGLOG(("par_settlement_handler_2::deliver get org data settlement_txn_amt [%lf]\n", dTmp));
+			}
+			
+		}
+
+
+DEBUGLOG(("par_settlement_handler_2::deliver: call MGTChannel.UpdateTxnLog...!\n"));
+
+                ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnLog");
+
+                if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) == PD_OK) {
+DEBUGLOG(("par_settlement_handler_2::deliver: call MGTChannel.UpdateTxnLog  SUCC!\n"));
+                }
+                else {
+                        iRet = FAILURE;
+DEBUGLOG(("par_settlement_handler_2::deliver: call MGTChannel.UpdateTxnLog FAILED!\n"));
+                }
+        }
+
+
+        if (iRet == SUCCESS) {
+                iRet = UpdateApprovalTimestamp(hContext);
+        }
+
+	hash_destroy(hTempTxn);
+	FREE_ME(hTempTxn);
+
+	return iRet;
+}
+
+

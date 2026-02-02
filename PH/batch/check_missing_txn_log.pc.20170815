@@ -1,0 +1,474 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2017/05/15              [WWK] 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cDebug;
+int iTriggerCnt;
+int init_search_ts = PD_TRUE;
+int iUpdGlobalSetting = PD_TRUE;
+
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+int GetRedirectPspId(recordset_t *rsRDPsp);
+int ProcessCheckMissingTxn(char* csPspId, char* csSysTs, hash_t* hContext);
+int UpdateLastCheckTime(char cPartyType, char* csPartyId, char* csSysTs);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+	int	iDtlRet = SUCCESS;
+	int	iCnt = 0;
+
+	hash_t *hContext;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+DEBUGLOG(("Start check_missing_txn_log\n"));
+DEBUGLOG(("- iTriggerCnt [%d]\n",iTriggerCnt));
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+
+	hash_t *hTmp = NULL;
+	recordset_t *rsRDPsp = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rsRDPsp,0);
+
+	iCnt = GetRedirectPspId(rsRDPsp);
+
+	char*	csPspId = NULL;
+	char*	csSysTs = NULL;
+
+DEBUGLOG(("Start loop PSP\n"));
+
+	if (iCnt > 0) {
+		hTmp = RecordSet_GetFirst(rsRDPsp);
+		while (hTmp) {
+			if (GetField_CString(hTmp,"psp_id",&csPspId)) {
+//DEBUGLOG(("- psp_id = [%s]\n",csPspId));
+			}
+
+			if (GetField_CString(hTmp,"sys_ts",&csSysTs)) {
+//DEBUGLOG(("- sys_ts = [%s]\n",csSysTs));
+			}
+
+			iDtlRet = ProcessCheckMissingTxn(csPspId,csSysTs,hContext);
+			/*
+			 * iDtlRet: PD_TRUE  (no missing)
+			 *	    PD_FASLE (missing)
+			 *	    PD_ERR (error)
+			 */
+
+			if (iDtlRet == PD_FALSE) {
+//DEBUGLOG(("!!Missing FOUND!!!\n"));
+			} else if (iDtlRet == PD_ERR) {
+DEBUGLOG(("!!ERROR!!!\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			hTmp = RecordSet_GetNext(rsRDPsp);
+		}
+
+DEBUGLOG(("End loop PSP\n"));
+DEBUGLOG(("- sys_ts = [%s]\n",csSysTs));
+
+		if (iRet == SUCCESS && iUpdGlobalSetting == PD_TRUE) {
+//DEBUGLOG(("Call UpdateLastCheckTime\n"));
+			iRet = UpdateLastCheckTime(PD_TYPE_GLOBAL,PD_DEFAULT_PSP,csSysTs);
+DEBUGLOG(("!!Update Global Last Check Time iRet[%d]\n",iRet));
+		}
+	}
+
+DEBUGLOG(("Normal EXIT\n"));
+
+	RecordSet_Destroy(rsRDPsp);
+	FREE_ME(rsRDPsp);
+
+	FREE_ME(hContext);
+
+	return iRet;
+}
+
+
+int GetRedirectPspId(recordset_t *rsRDPsp)
+{
+	int iPspCnt = 0;
+	hash_t *myHash;
+
+//DEBUGLOG(("GetRedirectPspId() Start\n"));
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	v_psp_id[PD_PSP_ID_LEN+1];
+		varchar	v_sys_ts[PD_DATETIME_LEN+1];
+		short	ind_psp_id = -1;
+		short	ind_sys_ts = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE c_cursor_getredirectpid CURSOR FOR
+		SELECT	psp_id,
+			TO_CHAR(sysdate,'YYYYMMDDHH24MISS') sys_ts
+		  FROM	psp_url,
+			(SELECT	prs_interval_end
+			   FROM	psp_redirect_setting
+			  WHERE	prs_party_type = 'G'
+			    AND	prs_party_id = '000')
+		 WHERE	effect_date <= to_char(sysdate,'YYYYMMDD')
+		   AND	is_redirect_url = 1;
+
+	EXEC SQL OPEN c_cursor_getredirectpid;
+	do{
+		EXEC SQL FETCH c_cursor_getredirectpid
+		INTO	:v_psp_id:ind_psp_id,
+			:v_sys_ts:ind_sys_ts;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+		//PSP_ID
+		if (ind_psp_id >= 0) {
+			v_psp_id.arr[v_psp_id.len] = '\0';
+			PutField_CString(myHash,"psp_id",(const char*)v_psp_id.arr);
+//DEBUGLOG(("PSP_ID with redirect URL: [%.*s]\n",v_psp_id.len,v_psp_id.arr));
+		}
+
+		//Start_system_timestamp
+		if (ind_sys_ts >= 0) {
+			v_sys_ts.arr[v_sys_ts.len] = '\0';
+			PutField_CString(myHash,"sys_ts",(const char*)v_sys_ts.arr);
+//DEBUGLOG(("System timestamp: [%.*s]\n",v_sys_ts.len,v_sys_ts.arr));
+		}
+
+		RecordSet_Add(rsRDPsp,myHash);
+		iPspCnt++;
+	}while(PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getredirectpid;
+
+//DEBUGLOG(("GetRedirectPspId() Normal Exit, total_count = [%d]\n",iPspCnt));
+
+	return iPspCnt;
+
+get_error:
+    DEBUGLOG(("getredirectpspid: error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getredirectpid;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int ProcessCheckMissingTxn(char *csPID, char *csSysTs, hash_t *hContext)
+{
+	int iDtlRet = SUCCESS;
+	int iCnt = 0;
+	int iCheckNoMissing = PD_TRUE;
+	char cPartyType = PD_TYPE_GLOBAL;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+//DEBUGLOG(("check_missing_txn_log Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_psp_id[PD_PSP_ID_LEN];
+		varchar hv_sys_ts[PD_DATETIME_LEN];
+
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		varchar	v_txn_create_ts[PD_CUSTOM_VALUE_LEN+1];
+		varchar v_psp_name[PD_NAME_LEN+1];
+		varchar	v_url[PD_TLG_URL_LEN+1];
+		varchar	v_start_ts[PD_CUSTOM_VALUE_LEN+1];
+		varchar	v_end_ts[PD_CUSTOM_VALUE_LEN+1];
+		char	v_party_type;
+		int	v_total_cnt;
+
+		short	ind_txn_id = -1;
+		short	ind_txn_create_ts = -1;
+		short	ind_psp_name = -1;
+		short	ind_url = -1;
+		short	ind_start_ts = -1;
+		short	ind_end_ts = -1;
+		short	ind_party_type = -1;
+		short	ind_total_cnt = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_psp_id.len = strlen(csPID);
+	memcpy(hv_psp_id.arr,csPID,hv_psp_id.len);
+//DEBUGLOG(("- psp_id = [%.*s]\n",hv_psp_id.len,hv_psp_id.arr));
+
+	hv_sys_ts.len = strlen(csSysTs);
+	memcpy(hv_sys_ts.arr,csSysTs,hv_sys_ts.len);
+//DEBUGLOG(("- sys_ts = [%.*s]\n",hv_sys_ts.len,hv_sys_ts.arr));
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+
+		SELECT	th_txn_id,
+			TO_CHAR(th_create_timestamp,'DD MON YYYY HH24:MI:SS') AS txn_create_ts,
+			pspd.psp_name,
+			purl.url,
+			TO_CHAR(TO_DATE(:hv_sys_ts,'YYYYMMDDHH24MISS') - (1/24/60)*prs_interval_start,'DD MON YYYY HH24:MI:SS') AS start_ts,
+			TO_CHAR(TO_DATE(:hv_sys_ts,'YYYYMMDDHH24MISS') - (1/24/60)*prs_interval_end,'DD MON YYYY HH24:MI:SS') AS end_ts,
+			rd_setting.prs_party_type,
+			count(*) over () as total_cnt
+		  FROM	txn_header,
+			txn_psp_detail,
+			psp_detail pspd,
+			psp_url purl,
+			(SELECT *
+			   FROM	(SELECT	prs_party_type,
+					prs_party_id,
+					prs_interval_start,
+					prs_interval_end,
+					prs_last_check_time
+				   FROM	psp_redirect_setting
+				  WHERE	((prs_party_type = 'G' AND prs_party_id = '000') OR
+					 (prs_party_type = 'P' and prs_party_id = :hv_psp_id))
+				 ORDER BY
+					DECODE(prs_party_type, 'P', 1, 'G', 2)
+				)
+			  WHERE	rownum = 1) rd_setting
+		 WHERE	th_txn_id = tp_txn_id
+		   AND	tp_psp_id = pspd.psp_id
+		   AND	tp_psp_id = purl.psp_id
+		   AND	tp_psp_id = :hv_psp_id
+		   AND	th_txn_code = 'DSI'
+		   AND	th_create_timestamp >= TO_DATE(:hv_sys_ts,'YYYYMMDDHH24MISS') - (1/24/60)*prs_interval_start
+		   AND	th_create_timestamp < TO_DATE(:hv_sys_ts,'YYYYMMDDHH24MISS') - (1/24/60)*prs_interval_end
+		   AND	th_create_timestamp >= nvl(prs_last_check_time,(TO_DATE(:hv_sys_ts,'YYYYMMDDHH24MISS') - (1/24/60)*prs_interval_start))
+		   AND	NOT EXISTS (SELECT null
+				      FROM psp_redirect_log
+				     WHERE prl_txn_id = th_txn_id)
+		 ORDER BY
+			th_create_timestamp,
+			th_txn_id;
+
+	EXEC SQL OPEN c_cursor_getinfo;
+
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_txn_id:ind_txn_id,
+			:v_txn_create_ts:ind_txn_create_ts,
+			:v_psp_name:ind_psp_name,
+			:v_url:ind_url,
+			:v_start_ts:ind_start_ts,
+			:v_end_ts:ind_end_ts,
+			:v_party_type:ind_party_type,	
+			:v_total_cnt:ind_total_cnt;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+//DEBUGLOG(("- No data found!\n"));
+			}
+			break;
+		}
+
+
+		if (ind_total_cnt >= 0) {
+			if (v_total_cnt <= iTriggerCnt) {
+				iCnt = v_total_cnt;
+				break;
+			}
+		}
+
+		if (init_search_ts == PD_TRUE) {
+			if (ind_start_ts >= 0 && ind_end_ts >= 0) {
+				v_start_ts.arr[v_start_ts.len] = '\0';
+				v_end_ts.arr[v_end_ts.len] = '\0';
+printf("Deposit search period: %.*s to %.*s<br>\n",v_start_ts.len,v_start_ts.arr,v_end_ts.len,v_end_ts.arr);
+			}
+			init_search_ts = PD_FALSE;
+		}
+
+
+		if (iCnt == 0) {
+			if (ind_url >= 0) {
+				v_url.arr[v_url.len] = '\0';
+printf("Redirect URL: %.*s<br>\n",v_url.len,v_url.arr);
+			}
+
+			if (ind_psp_name >= 0) {
+				v_psp_name.arr[v_psp_name.len] = '\0';
+printf("PSP account name: %.*s<br>\n",v_psp_name.len,v_psp_name.arr);
+			}
+
+
+printf("<table border=1><tr><td>Transaction ID</td><td>Transaction creation time</td></tr>\n");
+		}
+
+printf("<tr>");
+
+		if (ind_txn_id >= 0) {
+			v_txn_id.arr[v_txn_id.len] = '\0';
+printf("<td>%.*s</td>",v_txn_id.len,v_txn_id.arr);
+DEBUGLOG(("MISSING: txn_id [%.*s]\n",v_txn_id.len,v_txn_id.arr));
+		}
+
+		if (ind_txn_create_ts >= 0) {
+			v_txn_create_ts.arr[v_txn_create_ts.len] = '\0';
+printf("<td>%.*s</td>",v_txn_create_ts.len,v_txn_create_ts.arr);
+		}
+
+printf("</tr>\n");
+
+		if (ind_party_type >= 0) {
+			cPartyType = v_party_type;
+		}
+
+		iCnt++;
+	}
+	while(PD_TRUE);
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+
+	if (iCnt <= iTriggerCnt) {
+DEBUGLOG(("- PID [%s] count [%d], normal exit!\n",csPID,iCnt));
+		iDtlRet = UpdateLastCheckTime(PD_TYPE_PSP,csPID,csSysTs);
+
+		if (iDtlRet != PD_OK) {
+DEBUGLOG(("Call UpdateLastCheckTime() ERROR found\n"));
+			return iDtlRet;
+		}
+	} else {
+printf("</table><br><!--ALERT_SENT-->\n");
+
+		iCheckNoMissing = PD_FALSE;
+
+DEBUGLOG(("- PID [%s] count [%d] >= [%d], Alert Trigger!!\n",csPID,iCnt,iTriggerCnt));
+//DEBUGLOG(("!! Missing found, PID [%s] count [%d] >= [%d], Alert TRIGGER!\n",csPID,iCnt,iTriggerCnt));
+
+		if (cPartyType != PD_TYPE_PSP) {
+			iUpdGlobalSetting = PD_FALSE;
+		}
+	}
+
+	return iCheckNoMissing;
+
+sql_error:
+DEBUGLOG(("check_missing_txn_log error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int UpdateLastCheckTime(char cPartyType, char *csPartyId, char *csSysTs)
+{
+		char* csBuf;
+		EXEC SQL WHENEVER SQLERROR GOTO updateglobal_err;
+		EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+		EXEC SQL BEGIN DECLARE SECTION;
+			varchar	hv_dynstmt[1024];
+		EXEC SQL END DECLARE SECTION;
+
+		csBuf = (char*) malloc (128);
+
+		strcpy((char*)hv_dynstmt.arr,"UPDATE psp_redirect_setting");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+		strcat((char *)hv_dynstmt.arr, " SET prs_last_check_time = (TO_DATE('");
+		strcat((char *)hv_dynstmt.arr, csSysTs);
+		strcat((char *)hv_dynstmt.arr, "','YYYYMMDDHH24MISS') - (1/24/60)*prs_interval_end)");
+
+		strcat((char *)hv_dynstmt.arr, " WHERE prs_party_type = '");
+		sprintf(csBuf,"%c",cPartyType);
+		strcat((char *)hv_dynstmt.arr, csBuf);
+		strcat((char *)hv_dynstmt.arr, "'");
+
+		strcat((char *)hv_dynstmt.arr, " AND prs_party_id = '");
+		strcat((char *)hv_dynstmt.arr, csPartyId);
+		strcat((char *)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+//DEBUGLOG(("UpdateLastCheckTime sql [%s]\n",hv_dynstmt.arr));
+
+		EXEC SQL PREPARE PS FROM :hv_dynstmt;
+		EXEC SQL EXECUTE PS;
+
+		FREE_ME(csBuf);
+
+		return PD_OK;
+
+updateglobal_err:
+    DEBUGLOG(("Update Last Checking Time error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("check_missing_txn_log::Update Last Checking Time error code %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+	char c;
+
+	if (argc < 2 ) {
+		return PD_ERR;
+	}
+
+	while ((c = getopt(argc,argv,"c:")) != EOF) {
+		switch(c) {
+			case 'c':
+				iTriggerCnt = atoi(optarg);
+				break;
+			default:
+				return PD_ERR;
+		}
+	}
+
+        return SUCCESS;
+}

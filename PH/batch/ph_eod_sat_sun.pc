@@ -1,0 +1,210 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/11/29              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "batchcommon.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char	cDebug;
+int     ResetJobStatus();
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 2) {
+DEBUGLOG(("argc < 2\n"));
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+
+        int     iRet = SUCCESS;
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_new_curr_eod_date[PD_DATE_LEN];
+                varchar         hv_update_user[PD_USER_LEN];
+
+		varchar		v_last_ph_date[PD_DATE_LEN+1];
+		varchar		v_curr_eod_date[PD_DATE_LEN+1];
+
+		short		ind_last_ph_date=-1;
+		short		ind_curr_eod_date=-1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_new_curr_eod_date.len = strlen(argv[1]);
+        memcpy(hv_new_curr_eod_date.arr,argv[1],hv_new_curr_eod_date.len);
+DEBUGLOG(("batch_proc: curr_eod_date = [%.*s]\n",hv_new_curr_eod_date.len,hv_new_curr_eod_date.arr));
+
+        hv_update_user.len = strlen("SYSTEM");
+        memcpy(hv_update_user.arr,"SYSTEM",hv_update_user.len);
+DEBUGLOG(("batch_proc: update_user = [%.*s]\n",hv_update_user.len,hv_update_user.arr));
+
+        EXEC SQL EXECUTE
+                BEGIN
+			SELECT	sys_val
+			INTO	:v_last_ph_date:ind_last_ph_date
+			FROM	system_control
+			WHERE	sys_code = 'LTPHDATE';
+                END;
+        END-EXEC;
+
+        EXEC SQL EXECUTE
+                BEGIN
+			SELECT	sys_val
+			INTO	:v_curr_eod_date:ind_curr_eod_date
+			FROM	system_control
+			WHERE	sys_code = 'CTEODDATE';
+                END;
+        END-EXEC;
+
+	if((ind_last_ph_date<0) || (ind_curr_eod_date<0)){
+DEBUGLOG(("get Last PH Date/ Currenct EOD Date FAILED\n"));
+		return FAILURE;
+	}
+
+	v_last_ph_date.arr[v_last_ph_date.len]='\0';
+	v_curr_eod_date.arr[v_curr_eod_date.len]='\0';
+
+	if(strcmp((const char*)v_last_ph_date.arr,(const char*)hv_new_curr_eod_date.arr)>0){
+		EXEC SQL EXECUTE
+			BEGIN
+				UPDATE	system_control
+				SET	sys_val = :hv_new_curr_eod_date,
+					sys_update_user = :hv_update_user,
+					sys_update_timestamp = SYSDATE
+				WHERE sys_code = 'CTEODDATE';
+			END;
+		END-EXEC;
+
+		EXEC SQL EXECUTE
+			BEGIN
+				UPDATE	system_control
+				SET	sys_val = :v_curr_eod_date,
+					sys_update_user = :hv_update_user,
+					sys_update_timestamp = SYSDATE
+				WHERE sys_code = 'LTEODDATE';
+			END;
+		END-EXEC;
+		
+	}
+	else{
+DEBUGLOG(("Last PH Date !> input Current EOD Date\n"));
+		return SUCCESS;
+	}
+        
+        if (iRet == SUCCESS) {
+                iRet = ResetJobStatus();
+        }
+        return iRet;
+sql_error:
+    DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int batch_terminate(int argc, char* argv[])
+{   
+    return SUCCESS;
+}
+
+int     ResetJobStatus()
+{       
+        int iRet = SUCCESS;
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+                char            hv_status;
+                varchar         hv_update_user[PD_USER_LEN];
+                
+                varchar         v_eod_id[PD_EOD_ID_LEN + 1];
+                //char            v_type; 
+                char            v_status;
+                
+                short           v_return_value;
+                short           ind_eod_id = -1;
+                //short           ind_type = -1;
+                short           ind_status = -1;
+        EXEC SQL END DECLARE SECTION;
+        
+        hv_status = PD_EOD_NEW_CYCLE;
+        hv_update_user.len = strlen(PD_UPDATE_USER);
+        memcpy(hv_update_user.arr,PD_UPDATE_USER,hv_update_user.len);
+
+        EXEC SQL DECLARE c_cursor_get_eodjobs CURSOR FOR
+                select ej_id,
+                       es_status 
+                  from eod_jobs,
+			eod_jobs_status
+                 where ej_system_job != 'Y'
+		 and	ej_id = es_job_id
+                 order by ej_id;
+
+        EXEC SQL OPEN c_cursor_get_eodjobs;
+        do {
+                EXEC SQL FETCH c_cursor_get_eodjobs
+                INTO
+                        :v_eod_id:ind_eod_id,
+                        :v_status:ind_status;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                if (ind_status >= 0) {
+                        if (v_status == PD_EOD_PROCESSING)  {
+                                printf("Last Cycle JOB %.*s still processing\n",v_eod_id.len,v_eod_id.arr);
+                                //iRet = FAILURE;
+                        }
+			else{
+				EXEC SQL EXECUTE
+					BEGIN
+					:v_return_value := sp_eod_jobs_status_update(
+							:v_eod_id,
+							:hv_status,
+							:hv_update_user);
+
+				END;
+				END-EXEC;
+				DEBUGLOG(("ResetJobStatus:return_value = [%d]\n",v_return_value));
+				if (v_return_value != SP_OK)
+					iRet = FAILURE;
+			}
+                }
+        }
+	while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_get_eodjobs;
+
+        return iRet;
+
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_eodjobs;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}

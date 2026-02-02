@@ -1,0 +1,77 @@
+/*
+Partnerdelight (c)2013. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/08/19              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnWebOnUsCID.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+OBJPTR(DB);
+void TxnWebOnUsCID(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csPtr;
+	hash_t  *hTxn;
+DEBUGLOG(("TxnWebOnUsCID Authorize\n"));
+
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+
+/* customer_id */
+	if (GetField_CString(hRequest,"customer_id",&csPtr) && iRet == PD_OK) {
+DEBUGLOG(("TxnWebOnUsCID customer_id = [%s]\n",csPtr));
+		PutField_CString(hTxn,"customer_id",csPtr);
+	}
+	else {
+DEBUGLOG(("TxnWebOnUsCID customer_id is missing\n"));
+		iRet = INT_FORMAT_ERR;
+	}
+
+/* key_id */
+	if (GetField_CString(hRequest,"key_id",&csPtr) && iRet == PD_OK) {
+DEBUGLOG(("TxnWebOnUsCID key_id = [%s]\n",csPtr));
+		PutField_CString(hTxn,"client_id",csPtr);
+	}
+	else {
+DEBUGLOG(("TxnWebOnUsCID key_id is missing\n"));
+		iRet = INT_FORMAT_ERR;
+	}
+
+	PutField_CString(hTxn, "update_user", PD_UPDATE_USER);
+
+	if (iRet == PD_OK) {
+		 DBObjPtr = CreateObj(DBPtr,"DBClientMagic","Delete");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+	}
+
+	hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+DEBUGLOG(("TxnWebOnUsCID Authorize iRet = [%d]\n",iRet));
+	return iRet;
+}

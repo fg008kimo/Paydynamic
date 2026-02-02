@@ -1,0 +1,13 @@
+OBJHOME = $(HOME)/obj
+COMPHOME = $(HOME)/src/DB/OLBAIDTxn
+COMPLIBHOME = $(HOME)/lib/DB
+CPPFLAGS += -I$(COMPHOME) 
+COMPOBJHOME = $(COMPHOME)/obj
+COMPSO = libDBOLBAIDTxn.so
+SOOBJS =  OLBAIDTxn.o
+
+include $(HOME)/config/Make.rules
+
+LDLIBS +=
+
+all	: $(COMPSO)

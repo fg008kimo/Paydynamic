@@ -1,0 +1,40 @@
+DROP VIEW OL_DEPOSIT_BANK_ACCT_VIEW;
+
+CREATE OR REPLACE FORCE VIEW OL_DEPOSIT_BANK_ACCT_VIEW
+(
+   MERCHANT_ID,
+   ACCT_CCY,
+   INT_BANK_CODE,
+   BANK_ACCT_NUM,
+   SERVICE_CODE,
+   COUNTRY,
+   SHARED_ACCT,
+   STATUS_TYPE,
+   UPDATE_TIMESTAMP,
+   OWNER_NAME,
+   BRANCH_NAME,
+   ALLOW_ACTION
+)
+AS
+   SELECT OMB_MERCHANT_ID,
+          OB_ACCT_CCY,
+          OMB_INT_BANK_CODE,
+          OMB_BANK_ACCT_NUM,
+          OMB_SERVICE_CODE,
+          COUNTRY,
+          OB_SHARED_ACCT,
+          OB_STATUS_TYPE,
+          OB_UPDATE_TIMESTAMP,
+          OB_OWNER_NAME,
+          OB_BRANCH_NAME,
+          sp_ol_get_allow_action (OMB_INT_BANK_CODE,
+                                  OMB_BANK_ACCT_NUM,
+                                  'DEPOSIT_FILE_REQ')
+     FROM OL_MERCHANT_BANK_ACCT, OL_BANK_ACCTS, BANK_DESC
+    WHERE     OMB_INT_BANK_CODE = OB_INT_BANK_CODE
+          AND OMB_BANK_ACCT_NUM = OB_BANK_ACCT_NUM
+          AND OMB_DISABLED = 0
+          AND OMB_STATUS = 'O'
+          AND OMB_INT_BANK_CODE = INTERNAL_BANK_CODE
+          AND sp_ol_get_bank_acct_type (OB_INT_BANK_CODE, OB_BANK_ACCT_NUM) =
+                 'DSI';

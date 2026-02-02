@@ -1,0 +1,27 @@
+load data
+infile "txn_engine3.txt"
+append
+into table ol_txn_engine
+fields terminated by '|'
+(OTE_ACTIVITY,
+ OTE_BANK_STMT_TYPE,
+ OTE_CHANNEL,
+ OTE_TRIGGER_TYPE,
+ OTE_RECON_TYPE,
+ OTE_INPUT_BANK_STMT,
+ OTE_ALLOW_STMT_MULTIPLE,
+ OTE_INPUT_SYSTEM_TXN,
+ OTE_ALLOW_TXN_MULTIPLE,
+ OTE_ACTION_ID,
+ OTE_ALLOW_PENDING_FUND,
+ OTE_ALLOW_STMT_PARTIAL,
+ OTE_ALLOW_TXN_PARTIAL,
+ OTE_INCLUDE_BANK_CHARGE,
+ OTE_INCLUDE_INTEREST,
+ OTE_DESCRIPTION,
+ OTE_ALLOW_INSTANT_RECON,
+ ote_create_timestamp SYSDATE,
+ ote_update_timestamp SYSDATE,
+ ote_create_user,
+ ote_update_user
+)

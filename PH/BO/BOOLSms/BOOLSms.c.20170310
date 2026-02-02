@@ -1,0 +1,1037 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/26              David Wong
+Call OLAcctStatusAction.GetAllowActionFlag()       2014/04/22              David Wong
+Use stmt engine to match bank stmt                 2014/12/15              David Wong
+Change GetBankAccts to GetDepositBankAccts	   2014/02/26              Elvis Wong
+Add csWholeBankAcctNum		
+Add ValidateAmount and CheckWholeAmount	   	   2016/05/06		   Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "dbutility.h"
+#include "BOOLSms.h"
+#include "myrecordset.h"
+#include "myhash.h"
+#include "math.h"
+#include <time.h>
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+#define DELIMITER_DELIMITER "|"
+#define DEPOSIT_BANK_ACCT_TYPE "DSI"
+
+void BOOLSms(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+/*
+int TrimAmount(const char *p, char *pTrim)
+{
+	int iRet = PD_ERR;
+	int i = 0;
+        int org_len = 0, trim_len = 0;
+
+        org_len = strlen(p);
+
+DEBUGLOG(("TrimAmount() org_value = [%s], org_len = [%d]\n", p, org_len));
+
+	for (i=0; i<org_len; i++) {
+		if ((p[i] >= '0' && p[i] <= '9')
+		    || (p[i] == ',')
+		    || (p[i] == '.')
+		) {
+                     	pTrim[trim_len] = p[i];
+                        trim_len++;
+		}
+        }
+        pTrim[trim_len] = '\0';
+        
+DEBUGLOG(("TrimAmount() trim_value = [%s], trim_len = [%d]\n", pTrim, trim_len));
+
+	if (trim_len > 0) {
+		iRet = PD_OK;	
+	}
+
+        return iRet;
+}
+*/
+
+int ValidateAmount(const char* csAmt, char* csTrimAmt)
+{
+	int iRet = PD_TRUE;
+	int i = 0;
+	int trim_amt_len = 0;
+	
+	int num_cnt = 0;
+	int dot_cnt = 0;
+
+	int comma_pos = 0;
+	int dot_pos = 0;
+
+	char* csTmp = NULL;
+
+DEBUGLOG(("ValidateAmount() amt = [%s], amt_len = [%d]\n", csAmt, strlen(csAmt)));	
+
+	// Trim Amount
+	if (csAmt != NULL) {
+		// Trim Both Left and Right Char Space
+		csTmp = TrimAllChar((const unsigned char*)csAmt,strlen(csAmt),' ');
+
+		// Trim Left Char '+' (once time)
+		if (csTmp != NULL) {
+                	if (strlen(csTmp) > 0 && (*csTmp == '+' || *csTmp == 0x00)) {
+                        	csTmp++;
+                	}
+
+			// Copy to TrimAmt String
+			if (csTmp != NULL) {
+				strcpy(csTrimAmt, csTmp);
+                		trim_amt_len = strlen(csTrimAmt);
+			}
+        	}
+	}
+
+DEBUGLOG(("ValidateAmount() trim_amt = [%s], trim_amt_len = [%d]\n", csTrimAmt, trim_amt_len));
+
+	// Validate TrimAmt
+	if (trim_amt_len > 0) {
+		for (i=0; i<trim_amt_len; i++) {
+			if (csTrimAmt[i] >= '0' && csTrimAmt[i] <= '9') {
+                	     	num_cnt++;
+               		}
+
+			if (csTrimAmt[i] == ',') {
+                		comma_pos = i;
+			}
+
+			if (csTrimAmt[i] == '.') {
+                	        dot_cnt++;
+                	        dot_pos = i;
+                	}	
+
+			if ((csTrimAmt[i] == ' ')
+ 			    || (csTrimAmt[i] == '+')
+			)
+			{
+DEBUGLOG(("ValidateAmount() char ' ' or '+' exists!!!\n"));
+				iRet = PD_FALSE;
+                       		break;
+			}	
+
+			if (i == 0) {
+				if ((csTrimAmt[i] == ',') 
+				    || (csTrimAmt[i] == '.')
+				)
+				{
+DEBUGLOG(("ValidateAmount() char ',' or '.' exists at the beginning!!!\n"));
+                                	iRet = PD_FALSE;
+					break;
+                        	}
+			} else if (i == (trim_amt_len - 1)) {
+				if (csTrimAmt[i] == ',')	
+				{
+DEBUGLOG(("ValidateAmount() char ',' exists at the end!!!\n"));
+                        	        iRet = PD_FALSE;
+					break;
+                        	}
+			}
+        	}
+	
+		if (iRet == PD_TRUE) {
+			if ((num_cnt <= 0) 
+	    		    || (dot_cnt > 1)
+		    	    || ((dot_cnt == 1) && (comma_pos >= dot_pos))	 
+			)
+			{
+DEBUGLOG(("ValidateAmount() num_cnt = [%d], dot_cnt = [%d], comma_pos[%d], dot_pos[%d]\n", num_cnt, dot_cnt, comma_pos, dot_pos));
+				iRet = PD_FALSE;
+			}
+		}
+	} else {
+DEBUGLOG(("ValidateAmount() null string!!!\n"));
+		iRet = PD_FALSE;
+	}
+
+DEBUGLOG(("ValidateAmount() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int CheckWholeAmount(const char* csAmt)
+{
+        int iRet = PD_FALSE;
+	int iNumOfDP = 0;
+	
+DEBUGLOG(("CheckWholeAmount() amt = [%s]\n", csAmt));
+	
+
+	iNumOfDP = num_of_decimal_places(csAmt);
+DEBUGLOG(("CheckWholeAmount() num_of_decimal_places = [%d]\n", iNumOfDP));
+
+	if (iNumOfDP == 0) {
+		iRet = PD_TRUE;
+	}
+
+DEBUGLOG(("CheckWholeAmount() iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int ValidateField(const char* csDesc, char* csValue)
+{
+	int i = 0;
+DEBUGLOG(("ValidateField:: csDesc = [%s]\n", csDesc));
+DEBUGLOG(("ValidateField:: csValue = [%s]\n", csValue));
+
+	if (!strcmp(csDesc, "req_bank_acc") || !strcmp(csDesc, "req_bank_year") || !strcmp(csDesc, "req_payer_acc")) {
+		// 4 digits
+		if (strlen(csValue) != 4) {
+DEBUGLOG(("ValidateField:: length != 4\n"));
+			return PD_FALSE;
+		} else {
+			for (i = 0; i < strlen(csValue); i++) {
+				if ((csValue[i] < '0') || (csValue[i] > '9')) {
+DEBUGLOG(("ValidateField:: contains non-digit character\n"));
+					return PD_FALSE;
+				}
+			}
+		}
+	} else if (!strcmp(csDesc, "req_bank_month")) {
+		// 01-12
+		if (strlen(csValue) == 1) {
+			sprintf(csValue, "0%c", csValue[0]);
+DEBUGLOG(("ValidateField:: new csValue = [%s]\n", csValue));
+		}
+
+		if (strlen(csValue) != 2) {
+DEBUGLOG(("ValidateField:: length != 2\n"));
+			return PD_FALSE;
+		} else {
+			if (csValue[0] == '0') {
+				// 01-09
+				if ((csValue[1] < '1') || (csValue[1] > '9')) {
+DEBUGLOG(("ValidateField:: invalid month\n"));
+					return PD_FALSE;
+				}
+			} else if (csValue[0] == '1') {
+				// 10-12
+				if ((csValue[1] < '0') || (csValue[1] > '2')) {
+DEBUGLOG(("ValidateField:: invalid month\n"));
+					return PD_FALSE;
+				}
+			} else {
+DEBUGLOG(("ValidateField:: invalid month\n"));
+				return PD_FALSE;
+			}
+		}
+	} else if (!strcmp(csDesc, "req_bank_day")) {
+		// 01-31
+		if (strlen(csValue) == 1) {
+			sprintf(csValue, "0%c", csValue[0]);
+DEBUGLOG(("ValidateField:: new csValue = [%s]\n", csValue));
+		}
+
+		if (strlen(csValue) != 2) {
+DEBUGLOG(("ValidateField:: length != 2\n"));
+			return PD_FALSE;
+		} else {
+			if (csValue[0] == '0') {
+				// 01-09
+				if ((csValue[1] < '1') || (csValue[1] > '9')) {
+DEBUGLOG(("ValidateField:: invalid day\n"));
+					return PD_FALSE;
+				}
+			} else if ((csValue[0] == '1') || (csValue[0] == '2')) {
+				// 10-19, 20-29
+				if ((csValue[1] < '0') || (csValue[1] > '9')) {
+DEBUGLOG(("ValidateField:: invalid day\n"));
+					return PD_FALSE;
+				}
+			} else if (csValue[0] == '3') {
+				// 30-31
+				if ((csValue[1] < '0') || (csValue[1] > '1')) {
+DEBUGLOG(("ValidateField:: invalid day\n"));
+					return PD_FALSE;
+				}
+			} else {
+DEBUGLOG(("ValidateField:: invalid day\n"));
+				return PD_FALSE;
+			}
+		}
+	} else if (!strcmp(csDesc, "req_bank_hour")) {
+		// 00-23
+		if (strlen(csValue) == 1) {
+			sprintf(csValue, "0%c", csValue[0]);
+DEBUGLOG(("ValidateField:: new csValue = [%s]\n", csValue));
+		}
+
+		if (strlen(csValue) != 2) {
+DEBUGLOG(("ValidateField:: length != 2\n"));
+			return PD_FALSE;
+		} else {
+			if ((csValue[0] == '0') || (csValue[0] == '1')) {
+				// 00-09, 10-19
+				if ((csValue[1] < '0') || (csValue[1] > '9')) {
+DEBUGLOG(("ValidateField:: invalid hour\n"));
+					return PD_FALSE;
+				}
+			} else if (csValue[0] == '2') {
+				// 20-23
+				if ((csValue[1] < '0') || (csValue[1] > '3')) {
+DEBUGLOG(("ValidateField:: invalid hour\n"));
+					return PD_FALSE;
+				}
+			} else {
+DEBUGLOG(("ValidateField:: invalid hour\n"));
+				return PD_FALSE;
+			}
+		}
+	} else if (!strcmp(csDesc, "req_bank_minute")) {
+		// 00-59
+		if (strlen(csValue) == 1) {
+			sprintf(csValue, "0%c", csValue[0]);
+DEBUGLOG(("ValidateField:: new csValue = [%s]\n", csValue));
+		}
+
+		if (strlen(csValue) != 2) {
+DEBUGLOG(("ValidateField:: length != 2\n"));
+			return PD_FALSE;
+		} else {
+			if ((csValue[0] >= '0') && (csValue[0] <= '5')) {
+				if ((csValue[1] < '0') || (csValue[1] > '9')) {
+DEBUGLOG(("ValidateField:: invalid minute\n"));
+					return PD_FALSE;
+				}
+			} else {
+DEBUGLOG(("ValidateField:: invalid minute\n"));
+				return PD_FALSE;
+			}
+		}
+	} else if (!strcmp(csDesc, "req_bank_date")) {
+		if (strlen(csValue) != 8) {
+DEBUGLOG(("ValidateField:: length != 8\n"));
+			return PD_FALSE;
+		} else {
+			for (i = 0; i < strlen(csValue); i++) {
+				if ((csValue[i] < '0') || (csValue[i] > '9')) {
+DEBUGLOG(("ValidateField:: contains non-digit character\n"));
+					return PD_FALSE;
+				}
+			}
+		}
+	} else if (!strcmp(csDesc, "req_bank_amount") || !strcmp(csDesc, "req_bank_bal")) {
+		for (i = 0; i < strlen(csValue); i++) {
+			if ((csValue[i] < '0') || (csValue[i] > '9')) {
+				if ((csValue[i] != '+') && (csValue[i] != ',') && (csValue[i] != '.') && (csValue[i] != ' ')) {
+DEBUGLOG(("ValidateField:: contains non-digit character or negative sign\n"));
+					return PD_FALSE;
+				}
+			}
+		}
+DEBUGLOG(("ValidateField:: orig csValue = [%s]\n", csValue));
+		deleteCharacters(csValue, ",");
+DEBUGLOG(("ValidateField:: new csValue = [%s]\n", csValue));
+	}
+
+	//req_bank_channel
+	//req_bank_city
+	//req_bank_fee
+	//req_bank_name
+	//req_payee
+	//req_payer
+	//req_usage
+	//req_whole_amount
+	//req_amount
+
+	return PD_TRUE;
+}
+
+int ProcessSmsText(const hash_t* hTxn, hash_t* hText)
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csSender;
+	char *csText;
+	char csStatus[PD_SMS_REQ_STATUS_LEN] = "INT_ERR";
+	char csTmpText[PD_MAX_BUFFER];
+	char *csFormatId;
+	char *csIntBankCode;
+	char *csBankName;
+	char *csKeyWord;
+	int iAlert;
+	int iContentCnt;
+	char *csDelimiter;
+	int iIsGeneric;
+	char csGenDelim[PD_MAX_BUFFER];
+	char *csDelimiterDesc;
+	char *csSubDelimiter;
+	char *csDesc;
+	char csValue[PD_MAX_BUFFER];
+	char csTmp[PD_SP_VALUE_LEN];
+	char *csBankAcctNum;
+	int iSysSwitchEnabled;
+	int iSupportSmsStmt;
+	char *csAcctCcy;
+	char *csFullBankAcctNum;
+	char *csBaid;
+	char *csPspId;
+//	char *csStatusType;
+	int iAllowFlag = 0;
+	char *csTmpReqBankDate;
+	char csReqBankDate[PD_DATE_LEN];
+	char *csReqBankYear;
+	char *csReqBankMonth;
+	char *csReqBankDay;
+	char csReqBankTime[PD_TIME_LEN];
+	char *csReqBankHour;
+	char *csReqBankMinute;
+	char csCmd[PD_MAX_FILE_LEN + 1];
+	char *csOwnerName;
+	char *csBal;
+	double dBal;
+	int iSendAlert = 0;
+	char *csWholeBankAcctNum;
+	
+	int i, iPos, iValid, iDupCnt = 0;
+	char *csTagDelimiter = (char*) malloc (64);
+	char *csTagIsGeneric = (char*) malloc (64);
+	char *csTagDelimiterDesc = (char*) malloc (64);
+	char *csTagDesc = (char*) malloc (64);
+	char *pch;
+
+	int iIsValidAmt = PD_TRUE;
+	int iIsWholeAmt = PD_TRUE;
+	char csTrimAmt[PD_MAX_BUFFER];
+
+	recordset_t *rRecordFormat;
+	rRecordFormat = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordFormat, 0);
+
+	hash_t *hFormat;
+
+	time_t tNow;
+	struct tm * tStruct;
+	char csBuf[PD_TMP_BUF_LEN];
+
+	tNow = time(0);
+	tStruct = localtime(&tNow);
+
+	hash_t *hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+
+	// get sender
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hTxn, "sender", &csSender)) {
+DEBUGLOG(("ProcessSmsText:: sender not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get text
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hTxn, "text", &csText)) {
+DEBUGLOG(("ProcessSmsText:: text not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// check empty text
+	if (iRet == PD_OK) {
+		if (strlen(csText) == 0) {
+DEBUGLOG(("ProcessSmsText:: empty text\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "EMPTY_TEXT");
+		}
+	}
+
+	// check sender
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsFormat::CheckSender()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLSmsFormat", "CheckSender");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csSender);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("ProcessSmsText:: untrusted sender\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "UNTRUSTED_SENDER");
+		}
+	}
+
+	// check bank
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsFormat::CheckBank()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLSmsFormat", "CheckBank");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csText);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("ProcessSmsText:: unsupported bank\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "UNSUPPORTED_BANK");
+		}
+	}
+
+	// get all supported format
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsFormat::GetFormat()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLSmsFormat", "GetFormat");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csSender, csText, rRecordFormat);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsFormat::GetFormat() failed\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "FORMAT_NOT_FOUND");
+		}
+	}
+
+	// digest text
+	if (iRet == PD_OK) {
+		// loop all supported format
+		hFormat = RecordSet_GetFirst(rRecordFormat);
+		while (hFormat) {
+
+			strcpy(csTmpText, csText);
+DEBUGLOG(("ProcessSmsText:: csTmpText = [%s]\n", csTmpText));
+
+			// get format id
+			if (GetField_CString(hFormat, "id", &csFormatId)) {
+DEBUGLOG(("ProcessSmsText:: format id = [%s]\n", csFormatId));
+			} else {
+DEBUGLOG(("ProcessSmsText:: format id not found\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// get int_bank_code
+			if (GetField_CString(hFormat, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ProcessSmsText:: int_bank_code = [%s]\n", csIntBankCode));
+				PutField_CString(hText, "int_bank_code", csIntBankCode);
+			} else {
+DEBUGLOG(("ProcessSmsText:: int_bank_code not found\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// get bank_name
+			if (GetField_CString(hFormat, "bank_name", &csBankName)) {
+DEBUGLOG(("ProcessSmsText:: bank_name = [%s]\n", csBankName));
+				PutField_CString(hText, "req_bank_name", csBankName);
+			} else {
+DEBUGLOG(("ProcessSmsText:: bank_name not found\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// get key_word
+			if (GetField_CString(hFormat, "key_word", &csKeyWord)) {
+DEBUGLOG(("ProcessSmsText:: key_word = [%s]\n", csKeyWord));
+
+				// remove preceding key word
+				if (strncmp(csTmpText, csKeyWord, strlen(csKeyWord)) == 0) {
+					strcpy(csTmpText, csTmpText+strlen(csKeyWord));
+				}
+			} else {
+DEBUGLOG(("ProcessSmsText:: key_word not found\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// get alert
+			if (GetField_Int(hFormat, "alert", &iAlert)) {
+DEBUGLOG(("ProcessSmsText:: alert = [%d]\n", iAlert));
+			} else {
+DEBUGLOG(("ProcessSmsText:: alert not found\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// get content count
+			if (GetField_Int(hFormat, "content_cnt", &iContentCnt)) {
+				if (iContentCnt <= 0) {
+DEBUGLOG(("ProcessSmsText:: content count <= 0\n"));
+					iRet = PD_ERR;
+					break;
+				}
+DEBUGLOG(("ProcessSmsText:: content count = [%d]\n", iContentCnt));
+			} else {
+DEBUGLOG(("ProcessSmsText:: content count not found\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// start tokenize sms text
+			for (i = 1; i <= iContentCnt; i++) {
+				sprintf(csTagDelimiter, "content_delimiter_%d", i);
+				if (GetField_CString(hFormat, csTagDelimiter, &csDelimiter)) {
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csTagDelimiter, csDelimiter));
+
+					// check whether it is generic delimiter
+					sprintf(csTagIsGeneric, "content_is_generic_%d", i);
+					if (!GetField_Int(hFormat, csTagIsGeneric, &iIsGeneric)) {
+						// set to 0 if not found
+						iIsGeneric = 0;
+					}
+
+					if (iIsGeneric) {
+DEBUGLOG(("ProcessSmsText:: is generic delimiter\n"));
+						iRet = PD_ERR;
+						if (strcmp(csDelimiter, "[NON-DIGIT]") == 0) {
+							iPos = 0;
+							while (csTmpText[iPos] < '0' || csTmpText[iPos] > '9') {
+								iPos++;
+							}
+							strncpy(csGenDelim, csTmpText, iPos);
+							csGenDelim[iPos] = '\0';
+
+							sprintf(csTagDelimiterDesc, "content_delimiter_desc_%d", i);
+							if (GetField_CString(hFormat, csTagDelimiterDesc, &csDelimiterDesc)) {
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csTagDelimiterDesc, csDelimiterDesc));
+
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csDelimiterDesc, csGenDelim));
+								PutField_CString(hText, csDelimiterDesc, csGenDelim);
+							}
+
+							// remove the delimiter from sms text
+							strcpy(csTmpText, csTmpText+strlen(csGenDelim));
+DEBUGLOG(("ProcessSmsText:: after %s = [%s]\n", csTagDelimiter, csTmpText));
+							iRet = PD_OK;
+						} else if ((strcmp(csDelimiter, "[WHOLE-AMOUNT]") == 0) 
+							   || (strcmp(csDelimiter, "[AMOUNT]") == 0)
+						)
+						{
+							iPos = 0;
+                                                        while ((csTmpText[iPos] >= '0' && csTmpText[iPos] <= '9')
+							       || ((csTmpText[iPos] == '+') || (csTmpText[iPos] == ',') || (csTmpText[iPos] == '.') || (csTmpText[iPos] == ' '))
+							)
+							{
+                                                                iPos++;
+                                                        }
+                                                        strncpy(csGenDelim, csTmpText, iPos);
+                                                        csGenDelim[iPos] = '\0';
+
+							sprintf(csTagDelimiterDesc, "content_delimiter_desc_%d", i);
+							if (GetField_CString(hFormat, csTagDelimiterDesc, &csDelimiterDesc)) {
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csTagDelimiterDesc, csDelimiterDesc));
+
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csDelimiterDesc, csGenDelim));
+                                                                PutField_CString(hText, csDelimiterDesc, csGenDelim);
+                                                        }
+
+							// remove the delimiter from sms text
+                                                        strcpy(csTmpText, csTmpText+strlen(csGenDelim));
+DEBUGLOG(("ProcessSmsText:: after %s = [%s]\n", csTagDelimiter, csTmpText));
+
+							// validate amount
+							iIsValidAmt = ValidateAmount(csGenDelim, csTrimAmt);
+
+							// check whole amount
+							if (iIsValidAmt) {
+								if (strcmp(csDelimiter, "[WHOLE-AMOUNT]") == 0) {
+									iIsWholeAmt = CheckWholeAmount(csTrimAmt);
+								}
+							}
+
+							iRet = PD_OK;
+                                                }
+					} else {
+						// loop all sub-delimiter
+						iRet = PD_ERR;
+						csSubDelimiter = strtok(csDelimiter, DELIMITER_DELIMITER);
+						while (csSubDelimiter != NULL) {
+DEBUGLOG(("ProcessSmsText:: sub-%s = [%s]\n", csTagDelimiter, csSubDelimiter));
+
+							pch = strstr(csTmpText, csSubDelimiter);
+							if (pch != NULL) {
+								iValid = PD_FALSE;
+
+								sprintf(csTagDesc, "content_desc_%d", i);
+								if (GetField_CString(hFormat, csTagDesc, &csDesc)) {
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csTagDesc, csDesc));
+
+									strncpy(csValue, csTmpText, strlen(csTmpText)-strlen(pch));
+									csValue[strlen(csTmpText)-strlen(pch)] = '\0';
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csDesc, csValue));
+
+									// field validation
+									if (iAlert) {
+										iValid = PD_TRUE;
+									} else {
+										iValid = ValidateField(csDesc, csValue);
+									}
+
+									if (iValid) {
+										PutField_CString(hText, csDesc, csValue);
+									}
+								} else {
+									if (iAlert) {
+										iValid = PD_TRUE;
+									} else {
+										if (strncmp(csTmpText, csSubDelimiter, strlen(csSubDelimiter)) == 0) {
+											iValid = PD_TRUE;
+										}
+									}
+								}
+
+								if (iValid) {
+									sprintf(csTagDelimiterDesc, "content_delimiter_desc_%d", i);
+									if (GetField_CString(hFormat, csTagDelimiterDesc, &csDelimiterDesc)) {
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csTagDelimiterDesc, csDelimiterDesc));
+
+DEBUGLOG(("ProcessSmsText:: %s = [%s]\n", csDelimiterDesc, csSubDelimiter));
+										PutField_CString(hText, csDelimiterDesc, csSubDelimiter);
+									}
+
+									// remove the delimiter from sms text
+									strcpy(csTmpText, pch+strlen(csSubDelimiter));
+DEBUGLOG(("ProcessSmsText:: after %s = [%s]\n", csTagDelimiter, csTmpText));
+									iRet = PD_OK;
+									break;
+								}
+							} else {
+DEBUGLOG(("ProcessSmsText:: sub-%s not match, continue\n", csTagDelimiter));
+							}
+
+							csSubDelimiter = strtok(NULL, DELIMITER_DELIMITER);
+						}
+					}
+
+					if (iRet == PD_ERR) {
+DEBUGLOG(("ProcessSmsText:: %s not match, check next format\n", csTagDelimiter));
+						break;
+					}
+				} else {
+DEBUGLOG(("ProcessSmsText:: %s not found, check next format\n", csTagDelimiter));
+					iRet = PD_ERR;
+					break;
+				}
+			}
+
+			if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: format matched\n"));
+				break;
+			}
+
+			hash_destroy(hText);
+			hash_init(hText, 0);
+
+			hFormat = RecordSet_GetNext(rRecordFormat);
+		}
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: no format matched\n"));
+			strcpy(csStatus, "INVALID_FORMAT");
+		} else if (iAlert) {
+			if (iIsValidAmt) {
+				if (iIsWholeAmt) {
+					// unknown debit transaction alert
+DEBUGLOG(("ProcessSmsText:: alert\n"));
+//					sprintf(csCmd, "gen_sms_unknown_debit_txn_alert.sh \"%s\"", csText);
+//DEBUGLOG(("ProcessSmsText:: csCmd = [%s]\n", csCmd));
+//					system(csCmd);
+					strcpy(csStatus, "ALERT_ONLY");
+				} else {
+DEBUGLOG(("ProcessSmsText:: non whole amount\n"));
+					strcpy(csStatus, "NON_WHOLE_AMOUNT");
+				}
+			} else {
+DEBUGLOG(("ProcessSmsText:: invalid amount\n"));
+				strcpy(csStatus, "ALERT_ONLY");
+                              	//strcpy(csStatus, "INVALID_FORMAT");				
+			}
+			iRet = PD_ERR;
+		}
+	}
+
+	// lock bank acct
+	if (iRet == PD_OK) {
+		// get bank acct num
+		if (!GetField_CString(hText, "req_bank_acc", &csBankAcctNum)) {
+DEBUGLOG(("ProcessSmsText:: bank acct num not found\n"));
+			iRet = PD_ERR;
+		}
+
+		// get full bank acct num
+		if (iRet == PD_OK) {
+			hash_init(hRec, 0);
+DEBUGLOG(("ProcessSmsText:: call DBOLBankAccts::GetDepositBankAccts()\n"));
+                	DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "GetDepositBankAccts");
+                	iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, hRec);
+                	if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsFormat::GetDepositBankAccts() failed\n"));
+                        	iRet = PD_ERR;
+                        	strcpy(csStatus, "BANK_ACCT_NOT_FOUND");
+                	} else {
+				if (GetField_CString(hRec, "full_bank_acct_num", &csWholeBankAcctNum)) {
+DEBUGLOG(("ProcessSmsText:: full_bank_acct_num = [%s]\n", csWholeBankAcctNum));
+
+DEBUGLOG(("ProcessSmsText:: call DBOLResourceLock::GetBankAcctForUpdate()\n"));
+                        		DBObjPtr = CreateObj(DBPtr, "DBOLResourceLock", "GetBankAcctForUpdate");
+                        		iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csWholeBankAcctNum);
+                        		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLResourceLock::GetBankAcctForUpdate() failed\n"));
+                                		iRet = PD_ERR;
+                                		strcpy(csStatus, "BANK_ACCT_NOT_AVAIL");
+                        		}	
+				}
+                	} 
+			hash_destroy(hRec); 
+		}
+	}
+
+	// check duplicate
+	if (iRet == PD_OK) {
+// DEBUGLOG(("ProcessSmsText:: call DBSystemParameter::FindCode()\n"));
+		// DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		// iTmpRet = (unsigned long)(*DBObjPtr)(PD_SMS_DEDUP_RANGE, csTmp);
+		// if (iTmpRet != PD_FOUND) {
+// DEBUGLOG(("ProcessSmsText:: find code error\n"));
+			// iRet = PD_ERR;
+		// } else {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsTxnLog::CheckDuplicate()\n"));
+			strcpy(csTmp, "366");
+			DBObjPtr = CreateObj(DBPtr, "DBOLSmsTxnLog", "CheckDuplicate");
+			iDupCnt = (unsigned long)(*DBObjPtr)(csTmp, csSender, csText);
+
+			if (iDupCnt < 0) {
+DEBUGLOG(("ProcessSmsText:: check duplicate error\n"));
+				iRet = PD_ERR;
+				strcpy(csStatus, "CHECK_DUP_ERROR");
+			} else if (iDupCnt != 0) {
+DEBUGLOG(("ProcessSmsText:: found [%d] duplicate sms within [%s] minutes\n", iDupCnt, csTmp));
+				iRet = PD_ERR;
+				strcpy(csStatus, "DUPLICATED_SMS");
+			}
+		// }
+	}
+
+	// check whether all bank accts support sms stmt
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBSystemParameter::FindCode()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		iTmpRet = (unsigned long)(*DBObjPtr)(PD_SMS_STMT_UPL, csTmp);
+		if (iTmpRet != PD_FOUND) {
+DEBUGLOG(("ProcessSmsText:: find code error\n"));
+			iRet = PD_ERR;
+		} else if (csTmp[0] != '1') {
+DEBUGLOG(("ProcessSmsText:: all bank acct does not support sms stmt\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "ALL_DISABLED_SMS");
+		}
+	}
+
+	// check whether this bank acct supports sms stmt
+	if (iRet == PD_OK) {
+		hash_init(hRec, 0);
+DEBUGLOG(("ProcessSmsText:: call DBOLBankAccts::GetDepositBankAccts()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts", "GetDepositBankAccts");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csWholeBankAcctNum, hRec);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLSmsFormat::GetDepositBankAccts() failed\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "BANK_ACCT_NOT_FOUND");
+		} else if (!GetField_Int(hRec, "sys_switch_enabled", &iSysSwitchEnabled)) {
+DEBUGLOG(("ProcessSmsText:: sys_switch_enabled not found\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "SYS_SWITCH_DISABLED");
+		} else if (iSysSwitchEnabled == 0) {
+DEBUGLOG(("ProcessSmsText:: bank acct system switch disabled\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "SYS_SWITCH_DISABLED");
+		} else if (!GetField_Int(hRec, "support_sms_stmt", &iSupportSmsStmt)) {
+DEBUGLOG(("ProcessSmsText:: support_sms_stmt not found\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "ACCT_DISABLED_SMS");
+		} else if (iSupportSmsStmt == 0) {
+DEBUGLOG(("ProcessSmsText:: bank acct does not support sms stmt\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "ACCT_DISABLED_SMS");
+/*
+		} else if (!GetField_CString(hRec, "status_type", &csStatusType)) {
+DEBUGLOG(("ProcessSmsText:: status_type not found\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "ACCT_INACTIVE");
+		} else if ((strcmp(csStatusType, "A") != 0) && (strcmp(csStatusType, "F") != 0)) {
+DEBUGLOG(("ProcessSmsText:: bank acct is inactive\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "ACCT_INACTIVE");
+*/
+		} else {
+			GetField_CString(hRec, "acct_ccy", &csAcctCcy);
+			PutField_CString(hText, "acct_ccy", csAcctCcy);
+DEBUGLOG(("ProcessSmsText:: acct_ccy = [%s]\n", csAcctCcy));
+
+			GetField_CString(hRec, "full_bank_acct_num", &csFullBankAcctNum);
+			PutField_CString(hText, "full_bank_acct_num", csFullBankAcctNum);
+DEBUGLOG(("ProcessSmsText:: full_bank_acct_num = [%s]\n", csFullBankAcctNum));
+
+			GetField_CString(hRec, "owner_name", &csOwnerName);
+			PutField_CString(hText, "owner_name", csOwnerName);
+DEBUGLOG(("ProcessSmsText:: owner_name = [%s]\n", csOwnerName));
+
+                        // balance alert
+			if (GetField_CString(hText, "req_bank_bal", &csBal)) {
+				dBal = atof(csBal);
+			} else {
+				dBal = 0.0;
+			}
+DEBUGLOG(("ProcessSmsText:: req_bank_bal = [%f]\n", dBal));
+
+DEBUGLOG(("ProcessSmsText:: call DBOLBankBalCheck::CheckSendAlert()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankBalCheck", "CheckSendAlert");
+			iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, dBal, &iSendAlert);
+DEBUGLOG(("ProcessSmsText:: send_alert = [%d]\n", iSendAlert));
+
+			if (iSendAlert) {
+				sprintf(csCmd, "gen_bank_bal_reach_threshold_alert.sh \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"", csText, csIntBankCode, csBankName, csFullBankAcctNum, csOwnerName, csAcctCcy, csBal);
+DEBUGLOG(("ProcessSmsText:: csCmd = [%s]\n", csCmd));
+				system(csCmd);
+			}
+		}
+		hash_destroy(hRec);
+	}
+
+	// check bank acct status
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLAcctStatusAction::GetAllowActionFlag()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLAcctStatusAction", "GetAllowActionFlag");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csFullBankAcctNum, PD_AC_ACTION_SMS_POST, &iAllowFlag);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLAcctStatusAction::GetAllowActionFlag() failed\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "INVALID_ACCT_STATUS");
+		} else {
+DEBUGLOG(("ProcessSmsText:: iAllowFlag = [%d]\n", iAllowFlag));
+			if (!iAllowFlag) {
+DEBUGLOG(("ProcessSmsText:: invalid acct status\n"));
+				iRet = PD_ERR;
+				strcpy(csStatus, "INVALID_ACCT_STATUS");
+			}
+		}
+	}
+
+	// check baid
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLBankAcctId::GetBaidByBankAcct()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBaidByBankAcct");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csFullBankAcctNum, DEPOSIT_BANK_ACCT_TYPE, hText);
+		if (iTmpRet != PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLBankAcctId::GetBaidByBankAcct() failed\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "BAID_NOT_FOUND");
+		} else {
+			GetField_CString(hText, "baid", &csBaid);
+DEBUGLOG(("ProcessSmsText:: baid = [%s]\n", csBaid));
+			GetField_CString(hText, "psp_id", &csPspId);
+DEBUGLOG(("ProcessSmsText:: psp_id = [%s]\n", csPspId));
+		}
+	}
+
+	// check whether sms date is today or not
+	if (iRet == PD_OK) {
+		if (GetField_CString(hText, "req_bank_date", &csTmpReqBankDate)) {
+DEBUGLOG(("ProcessSmsText:: req_bank_date = [%s]\n", csTmpReqBankDate));
+			strcpy(csReqBankDate, csTmpReqBankDate);
+		} else {
+			if (GetField_CString(hText, "req_bank_year", &csReqBankYear)) {
+DEBUGLOG(("req_bank_year = [%s]\n", csReqBankYear));
+				strcpy(csReqBankDate, csReqBankYear);
+			} else {
+				strftime(csBuf, sizeof(csBuf), "%Y", tStruct);
+				strcpy(csReqBankDate, csBuf);
+			}
+			if (GetField_CString(hText, "req_bank_month", &csReqBankMonth)) {
+				strcat(csReqBankDate, csReqBankMonth);
+			} else {
+				strftime(csBuf, sizeof(csBuf), "%m", tStruct);
+				strcat(csReqBankDate, csBuf);
+			}
+			if (GetField_CString(hText, "req_bank_day", &csReqBankDay)) {
+				strcat(csReqBankDate, csReqBankDay);
+			} else {
+				strftime(csBuf, sizeof(csBuf), "%d", tStruct);
+				strcat(csReqBankDate, csBuf);
+			}
+DEBUGLOG(("ProcessSmsText:: req_bank_year+req_bank_month+req_bank_day = [%s]\n", csReqBankDate));
+			PutField_CString(hText, "req_bank_date", csReqBankDate);
+		}
+
+		strftime(csBuf, sizeof(csBuf), "%Y%m%d", tStruct);
+		if (strcmp(csReqBankDate, csBuf) != 0) {
+DEBUGLOG(("ProcessSmsText:: sms date is not today\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "NON_SAME_DAY");
+		}
+
+		if (GetField_CString(hText, "req_bank_hour", &csReqBankHour)) {
+			if (GetField_CString(hText, "req_bank_minute", &csReqBankMinute)) {
+				strcpy(csReqBankTime, csReqBankHour);
+				strcat(csReqBankTime, csReqBankMinute);
+				strcat(csReqBankTime, "00");
+				PutField_CString(hText, "req_bank_time", csReqBankTime);
+DEBUGLOG(("ProcessSmsText:: req_bank_time = [%s]\n", csReqBankTime));
+			}
+		}
+	}
+
+/*
+	// check any bank stmt found
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessSmsText:: call DBOLStatement::MatchStmt()\n"));
+		PutField_CString(hText, "amt_type", PD_CR);
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "MatchStmt");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hText);
+		if (iTmpRet != PD_NOT_FOUND) {
+DEBUGLOG(("ProcessSmsText:: bank statement found\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "AMOUNT_FOUND");
+		}
+	}
+*/
+
+	// check any bank stmt found
+	if (iRet == PD_OK) {
+		PutField_CString(hText, "trigger_type", PD_TRIGGER_SYSTEM);
+		PutField_CString(hText, "input_channel", PD_CHANNEL_SMS);
+		PutField_CString(hText, "bank_acct_type", PD_NATURE_DEPOSIT);
+		PutField_CString(hText, "baid_txn_code", PD_BANK_DEPOSIT_TXN_CODE);
+		PutField_CString(hText, "amt_type", PD_CR);
+ 
+DEBUGLOG(("ProcessSmsText:: call BOOLStmtEngine::ProcessMatching()\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLStmtEngine", "ProcessMatching");
+		iTmpRet = (unsigned long)(*BOObjPtr)(hText);
+		if (iTmpRet == PD_FOUND) {
+DEBUGLOG(("ProcessSmsText:: bank statement found\n"));
+			iRet = PD_ERR;
+			strcpy(csStatus, "AMOUNT_FOUND");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		PutField_CString(hText, "req_status", "UPLOADED");
+	} else {
+		PutField_CString(hText, "req_status", csStatus);
+	}
+
+	FREE_ME(csTagDelimiter);
+	FREE_ME(csTagIsGeneric);
+	FREE_ME(csTagDelimiterDesc);
+	FREE_ME(csTagDesc);
+
+	FREE_ME(hRec);
+	// hash_destroy(hFormat);
+	// FREE_ME(hFormat);
+	RecordSet_Destroy(rRecordFormat);
+	FREE_ME(rRecordFormat);
+
+DEBUGLOG(("ProcessSmsText() iRet = [%d]\n", iRet));
+	return iRet;
+}
+

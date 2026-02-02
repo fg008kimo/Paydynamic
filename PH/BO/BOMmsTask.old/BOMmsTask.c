@@ -1,0 +1,309 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/11/25              Cody Chan
+Handle NewTask to Node or on Local                 2012/03/06              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOMmsTask.h"
+
+char    cDebug;
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(BO);
+
+void BOMmsTask(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int NewTask(hash_t *hContext,
+                        hash_t *hRequest,
+                        hash_t *hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csTmp;
+	char*	csFromType;
+	char*	csToType;
+	char*	csTxnCode;
+	char*	csTxnDesc;
+	//char*	csHandler;
+
+	char	cIsdInd;
+	int	iCF_Ind = PD_FALSE;  
+	int	iVoidFlag = PD_FALSE;  
+	char	*csPartyType = NULL;
+	char	*csServerNode= NULL;
+	char	*csNodeId = NULL;
+	char	*csNodeKey = NULL;
+	char	cTmp;
+
+	int	iTestReject = PD_FALSE ;
+
+	hash_t  *hRec;
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t *) malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+	
+	
+	csTxnCode = (char*) malloc (PD_TXN_CODE_LEN +1 );
+        csTxnDesc = (char*) malloc (PD_DESC_LEN + 1);
+
+DEBUGLOG(("BOMmsTask:NewTask()\n"));
+
+/* isd_ind */
+	if (GetField_Char(hRequest, "isd_ind", &cIsdInd)) {
+DEBUGLOG(("BOMmsTask:NewTask() isd_ind = [%c]\n",cIsdInd));
+	}
+	else {
+DEBUGLOG(("BOMmsTask:NewTask(): isd_ind missing!\n"));
+ERRLOG("BOMmsTask:NewTask(): isd_ind missing!!\n");
+		iRet = INT_ERR;
+	}	
+
+/*Void Flag*/
+	if (GetField_Int(hRequest, "void_flag", &iVoidFlag)) {
+DEBUGLOG(("BOMmsTask:NewTask() void_flag = [%d]\n",iVoidFlag));
+	}
+
+
+	if (cIsdInd != PD_MMS_ISD_IND_INIT) {
+		if (GetField_CString(hRequest,"mms_from_type",&csFromType) && GetField_CString(hRequest,"mms_to_type",&csToType)) {
+DEBUGLOG(("BOMmsTask:NewTask() from Type = [%s]\n",csFromType));
+DEBUGLOG(("BOMmsTask:NewTask() to Type = [%s]\n",csToType));
+
+			DBObjPtr = CreateObj(DBPtr,"DBMmsTxnCode","FindTxnCodeByType");
+	                if((unsigned long) ((*DBObjPtr)(csTxnCode, csTxnDesc, csFromType, csToType)) != FOUND){
+DEBUGLOG(("BOMmsTask:NewTask() DBMmsTxnCode: Find txn code error!!\n"));
+ERRLOG("BOMmsTask:NewTask() DBMmsTxnCode: Find txn code error!!\n");
+				iRet = INT_ERR;
+                	}
+	                else{
+DEBUGLOG(("BOMmsTask:NewTask() Call DBMmsTxnCode: csTxnCode [%s] Desc [%s]\n", csTxnCode, csTxnDesc));
+				PutField_CString(hContext,"sub_txn_code",csTxnCode);
+				PutField_CString(hContext,"sub_txn_desc",csTxnDesc);
+                	}
+
+		}
+		else {
+DEBUGLOG(("BOMmsTask:NewTask() mms_from_type or mms_to_type is missing!!!\n"));
+		}
+	}
+
+/*
+	if(iRet==PD_OK){
+		csHandler = (char*) malloc (20);
+                sprintf(csHandler,"TxnMmcByUs%s",csTxnCode);
+DEBUGLOG(("BOMmsTask:NewTask() Create Txn Object [%s]\n",csHandler));
+                TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+                FREE_ME(csHandler);
+
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+DEBUGLOG(("BOMmsTask:NewTask() iRet = [%d]\n",iRet));
+	}
+*/
+
+
+/* carry_forward_ind */
+
+	if (GetField_Int(hRequest, "carry_forward_ind", &iCF_Ind)) {
+DEBUGLOG(("BOMmsTask:NewTask() carry_forward_ind = [%d]\n",iCF_Ind));
+	}
+	else {
+		iCF_Ind = PD_FALSE;
+DEBUGLOG(("BOMmsTask:NewTask() assign carry_forward_ind to default value [%d]\n",iCF_Ind));
+	}
+
+/* party_type */
+	if (GetField_CString(hRequest, "party_type", &csPartyType)) {
+DEBUGLOG(("BOMmsTask:NewTask() party_type = [%s]\n",csPartyType));
+	}
+	else {
+DEBUGLOG(("BOMmsTask:NewTask(): party_type missing!\n"));
+ERRLOG("BOMmsTask:NewTask(): party_type missing!!\n");
+		iRet = INT_ERR;
+	}
+
+/* node_id */
+	if (GetField_CString(hRequest, "node_id", &csNodeId)) {
+DEBUGLOG(("BOMmsTask:NewTask(): node_id  = [%s]\n", csNodeId));
+		PutField_CString(hRequest, "mms_node_id", csNodeId);
+	}
+	else {
+DEBUGLOG(("BOMmsTask:NewTask(): node_id missing!\n"));
+ERRLOG("BOMmsTask:NewTask(): node_id missing!!\n");
+		iRet = INT_ERR;
+	}
+
+/* server_node */
+        if (GetField_CString(hContext, "server_node", &csServerNode)) {
+DEBUGLOG(("BOMmsTask:NewTask():server node_id = [%s]\n",csServerNode));
+        }
+        else {
+DEBUGLOG(("BOMmsTask:NewTask():server node_id not found !!\n"));
+ERRLOG("BOMmsTask:NewTask(): server node_id not found!!\n");
+                iRet = INT_ERR;
+	}
+
+
+	if (iRet == PD_OK) {
+		if (iCF_Ind == PD_TRUE) {
+			//No need to handle, as already update balance
+DEBUGLOG(("BOMmsTask:NewTask() No need to update balance\n"));
+			if (GetField_Char(hRequest, "auto_reverse", &cTmp)) {
+				PutField_Char(hResponse, "auto_reverse", PD_MMS_SYS_REV_SUCC);
+DEBUGLOG(("BOMmsTask:NewTask() iCF_Ind [%d] assign auto_reverse [%c]\n", iCF_Ind, PD_MMS_SYS_REV_SUCC));
+			}
+		}
+		else {
+			// chk node_id
+			if  (!strcmp(csNodeId, csServerNode)) {
+
+				if (!strcmp(csPartyType, PD_MMS_PARTY_STL_BK)) {
+				// Settlement Bank , no Balance 
+DEBUGLOG(("BOMmsTask:NewTask() party_type [%s] No balance update\n", csPartyType));
+
+					if (GetField_Char(hRequest, "auto_reverse", &cTmp)) {
+						PutField_Char(hResponse, "auto_reverse", PD_MMS_SYS_REV_SUCC);
+DEBUGLOG(("BOMmsTask:NewTask() type [%s] assign auto_reverse [%c]\n", csPartyType, PD_MMS_SYS_REV_SUCC));
+					}
+				}
+				else {
+				// Handle Balance on Local
+DEBUGLOG(("BOMmsTask:NewTask(): Call BOMmsBalance: TxnTypeHandler\n"));
+		                        BOObjPtr = CreateObj(BOPtr,"BOMmsBalance","TxnTypeHandler");
+					iRet = (unsigned long)((*BOObjPtr)(hRequest));
+
+DEBUGLOG(("BOMmsTask:NewTask()::call TxnTypeHandler iRet=[%d]\n",iRet));
+
+/****** TESTING ******/
+if (iTestReject == PD_TRUE || GetField_Char(hContext, "test_case", &cTmp)) {
+DEBUGLOG(("BOMmsTask:NewTask()::Simulate Reject case\n"));
+	iRet = PD_ERR;
+}
+
+/****** TESTING ******/
+
+					if (iRet != PD_OK) {
+						PutField_Int(hContext, "internal_error", iRet);
+					}
+
+					if (GetField_Char(hRequest, "auto_reverse", &cTmp)) { 
+						if (iRet == PD_OK) {
+							PutField_Char(hResponse, "auto_reverse", PD_MMS_SYS_REV_SUCC);
+DEBUGLOG(("BOMmsTask:NewTask()::Assign new auto_reverse to [%c]\n", PD_MMS_SYS_REV_SUCC));
+						}		
+						else {
+							PutField_Char(hResponse, "auto_reverse", PD_MMS_SYS_REV_PENDING);
+DEBUGLOG(("BOMmsTask:NewTask()::Assign new auto_reverse to [%c]\n", PD_MMS_SYS_REV_PENDING));
+
+							int iRevRet = PD_OK;
+DEBUGLOG(("BOMmsTask:NewTask()::Call TxnMmsByUsREV: Authorize\n"));
+							//pending reverse
+							TxnObjPtr = CreateObj(TxnPtr,"TxnMmsByUsREV","Authorize");
+							iRevRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hRequest);
+						}
+					}
+				}
+			} 
+			else {
+
+				if (GetField_Char(hRequest, "auto_reverse", &cTmp) ||
+				    iVoidFlag == PD_TRUE) {
+					PutField_CString(hRequest, "process_type", PD_MMS_PROCESS_REV);
+					PutField_CString(hRequest,"process_code",PD_MMS_REV_MONEY_MOVEMENT);
+				}
+				else {
+					PutField_CString(hRequest, "process_type", PD_MMS_PROCESS_TYPE);
+
+					if (cIsdInd == PD_SOURCE) {
+						if (!strcmp(csPartyType, PD_MMS_PARTY_PSP)) {
+							PutField_CString(hRequest, "process_code", PD_MMS_TRANSFER_FR_PSP);
+						} else if (!strcmp(csPartyType, PD_MMS_PARTY_MERCH)) {
+							PutField_CString(hRequest, "process_code", PD_MMS_TRANSFER_FR_MERCH);
+						} else {
+							iRet = INT_ERR;
+DEBUGLOG(("BOMmsTask:NewTask():unexpected party_type for node [%s] isd_ind [%c]!!\n",csNodeId, cIsdInd));
+ERRLOG("BOMmsTask:NewTask(): unexpected party_type for node [%s] isd_ind [%c]!!\n", csNodeId, cIsdInd); 
+						}
+					} 
+					else {
+						if (!strcmp(csPartyType, PD_MMS_PARTY_PSP)) {
+							PutField_CString(hRequest, "process_code", PD_MMS_TRANSFER_TO_PSP);
+						} else if (!strcmp(csPartyType, PD_MMS_PARTY_MERCH)) {
+							PutField_CString(hRequest, "process_code", PD_MMS_TRANSFER_TO_MERCH);
+						} else {
+							iRet = INT_ERR;
+DEBUGLOG(("BOMmsTask:NewTask():unexpected party_type for node [%s] isd_ind [%c]!!\n",csNodeId, cIsdInd));
+ERRLOG("BOMmsTask:NewTask(): unexpected party_type for node [%s] isd_ind [%c]!!\n", csNodeId, cIsdInd); 
+						}
+	
+					}
+
+				}
+
+				if (iRet == PD_OK) {
+DEBUGLOG(("BOMmsTask:NewTask()::Get Node [%s] Key\n", csNodeId));
+
+					DBObjPtr = CreateObj(DBPtr, "DBMmsKeys", "GetMmsKey");
+					if ((unsigned long)(*DBObjPtr)(csNodeId, rRecordSet) == PD_OK) {
+						hRec = RecordSet_GetFirst(rRecordSet);
+						while (hRec) {
+							if (GetField_CString(hRec, "mms_key", &csNodeKey)) {
+								PutField_CString(hRequest, "mms_key", csNodeKey);
+							}
+DEBUGLOG(("BOMmsTask:NewTask()::Call TxnMmsByUs2Node: Authorize:node_id [%s] key [%s] \n",csNodeId, csNodeKey));
+
+							TxnObjPtr = CreateObj(TxnPtr, "TxnMmsByUs2Node","Authorize");
+							iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+DEBUGLOG(("BOMmsTask:NewTask()::call TxnMmsByUs2Node iRet=[%d]\n",iRet));
+
+							if (iRet == PD_OK) {
+								if (GetField_CString(hResponse, "txn_country", &csTmp)) {
+DEBUGLOG(("BOMmsTask:NewTask()::get txn_country =[%s]\n",csTmp));
+									PutField_CString(hRequest, "txn_country", csTmp);
+								}
+							}
+
+							if (GetField_Char(hResponse, "auto_reverse", &cTmp)) {
+DEBUGLOG(("BOMmsTask:NewTask()::get auto_reverse =[%c]\n",cTmp));
+							}
+
+							break; // expected one record only!
+
+							hRec = RecordSet_GetNext(rRecordSet);
+						}
+					} 
+					else {
+						iRet = INT_ERR;
+DEBUGLOG(("BOMmsTask:NewTask():GetMmsKey::fail to get record for [%s]\n", csNodeId));
+ERRLOG("BOMmsTask::NewTask():GetMmsKey::fail to get record for [%s]\n", csNodeId);
+					}
+				}
+			}  // end of non server_node
+		}
+	}
+
+
+DEBUGLOG(("BOMmsTask:NewTask() exit iRet = [%d]\n",iRet));
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	
+	FREE_ME(csTxnCode);
+	FREE_ME(csTxnDesc);
+	return 	iRet;
+}

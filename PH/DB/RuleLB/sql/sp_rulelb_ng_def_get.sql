@@ -1,0 +1,298 @@
+CREATE OR REPLACE FUNCTION sp_rulelb_ng_def_get(
+   in_merchant_id       MERCH_DETAIL.MERCHANT_ID%TYPE,
+   in_channel_code      rule_psp_lb_criteria.rc_channel_code%TYPE,
+   in_service_code      rule_psp_lb_criteria.rc_service_code%TYPE,
+   in_country           rule_psp_lb_criteria.rc_country%TYPE,
+   in_ccy               RULE_PSP_LB_CRITERIA.RC_CCY%TYPE,
+   in_ip_region_code	PSP_RESTRICT_IP_REGION.PIR_REGION_CODE%TYPE,
+   in_device_type	PID_BANK_GROUP_MAPPING.PGM_DEVICE_TYPE%TYPE,
+   in_amount            RULE_PSP_LB_CRITERIA.RC_MAX_TRANSACTION_AMOUNT%TYPE,
+   out_cursor       OUT SYS_REFCURSOR)
+   RETURN NUMBER
+IS
+BEGIN
+   OPEN out_cursor FOR
+	select 	bank_group,
+		bm_int_bank_code,
+		pgm_bank_code,
+		is_all_child_outage,
+		is_outage is_child_outage,
+		rc_customer_segment,
+		currency_id,
+		rpp_psp_id,
+		remaining_limit,
+		credit_option,
+		debit_option
+	from 	(SELECT bank_group,
+			bm_int_bank_code,
+			pgm_bank_code,
+			nbxa_pid_group,
+			bank_code_cnt,
+			parent_bank_code_cnt,
+			is_child_bank_code,
+			child_bank_code_cnt,
+			case when child_bank_code_cnt>0 and child_bank_code_cnt = sum(is_outage) over (partition by bank_group,is_child_bank_code) then 1 else 0 end as is_all_child_outage,
+			is_outage,
+			sum(is_outage) over (partition by bank_group, is_child_bank_code) as child_outage_cnt,
+			rc_customer_segment,
+			rpp_psp_id,
+			currency_id,
+			remaining_limit,
+			display_order,
+			credit_option,
+			debit_option
+		from	(select	nbxa_pid_group,
+				rpp_psp_id,
+				currency_id,
+				remaining_limit,
+				rc_customer_segment,
+				credit_option,
+				debit_option,
+				bm_int_bank_code,
+				bank_group,
+				pgm_bank_code,
+				pgm_pid_group,
+				display_order,
+				count(bm_int_bank_code) over (partition by bank_group) as bank_code_cnt,
+				sum(case when (bank_group is null or bm_int_bank_code = bank_group) then 1 else 0 end) over (partition by bank_group) as parent_bank_code_cnt,
+				case when (bank_group is not null and bm_int_bank_code <> bank_group) then 1 else 0 end as is_child_bank_code,
+				sum(case when (bank_group is not null and bm_int_bank_code <> bank_group) then 1 else 0 end) over (partition by bank_group) as child_bank_code_cnt,
+				is_outage
+			from	(select	nbxa_pid_group,
+					rpp_psp_id,
+					currency_id,
+					remaining_limit,
+					rc_customer_segment,
+					credit_option,
+					debit_option,
+					b.bm_int_bank_code bm_int_bank_code,
+					b.bank_group bank_group,
+					b.pgm_bank_code pgm_bank_code,
+					b.pgm_pid_group pgm_pid_group,
+					NVL(c.pbm_display_order,b.fe_display_order) display_order,
+					case when f.rb_scheduler_id is not NULL then 1 else 0 end as is_outage
+				from	(SELECT	psp_name,
+						nbxa_pid_group,
+						client_id,
+						rpp_psp_id,
+						currency_id,
+						rpp_limit,
+						remaining_limit,
+						psp_channel_code,
+						overrided_bank_code_channel,
+						rc_service_code,
+						rc_customer_segment,
+						credit_option,
+						debit_option,
+						pd_restrict_deposit_ip
+					FROM 	(SELECT	rm_psp_id,
+							rc_service_code,
+							rc_customer_segment,
+							credit_option,
+							debit_option
+						FROM 	(SELECT	rc_channel_code,
+								rc_service_code,
+								rc_payment_method,
+								rc_country,
+								rc_ccy,
+								rc_party_type,
+								rc_party_id,
+								rc_business_type,
+								rc_criteria_pool_id,
+								rc_customer_segment,
+								rp_criteria_pool_id,
+								rp_pool_id,
+								CASE WHEN rc_card_type_opt = 'C' THEN 1 ELSE 0 END
+								credit_option,
+								CASE WHEN rc_card_type_opt = 'D' THEN 1 ELSE 0 END
+								debit_option
+							FROM	rule_psp_lb_criteria, rule_psp_lb_pools
+							WHERE	RULE_SCHEDULE_PKG.InRunningPeriod (rc_scheduler_id) = 1
+							AND 	rc_criteria_pool_id = rp_criteria_pool_id
+							AND 	rc_disabled = 0
+							AND 	rp_disabled = 0
+							AND 	rc_ccy = in_ccy
+							AND 	rc_party_id = in_merchant_id
+							AND 	rc_channel_code = in_channel_code
+							AND 	rc_service_code = in_service_code
+							AND 	rc_country = in_country
+							AND 	RC_ALLOW_SPECIAL_REGION = 0
+							AND 	rc_min_transaction_amount <= in_amount
+							AND 	((rc_max_transaction_amount >= in_amount AND rc_max_transaction_amount > 0)
+								 OR rc_max_transaction_amount = 0)
+							AND 	((rc_customer_segment IS NULL
+							AND 	(SELECT	cgm_merchant_id
+								FROM 	customer_group_merchant
+								WHERE 	cgm_merchant_id = in_merchant_id
+								AND 	cgm_disabled = 0) IS NULL))),
+							(SELECT	business_type,
+								merchant_id,
+								clients.client_id
+							FROM 	merch_detail, clients
+							WHERE 	merchant_id = in_merchant_id
+							AND 	disabled = 0
+							AND 	merch_detail.status = 'O'
+							AND 	merch_detail.client_id = clients.client_id
+							AND 	clients.status = 'O'),
+							(rule_psp_lb_mapping)
+						WHERE  	rc_business_type = business_type
+						AND 	rp_pool_id = rm_pool_id
+						AND 	rm_disabled = 0
+						AND 	((rc_party_type = 'M' AND rc_party_id = merchant_id)
+							 OR (rc_party_type = 'C' AND rc_party_id = client_id)
+							 OR (rc_party_type = 'G'))
+						GROUP BY	rm_psp_id,
+								rc_service_code,
+								rc_customer_segment,
+								credit_option,
+								debit_option),
+								(SELECT	psp_name,
+									nbxa_pid_group,
+									client_id,
+									psp_channel_code,
+									overrided_bank_code_channel,
+									pd_restrict_deposit_ip,
+									rpp_psp_id,
+									currency_id,
+									rpp_limit,
+									CASE
+										WHEN rpp_limit = 0 THEN rpp_limit
+										ELSE rpp_limit - NVL (tc_total_counter, 0)
+									END
+									AS remaining_limit
+								FROM 	(SELECT	rpp_psp_id,
+										currency_id,
+										rpp_limit,
+										client_id,
+										psp_name,
+										nbxa_pid_group,
+										psp_channel_code,
+										overrided_bank_code_channel,
+										pd_restrict_deposit_ip
+									FROM 	(SELECT	rpp_psp_id,
+											rpp_limit
+										FROM 	rule_psp_lb_psp
+										WHERE 	rpp_disabled = 0),
+										(SELECT r_psp_id,
+                                                                   			currency_id,
+                                                                   			client_id,
+                                                                   			psp_name,
+                                                                   			nbxa_pid_group,
+                                                                   			psp_channel_code,
+                                                                   			overrided_bank_code_channel,
+                                                                   			pd_restrict_deposit_ip
+										FROM	(SELECT PSP_ID AS r_psp_id,
+												currency_id,
+												client_id,
+												psp_name,
+												nbxa_pid_group,
+												psp_channel_code,
+												overrided_bank_code_channel,
+												pd_restrict_deposit_ip
+											FROM 	psp_detail,
+												psp_master
+											WHERE 	client_id = pm_client_id
+											AND 	disabled = 0
+											AND 	online_mode = 'Y'
+											AND 	status = 'O'
+											AND 	pm_status = 'O')
+										LEFT JOIN
+                                                                    			(SELECT pir_psp_id,
+												pir_region_code
+                                                                     			 FROM   psp_restrict_ip_region
+                                                                     			 WHERE  pir_disabled = 0) 
+                                                             			ON     (pir_psp_id = r_psp_id)
+                                                            			WHERE (pd_restrict_deposit_ip = 0 OR (pd_restrict_deposit_ip = 1 AND pir_region_code = in_ip_region_code))
+                                                            			GROUP BY r_psp_id,
+                                                                     		 	 currency_id,
+                                                                     		 	 client_id,
+                                                                     		 	 psp_name,
+                                                                     		 	 nbxa_pid_group,
+                                                                     		 	 psp_channel_code,
+                                                                     		 	 overrided_bank_code_channel,
+                                                                     		 	 pd_restrict_deposit_ip)
+									WHERE 	rpp_psp_id = r_psp_id)
+--
+								LEFT JOIN	(SELECT 	SUM (tc_total_counter) AS tc_total_counter,
+												tc_party_id AS party_psp_id
+										FROM 		txn_counters
+										WHERE 		tc_party_type = 'P'
+										AND 		tc_category = 'AMT'
+										AND 		tc_type = 'D'
+										GROUP BY 	tc_party_id)
+								ON rpp_psp_id = party_psp_id)
+--
+					WHERE rm_psp_id = rpp_psp_id) a
+--
+				LEFT JOIN 	(SELECT	bm_int_bank_code,
+							bm_psp_channel_id,
+							bank_group,
+							pgm_bank_code,
+							pgm_pid_group,
+							fe_display_order
+                                        	FROM 	bank_mapping,
+							bank_desc,
+							pid_bank_group_mapping
+						WHERE   internal_bank_code = bm_int_bank_code
+						AND 	(((pgm_bank_code = internal_bank_code) or (pgm_bank_code = bank_group) or (pgm_bank_group = internal_bank_code))
+							 AND (bank_group IS NOT NULL)
+							)
+						AND	pgm_service_code = in_service_code
+						AND	pgm_device_type = in_device_type
+						AND 	bm_disabled = 0
+						AND 	pgm_disabled = 0
+						) b
+				ON ((a.overrided_bank_code_channel IS NOT NULL AND b.bm_psp_channel_id = a.overrided_bank_code_channel)
+                                    OR (a.overrided_bank_code_channel IS NULL AND b.bm_psp_channel_id = a.psp_channel_code))
+--
+				LEFT JOIN   	(SELECT pbm_bank_code,
+                                                	pbm_service_code,
+                                                	pbm_display_order
+                                            	FROM    paypage_bank_mapping
+                                        	WHERE   pbm_disabled = 0) c
+                            	ON c.pbm_bank_code = b.pgm_bank_code
+                            	AND c.pbm_service_code = a.rc_service_code
+--
+				LEFT JOIN	(SELECT	rb_bank_code,
+							rb_scheduler_id
+						FROM 	rule_disabled_bank
+						WHERE 	rb_disabled = 0
+						AND 	rb_channel_code = 'WEB'
+						AND 	rb_type IN ('G')
+						AND 	RULE_SCHEDULE_PKG.InRunningPeriod (rb_scheduler_id) = 1)f
+				on f.rb_bank_code = b.bm_int_bank_code
+--
+				)
+			)
+		WHERE	nbxa_pid_group = pgm_pid_group
+		)
+	where 		((child_bank_code_cnt> 0 and is_child_bank_code = 1) or child_bank_code_cnt = 0)
+	group by	display_order,
+			bank_group,
+			bm_int_bank_code,
+			pgm_bank_code,
+			is_all_child_outage,
+			is_outage,
+			rc_customer_segment,
+			rpp_psp_id,
+			currency_id,
+			remaining_limit,
+			credit_option,
+			debit_option
+	ORDER BY 	display_order,
+			bank_group,
+			bm_int_bank_code,
+			pgm_bank_code,
+			credit_option DESC,
+			remaining_limit DESC,
+			is_outage;
+
+   RETURN 0;
+
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+END sp_rulelb_ng_def_get;
+/
+

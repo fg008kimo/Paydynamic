@@ -1,0 +1,66 @@
+CREATE OR REPLACE FUNCTION sp_ol_bank_acct_id_insert_v2(
+	in_baid			ol_bank_acct_id.obai_baid%type,
+	in_baid_name		ol_bank_acct_id.obai_baid_name%type,
+	in_int_bank_code	ol_bank_acct_id.obai_int_bank_code%type,
+	in_bank_acct_num	ol_bank_acct_id.obai_bank_acct_num%type,
+	in_psp_id		ol_bank_acct_id.obai_psp_id%type,
+	in_status		ol_bank_acct_id.obai_status%type,
+	in_apply_deposit_cost	ol_bank_acct_id.obai_apply_deposit_cost%type,
+	in_init_bal		ol_bank_acct_id.obai_init_bal%type,
+	in_code_in_num          ol_bank_acct_id.obai_code_in_num%type,
+	in_pid_code		ol_bank_acct_id.obai_pid_code%type,
+	in_category		ol_bank_acct_id.obai_category%type,
+	in_sub_provider		ol_bank_acct_id.obai_sub_provider%type,
+	in_create_user		ol_bank_acct_id.obai_create_user%type
+	)
+RETURN NUMBER IS
+
+BEGIN
+	INSERT INTO ol_bank_acct_id (
+		obai_baid,
+		obai_baid_name,
+		obai_int_bank_code,
+		obai_bank_acct_num,
+		obai_psp_id,
+		obai_status,
+		obai_apply_deposit_cost,
+		obai_init_bal,
+        	obai_code_in_num,
+		obai_pid_code,
+		obai_category,
+		obai_sub_provider,
+		obai_create_user,
+		obai_create_timestamp,
+		obai_update_user,
+		obai_update_timestamp
+	)
+	VALUES (
+		in_baid,
+		in_baid_name,
+		in_int_bank_code,
+		in_bank_acct_num,
+		in_psp_id,
+		in_status,
+		in_apply_deposit_cost,
+		in_init_bal,
+		in_code_in_num,
+		in_pid_code,
+		in_category,
+		in_sub_provider,
+		in_create_user,
+		sysdate,
+		in_create_user,
+		sysdate
+	);
+
+	IF SQL%ROWCOUNT = 0 THEN
+		RETURN 1;
+	ELSE
+		RETURN 0;
+	END IF;
+
+EXCEPTION
+	WHEN OTHERS THEN
+		RETURN 9;
+END sp_ol_bank_acct_id_insert_v2;
+/

@@ -1,0 +1,118 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/03/12              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmcByUsARH.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+OBJPTR(DB);
+OBJPTR(Txn);
+void TxnMmcByUsARH(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+	int     iRet = PD_OK;
+	int	iBatchId;
+	char*   csOrgTxnSeq;
+	char*   csOrgDtlTxnSeq;
+	char*	csTmp;
+	char	cTmp;
+	hash_t  *hRec, *hTxn;
+
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("TxnMmcByUsARH: Authorize()\n"));
+
+/* txn_seq */
+	if (GetField_CString(hRequest,"txn_seq",&csOrgTxnSeq)) {
+		PutField_CString(hTxn,"txn_seq",csOrgTxnSeq);
+DEBUGLOG(("TxnMmcByUsARH: txn_seq = [%s]\n",csOrgTxnSeq));
+	}
+/* dtl_txn_seq */
+	if (GetField_CString(hRequest,"dtl_txn_seq",&csOrgDtlTxnSeq)) {
+DEBUGLOG(("TxnMmcByUsARH: dtl_txn_seq = [%s]\n",csOrgDtlTxnSeq));
+	}
+
+/* batch_id */
+	if (GetField_Int(hRequest,"batch_id",&iBatchId)) {
+DEBUGLOG(("TxnMmcByUsARH: batch_id = [%d]\n",iBatchId));
+	}
+
+	if(GetField_Char(hRequest,"auto_reverse",&cTmp)){
+		PutField_Char(hTxn,"auto_reverse",cTmp);
+DEBUGLOG(("TxnMmcByUsARH: auto_reverse = [%c]\n",cTmp));
+	}
+
+	PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+
+
+	int iTmpRet=PD_OK;
+DEBUGLOG(("TxnMmcByUsARH: Call DBMmsTransaction:GetMmsTxnDetailByBatchId\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","GetMmsTxnDetailByBatchId");
+	if ((unsigned long)((*DBObjPtr)(csOrgTxnSeq,csOrgDtlTxnSeq,iBatchId,rRecordSet)) == PD_OK) {
+DEBUGLOG(("GetMmsTxnDetailByBatchId Prev Txn Found\n"));
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec && iTmpRet==PD_OK){
+			if(GetField_CString(hRec,"dtl_txn_seq",&csTmp)){
+				PutField_CString(hTxn,"dtl_txn_seq",csTmp);
+DEBUGLOG(("GetMmsTxnDetailByBatchId: dtl_txn_seq = [%s]\n",csTmp));
+			}
+			if(GetField_Char(hRec,"status",&cTmp)){
+DEBUGLOG(("GetMmsTxnDetailByBatchId: status = [%c]\n",cTmp));
+				if(cTmp!=PD_ACCEPT)
+					continue;
+			}
+
+DEBUGLOG(("TxnMmcByUsARH::Call TxnMmcByUsVTX\n"));
+			TxnObjPtr = CreateObj(TxnPtr, "TxnMmcByUsVTX","Authorize");
+			iTmpRet = (unsigned long)(*TxnObjPtr)(hContext,hTxn,hResponse);
+DEBUGLOG(("TxnMmcByUsARH::call TxnMmcByUsVTX iRet=[%d]\n",iTmpRet));
+			
+			if(iTmpRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMmsTransaction:UpdateDetail\n"));
+				PutField_Char(hTxn,"status",PD_REVERSING);
+				DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","UpdateDetail");
+				iTmpRet = (unsigned long) ((*DBObjPtr)(hTxn));
+DEBUGLOG(("DBMmsTransaction:UpdateDetail iRet[%d]\n",iRet));
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+
+
+	FREE_ME(hTxn);
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+DEBUGLOG(("TxnMmcByUsARH Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

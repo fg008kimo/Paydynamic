@@ -1,0 +1,25 @@
+DROP TYPE PHUSER.RPT_TXN_Detail_OBJ;
+
+CREATE OR REPLACE TYPE PHUSER.RPT_TXN_Detail_OBJ is object (txn_id varchar(16),
+							status varchar(1),
+							ar_ind varchar(1),
+							internal_code number,
+							response_code varchar(6),
+							merchant_id varchar(15),
+							merchant_ref varchar(50),
+							psp_name varchar(50),
+							tid varchar(50),
+							txn_ccy char(3),
+							txn_amount number,
+							service_fee number,
+							merchant_txn_date varchar(14),
+							local_txn_date varchar(8),
+							local_txn_time varchar(6),
+							psp_txn_date varchar(8),
+							host_posting_date varchar(8),
+							txn_code_desc varchar(50),
+							txn_code char(3),
+							last_updatetime varchar(14),
+							client_name varchar(50),
+							bill_no varchar(20))
+/

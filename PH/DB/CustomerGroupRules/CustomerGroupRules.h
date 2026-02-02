@@ -1,0 +1,46 @@
+#ifndef _CUSTOMER_GROUP_RULES_H_
+#define _CUSTOMER_GROUP_RULES_H_
+
+#include "myhash.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int FindGroupCnt(const char* csMerchantId);
+int PickGroup(const char* csMerchantId,
+                const char* csCountryId,
+                const char* csChannelCode,
+                const char* csServiceCode,
+                const char* csCurrencyId,
+                const char* csDate,
+		const hash_t* hTxn,
+                char*   csCustomerGroup);
+
+int PickPromoteGroup(const char* csMerchantId,
+                const char* csCountryId,
+                const char* csChannelCode,
+                const char* csServiceCode,
+                const char* csCurrencyId,
+                const char* csDate,
+                const char* csFromGroup,
+                const hash_t* hTxn,
+                char*   csCustomerGroup);
+
+int GetAllPromoteSegment(const char* csMerchantId,
+                     const char* csCustomerGroup,
+                     hash_t * hTxn);
+
+int IsPromoteGroup(const char* csMerchantId,
+		   const char* csCustomerGroup);
+
+int IsCurrentGroup(const char* csMerchantId,
+                   const char* csCustomerGroup);
+
+int GetFromGroup(const char* csMerchantId, 
+		 char* csCustomerGroup);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

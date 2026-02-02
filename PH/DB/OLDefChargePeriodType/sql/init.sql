@@ -1,0 +1,6 @@
+INSERT INTO OL_DEF_CHARGE_PERIOD_TYPE VALUES ('I','Immediate',sysdate,sysdate,'SYSTEM','SYSTEM');
+INSERT INTO OL_DEF_CHARGE_PERIOD_TYPE VALUES ('M','Manual',sysdate,sysdate,'SYSTEM','SYSTEM');
+INSERT INTO OL_DEF_CHARGE_PERIOD_TYPE VALUES ('D','Daily',sysdate,sysdate,'SYSTEM','SYSTEM');
+
+commit;
+

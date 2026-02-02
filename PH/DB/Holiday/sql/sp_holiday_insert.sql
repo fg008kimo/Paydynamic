@@ -1,0 +1,46 @@
+CREATE OR REPLACE FUNCTION sp_holiday_insert(
+	in_country		holiday.h_country%type,
+	in_service_code         holiday.h_service_code%type,
+	in_date			holiday.h_date%type,
+	in_desc			holiday.h_desc%type,
+	in_non_holiday		holiday.h_is_non_holiday%type,
+	in_create_user		holiday.h_create_user%type)
+  RETURN NUMBER IS
+
+BEGIN
+    INSERT INTO holiday(
+	h_country,
+	h_service_code,
+	h_date,
+	h_desc,
+	h_is_non_holiday,
+	h_create_timestamp,
+	h_create_user,
+	h_update_timestamp,
+	h_update_user
+	)
+
+    VALUES(
+	in_country,
+	in_service_code,
+	in_date,
+	in_desc,
+	in_non_holiday,
+	sysdate,
+	in_create_user,
+	sysdate,
+	in_create_user
+	);
+
+    IF SQL%ROWCOUNT = 0 THEN
+       RETURN 1;
+    ELSE
+       RETURN 0;
+    END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+
+END sp_holiday_insert;
+/

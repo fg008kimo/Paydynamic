@@ -1,0 +1,395 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/12/15              LokMan Chow
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+OBJPTR(DB);
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR		","
+#define ALREADY_UPDATED 	10
+#define MAX_MERCHANT_NUM	100
+#define PD_FILEPATH_LEN		50
+#define AMOUNT_LEN		12
+
+char    cs_filepath[PD_FILEPATH_LEN + 1];
+char	cs_amount[AMOUNT_LEN+1];
+char	cs_mode[7]; //NORMAL, RETRY
+char    cDebug;
+
+int process_txn(FILE *fp,const char* csAmount,const char* csMode);
+int UpdatePaySelection(const int iSeqNum, const int iRefNum, const char* csMerchRef);
+int getLastRefNum();
+int RollBackSelection(const int iRefNum);
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 3) {
+      	printf("usage: -o outputfile path -a amount -m mode\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_filepath,"");
+	strcpy(cs_amount,"");
+	strcpy(cs_mode,"");
+
+        while ((c = getopt(argc,argv,"o:a:m:")) != EOF) {
+                switch (c) {
+                        case 'o':
+                                strcpy(cs_filepath, optarg);
+                                break;
+                        case 'a':
+                                strcpy(cs_amount, optarg);
+                                break;
+                        case 'm':
+                                strcpy(cs_mode, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_filepath,"") || !strcmp(cs_amount,"") || !strcmp(cs_mode,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+        char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+	FILE    *fp;
+        
+	iRet = parse_arg(argc,argv);
+        if (iRet != SUCCESS) {
+                printf("usage: -o outputfile path -a amount -m mode\n");
+                return (iRet);
+        }
+
+	char csTime[PD_DATETIME_LEN + 1];
+	strcpy(csTime,getdatetime());
+	csTime[PD_DATETIME_LEN]='\0';
+
+	sprintf(cs_outfile_name, "%s/PAY_SELECTION-%s-%s.txt",cs_filepath,csTime,cs_amount);
+	fp = fopen(cs_outfile_name,"w");
+	if (fp != NULL) {
+		iRet = process_txn(fp,cs_amount,cs_mode);
+	}
+	else{
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outfile_name));
+	}
+
+	fclose(fp);
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_txn(FILE *fp, const char* csAmount, const char* csMode)
+{               
+
+ 
+        int     iRet = SUCCESS;
+	int	iAmount = atoi(csAmount);
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar		v_file_seq[PD_TXN_SEQ_LEN+1];
+		int		v_seq_num;
+		varchar		v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		varchar 	v_account_num[PD_AC_NO_LEN+1];
+		varchar 	v_account_name[PD_ACC_NAME_LEN+1];
+		varchar 	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar 	v_branch[PD_BANK_BRANCH_LEN+1];
+		varchar		v_province[PD_PROVINCE_LEN+1];
+		varchar		v_city[PD_CITY_LEN+1];
+		varchar		v_payout_ccy[PD_CCY_ID_LEN+1];
+		varchar		v_amount[AMOUNT_LEN+1];
+		int		v_ref_num;
+
+		short		ind_file_seq = -1;
+                short           ind_seq_num = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_account_num = -1;
+                short           ind_account_name = -1;
+                short           ind_bank_name = -1;
+                short           ind_branch = -1;
+                short           ind_province = -1;
+                short           ind_city = -1;
+                short           ind_payout_ccy = -1;
+                short           ind_amount = -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	if(strcmp(csMode,"RETRY")){
+		v_ref_num = getLastRefNum() + 1;
+		if(v_ref_num<0)
+			return FAILURE;
+	}
+	else{
+		v_ref_num = getLastRefNum();
+		if(v_ref_num<0)
+			return FAILURE;
+
+		if(RollBackSelection(v_ref_num)!=SUCCESS)
+			return FAILURE;
+	}
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select  file_seq,
+			seq_num,
+                        merchant_ref,
+                        account_name,
+                        account_num,
+                        bank_name,
+                        branch,
+                        province,
+                        city,
+                        amount,
+                        currency
+  		   from pay_selection
+		   where status='Y'
+		  order by seq_num;
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO	:v_file_seq:ind_file_seq,
+			:v_seq_num:ind_seq_num,
+                        :v_merchant_ref:ind_merchant_ref,
+                        :v_account_name:ind_account_name,
+                        :v_account_num:ind_account_num,
+                        :v_bank_name:ind_bank_name,
+                        :v_branch:ind_branch,
+                        :v_province:ind_province,
+                        :v_city:ind_city,
+                        :v_amount:ind_amount,
+                        :v_payout_ccy:ind_payout_ccy;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if(ind_amount<0)
+			continue;
+		v_amount.arr[v_amount.len]='\0';
+		if(atoi(v_amount.arr)<=iAmount){
+			iAmount = iAmount - atoi(v_amount.arr);
+		}
+		else
+			break;
+
+/* Field #0 file_seq */
+		if (ind_file_seq < 0 )
+			v_file_seq.arr[0] = '\0';
+		fprintf(fp,"%.*s%s",v_file_seq.len,v_file_seq.arr,PD_MY_DELIMITOR);
+
+
+/* Field #1 merchant_ref */
+                if (ind_merchant_ref < 0 )
+                        v_merchant_ref.arr[0] = '\0';
+		else
+			v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+                fprintf(fp,"%.*s%s",v_merchant_ref.len,v_merchant_ref.arr,PD_MY_DELIMITOR);
+
+
+/* Field #2 account_num */
+                if (ind_account_num < 0 )
+			v_account_num.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_account_num.len,v_account_num.arr,PD_MY_DELIMITOR);
+
+
+/* Field #3  account_name*/
+                if (ind_account_name < 0 )
+                        v_account_name.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_account_name.len,v_account_name.arr,PD_MY_DELIMITOR);
+
+/* Field #4  bank_name*/
+                if (ind_bank_name< 0 )
+                        v_bank_name.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_bank_name.len,v_bank_name.arr,PD_MY_DELIMITOR);
+
+/* Field #5  branch*/
+                if (ind_branch< 0 )
+                        v_branch.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_branch.len,v_branch.arr,PD_MY_DELIMITOR);
+
+/* Field #6 amount*/
+                //if (ind_amount< 0 )
+		//	v_amount.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_amount.len,v_amount.arr,PD_MY_DELIMITOR);
+
+/* Field #7 payout_ccy*/
+                if (ind_payout_ccy< 0 )
+                        v_payout_ccy.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_payout_ccy.len,v_payout_ccy.arr,PD_MY_DELIMITOR);
+
+/* Field #8 province*/
+                if (ind_province< 0 )
+                        v_province.arr[0] = '\0';
+                fprintf(fp,"%.*s%s",v_province.len,v_province.arr,PD_MY_DELIMITOR);
+
+/* Field #9 city*/
+                if (ind_city< 0 )
+                        v_city.arr[0] = '\0';
+                fprintf(fp,"%.*s\n",v_city.len,v_city.arr);
+
+
+		UpdatePaySelection(v_seq_num,v_ref_num,v_merchant_ref.arr);
+
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	
+
+	EXEC SQL CLOSE c_cursor_gettxn;
+DEBUGLOG(("RET = [%d]\n",iRet));
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+int UpdatePaySelection(const int iSeqNum, const int iRefNum, const char* csMerchRef)
+{
+	int iRet = SUCCESS;
+	char *csSeqNum=strdup("");
+	char *csRefNum=strdup("");
+	hash_t *hUpd;
+	hUpd = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hUpd,0);
+
+	sprintf(csSeqNum,"%d",iSeqNum);
+	sprintf(csRefNum,"%d",iRefNum);
+
+	PutField_Char(hUpd,"status",'X');
+	PutField_CString(hUpd,"ref_num",csRefNum);
+	PutField_CString(hUpd,"merchant_ref",csMerchRef);
+	PutField_CString(hUpd,"seq_num",csSeqNum);
+	DBObjPtr = CreateObj(DBPtr,"DBPaySelection","UpdateStatus");
+	if((unsigned long int)(*DBObjPtr)(hUpd) == SUCCESS){
+DEBUGLOG(("Update Payout Status Success:SeqNum[%s] MerchRef[%s]\n",csSeqNum,csMerchRef));
+	}
+	else{
+DEBUGLOG(("Update Payout Status Failed:SeqNum[%s] MerchRef[%s]\n",csSeqNum,csMerchRef));
+		iRet = FAILURE;
+	}
+
+	hash_destroy(hUpd);
+	FREE_ME(hUpd);
+	FREE_ME(csSeqNum);
+	FREE_ME(csRefNum);
+
+	return iRet;
+
+}
+
+int RollBackSelection(const int iRefNum)
+{
+	int iRet = SUCCESS;
+	EXEC SQL WHENEVER SQLERROR GOTO rollback_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int     v_ref_num;
+	EXEC SQL END DECLARE SECTION;
+	
+	v_ref_num=iRefNum;
+
+	EXEC SQL EXECUTE
+                BEGIN
+			UPDATE	pay_selection
+			SET	status='Y', ref_num=0
+			where	ref_num=:v_ref_num;
+		END;
+        END-EXEC;
+
+	return iRet;
+rollback_error:
+    DEBUGLOG(("rollback selection error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int getLastRefNum()
+{
+	int iResult = 0;
+	EXEC SQL WHENEVER SQLERROR GOTO get_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		int	v_ref_num;
+		short	ind_ref_num = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL EXECUTE
+                BEGIN
+                        SELECT  max(ref_num)
+                        INTO    :v_ref_num:ind_ref_num
+                        FROM    pay_selection
+                        WHERE   status='X';
+                END;
+        END-EXEC;
+
+	if(ind_ref_num>=0)
+		iResult = v_ref_num;
+
+	return iResult;
+get_error:
+    DEBUGLOG(("get last ref_num error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return -100;
+}

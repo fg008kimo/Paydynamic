@@ -1,0 +1,44 @@
+#ifndef _IMPORT_MERCHANT_FILE_H
+#define _IMPORT_MERCHANT_FILE_H
+#include "common.h"
+
+
+#define	NUM_OF_CHAR			26
+#define MAX_NUM_OF_RECORD		2000
+#define	IMPORT_MAX_FILE			17
+#define	IMPORT_FIELD_LEN		50
+
+#define	IDX_HEADER_MERCHANT_ID		0
+#define	IDX_HEADER_NUMBER_OF_RECORD	1
+#define	IDX_HEADER_MAC			2
+#define	IDX_HEADER_RESPONSE_CODE	3
+
+#define	IDX_DETAIL_SEQ_NUM		0
+#define	IDX_DETAIL_MERCHANT_REF		1
+#define	IDX_DETAIL_COUNTRY		2
+#define	IDX_DETAIL_ID			3
+#define	IDX_DETAIL_ACC_NO		4
+#define IDX_DETAIL_BANK_CODE		5
+#define	IDX_DETAIL_BANK_NAME		7
+#define	IDX_DETAIL_ACC_NAME		6
+#define	IDX_DETAIL_BRANCH_NAME		8
+#define	IDX_DETAIL_PHONE_NO		9
+#define	IDX_DETAIL_PROVINCE		10
+#define	IDX_DETAIL_CITY			11
+#define	IDX_DETAIL_AMOUNT		12
+#define	IDX_DETAIL_PAYOUT_CCY		13
+#define	IDX_DETAIL_DST_CCY		14
+#define IDX_DETAIL_MAC			15
+#define IDX_DETAIL_RESPONSE_CODE	16
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

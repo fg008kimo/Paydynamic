@@ -1,0 +1,396 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/05/30              Stan Poon
+set the first auto-settlment day when
+	the auto settlement rule just activate	   2014/03/04		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsMAS.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#include "sha1.h"
+
+#define PD_DETAIL_TAG   "dt"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+/*char *csWeek[]={"0","Monday","Tuesday","Wednesday","Thursday","Friday"};*/
+
+void TxnMgtByUsMAS(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+		  const hash_t* hRequest,
+			hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	int	iDtlRet = PD_OK;
+	char	csTag[PD_TAG_LEN+1];
+	int	i = 0;
+	int	iCnt = 0;
+
+	char	*csTmp;
+	int	iTmp;
+	double	dTmp;
+
+	char	*csUser;
+	char	csDesc[PD_DESC_LEN + 1];
+	int	iDisabled;
+	int	iSupportAutoSett;
+	int	iAutoSettId;
+	char	cDefType;
+	int	isDefType;
+	int	iSupportAutoSett_New;
+	
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	hash_t  *hDtlTxn;
+	hDtlTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hDtlTxn, 0);
+
+	hash_t  *hLog;
+	hLog = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hLog, 0);
+
+DEBUGLOG(("TxnMgtByUsMAS::Authorize\n"));
+
+/* user */
+	if(GetField_CString(hRequest,"add_user",&csUser)){
+		PutField_CString(hTxn,"create_user",csUser);
+		PutField_CString(hTxn,"update_user",csUser);
+		PutField_CString(hLog,"create_user",csUser);
+DEBUGLOG(("Authorize::create_user= [%s]\n",csUser));
+DEBUGLOG(("Authorize::update_user= [%s]\n",csUser));
+	}
+
+/* mid */ 
+	if(GetField_CString(hRequest,"merchant_id",&csTmp)){
+		PutField_CString(hTxn,"merchant_id",csTmp);
+		PutField_CString(hLog,"merchant_id",csTmp);
+DEBUGLOG(("Authorize::merchant_id= [%s]\n",csTmp));
+	}
+
+/* country */
+	if(GetField_CString(hRequest,"txn_country",&csTmp)){
+		PutField_CString(hTxn,"country",csTmp);
+		PutField_CString(hLog,"txn_country",csTmp);
+DEBUGLOG(("Authorize::country= [%s]\n",csTmp));
+	}
+
+/* ccy */
+	if(GetField_CString(hRequest,"txn_ccy",&csTmp)){
+		PutField_CString(hTxn,"ccy",csTmp);
+		PutField_CString(hLog,"txn_ccy",csTmp);
+DEBUGLOG(("Authorize::ccy= [%s]\n",csTmp));
+	}
+
+/* service */
+	if(GetField_CString(hRequest,"service_code",&csTmp)){
+		PutField_CString(hTxn,"service",csTmp);
+		PutField_CString(hLog,"service_code",csTmp);
+DEBUGLOG(("Authorize::service= [%s]\n",csTmp));
+	}
+
+/* support_auto_sett */
+	if(GetField_CString(hRequest,"support_auto_sett",&csTmp)){
+		iSupportAutoSett_New= atoi(csTmp);
+		PutField_Int(hTxn,"support_auto_sett",iSupportAutoSett_New);
+DEBUGLOG(("Authorize::support_auto_sett= [%d]\n",iSupportAutoSett_New));
+	}
+
+/* total_cnt */
+	if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("Authorize::total_cnt = [%d]\n", iCnt));
+		PutField_Int(hResponse, "total_cnt", iCnt);
+	}
+	else {
+DEBUGLOG(("Authorize::total_cnt not found\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::total_cnt not found\n");
+		iRet = INT_FORMAT_ERR;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* ip_addr */
+	if(GetField_CString(hRequest,"ip_addr",&csTmp)){
+		PutField_CString(hTxn,"ip_addr",csTmp);
+DEBUGLOG(("Authorize::ip_addr= [%s]\n",csTmp));
+	}
+
+/* action */ 
+/*	if (GetField_CString(hRequest, "action", &csTmp)) {
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize::action = [%c]\n",cAction));
+		//support add, update(desc) and delete
+		if (cAction != PD_ACTION_ADD && cAction != PD_ACTION_UPDATE && cAction != PD_ACTION_DELETE) {
+DEBUGLOG(("Authorize::action [%d] not support!!\n", cAction));
+ERRLOG("TxnMgtByUsMAS::Authorize::action not support!!\n");
+			iRet=INT_ACTION_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+	else {
+DEBUGLOG(("Authorize::action not found!!\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::action not found!!\n");
+		iRet=INT_ACTION_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+*/
+
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBMerchantBalAcct:GetAutoSettId\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","GetAutoSettId");
+		if((unsigned long)((*DBObjPtr)(hTxn, &iSupportAutoSett, &iAutoSettId) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantBalAcct:GetAutoSettId Failed\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::DBMerchantBalAcct:GetAutoSettId Failed\n");
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else {
+DEBUGLOG(("Authorize::DBMerchantBalAcct:GetAutoSettId Succ\n"));
+			PutField_Int(hTxn,"auto_sett_id",iAutoSettId);
+DEBUGLOG(("Authorize::DBMerchantBalAcct:GetAutoSettId org support_auto_sett= [%d]\n",iSupportAutoSett));
+DEBUGLOG(("Authorize::DBMerchantBalAcct:GetAutoSettId auto_sett_id= [%d]\n",iAutoSettId));
+
+			/*set auto settlement last date when activating auto settlement function*/
+			if(iRet==PD_OK && iSupportAutoSett_New && !iSupportAutoSett){
+				PutField_Char(hLog,"status",PD_REJECT);
+				PutField_Char(hLog,"rule_type",PD_EVERY_X_DAY_RULE);
+				if(GetField_CString(hContext,"PHDATE",&csTmp)){
+					PutField_CString(hLog,"last_sett_date",csTmp);
+					PutField_CString(hLog,"settlement_date",csTmp);
+				}
+
+				DBObjPtr = CreateObj(DBPtr,"DBAutoSettlementExecLog","MatchLastSettlementDetail");
+				int iChk = (unsigned long)((*DBObjPtr)(hLog));
+				if(iChk == PD_NOT_FOUND){
+DEBUGLOG(("Authorize::Call DBAutoSettlementExecLog:Add\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBAutoSettlementExecLog","Add");
+					iRet = (unsigned long)((*DBObjPtr)(hLog));
+				}
+				else{
+DEBUGLOG(("Authorize::Today already is the last auto settlement day\n"));
+				}
+
+			}
+
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBMerchantBalAcct:UpdateMerchantAutoSettlement\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalAcct","UpdateMerchantAutoSettlement");
+		if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantBalAcct:UpdateMerchantAutoSettlement Failed\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::DBMerchantBalAcct:UpdateMerchantAutoSettlement Failed\n");
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else {
+DEBUGLOG(("Authorize::DBMerchantBalAcct:UpdateMerchantAutoSettlement Succ\n"));
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBDefAutoSettlementType:GetDefaultRuleType\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBDefAutoSettlementType","GetDefaultRuleType");
+		if((unsigned long)((*DBObjPtr)(&cDefType) != PD_OK)){
+DEBUGLOG(("Authorize::DBDefAutoSettlementType:GetDefaultRuleType Failed\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::DBDefAutoSettlementType:GetDefaultRuleType Failed\n");
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else {
+DEBUGLOG(("Authorize::DBDefAutoSettlementType:GetDefaultRuleType Succ\n"));
+DEBUGLOG(("Authorize::DBDefAutoSettlementType:GetDefaultRuleType type= [%c]\n",cDefType));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		for (i = 0; i < iCnt; i++) {
+			hash_init(hDtlTxn, 0);
+
+			PutField_Int(hDtlTxn,"auto_sett_id",iAutoSettId);
+			PutField_CString(hDtlTxn,"create_user",csUser);
+			PutField_CString(hDtlTxn,"update_user",csUser);
+
+			csDesc[0] = '\0';
+
+			/* sett_type */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_sett_type_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%c]\n", csTag, csTmp[0]));
+				PutField_Char(hDtlTxn, "sett_type", csTmp[0]);
+
+				if (csTmp[0] == cDefType) isDefType = 1;
+				else isDefType = 0;
+			} else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMAS::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_ERR;
+			}
+
+			/* disabled */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_disabled_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+				iDisabled = atoi(csTmp);
+DEBUGLOG(("Authorize::() [%s] = [%d]\n", csTag, iDisabled));
+				PutField_Int(hDtlTxn, "disabled", iDisabled);
+			} else {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMAS::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_ERR;
+			}
+
+			/* sett_value */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_sett_value_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+				PutField_CString(hDtlTxn, "sett_value", csTmp);
+				/*if (cDefType == 'D' || cDefType == 'M') {
+					iTmp = atoi(csTmp);
+					if (iTmp < 0) {
+						iDtlRet = INT_ERR;
+					} else {
+						if(cDefType == 'D') sprintf(csDesc, "Every %d Business Days", iTmp);
+						else if (cDefType == 'M') sprintf(csDesc, "%d Business Day of Month", iTmp);
+					} 
+				} else if (cDefType == 'W') {
+					int iCount;
+					sprintf(csDesc, "Every");
+					for (iCount=0;iCount<strlen(csTmp);iCount++) {
+						if (iCount%2==0) {
+							iTmp = csTmp[iCount] - '0';
+							if (iTmp < 1 || iTmp > 5) {
+								iDtlRet = INT_ERR;
+							} else {
+								strcat(csDesc, " ");
+								strcat(csDesc, csWeek[iTmp]);
+							}
+						} else if (iCount%2==1 && csTmp[iCount]!=',') {
+							iDtlRet = INT_ERR;
+						}
+					}
+				}*/
+			} else if (iDisabled == 0) {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMAS::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_ERR;
+			} else {
+				PutField_CString(hDtlTxn, "sett_value", "\0");
+			}
+
+			/* sett_min_amt */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_sett_min_amt_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+				dTmp = atof(csTmp);
+DEBUGLOG(("Authorize::() [%s] = [%lf]\n", csTag, dTmp));
+				PutField_CString(hDtlTxn, "sett_min_amount", csTmp);
+			} else if (iDisabled == 0) {
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnMgtByUsMAS::Authorize::[%s] not found\n", csTag);
+				iDtlRet = INT_ERR;
+			} else {
+				PutField_CString(hDtlTxn, "sett_min_amount", "");
+			}
+
+			/* sett_desc */
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "%s_sett_desc_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+				PutField_CString(hDtlTxn, "desc", csTmp);
+			} else {
+				PutField_CString(hDtlTxn, "desc", csDesc);
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csDesc));
+			}
+
+/* Add or Update Start */
+
+			if (iDtlRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBRuleAutoSettlement:FindRule\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBRuleAutoSettlement","FindRule");
+				iTmp = (unsigned long)((*DBObjPtr)(iAutoSettId,cDefType,isDefType));
+				if(iTmp == PD_ERR){
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:FindRule Failed\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::DBRuleAutoSettlement:FindRule Failed\n");
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+				} else if (iTmp == PD_FOUND){
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:FindRule FOUND\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBRuleAutoSettlement","Update");
+					if((unsigned long)((*DBObjPtr)(hDtlTxn,cDefType,isDefType) != PD_OK)){
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:Update Failed\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::DBRuleAutoSettlement:Update Failed\n");
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+					} else {
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:Update Success\n"));
+					}
+
+				} else if (iTmp == PD_NOT_FOUND){
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:FindRule NOT FOUND\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBRuleAutoSettlement","Add");
+					if((unsigned long)((*DBObjPtr)(hDtlTxn)) != PD_OK){
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:Add Failed\n"));
+ERRLOG("TxnMgtByUsMAS::Authorize::DBRuleAutoSettlement:Add Failed\n");
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+					} else {
+DEBUGLOG(("Authorize::DBRuleAutoSettlement:Add Success\n"));
+					}
+				}
+			}
+
+
+/* End */
+
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "ret_%d", i+1);
+DEBUGLOG(("Authorize::() [%s] = [%d]\n",csTag, iDtlRet));
+			PutField_Int(hResponse, csTag ,iDtlRet);
+
+			if (iDtlRet != PD_OK) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+	hash_destroy(hDtlTxn);
+	FREE_ME(hDtlTxn);
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+	hash_destroy(hLog);
+	FREE_ME(hLog);
+
+DEBUGLOG(("TxnMgtByUsMAS Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

@@ -1,0 +1,304 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/12/04              LokMan Chow
+Dual control					   2013/03/06		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsOST.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+int	CheckStatus(const char* csTxnSeq);
+
+void TxnMgtByUsOST(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char    *csUser = NULL;
+	char	*csPspTxnCcy = NULL;
+	char	*csTxnCcy = NULL;
+	char	*csTmp = NULL;
+	char	*csTxnSeq = NULL;
+	char	*csOrgTxnId = NULL;
+	double	dOrgAmt = 0.0;
+	double	dPspAmt = 0.0;
+	int	iId = 0;
+	char	csId[PD_TXN_SEQ_LEN+1];
+	char	*csMode = NULL;
+	char	*csDate;
+	char	cTmp;
+
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	if(GetField_CString(hRequest,"mode",&csMode)){
+		//two mode: deliver_from [FR], deliver_to [TO]
+		if(!strcmp(csMode,PD_DELIVER_TO)){
+			PutField_CString(hContext,"txn_code",PD_OFFLINE_SETTLE_TO);
+		}
+DEBUGLOG(("Authorize::deliver_mode = [%s]\n",csMode));
+	}
+	else{
+		iRet = INT_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::deliver_mode not found!!!!\n"));
+ERRLOG("TxnMgtByUsOST:Authorize::deliver_mode not found!!!!\n");
+	}
+	
+	if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("Authorize::add_user = [%s]\n",csUser));
+		PutField_CString(hContext,"add_user",csUser);
+		PutField_CString(hContext,"update_user",csUser);
+	}
+
+	if(GetField_CString(hRequest,"remark",&csTmp)){
+DEBUGLOG(("Authorize::remark = [%s]\n",csTmp));
+		PutField_CString(hRequest,"remark",csTmp);
+	}
+
+	if(GetField_CString(hContext,"PHDATE",&csDate)){
+DEBUGLOG(("Authorize::PH date = [%s]\n",csDate));
+	}
+
+	if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+		PutField_CString(hRequest,"net_ccy",csTxnCcy);
+		PutField_CString(hContext,"txn_ccy",csTxnCcy);
+DEBUGLOG(("Authorize::txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMgtByUsOST::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_Double(hContext,"txn_amt",&dOrgAmt)){
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dOrgAmt));
+	}
+	else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMgtByUsOST::Authorize::txn_amt not found!!\n");
+		iRet=INT_PAY_AMOUNT_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(iRet == PD_OK){
+		char*   csValueTmp;
+                csValueTmp = (char*) malloc (128);
+DEBUGLOG(("Authorize:: call SystemParameter:FindCode Allow Offline Settlement\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+                if ((unsigned long)(DBObjPtr)(PD_OFFLINE_SETTLE,csValueTmp) == FOUND) {
+                        cTmp = csValueTmp[0];
+DEBUGLOG(("FindCode Allow Offline Settlement = [%c]\n",cTmp));
+                        if(cTmp != PD_YES){
+DEBUGLOG(("Authorize:: Offline Settlement not allowed!!!!!!!!\n"));
+ERRLOG("TxnMgtByUsOST::Authorize: Offline Settlement not allowed!!!!!!!!\n");
+                                iRet=INT_INVALID_TXN;
+                        }
+                }
+		FREE_ME(csValueTmp);
+        }
+
+	if(iRet ==PD_OK && !strcmp(csMode,PD_DELIVER_TO)){
+		if(GetField_CString(hRequest,"org_txn_seq",&csOrgTxnId)){
+DEBUGLOG(("Authorize::org_txn_seq = [%s]\n",csOrgTxnId));
+			if(CheckStatus(csOrgTxnId)!=PD_OK){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::Invalid txn selected\n"));
+ERRLOG("TxnMgtByUsOST::Authorize::Invalid txn selected!!\n");
+			}
+		}
+		else{
+DEBUGLOG(("Authorize::org_txn_seq not found!!\n"));
+ERRLOG("TxnMgtByUsOST:Authorize::org_txn_seq not found!!\n");
+			iRet=INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+
+	if(iRet==PD_OK){
+		PutField_CString(hContext,"process_type",PD_PROCESS_TYPE_DEF);
+		PutField_CString(hContext,"process_code",PD_PROCESS_CODE_DEF);
+		PutField_CString(hContext,"txn_date",csDate);
+		PutField_Double(hContext,"txn_amt",dOrgAmt);
+		PutField_Int(hContext,"do_logging",PD_TRUE);
+		if(!strcmp(csMode,PD_DELIVER_TO)){
+			PutField_CString(hContext,"txn_code",PD_OFFLINE_SETTLE_TO);
+			PutField_CString(hContext,"org_txn_seq",csOrgTxnId);
+		}
+
+DEBUGLOG(("Authorize::Call MGTChannel:AddTxnLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+		if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::AddTxnLog Failed\n"));
+		}
+	}
+
+	if(!strcmp(csMode,PD_DELIVER_TO)){
+		//Mode: DLV_TO
+		//AddTxnLog: OSD
+		//relating OST and OSD
+		//handle fundsIn
+		//if all OK, update txn_header:Status = 'C','A', and txn_detail: td_batch_id
+		hash_t *hRec;
+		recordset_t     *rRecordSet;
+		rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(rRecordSet,0);
+
+		if(GetField_CString(hContext,"txn_seq",&csTxnSeq)){
+DEBUGLOG(("Authorize::txn_seq = [%s]\n",csTxnSeq));
+		}
+
+		//find org amount and ccy
+		if(iRet==PD_OK){
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+			if ((*DBObjPtr)(csOrgTxnId,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::find txn_header by [%s]\n",csOrgTxnId));
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if(GetField_CString(hRec,"net_ccy",&csPspTxnCcy)){
+DEBUGLOG(("Authorize::fundin_ccy = [%s]\n",csPspTxnCcy));
+					}
+					if(GetField_Double(hRec,"txn_amt",&dPspAmt)){
+DEBUGLOG(("Authorize::fundin_amt = [%lf]\n",dPspAmt));
+					}
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+		}
+
+		//handle FundsIn		
+		if(iRet==PD_OK){
+			PutField_Double(hRequest,"bank_amt",dOrgAmt);
+			PutField_CString(hRequest,"bank_ccy",csTxnCcy);
+			PutField_Double(hRequest,"fin_amt",dPspAmt);
+			PutField_CString(hRequest,"fin_ccy",csPspTxnCcy);
+DEBUGLOG(("Authorize::Call TxnMgtByUsFIR\n"));
+			TxnObjPtr = CreateObj(TxnPtr, "TxnMgtByUsFIR","Authorize");
+			iRet = (unsigned long)((*TxnObjPtr)(hContext, hRequest, hResponse)); 
+			if (iRet == PD_OK) {
+				if(GetField_Int(hContext,"fundsin_id",&iId)){
+DEBUGLOG(("Authorize::TxnMgtByUsFIR return fundsin_id[%d]\n",iId));
+					sprintf(csId,"%d",iId);
+					PutField_CString(hTxn,"td_batch_id",csId);
+				}
+			}
+			else{
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+
+		if(iRet==PD_OK){
+			PutField_CString(hTxn,"txn_seq",csTxnSeq);
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+			iRet = (unsigned long)(*DBObjPtr)(hTxn);
+		}
+		if(iRet==PD_OK){
+			hash_init(hTxn,0);
+			PutField_CString(hTxn,"txn_seq",csOrgTxnId);
+			PutField_CString(hTxn,"sub_status",PD_DELIVERED);
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			iRet = (unsigned long)(*DBObjPtr)(hTxn);
+			
+		}
+
+	}
+	if(iRet==PD_OK){
+		PutField_Char(hContext,"status",PD_COMPLETE);
+		PutField_Char(hContext,"ar_ind",PD_ACCEPT);
+		PutField_CString(hContext,"sub_status",PD_APPROVED);
+		PutField_Int(hContext,"internal_code",PD_OK);
+		PutField_CString(hContext,"response_code","0");
+		PutField_CString(hContext,"approval_date",csDate);
+DEBUGLOG(("Authorize::Call MGTChannel:UpdateTxnLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","UpdateTxnLog");
+		if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::MGTChannel:AddTxnLog Failed\n"));
+		}
+		PutField_Int(hContext,"do_logging",PD_FALSE);
+	}
+
+	FREE_ME(hTxn);
+DEBUGLOG(("TxnMgtByUsOST Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int	CheckStatus(const char* csTxnSeq)
+{
+	int	iRet = PD_ERR;
+	char	cStatus;
+	char	cArInd;
+	char	*csSubStatus;
+	hash_t *hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+	if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::find txn_header by [%s]\n",csTxnSeq));
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+			if(GetField_Char(hRec,"status",&cStatus)){
+DEBUGLOG(("Authorize::status = [%c]\n",cStatus));
+			}
+			if(GetField_Char(hRec,"ar_ind",&cArInd)){
+DEBUGLOG(("Authorize::ar_ind  = [%c]\n",cArInd));
+			}
+			if(GetField_CString(hRec,"sub_status",&csSubStatus)){
+DEBUGLOG(("Authorize::sub status = [%s]\n",csSubStatus));
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+
+		if(cStatus==PD_COMPLETE &&
+		   cArInd==PD_ACCEPT &&
+		   !strcmp(csSubStatus,PD_APPROVED)){
+			iRet = PD_OK;
+DEBUGLOG(("Authorize::Valid txn[%s]: [%c][%c][%s]\n",csTxnSeq,cStatus,cArInd,csSubStatus));
+		}
+		else{
+DEBUGLOG(("Authorize::Invalid txn[%s]: [%c][%c][%s]\n",csTxnSeq,cStatus,cArInd,csSubStatus));
+		}
+	}
+
+
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	return iRet;
+}

@@ -1,0 +1,518 @@
+/*
+PDProTech (c)2019. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+ 
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2019/08/12              [WMC]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "gen_deposit_trace_report.h"
+#define __USE_XOPEN
+#include <time.h>
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_start_datetime[PD_TMP_BUF_LEN+1];
+char cs_end_datetime[PD_TMP_BUF_LEN+1];
+
+static char    cDebug='Y';
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+int GetDepositTracerRecords(const char *csStartDatetime, const char *csEndDatetime, recordset_t* myRec);
+int CreateAlertEmailTpl(recordset_t *rRecordset);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = SUCCESS;
+	int     iDtlRet = PD_ERR;
+
+	recordset_t *rRecordset;
+        rRecordset = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordset, 0);
+
+DEBUGLOG(("batch_proc: Start!\n"));
+
+	iRet = parse_arg(argc,argv);
+	if (iRet == SUCCESS) {
+DEBUGLOG((" Start Datetime = [%s][%d]\n",cs_start_datetime,strlen(cs_start_datetime)));
+DEBUGLOG((" End Datetime = [%s][%d]\n",cs_end_datetime,strlen(cs_end_datetime)));
+	} else {
+		printf("*usage: -s START_DATE -e END_DATE\n");
+		return FAILURE;
+	}
+
+        if (iRet == SUCCESS) {
+
+		// Get Deposit Trace Record(s)
+                iDtlRet = GetDepositTracerRecords(cs_start_datetime, cs_end_datetime, rRecordset);
+		if (iDtlRet == PD_FOUND) {
+
+			// Create Alert Email Template
+                        iDtlRet = CreateAlertEmailTpl(rRecordset);
+                        if (iDtlRet != PD_OK) {
+
+                                iRet = FAILURE;
+                        }
+
+                } else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG((" No Alert Email Send!!\n"));	
+		} else {
+
+                        iRet = FAILURE;
+                }		
+	}
+
+	RecordSet_Destroy(rRecordset);
+        FREE_ME(rRecordset);	
+
+DEBUGLOG(("batch_proc: iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_start_datetime,"");
+	strcpy(cs_end_datetime,"");
+
+	if (argc < 4) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"s:e:")) != EOF) {
+		switch (c) {
+			case 's':
+                                strcpy(cs_start_datetime, optarg);
+                                break;
+			case 'e':
+                                strcpy(cs_end_datetime, optarg);
+                                break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_start_datetime,"") || !strcmp(cs_end_datetime,""))
+		return FAILURE;
+
+        return SUCCESS;
+}
+
+
+int GetDepositTracerRecords(const char *csStartDatetime, const char *csEndDatetime, recordset_t* myRec)
+{
+	int     iCnt = 0;
+        hash_t  *myHash;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getdeptrcrec_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+               	varchar         hv_start_datetime[PD_TIMESTAMP_LEN + 1];
+                varchar         hv_end_datetime[PD_TIMESTAMP_LEN + 1];
+
+		varchar         v_txn_id[PD_TXN_SEQ_LEN + 1];
+		varchar         v_psp_channel[PD_AC_BANK_NAME_LEN + 1];
+		double		v_amt;
+		varchar         v_create_datetime[PD_TIMESTAMP_LEN + 1];
+		varchar         v_merch_ref[PD_MERCHANT_REF_LEN + 1];
+		varchar         v_trace_result[PD_DESC_LEN + 1];
+		varchar         v_trace_creator[PD_USER_LEN + 1];
+		varchar         v_trace_timestamp[PD_TIMESTAMP_LEN + 1];
+
+		short           ind_txn_id = -1;
+		short           ind_psp_channel = -1;
+		short           ind_amt = -1;
+		short           ind_create_datetime = -1;
+		short           ind_merch_ref = -1;
+		short           ind_trace_result = -1;
+		short           ind_trace_creator = -1;
+		short           ind_trace_timestamp = -1;
+		
+                short           hv_return_value;
+
+		SQL_CURSOR      c_cursor_getdeptrcrec;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetDepositTracerRecords: Begin\n"));
+
+	hv_start_datetime.len = strlen(csStartDatetime);
+        memcpy(hv_start_datetime.arr, csStartDatetime, hv_start_datetime.len);
+//DEBUGLOG((" start_datetime = [%.*s]\n", hv_start_datetime.len, hv_start_datetime.arr));
+
+	hv_end_datetime.len = strlen(csEndDatetime);
+        memcpy(hv_end_datetime.arr, csEndDatetime, hv_end_datetime.len);
+//DEBUGLOG((" end_datetime = [%.*s]\n", hv_end_datetime.len, hv_end_datetime.arr));
+
+	EXEC SQL ALLOCATE       :c_cursor_getdeptrcrec;
+        EXEC SQL EXECUTE
+                BEGIN
+                                :hv_return_value := sp_get_deposit_trace_txn_rec(to_date(:hv_start_datetime, 'YYYYMMDDHH24MISS'),
+									 	 to_date(:hv_end_datetime, 'YYYYMMDDHH24MISS'),
+									 	 :c_cursor_getdeptrcrec);
+                END;
+        END-EXEC;
+
+DEBUGLOG((" hv_return_value = [%d]\n", hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+		for (;;) {
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(myHash,0);
+
+                        ind_txn_id = -1;
+                        ind_psp_channel = -1;
+                        ind_amt = -1;
+                        ind_create_datetime = -1;
+                        ind_merch_ref = -1;
+                        ind_trace_result = -1;
+                        ind_trace_creator = -1;
+                        ind_trace_timestamp = -1;
+
+                        EXEC SQL WHENEVER NOTFOUND DO break;
+                        EXEC SQL FETCH :c_cursor_getdeptrcrec
+
+                        INTO
+                                :v_txn_id:ind_txn_id,
+                                :v_psp_channel:ind_psp_channel,
+                                :v_amt:ind_amt,
+                                :v_create_datetime:ind_create_datetime,
+                                :v_merch_ref:ind_merch_ref,
+                                :v_trace_result:ind_trace_result,
+                                :v_trace_creator:ind_trace_creator,
+                                :v_trace_timestamp:ind_trace_timestamp;
+
+                        if (SQLCODE == SQL_NOT_FOUND) {
+                                break;
+                        }
+
+/* txn_id */
+                        if(ind_txn_id>=0){
+                                v_txn_id.arr[v_txn_id.len]='\0';
+                                PutField_CString(myHash,"txn_id",(const char*)v_txn_id.arr);
+//DEBUGLOG((" txn_id = [%s]\n",v_txn_id.arr));
+                        }
+
+/* psp_channel */
+                        if(ind_psp_channel>=0){
+                                v_psp_channel.arr[v_psp_channel.len]='\0';
+                                PutField_CString(myHash,"psp_channel",(const char*)v_psp_channel.arr);
+//DEBUGLOG((" psp_channel = [%s]\n",v_psp_channel.arr));
+                        }
+
+/* amt */
+			if(ind_amt>=0){
+				PutField_Double(myHash, "amt", v_amt);
+//DEBUGLOG((" amt = [%f]\n",v_amt));
+			}
+
+/* create_datetime */
+                        if(ind_create_datetime>=0){
+                                v_create_datetime.arr[v_create_datetime.len]='\0';
+                                PutField_CString(myHash,"create_datetime",(const char*)v_create_datetime.arr);
+//DEBUGLOG((" create_datetime = [%s]\n",v_create_datetime.arr));
+                        }
+
+/* merch_ref */
+                        if(ind_merch_ref>=0){
+                                v_merch_ref.arr[v_merch_ref.len]='\0';
+                                PutField_CString(myHash,"merch_ref",(const char*)v_merch_ref.arr);
+//DEBUGLOG((" merch_ref = [%s]\n",v_merch_ref.arr));
+                        }
+
+/* trace_result */
+                        if(ind_trace_result>=0){
+                                v_trace_result.arr[v_trace_result.len]='\0';
+                                PutField_CString(myHash,"trace_result",(const char*)v_trace_result.arr);
+//DEBUGLOG((" trace_result = [%s]\n",v_trace_result.arr));
+                        }
+
+/* trace_creator */
+                        if(ind_trace_creator>=0){
+                                v_trace_creator.arr[v_trace_creator.len]='\0';
+                                PutField_CString(myHash,"trace_creator",(const char*)v_trace_creator.arr);
+//DEBUGLOG((" trace_creator = [%s]\n",v_trace_creator.arr));
+                        }
+
+/* trace_timestamp */
+                        if(ind_trace_timestamp>=0){
+                                v_trace_timestamp.arr[v_trace_timestamp.len]='\0';
+                                PutField_CString(myHash,"trace_timestamp",(const char*)v_trace_timestamp.arr);
+//DEBUGLOG((" trace_timestamp = [%s]\n",v_trace_timestamp.arr));
+                        }
+
+			iCnt++;
+			RecordSet_Add(myRec,myHash);
+		}
+
+DEBUGLOG(("GetDepositTracerRecords: Found\n"));
+		return PD_FOUND;
+        }
+	else if (hv_return_value == SP_NOT_FOUND)
+        {
+DEBUGLOG(("GetDepositTracerRecords: Not Found\n"));
+                return PD_NOT_FOUND;
+        }
+	else if (hv_return_value == SP_OTHER_ERR)
+        {
+DEBUGLOG(("GetDepositTracerRecords: SP_OTHER_ERR\n"));
+ERRLOG("gen_deposit_trace_report:GetDepositTracerRecords SP_OTHER_ERR\n");
+                return PD_OTHER_ERR;
+        }
+	else if (hv_return_value == SP_ERR)
+        {
+DEBUGLOG(("GetDepositTracerRecords: SP_ERR\n"));
+ERRLOG("gen_deposit_trace_report:GetDepositTracerRecords SP_ERR\n");
+                return PD_ERR;
+        }
+
+	EXEC SQL CLOSE :c_cursor_getdeptrcrec;
+        EXEC SQL FREE :c_cursor_getdeptrcrec;
+
+getdeptrcrec_error:
+DEBUGLOG(("getdeptrcrec_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("gen_deposit_trace_report_Get: SP_INTERNAL_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_getdeptrcrec;
+        EXEC SQL FREE :c_cursor_getdeptrcrec;
+        return PD_ERR;
+}
+
+
+int CreateAlertEmailTpl(recordset_t *rRecordset)
+{
+	int iRet = PD_OK;
+
+	int iDynCnt = 0;
+	int iCnt = 0;
+
+	char csStartDatetime[PD_TIMESTAMP_LEN + 1];
+        char csEndDatetime[PD_TIMESTAMP_LEN + 1];
+
+	struct tm tStruct;
+
+	hash_t *hRec;
+
+	hash_t *hTemplate;
+      	hTemplate = (hash_t*) malloc (sizeof(hash_t));
+      	hash_init(hTemplate,0);
+	
+DEBUGLOG(("CreateAlertEmailTpl: Begin\n"));
+
+	memset(csStartDatetime, 0, sizeof(csStartDatetime));
+        memset(csEndDatetime, 0, sizeof(csEndDatetime));
+	
+	// Get Email Template Body Parameters	
+	hRec = RecordSet_GetFirst(rRecordset);
+    	while ((iRet == PD_OK) && (hRec)) {
+
+		double dTmp = 0.0;
+
+		char *csTmp = NULL;
+	
+		char csTag[PD_TAG_LEN+1];
+		char csBuf[PD_TMP_BUF_LEN+1];
+		
+		memset(csTag, 0, sizeof(csTag));
+		memset(csBuf, 0, sizeof(csBuf));
+
+/* txn_id */
+		if (GetField_CString(hRec,"txn_id",&csTmp)) {
+DEBUGLOG((" [%d]txn_id = [%s]\n",iCnt,csTmp));
+			sprintf(csTag, "ftxn_id-%d", iCnt);
+                      	sprintf(csBuf, "%s", csTmp);
+                     	iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+		} else {
+DEBUGLOG((" [%d]txn_id not found!!\n",iCnt));
+ERRLOG("gen_deposit_trace_report:CreateAlertEmailTpl: txn_id not found!!\n");
+			iRet = PD_ERR;
+		}
+
+/* psp_channel */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hRec,"psp_channel",&csTmp)) {
+DEBUGLOG((" [%d]psp_channel = [%s]\n",iCnt,csTmp));
+                	        sprintf(csTag, "fpsp_channel-%d", iCnt);
+                	        sprintf(csBuf, "%s", csTmp);
+                	        iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+                	} else {
+DEBUGLOG((" [%d]psp_channel not found!!\n",iCnt));
+ERRLOG("gen_deposit_trace_report:CreateAlertEmailTpl: psp_channel not found!!\n");
+                	        iRet = PD_ERR;
+                	}
+		}
+
+/* amt */
+		if (iRet == PD_OK) {
+			if (GetField_Double(hRec,"amt",&dTmp)) {
+DEBUGLOG((" [%d]amt = [%lf]\n",iCnt,dTmp));		
+				sprintf(csTag, "famt-%d", iCnt);
+				sprintf(csBuf, "%s", commaprintdouble(dTmp,PD_DECIMAL_LEN));
+                	        iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+			} else {
+DEBUGLOG((" [%d]amt not found!!\n",iCnt));
+ERRLOG("gen_deposit_trace_report:CreateAlertEmailTpl: amt not found!!\n");
+                	        iRet = PD_ERR;
+			}
+		}
+
+/* create_datetime */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hRec,"create_datetime",&csTmp)) {
+DEBUGLOG((" [%d]create_datetime = [%s]\n",iCnt,csTmp));
+                	        sprintf(csTag, "fcreate_datetime-%d", iCnt);
+                	        sprintf(csBuf, "%s", csTmp);
+                	        iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+                	} else {
+DEBUGLOG((" [%d]create_datetime not found!!\n",iCnt));
+ERRLOG("gen_deposit_trace_report:CreateAlertEmailTpl: create_datetime not found!!\n");
+                	        iRet = PD_ERR;
+			}
+		}
+
+/* merch_ref */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hRec,"merch_ref",&csTmp)) {
+DEBUGLOG((" [%d]merch_ref = [%s]\n",iCnt,csTmp));
+                	        sprintf(csTag, "fmerch_ref-%d", iCnt);
+                	        sprintf(csBuf, "%s", csTmp);
+                	        iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+                	} else {
+DEBUGLOG((" [%d]merch_ref not found!!\n",iCnt));
+ERRLOG("gen_deposit_trace_report:CreateAlertEmailTpl: merch_ref not found!!\n");
+                	        iRet = PD_ERR;
+			}
+		}
+
+/* trace_result */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hRec,"trace_result",&csTmp)) {
+DEBUGLOG((" [%d]trace_result = [%s]\n",iCnt,csTmp));
+                	        sprintf(csTag, "ftrace_result-%d", iCnt);
+                	        sprintf(csBuf, "%s", csTmp);
+                	        iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+               	 	} else {
+DEBUGLOG((" [%d]trace_result = [ ]\n",iCnt));
+				sprintf(csTag, "ftrace_result-%d", iCnt);
+				sprintf(csBuf, "%s", " ");
+			}
+			iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+		}
+
+/* trace_creator */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hRec,"trace_creator",&csTmp)) {
+DEBUGLOG((" [%d]trace_creator = [%s]\n",iCnt,csTmp));
+                	        sprintf(csTag, "ftrace_creator-%d", iCnt);
+                	        sprintf(csBuf, "%s", csTmp);
+                	} else {
+DEBUGLOG((" [%d]trace_creator = [ ]\n",iCnt));
+                	        sprintf(csTag, "ftrace_creator-%d", iCnt);
+                	        sprintf(csBuf, "%s", " ");		
+			}
+			iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+		}
+
+/* trace_timestamp */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hRec,"trace_timestamp",&csTmp)) {
+DEBUGLOG((" [%d]trace_timestamp = [%s]\n",iCnt,csTmp));
+                	        sprintf(csTag, "ftrace_timestamp-%d", iCnt);
+                	        sprintf(csBuf, "%s", csTmp);
+                	        iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+                	} else {
+DEBUGLOG((" [%d]trace_timestamp = [ ]\n",iCnt));
+                	        sprintf(csTag, "ftrace_timestamp-%d", iCnt);
+                	        sprintf(csBuf, "%s", " ");
+			}
+			iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, csTag, "STR", "stbl_body-0", csBuf);
+		}
+
+		iCnt++;
+
+              	hRec = RecordSet_GetNext(rRecordset);
+	}
+
+	if (iRet == PD_OK) {
+
+            	// Record(s) Exists
+             	if (iCnt > 0) {
+
+			// Get Email Template Global Parameters
+			/* start datetime */
+			memset(&tStruct, 0, sizeof(struct tm));
+			strptime(cs_start_datetime, PD_IN_DATETIME_FORMAT, &tStruct);
+                    	strftime(csStartDatetime, sizeof(csStartDatetime), PD_TITLE_DATETIME_FORMAT, &tStruct);
+			iDynCnt = set_tpl_dyn_cstring(hTemplate,iDynCnt,"fstart_datetime","GLO","STR",csStartDatetime);
+
+			/* end datetime */
+			memset(&tStruct, 0, sizeof(struct tm));
+                        strptime(cs_end_datetime, PD_IN_DATETIME_FORMAT, &tStruct);
+                        strftime(csEndDatetime, sizeof(csEndDatetime), PD_TITLE_DATETIME_FORMAT, &tStruct);
+			iDynCnt = set_tpl_dyn_cstring(hTemplate,iDynCnt,"fend_datetime","GLO","STR",csEndDatetime);
+
+			// Get Email Template Section Parameters
+			iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+                       	iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+	    		PutField_CString(hTemplate, "funct", PD_EML_FUNCT_DEP_TRC_REPORT);
+	    		PutField_CString(hTemplate, "source", PD_EML_SOURCE_BATCH);
+	  		PutField_Char(hTemplate, "party_type", PD_TYPE_GLOBAL);
+	    		PutField_CString(hTemplate, "party_id", PD_EML_PARTY_ID_BATCH);	
+	   		PutField_Int(hTemplate, "total_dyn", iDynCnt);
+
+			// Call BOAlertEmail
+			BOObjPtr = CreateObj(BOPtr, "BOAlertEmail", "ProcessTpl");
+			iRet = (unsigned long)((*BOObjPtr)(hTemplate));
+	            	if (iRet == PD_OK) {
+DEBUGLOG((" BOAlertEmail:ProcessTpl Success!!\n"));
+			} else {
+DEBUGLOG((" BOAlertEmail:ProcessTpl Failure!!\n"));
+	                   	PutField_Int(hTemplate, "internal_error", iRet);
+	            	}	
+		}
+	}
+
+	hash_destroy(hTemplate);
+      	FREE_ME(hTemplate);
+
+DEBUGLOG(("CreateAlertEmailTpl: iRet = [%d]\n", iRet));
+	return iRet;
+}
+

@@ -1,0 +1,442 @@
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/02/03              Cody Chan
+For psp report					   2012/02/09		   LokMan Chow
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sys/stat.h>
+#include <oraca.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "extract_rptcommon.h"
+#include "batchcommon.h"
+
+
+char    cs_psp_id[PD_PSP_ID_LEN + 1];
+char    cs_eod_date[PD_DATE_LEN + 1];
+char    cs_mode[PD_DESC_LEN+ 1];
+char    cDebug = 'Y';
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+int parse_arg(int argc,char **argv);
+int process_single_psp(const char *cs_eod_date, const char *cs_mode, const char *cs_psp_id);
+int process_multi_psp(const char *cs_eod_date, const char *cs_mode);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}	
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet = SUCCESS;
+
+	iRet = parse_arg(argc,argv);
+
+	if(iRet != SUCCESS){
+		printf("usage: -m Mode(Required)  -d Date(Optional) -p PspId(Optional)\n");
+		printf("usage: Mode: [txn/live] - Daily Txn Reports , [match] - For Matching Reports\n");
+		printf("usage: If no input date, use default EOD date\n");
+		printf("usage: If no input psp id, extract all psp report\n");
+	}
+	else{
+		if(!strcmp(cs_eod_date,"")){
+			iRet = GetCurrEODDate((unsigned char*)cs_eod_date);
+		}
+
+		if(iRet == SUCCESS){
+			if(!strcmp(cs_psp_id,""))
+				iRet = process_multi_psp(cs_eod_date,cs_mode);
+			else
+				iRet = process_single_psp(cs_eod_date,cs_mode,cs_psp_id);
+		}
+	}
+	return iRet;
+}
+
+int process_single_psp(const char *cs_eod_date, const char *cs_mode, const char *cs_psp_id)
+{
+	int	iRet = SUCCESS;
+	char	csFileName[PD_TMP_BUF_LEN+1];
+
+	EXEC SQL WHENEVER SQLERROR GOTO single_error;
+    	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		short           hv_return_value;
+
+		varchar		hv_txn_date[PD_DATE_LEN];
+		varchar		hv_psp_id[PD_PSP_ID_LEN +1];
+
+		varchar		v_psp_name[PD_PSP_NAME_LEN+1];
+		varchar		v_psp_channel[PD_PSP_CHANNEL_CODE_LEN+1];
+		varchar		v_psp_country[PD_COUNTRY_LEN+1];
+
+		SQL_CURSOR	c_cursor_rpt_p01;
+		SQL_CURSOR	c_cursor_rpt_detail;
+		SQL_CURSOR	c_cursor_rpt_summary;
+
+                short           ind_psp_name= -1;
+                short           ind_psp_channel= -1;
+                short           ind_psp_country= -1;
+
+    	EXEC SQL END DECLARE SECTION;
+
+
+	hv_txn_date.len = strlen(cs_eod_date);
+	memcpy(hv_txn_date.arr,cs_eod_date,hv_txn_date.len);
+DEBUGLOG(("batch_proc:hv_txn_date = [%.*s]\n",hv_txn_date.len,hv_txn_date.arr));
+
+	hv_psp_id.len = strlen(cs_psp_id);
+	memcpy(hv_psp_id.arr,cs_psp_id,hv_psp_id.len);
+DEBUGLOG(("batch_proc:hv_psp_id = [%.*s]\n",hv_psp_id.len,hv_psp_id.arr));
+
+	EXEC SQL DECLARE c_cursor_getpspch CURSOR FOR
+                 SELECT 
+			psp_name,
+                        psp_channel_code,
+			country
+                  FROM  psp_detail a,
+			clients b,
+			psp_country c
+                  WHERE a.status = 'O'
+		  AND a.disabled  = 0
+		  AND a.txn_type in ('A','D')
+		  AND a.online_mode = 'Y'
+		  AND a.client_id = b.client_id
+		  AND b.status = 'O'
+		  AND b.TYPE = 'P'
+		  AND a.psp_id = c.psp_id
+		  AND a.psp_id = :hv_psp_id;
+
+
+	EXEC SQL OPEN c_cursor_getpspch;
+	do{
+		EXEC SQL FETCH c_cursor_getpspch
+		INTO
+			:v_psp_name:ind_psp_name,
+			:v_psp_channel:ind_psp_channel,
+			:v_psp_country:ind_psp_country;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		v_psp_name.arr[v_psp_name.len] = '\0';
+		v_psp_channel.arr[v_psp_channel.len] = '\0';
+		v_psp_country.arr[v_psp_country.len] = '\0';
+DEBUGLOG(("batch_proc: psp [%s][%s][%s][%s]\n",hv_psp_id.arr,v_psp_name.arr,v_psp_channel.arr,v_psp_country.arr));
+
+
+/*For Detail Txn Report*/
+		if(!strcmp(cs_mode,"txn") || !strcmp(cs_mode,"live")){
+
+		    EXEC SQL ALLOCATE :c_cursor_rpt_detail;
+		    EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := REPORT_PKG.rpt_txn_detail(:hv_txn_date,:hv_psp_id,:c_cursor_rpt_detail);
+			END;
+		    END-EXEC;
+
+
+		    if(hv_return_value > 0){
+			if(!strcmp(cs_mode,"txn")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"daily"));
+				Extract_RPT_DETAIL(csFileName,c_cursor_rpt_detail);
+			}
+			else if(!strcmp(cs_mode,"live")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"live"));
+				Extract_RPT_DETAIL(csFileName,c_cursor_rpt_detail);
+			}
+			
+		    }
+
+		    EXEC SQL CLOSE :c_cursor_rpt_detail;
+
+//////summary , live summary
+		    EXEC SQL ALLOCATE :c_cursor_rpt_summary;
+		    EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := REPORT_PKG.rpt_txn_summary(:hv_txn_date,:hv_psp_id,:c_cursor_rpt_summary);
+			END;
+		    END-EXEC;
+
+
+		    if(hv_return_value > 0){
+			if(!strcmp(cs_mode,"txn")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"summary"));
+				Extract_RPT_SUMMARY(csFileName,c_cursor_rpt_summary);
+			}
+			else if(!strcmp(cs_mode,"live")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"livesummary"));
+				Extract_RPT_SUMMARY(csFileName,c_cursor_rpt_summary);
+			}
+			
+		    }
+
+		    EXEC SQL CLOSE :c_cursor_rpt_summary;
+
+		}
+
+		else{
+/*For Matching Report*/
+		    EXEC SQL ALLOCATE :c_cursor_rpt_p01;
+		    EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := REPORT_PKG.rpt_p01(:hv_txn_date,:hv_psp_id,:c_cursor_rpt_p01);
+			END;
+		    END-EXEC;
+
+
+		    if(hv_return_value > 0){
+			strcpy(csFileName,GetFileName(v_psp_name.arr,cs_eod_date));
+
+			if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_ESKY))
+				Extract_RPT_ESKY(csFileName,c_cursor_rpt_p01);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_YEEPAY))
+				Extract_RPT_YPY(csFileName,c_cursor_rpt_p01);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_HPAY_CNP))
+				Extract_RPT_HCP(csFileName,c_cursor_rpt_p01);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_TWV))
+				Extract_RPT_TWV(csFileName,c_cursor_rpt_p01);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_ALLINPAY))
+				Extract_RPT_ALP(csFileName,c_cursor_rpt_p01);
+			
+		    }
+		
+		    EXEC SQL CLOSE :c_cursor_rpt_p01;
+		}
+
+
+	}while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getpspch;
+
+	return iRet;
+single_error:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_rpt_p01;
+	EXEC SQL CLOSE :c_cursor_rpt_detail;
+	EXEC SQL CLOSE :c_cursor_rpt_summary;
+	EXEC SQL CLOSE c_cursor_getpspch;
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;
+}
+
+int process_multi_psp(const char *cs_eod_date, const char *cs_mode)
+{
+	int	iRet = SUCCESS;
+	char	csFileName[PD_TMP_BUF_LEN+1];
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+    	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		short           hv_return_value;
+
+		varchar		hv_txn_date[PD_DATE_LEN];
+		varchar		v_psp_id[PD_PSP_ID_LEN +1];
+
+		varchar		v_psp_channel[PD_PSP_CHANNEL_CODE_LEN+1];
+		varchar		v_psp_name[PD_PSP_NAME_LEN+1];
+		varchar		v_psp_country[PD_COUNTRY_LEN+1];
+
+		SQL_CURSOR	c_cursor_rpt_p02;
+		SQL_CURSOR	c_cursor_rpt_detail;
+		SQL_CURSOR	c_cursor_rpt_summary;
+
+                short           ind_psp_id = -1;
+                short           ind_psp_name= -1;
+                short           ind_psp_channel= -1;
+                short           ind_psp_country= -1;
+
+    	EXEC SQL END DECLARE SECTION;
+
+
+	hv_txn_date.len = strlen(cs_eod_date);
+	memcpy(hv_txn_date.arr,cs_eod_date,hv_txn_date.len);
+DEBUGLOG(("batch_proc:hv_txn_date = [%.*s]\n",hv_txn_date.len,hv_txn_date.arr));
+
+	EXEC SQL DECLARE c_cursor_getpsp CURSOR FOR
+                 SELECT a.psp_id,
+			psp_name,
+                        psp_channel_code,
+			country
+                  FROM  psp_detail a,
+			clients b,
+			psp_country c
+                  WHERE a.status = 'O'
+		  AND a.disabled  = 0
+		  AND a.txn_type in ('A','D')
+		  AND a.online_mode = 'Y'
+		  AND a.client_id = b.client_id
+		  AND b.status = 'O'
+		  AND b.TYPE = 'P'
+		  AND a.psp_id = c.psp_id
+		  order by psp_channel_code, a.psp_id;
+
+
+	EXEC SQL OPEN c_cursor_getpsp;
+	do{
+		EXEC SQL FETCH c_cursor_getpsp
+		INTO
+			:v_psp_id:ind_psp_id,
+			:v_psp_name:ind_psp_name,
+			:v_psp_channel:ind_psp_channel,
+			:v_psp_country:ind_psp_country;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		v_psp_id.arr[v_psp_id.len] = '\0';
+		v_psp_name.arr[v_psp_name.len] = '\0';
+		v_psp_channel.arr[v_psp_channel.len] = '\0';
+		v_psp_country.arr[v_psp_country.len] = '\0';
+DEBUGLOG(("batch_proc: psp [%s][%s][%s][%s]\n",v_psp_id.arr,v_psp_name.arr,v_psp_channel.arr,v_psp_country.arr));
+
+
+/*For Detail Txn Report*/
+		if(!strcmp(cs_mode,"txn")|| !strcmp(cs_mode,"live")){
+
+		    EXEC SQL ALLOCATE :c_cursor_rpt_detail;
+		    EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := REPORT_PKG.rpt_txn_detail(:hv_txn_date,:v_psp_id,:c_cursor_rpt_detail);
+			END;
+		    END-EXEC;
+
+
+		    if(hv_return_value > 0){
+			if(!strcmp(cs_mode,"txn")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"daily"));
+				Extract_RPT_DETAIL(csFileName,c_cursor_rpt_detail);
+			}
+			else if(!strcmp(cs_mode,"live")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"live"));
+				Extract_RPT_DETAIL(csFileName,c_cursor_rpt_detail);
+			}
+		    }
+
+		    EXEC SQL CLOSE :c_cursor_rpt_detail;
+
+//////summary , live summary
+		    EXEC SQL ALLOCATE :c_cursor_rpt_summary;
+		    EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := REPORT_PKG.rpt_txn_summary(:hv_txn_date,:v_psp_id,:c_cursor_rpt_summary);
+			END;
+		    END-EXEC;
+
+
+		    if(hv_return_value > 0){
+			if(!strcmp(cs_mode,"txn")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"summary"));
+				Extract_RPT_SUMMARY(csFileName,c_cursor_rpt_summary);
+			}
+			else if(!strcmp(cs_mode,"live")){
+				strcpy(csFileName,GetTxnDetailFileName(v_psp_name.arr,v_psp_country.arr,cs_eod_date,"livesummary"));
+				Extract_RPT_SUMMARY(csFileName,c_cursor_rpt_summary);
+			}
+			
+		    }
+
+		    EXEC SQL CLOSE :c_cursor_rpt_summary;
+		}
+
+		else{
+		    EXEC SQL ALLOCATE :c_cursor_rpt_p02;
+
+		    EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := REPORT_PKG.rpt_p01(:hv_txn_date,:v_psp_id,:c_cursor_rpt_p02);
+			END;
+		    END-EXEC;
+
+		    if(hv_return_value > 0){
+			strcpy(csFileName,GetFileName(v_psp_name.arr,cs_eod_date));
+
+			if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_ESKY))
+				Extract_RPT_ESKY(csFileName,c_cursor_rpt_p02);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_YEEPAY))
+				Extract_RPT_YPY(csFileName,c_cursor_rpt_p02);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_HPAY_CNP))
+				Extract_RPT_HCP(csFileName,c_cursor_rpt_p02);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_TWV))
+				Extract_RPT_TWV(csFileName,c_cursor_rpt_p02);
+			else if(!strcmp((const char*)v_psp_channel.arr,PD_CHANNEL_ALLINPAY))
+				Extract_RPT_ALP(csFileName,c_cursor_rpt_p02);
+			
+		    }
+
+		    EXEC SQL CLOSE :c_cursor_rpt_p02;
+		}
+
+	}while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getpsp;
+
+	return iRet;
+sql_error:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_rpt_p02;
+	EXEC SQL CLOSE :c_cursor_rpt_detail;
+	EXEC SQL CLOSE c_cursor_getpsp;
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+	strcpy(cs_psp_id,"");
+	strcpy(cs_eod_date,"");
+	strcpy(cs_mode,"");
+
+	while ((c = getopt(argc,argv,"m:p:d:")) != EOF) {
+		switch (c) {
+			case 'm':
+				strcpy(cs_mode, optarg);
+				break;
+			case 'p':
+				strcpy(cs_psp_id, optarg);
+				break;
+			case 'd':
+				strcpy(cs_eod_date, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if(!strcmp(cs_mode,"")){
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}

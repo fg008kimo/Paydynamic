@@ -1,0 +1,3013 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/26              David Wong
+Add ProcessStmtFile
+ (encoding,multi-format,field checking)		   2013/07/29              Stan Poon
+Add ProcessStmtFile running balance checking       2013/08/06              David Wong
+Add ProcessStmtFile de-duplication                 2013/08/15              David Wong
+Add ProcessStmtFile error table                    2013/09/17              Stan Poon
+Add ProcessAuxStmtFile                             2013/10/??              David Wong
+Add ProcessStmtFile BAID and update BAID balance   2014/01/09		   Stan Poon
+Add ProcessStmtFile Txn Code Keywords Mapping	   2014/01/09		   Stan Poon
+Add ProcessStmtFile Add Txn Level		   2014/01/09		   Stan Poon
+Add ProcessStmtFile Table Lock			   2014/01/09		   Stan Poon
+Add ProcessStmtFile Add BAID Txn Level		   2014/02/21		   Stan Poon
+Add ProcessStmtFile to BOOLBankStmtMatch	   2014/02/21		   Stan Poon
+Add ProcessStmtFile Void and change Txn Code	   2014/02/21		   Stan Poon
+Add ProcessStmtFile Auto Post Deposit Txn	   2014/02/21		   Stan Poon
+Add ProcessStmtFile Sort Bank Stmt		   2014/03/05		   Stan Poon
+Add Merge Column in template			   2014/06/16		   Stan Poon
+Add update_bal indicator			   2014/07/21		   David Wong
+Add ProcessStmtTmp, AddStmtTmp, UpdateStmtTmp      2014/08/25              Stan Poon
+Add Statement Tmp DeDuplcation                     2014/09/05              Stan Poon
+Handle sorting with error                          2014/09/08              Stan Poon
+Handle split and count                             2014/09/10              Stan Poon
+Add sender_baid_name,
+    recipient_baid_name
+    and client name       			   2014/12/29              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "BOOLBankStmt.h"
+#include "math.h"
+#define __USE_XOPEN
+#include "time.h"
+
+#define	IN_FILE_EXT_DELIMITER	"."
+#define	EXCEL_CONVERT_SCRIPT	"xls2txt"
+#define	TEXT_CONVERT_SCRIPT	"iconv"
+#define	OUT_FILE_ENCODING	"UTF-8"
+
+#define PD_DEFAULT_DATE_FORMAT		"%Y%m%d"
+#define PD_DEFAULT_TIME_FORMAT		"%H%M%S"
+#define PD_DEFAULT_DATETIME_FORMAT	"%Y%m%d%H%M%S"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOOLBankStmt(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+/*
+ * Statement Script * * * * * * * * * * * * * * * * * * * *
+ */
+int ConvertStmtFile(hash_t *hContext, hash_t *hRequest)
+{
+	int iRet = PD_OK;
+	int iCnt = 0;
+	char csTmpForStrtok[PD_TMP_BUF_LEN];
+	char *csTmp = NULL;
+	char *csInFileName = NULL, *csIntBankCode = NULL;
+	char csInFileExt[PD_TMP_BUF_LEN];
+	char csScriptName[PD_TMP_BUF_LEN];
+	char csInFileEncoding[PD_TMP_BUF_LEN];
+	char csInFilePrefix[PD_TMP_BUF_LEN];
+	char csInFileCountry[PD_TMP_BUF_LEN];
+	char *csNewFullName = NULL;
+	char *csConvertedFullName = NULL;
+	char csSysCmd[PD_TMP_BUF_LEN*3];
+
+/* in_file_name */
+	if (GetField_CString(hContext, "in_file_name", &csInFileName)) {
+DEBUGLOG(("ConvertStmtFile in_file_name = [%s]\n", csInFileName));
+	}
+
+/* new_file */
+	if (GetField_CString(hContext, "new_file", &csNewFullName)) {
+DEBUGLOG(("ConvertStmtFile new_file = [%s]\n", csNewFullName));
+	}
+
+/* converted_file */
+	if (GetField_CString(hContext, "converted_file", &csConvertedFullName)) {
+DEBUGLOG(("ConvertStmtFile converted_file = [%s]\n", csConvertedFullName));
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ConvertStmtFile int_bank_code = [%s]\n", csIntBankCode));
+	}
+
+/* get in_file_ext */
+	if (iRet == PD_OK) {
+		iCnt = 0;
+		strcpy(csTmpForStrtok, csInFileName);
+		csTmp = strtok(csTmpForStrtok, IN_FILE_EXT_DELIMITER);
+		while (csTmp != NULL) {
+// DEBUGLOG(("ConvertStmtFile in_file_name token: [%s]\n", csTmp));
+			iCnt++;
+			//strcpy(csInFileExt, csTmp);
+			U2L(csTmp,strlen(csTmp),csInFileExt);
+			csTmp = strtok(NULL, IN_FILE_EXT_DELIMITER);
+		}
+
+		if (iCnt > 0) {
+// DEBUGLOG(("ConvertStmtFile in_file_ext = [%s]\n", csInFileExt));
+		} else {
+			iRet = PD_ERR;
+DEBUGLOG(("ConvertStmtFile in_file_ext IS MISSING!!!\n"));
+ERRLOG("BOOLBankStmt::ConvertStmtFile in_file_ext IS MISSING!!!\n");
+		}
+	}
+
+/* get convert info */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ConvertStmtFile call OLStmtConvertScript::GetConvertInfo()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtConvertScript", "GetConvertInfo");
+		iRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csInFileExt, csScriptName, csInFileEncoding, csInFilePrefix, csInFileCountry);
+
+		if (iRet != PD_OK) {
+			iRet = PD_ERR;
+DEBUGLOG(("ConvertStmtFile call OLStmtConvertScript::GetConvertInfo() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ConvertStmtFile call OLStmtConvertScript::GetConvertInfo() FAILURE!!!\n");
+		}
+	}
+
+/* do the conversion
+example: xls2csv -x "spreadsheet.xls" -b WINDOWS-1252 -c "csvfile.csv" -a UTF-8
+example: iconv -f WINDOWS-1252 -t UTF-8 "spreadsheet.xls"
+example: xls2txt "spreadsheet.xls"
+*/
+	if (iRet == PD_OK) {
+		if (!strcmp(csScriptName, EXCEL_CONVERT_SCRIPT)) {
+			snprintf(csSysCmd, sizeof(csSysCmd), "%s \"%s\" > \"%s\"", EXCEL_CONVERT_SCRIPT, csNewFullName, csConvertedFullName);
+		} else if (!strcmp(csScriptName, TEXT_CONVERT_SCRIPT)) {
+			snprintf(csSysCmd, sizeof(csSysCmd), "%s -f \"%s\" -t \"%s\" \"%s\" > \"%s\"", TEXT_CONVERT_SCRIPT, csInFileEncoding, OUT_FILE_ENCODING, csNewFullName, csConvertedFullName);
+		} else {
+			snprintf(csSysCmd, sizeof(csSysCmd), "%s \"%s\" \"%s\" \"%s\" \"%s\" \"%s\"", csScriptName, csInFileEncoding, OUT_FILE_ENCODING, csNewFullName, csConvertedFullName, csInFileExt);
+		}
+
+DEBUGLOG(("ConvertStmtFile call system command [%s][%d]\n", csSysCmd, strlen(csSysCmd)));
+		int status = system(csSysCmd);
+
+		iRet = WEXITSTATUS(status);
+		if (iRet != PD_OK) {
+DEBUGLOG(("ConvertStmtFile conversion FAILURE!!! Ret = [%d][%d]\n",status,iRet));
+ERRLOG("BOOLBankStmt::ConvertStmtFile conversion FAILURE!!!\n");
+			iRet = PD_ERR;
+		}
+	}
+
+DEBUGLOG(("ConvertStmtFile Normal Exit! iRet = [%d]\n", iRet));
+
+	return iRet;
+}
+
+
+char *CS_DEDUP_KEY_WITH_TIME[]    = {"statement_date", "statement_time", "txn_ccy", "txn_amount", "amt_type", "balance"};
+char *CS_DEDUP_KEY_WITHOUT_TIME[] = {"statement_date", "txn_ccy", "txn_amount", "amt_type", "balance"};
+int INT_DEDUP_KEY_WITH_TIME       = (int)sizeof(CS_DEDUP_KEY_WITH_TIME)/(int)sizeof(*CS_DEDUP_KEY_WITH_TIME);
+int INT_DEDUP_KEY_WITHOUT_TIME    = (int)sizeof(CS_DEDUP_KEY_WITHOUT_TIME)/(int)sizeof(*CS_DEDUP_KEY_WITHOUT_TIME);
+
+char *CS_TMP_KEY_WITH_TIME[]      = {"raw_date", "raw_time", "txn_amount", "amt_type", "balance"};
+char *CS_TMP_KEY_WITHOUT_TIME[]   = {"raw_date", "txn_amount", "amt_type", "balance"};
+int INT_TMP_KEY_WITH_TIME         = (int)sizeof(CS_TMP_KEY_WITH_TIME)/(int)sizeof(*CS_TMP_KEY_WITH_TIME);
+int INT_TMP_KEY_WITHOUT_TIME      = (int)sizeof(CS_TMP_KEY_WITHOUT_TIME)/(int)sizeof(*CS_TMP_KEY_WITHOUT_TIME);
+
+char *CS_BANK_CHARGE_DETAIL[]     = {"as_ind","int_bank_code","bank_acct_num","raw_date","raw_time","statement_date","statement_time","txn_ccy","txn_amount","amt_type","balance"};
+int INT_BANK_CHARGE_DETAIL        = (int)sizeof(CS_BANK_CHARGE_DETAIL)/(int)sizeof(*CS_BANK_CHARGE_DETAIL);
+
+/*
+ * Statement Raw File * * * * * * * * * * * * * * * * * * * *
+ */
+int GetSystemDate(hash_t *hContext);
+int GetCompareKey(const hash_t *hRls, char *csTag[], int iTagSize, char *csCompareKey);
+void GetCompareTmpKey(const hash_t *hRls, char *csTag[], int iTagSize, char *csCompareKey);
+int CheckDetail(const hash_t *hContext, hash_t *hRls, char *cs_err_msg_buf, int iLogMsg, int iLogErr);
+int SplitLineByhFormat(const char *csLine, const char *csFormatId, const hash_t *hFormat, hash_t *hRls);
+struct node *CustomSort(struct node *head);
+void CopyHash(const hash_t *hIn, char *csTag[], int iTagSize, hash_t *hOut);
+
+int ProcessStmtFile(hash_t *hContext, hash_t *hRequest, recordset_t *rRecordFormat, recordset_t *myFile)
+{
+	int iRet = PD_OK, iDtlRet = PD_OK, iTmpRet = PD_OK;
+
+/* non-reusable */
+	char *csFileId = NULL, *csConvertedFileName = NULL, *csConvertedFullName = NULL;
+	char *csIntBankCode = NULL, *csBankAcctNum = NULL;
+	char *csCountry = NULL;
+	char *csUser = NULL;
+	int iValidateAcctNum = 1, iValidateRunningBal = 1, iValidateIntoTable = 1;
+	int iSBlankLine = 0, iEBlankLine = 0;
+	int iStmtTime = 0;
+
+	char *csFormatId = NULL, csDelimiter[2] = "";
+	int iNegAmount, iNegBalance, iReverse, iBankAcctRow, iStartRow, iEndRow, iStartYear, iTolDateTime, iTotalField;
+	int iTotalLine = 0, iFileCount = 0, iSkipCount = 0;
+
+	FILE *fin = NULL;
+	hash_t *hFormat = NULL;
+
+/* reusable */
+	char *csTmp = NULL;
+	char *csTag = (char*) malloc (64);
+	char *csBalance = NULL, *csBankCharge = NULL;
+	char cs_input_buf[PD_TMP_MSG_BUF_LEN] = "", cs_tmp_input_buf[PD_TMP_MSG_BUF_LEN] = "", cs_err_msg_buf[PD_TMP_BUF_LEN] = "";
+	char csFileCompareKey[PD_TMP_MSG_BUF_LEN] = "";
+	char *csPrevFileCompareKey = NULL;
+
+	int iTmp = 0;
+	int iCurrLine = 0, iDtlLine = 0;
+	int iField = 0, iError = 0;
+	int iMatched = 0;
+
+	hash_t *hRec = NULL, *hBankCharge = NULL;
+	hash_t *hKey = NULL;
+
+	recordset_t *myRec = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(myRec, 0);
+
+	recordset_t *myKey = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(myKey, 0);
+
+	struct node *head = NULL, *tail = NULL, *currentNode = NULL;
+
+/* in_file_name */
+	if (GetField_CString(hContext, "in_file_name", &csTmp)) {
+DEBUGLOG(("ProcessStmtFile() in_file_name = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() in_file_name NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* in_file_path */
+	if (GetField_CString(hContext, "in_file_path", &csTmp)) {
+DEBUGLOG(("ProcessStmtFile() in_file_path = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() in_file_path NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* converted_file_name */
+	if (GetField_CString(hContext, "converted_file_name", &csConvertedFileName)) {
+DEBUGLOG(("ProcessStmtFile() converted_file_name = [%s]\n", csConvertedFileName));
+	} else {
+DEBUGLOG(("ProcessStmtFile() converted_file_name NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* converted_file */
+	if (GetField_CString(hContext, "converted_file", &csConvertedFullName)) {
+DEBUGLOG(("ProcessStmtFile() converted_file = [%s]\n", csConvertedFullName));
+	} else {
+DEBUGLOG(("ProcessStmtFile() converted_file NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* file_id */
+	if (GetField_CString(hContext, "file_id", &csFileId)) {
+DEBUGLOG(("ProcessStmtFile() file_id = [%s]\n", csFileId));
+	} else {
+DEBUGLOG(("ProcessStmtFile() file_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* ver */
+	if (GetField_Int(hContext, "ver", &iTmp)) {
+DEBUGLOG(("ProcessStmtFile() ver = [%d]\n", iTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() ver NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* psp_id */
+	if (GetField_CString(hContext, "psp_id", &csTmp)) {
+DEBUGLOG(("ProcessStmtFile() psp_id = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() psp_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* baid */
+	if (GetField_CString(hContext, "baid", &csTmp)) {
+DEBUGLOG(("ProcessStmtFile() baid = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() baid NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ProcessStmtFile() int_bank_code = [%s]\n", csIntBankCode));
+	} else {
+DEBUGLOG(("ProcessStmtFile() int_bank_code NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hContext, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("ProcessStmtFile() bank_acct_num = [%s]\n", csBankAcctNum));
+	} else {
+DEBUGLOG(("ProcessStmtFile() bank_acct_num NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* PHDATE */
+	if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("ProcessStmtFile() PHDATE = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() PHDATE NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* country */
+	if (GetField_CString(hContext, "country", &csCountry)) {
+DEBUGLOG(("ProcessStmtFile() country = [%s]\n", csCountry));
+	} else {
+DEBUGLOG(("ProcessStmtFile() country NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_ccy */
+	if (GetField_CString(hContext, "acct_ccy", &csTmp)) {
+DEBUGLOG(("ProcessStmtFile() ccy = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() ccy NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_type */
+	if (GetField_CString(hContext, "bank_acct_type", &csTmp)) {
+DEBUGLOG(("ProcessStmtFile() type = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtFile() type NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* user */
+	if (GetField_CString(hContext, "create_user", &csUser)) {
+DEBUGLOG(("ProcessStmtFile() user = [%s]\n", csUser));
+	} else {
+DEBUGLOG(("ProcessStmtFile() user NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* validate_acct_num */
+	if (GetField_Int(hContext, "validate_acct_num", &iValidateAcctNum)) {
+DEBUGLOG(("ProcessStmtFile() ** validate_acct_num = [%d]\n", iValidateAcctNum));
+	}
+
+/* validate_running_balance */
+	if (GetField_Int(hContext, "validate_running_bal", &iValidateRunningBal)) {
+DEBUGLOG(("ProcessStmtFile() ** validate_running_balance = [%d]\n", iValidateRunningBal));
+	}
+
+/* validate_into_table */
+	if (GetField_Int(hContext, "validate_into_table", &iValidateIntoTable)) {
+DEBUGLOG(("ProcessStmtFile() ** validate_into_table = [%d]\n", iValidateIntoTable));
+	}
+
+
+/*
+ * File Open
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtFile() Start Opening File...\n"));
+		fin = fopen(csConvertedFullName, "r");
+		if (fin == NULL) {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet); //
+DEBUGLOG(("ProcessStmtFile() cannot open file [%s]!!!\n", csConvertedFileName));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() cannot open file [%s]!!!\n", csConvertedFileName);
+		} else {
+			while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+				if (strlen_content(cs_input_buf) == 0) {
+					iSBlankLine++;
+				} else {
+					break; //
+				}
+			}
+			rewind(fin);
+			while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+				if (strlen_content(cs_input_buf) == 0) {
+					iEBlankLine++;
+				} else {
+					iEBlankLine = 0;
+				}
+				iTotalLine++;
+			}
+DEBUGLOG(("ProcessStmtFile() Summary: Total Line = [%d] Starting/Ending Blank Line = [%d]/[%d]\n",iTotalLine,iSBlankLine,iEBlankLine));
+		}
+	}
+
+
+/*
+ * Support Multi format
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtFile() Start Checking Format...\n"));
+
+		hFormat = RecordSet_GetFirst(rRecordFormat);
+		while (hFormat) {
+/* format_id */
+			if (GetField_CString(hFormat, "format_id", &csFormatId)) {
+	/* delimiter */
+				sprintf(csTag, "delimiter_%s", csFormatId);
+				if (!GetField_CString(hFormat, csTag, &csTmp)) {
+					iRet = INT_FORMAT_TEMPLATE_ERROR;
+					PutField_Int(hContext, "internal_error", iRet); //
+DEBUGLOG(("ProcessStmtFile() delimiter NOT FOUND!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() delimiter NOT FOUND!!!\n");
+					break; //
+				} else {
+					sprintf(csDelimiter,"%c",atoi(csTmp));
+				}
+			}
+/* neg_amount */
+			if (!GetField_CString(hFormat, "neg_amount", &csTmp)) {
+				iNegAmount = 0;
+			} else {
+				iNegAmount = atoi(csTmp);
+			}
+/* neg_balance */
+			if (!GetField_CString(hFormat, "neg_balance", &csTmp)) {
+				iNegBalance = 0;
+			} else {
+				iNegBalance = atoi(csTmp);
+			}
+/* reverse */
+			if (!GetField_CString(hFormat, "reverse", &csTmp)) {
+				iReverse = 0;
+			} else if (*csTmp=='1') {
+				iReverse = 1;
+			} else {
+				iReverse = 0;
+			}
+/* row_bank_acct */
+			if (!GetField_CString(hFormat, "row_bank_acct", &csTmp)) {
+				iBankAcctRow = 0;
+			} else {
+				iBankAcctRow = atoi(csTmp);
+				if (iBankAcctRow > 0) {
+					iBankAcctRow += iSBlankLine;
+				}
+			}
+/* row_start */
+			if (!GetField_CString(hFormat, "row_start", &csTmp)) {
+				iStartRow = 1;
+			} else {
+				iStartRow = atoi(csTmp) + iSBlankLine;
+			}
+/* row_end */
+			if (!GetField_CString(hFormat, "row_end", &csTmp)) {
+				iEndRow = 1;
+			} else {
+				iEndRow = atoi(csTmp) + iEBlankLine;
+			}
+/* start_year */
+			if (!GetField_CString(hFormat, "start_year", &csTmp)) {
+				iStartYear = 0;
+			} else {
+				iStartYear = atoi(csTmp);
+			}
+/* tol_datetime */
+			if (!GetField_CString(hFormat, "tol_datetime", &csTmp)) {
+				iTolDateTime = 2;
+			} else {
+				iTolDateTime = atoi(csTmp);
+			}
+/* total_field */
+			if (!GetField_CString(hFormat, "total_field", &csTmp)) {
+				iTotalField = 0;
+			} else {
+				iTotalField = atoi(csTmp);
+			}
+
+			iCurrLine = 0;
+			iField = 0;
+			rewind(fin);
+
+		/* Count Total Field */
+			while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+				iCurrLine++;
+				if (iCurrLine == iStartRow) {
+					if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0A) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+					if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0D) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+					strcpy(cs_tmp_input_buf,cs_input_buf);
+					csTmp = mystrtok(cs_tmp_input_buf, csDelimiter);
+					while (csTmp != NULL) {
+						iField++;
+						csTmp = mystrtok(NULL, csDelimiter);
+					}
+DEBUGLOG(("ProcessStmtFile() format_id[%s] delimiter[%s]\n",csFormatId,csDelimiter));
+DEBUGLOG(("ProcessStmtFile() line %03d count[%d]/total_field[%d] [%s]\n",iCurrLine,iField,iTotalField,cs_input_buf));
+				/* Total Field Matched */
+					if (iField == iTotalField) {
+						iMatched = 1;
+					}
+					break; //
+				}
+			}
+
+			if (iMatched == 1) break; //
+
+			hFormat = RecordSet_GetNext(rRecordFormat);
+		} // hFormat
+
+		if (iRet == PD_OK) {
+		/* SUCCEED */
+			if (iMatched == 1) {
+				PutField_CString(hContext,"format_id",csFormatId);
+DEBUGLOG(("ProcessStmtFile() Summary: Format ID [%s] Picked\n",csFormatId));
+
+				PutField_Int(hContext, "neg_amount", iNegAmount);
+				PutField_Int(hContext, "neg_balance", iNegBalance);
+				PutField_Int(hContext, "start_year", iStartYear);
+				PutField_Int(hContext, "tol_datetime", iTolDateTime);
+
+			/* DATE_FORMAT */
+				if (GetField_CString(hFormat, "DATE_FORMAT", &csTmp)) {
+					PutField_CString(hContext, "DATE_FORMAT", csTmp);
+				}
+			/* TIME_FORMAT */
+				if (GetField_CString(hFormat, "TIME_FORMAT", &csTmp)) {
+					PutField_CString(hContext, "TIME_FORMAT", csTmp);
+					iStmtTime = 1;
+				}
+		/* FAIL */
+			} else {
+				iRet = INT_INVALID_FILE_FORMAT;
+				PutField_Int(hContext, "internal_error", iRet); //
+DEBUGLOG(("ProcessStmtFile() NO FORMAT MATCHED!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() NO FORMAT MATCHED!!!\n");
+			}
+		}
+	}
+
+
+/*
+ * Timezone
+ */
+	if (iRet == PD_OK) {
+		if (!strcmp(csCountry,PD_JAPAN)) {
+			PutField_CString(hContext,"TIME_ZONE",PD_DESTZONE_JP);
+DEBUGLOG(("ProcessStmtFile() TIME_ZONE [%s]\n",PD_DESTZONE_JP));
+		} else if (!strcmp(csCountry,PD_INDIA)) {
+			PutField_CString(hContext,"TIME_ZONE",PD_DESTZONE_IN);
+DEBUGLOG(("ProcessStmtFile() TIME_ZONE [%s]\n",PD_DESTZONE_IN));
+		}
+
+		iRet = GetSystemDate(hContext);
+	}
+
+
+/*
+ * Statement Detail Preparation
+ */
+	if (iRet == PD_OK) {
+		rewind(fin);
+		iCurrLine=0;
+		iMatched=0;
+
+DEBUGLOG(("ProcessStmtFile() Start Reading File...\n"));
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+			iCurrLine++;
+
+			if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0A) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+			if (cs_input_buf[strlen(cs_input_buf)-1] == 0x0D) cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+
+		/* handle leading and trailing rows */
+			if (iCurrLine < iStartRow || iCurrLine > iTotalLine - iEndRow + 1) {
+				iDtlLine = 0;
+			} else {
+				iDtlLine++;
+			}
+// DEBUGLOG(("ProcessStmtFile() iDtlLine = [%d]\n",iDtlLine));
+
+		/* check bank account number */
+			if (iCurrLine <= iBankAcctRow) {
+				if (iMatched != 1) {
+					strcpy(cs_tmp_input_buf,cs_input_buf);
+					_deleteCharacters(cs_tmp_input_buf,"-");
+					csTmp = strstr(cs_tmp_input_buf, csBankAcctNum);
+					if (csTmp == NULL) {
+						if (iCurrLine == iBankAcctRow) { //
+DEBUGLOG(("ProcessStmtFile() Bank Account Number NOT MATCH!!!\n"));
+DEBUGLOG(("ProcessStmtFile() Bank Account Number[%s] NOT MATCH [%s]\n",csBankAcctNum,cs_input_buf));
+							if (iValidateAcctNum == 0) {
+DEBUGLOG(("ProcessStmtFile() ** No Bank Account Validation\n"));
+							} else {
+								iRet = INT_BANK_ACCT_NOT_MATCH;
+								PutField_Int(hContext, "internal_error", iRet); //
+								break; //
+							}
+						}
+					} else {
+						iMatched=1;
+DEBUGLOG(("ProcessStmtFile() Bank Account Number[%s] Matched [%s]\n",csBankAcctNum,cs_input_buf));
+					}
+				}
+			} else if (iBankAcctRow < 1) {
+				if (iCurrLine == 1) {
+DEBUGLOG(("ProcessStmtFile() ## No Bank Account Validation for this bank\n"));
+				}
+			}
+
+		/* ignore rows containing useless info */
+			if (strlen_content(cs_input_buf) == 0) {
+				if (iDtlLine == 0) {
+DEBUGLOG(("ProcessStmtFile() line %03d ignore [%s]\n",iCurrLine,cs_input_buf));
+				} else {
+DEBUGLOG(("ProcessStmtFile() line %03d ignore  [%s]\n",iCurrLine,cs_input_buf));
+				}
+				continue; //
+			}
+
+		/* Process */
+			hRec = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hRec, 0);
+			if (SplitLineByhFormat(cs_input_buf, csFormatId, hFormat, hRec) != PD_OK) {
+				iRet = INT_FORMAT_TEMPLATE_ERROR;
+				PutField_Int(hContext, "internal_error", iRet); //
+DEBUGLOG(("ProcessStmtFile() FORMAT ERROR!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() FORMAT ERROR!!!\n");
+				break; //
+			}
+
+			//remove field - tmp_content_temp
+			RemoveField_CString(hRec, "tmp_content_temp");
+
+			cs_err_msg_buf[0] = '\0';
+			PutField_Int(hRec,"seq",iCurrLine);
+			PutField_Int(hRec,"sys_seq",iReverse==0?iCurrLine:-1*iCurrLine);
+
+			if (GetField_CString(hRec,"statement_date",&csTmp)) {
+				RemoveField_CString(hRec,"statement_date");
+				PutField_CString(hRec,"raw_date",csTmp);
+			}
+			if (GetField_CString(hRec,"statement_time",&csTmp)) {
+				RemoveField_CString(hRec,"statement_time");
+				PutField_CString(hRec,"raw_time",csTmp);
+			}
+
+		/* Check Field */
+			iDtlRet = CheckDetail(hContext, hRec, cs_err_msg_buf, (iCurrLine == iStartRow), iDtlLine);
+			// iDtlRet = CheckDetail(hContext, hRec, cs_err_msg_buf, 1, iDtlLine);
+
+			PutField_CString(hRec, "int_bank_code", csIntBankCode);
+			PutField_CString(hRec, "bank_acct_num", csBankAcctNum);
+			if (GetField_CString(hContext, "TIME_FORMAT", &csTmp)) {
+				PutField_CString(hRec, "TIME_FORMAT", csTmp);
+			}
+
+			if (iDtlRet == PD_OK || iDtlRet == PD_OTHER_ERR || iDtlLine > 0) { //valid records
+
+			/* Self DeDuplication */
+				if (!GetField_CString(hRec,"as_ind",&csTmp)) {
+					GetCompareTmpKey(hRec, iStmtTime==1?CS_TMP_KEY_WITH_TIME:CS_TMP_KEY_WITHOUT_TIME,
+								iStmtTime==1?INT_TMP_KEY_WITH_TIME:INT_TMP_KEY_WITHOUT_TIME, csFileCompareKey);
+
+					hKey = RecordSet_GetFirst(myKey);
+					while (hKey) {
+						GetField_CString(hKey,"compare_key",&csPrevFileCompareKey);
+
+						if (!strcmp(csFileCompareKey, csPrevFileCompareKey)) {
+							if (iDtlRet == PD_OK) {
+DEBUGLOG(("ProcessStmtFile() line %03d Self DeDup file[%s] prev_file[%s] FOUND\n",iCurrLine,csFileCompareKey,csPrevFileCompareKey));
+							} else {
+								iDtlRet = PD_OK;
+DEBUGLOG(("ProcessStmtFile() line %03d Self DeDup file[%s] prev_file[%s] FAILURE FOUND\n",iCurrLine,csFileCompareKey,csPrevFileCompareKey));
+							}
+							iSkipCount++;
+							PutField_CString(hRec, "as_ind", "skip");
+							break; //
+						}
+						hKey = RecordSet_GetNext(myKey);
+					}
+				}
+
+				if (!GetField_CString(hRec,"as_ind",&csTmp)) {
+					hKey = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(hKey, 0);
+					PutField_CString(hKey,"compare_key",csFileCompareKey);
+					RecordSet_Add(myKey, hKey);
+// DEBUGLOG(("ProcessStmtFile() line %03d Self DeDup file[%s] NOT FOUND\n",iCurrLine,csFileCompareKey));
+				}
+
+			/* Tmp DeDuplication */
+				if (!GetField_CString(hRec,"as_ind",&csTmp)) {
+					//GetCompareTmpKey(hRec, iStmtTime==1?CS_TMP_KEY_WITH_TIME:CS_TMP_KEY_WITHOUT_TIME,
+					//			iStmtTime==1?INT_TMP_KEY_WITH_TIME:INT_TMP_KEY_WITHOUT_TIME, csFileCompareKey);
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLStatementTmp", "CheckTmpRecord"); //
+					iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+					if (iTmpRet == FOUND) {
+						if (iDtlRet == PD_OK) {
+DEBUGLOG(("ProcessStmtFile() line %03d DBOLStatementTmp::CheckTmpRecord() file[%s] FOUND\n",iCurrLine,csFileCompareKey));
+						} else {
+							iDtlRet = PD_OK;
+DEBUGLOG(("ProcessStmtFile() line %03d DBOLStatementTmp::CheckTmpRecord() file[%s] FAILURE FOUND\n",iCurrLine,csFileCompareKey));
+						}
+						iSkipCount++;
+						PutField_CString(hRec, "as_ind", "skip"); //
+					} else if (iTmpRet == NOT_FOUND) {
+// DEBUGLOG(("ProcessStmtFile() line %03d DBOLStatementTmp::CheckTmpRecord() file[%s] NOT FOUND\n",iCurrLine,csFileCompareKey));
+					} else {
+						iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtFile() DBOLStatementTmp::CheckTmpRecord() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() DBOLStatementTmp::CheckTmpRecord() FAILURE!!!\n");
+						break; //
+					}
+				}
+
+			/* DB DeDuplication */
+				/* bank_charge */
+				/* pre-split to dedup */
+				if (GetField_Int(hRec,"to_split",&iTmp)) {
+					if (GetField_CString(hRec,"bank_charge",&csBankCharge) &&
+					    GetField_CString(hRec,"balance",&csBalance)) {
+						sprintf(csTag,"%.2lf",atof(csBalance)+atof(csBankCharge));
+						PutField_CString(hRec,"org_balance",csBalance);
+						PutField_CString(hRec,"balance",csTag);
+					}
+				}
+
+				if (iDtlRet == PD_OK) {
+					if (!GetField_CString(hRec,"as_ind",&csTmp)) {
+						iTmpRet = GetCompareKey(hRec, iStmtTime==1?CS_DEDUP_KEY_WITH_TIME:CS_DEDUP_KEY_WITHOUT_TIME,
+									iStmtTime==1?INT_DEDUP_KEY_WITH_TIME:INT_DEDUP_KEY_WITHOUT_TIME, csFileCompareKey);
+						if (iTmpRet != PD_OK) {
+							iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtFile() GetCompareKey() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() GetCompareKey() FAILURE!!!\n");
+							break;
+						}
+
+						DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "CheckBankStmtRecord"); //
+						iTmpRet = (unsigned long)(*DBObjPtr)(hRec);
+						if (iTmpRet == FOUND) {
+DEBUGLOG(("ProcessStmtFile() line %03d DBOLStatement::CheckBankStmtRecord() file[%s] FOUND\n",iCurrLine,csFileCompareKey));
+							iSkipCount++;
+							PutField_CString(hRec, "as_ind", "skip");
+						} else if (iTmpRet == NOT_FOUND) {
+ DEBUGLOG(("ProcessStmtFile() line %03d DBOLStatement::CheckBankStmtRecord() file[%s] NOT FOUND\n",iCurrLine,csFileCompareKey));
+						} else {
+							iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtFile() DBOLStatement::CheckBankStmtRecord() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtFile() DBOLStatement::CheckBankStmtRecord() FAILURE!!!\n");
+							break; //
+						}
+					}
+				}
+			}
+
+		/* Finish */
+			if (iDtlRet == PD_OK) { //valid records
+			/* SUCCESS */
+				iFileCount++;
+
+if (iDtlLine == 0) DEBUGLOG(("ProcessStmtFile() line %03d success (Extra) [%s]\n",iCurrLine,cs_input_buf));
+// if (iDtlLine > 0) DEBUGLOG(("ProcessStmtFile() line %03d success [%s]\n",iCurrLine,cs_input_buf));
+
+			} else {
+				if (iDtlRet == PD_OTHER_ERR || iDtlLine > 0) { //valid records
+				/* FAILURE */
+					iFileCount++;
+
+					iError++;
+					iRet = INT_DETAIL_FIELD_ERROR;
+					PutField_Int(hContext, "internal_error", iRet); //
+					PutField_Int(hContext, "result_cnt", iError); //
+					sprintf(csTag, "seq_%d", iError);
+					PutField_Int(hContext, csTag, iCurrLine); //
+					sprintf(csTag, "result_%d", iError);
+					PutField_CString(hContext, csTag, cs_err_msg_buf); //
+
+if (iDtlLine == 0) DEBUGLOG(("ProcessStmtFile() line %03d FAILURE (Extra) [%s]\n",iCurrLine,cs_input_buf));
+if (iDtlLine > 0) DEBUGLOG(("ProcessStmtFile() line %03d FAILURE [%s]\n",iCurrLine,cs_input_buf));
+
+				/* OKAY */
+				} else {
+					hash_destroy(hRec);
+					FREE_ME(hRec);
+
+DEBUGLOG(("ProcessStmtFile() line %03d ignore [%s]\n",iCurrLine,cs_input_buf));
+					continue; //
+				}
+			}
+
+			currentNode = (struct node*) malloc (sizeof(struct node));
+			currentNode->hDtl = hRec;
+			if (head == NULL) {
+				head = currentNode;
+				head->next = NULL;
+				tail = head;
+			} else if (iReverse == 0) {
+				tail->next = currentNode;
+				tail = currentNode;
+				tail->next = NULL;
+			} else {
+				currentNode->next = head;
+				head = currentNode;
+			}
+		} // fgets()
+
+		//
+		PutField_Int(hContext,"skip_count",iSkipCount); //
+		PutField_Int(hContext,"file_count",iFileCount); //
+		PutField_Int(hContext,"total_count",iFileCount); //
+DEBUGLOG(("ProcessStmtFile() Summary: Skip: [%d]\n",iSkipCount)); //
+DEBUGLOG(("ProcessStmtFile() Summary: File: [%d]\n",iFileCount)); //
+		//
+
+	/* Sorting */
+		if (iFileCount > 0) {
+DEBUGLOG(("ProcessStmtFile() sort records\n"));
+			head = CustomSort(head);
+		}
+
+	/* RecordSet */
+		while (head != NULL) {
+			hRec = head->hDtl;
+			RecordSet_Add(myFile, hRec);
+			/* delete */
+			currentNode = head;
+			head = head->next;
+			FREE_ME(currentNode);
+
+			/* bank_charge */
+			/* split */
+			if (GetField_Int(hRec,"to_split",&iTmp)) {
+				if (GetField_CString(hRec,"bank_charge",&csBankCharge) &&
+				    GetField_CString(hRec,"org_balance",&csBalance)) {
+					hBankCharge = (hash_t*) malloc (sizeof(hBankCharge));
+					hash_init(hBankCharge,0);
+
+					if (GetField_Int(hRec,"seq",&iCurrLine)) {
+						PutField_Int(hBankCharge,"seq",iCurrLine);
+					}
+					CopyHash(hRec,CS_BANK_CHARGE_DETAIL,INT_BANK_CHARGE_DETAIL,hBankCharge);
+
+					PutField_Int(hBankCharge,"split",1);
+					PutField_CString(hBankCharge,"format_txn_code",PD_TXN_CODE_BANK_CHARGE);
+					PutField_CString(hBankCharge,"txn_amount",csBankCharge);
+					PutField_CString(hBankCharge,"balance",csBalance);
+ DEBUGLOG(("split record: txn_amount[%s] balance[%s]\n",csBankCharge,csBalance));
+
+					RecordSet_Add(myFile, hBankCharge);
+				}
+			}
+		}
+	}
+
+
+/*
+ * File Close
+ */
+	if (fin) {
+DEBUGLOG(("ProcessStmtFile() close file\n"));
+		fclose(fin);
+		fin = NULL;
+	}
+
+
+	_RecordSet_Destroy(myRec);
+	FREE_ME(myRec);
+
+	FREE_ME(csTag);
+
+DEBUGLOG(("ProcessStmtFile() iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+/*
+ * Statement Raw Tmp * * * * * * * * * * * * * * * * * * * *
+ */
+int ProcessStmtTmp(hash_t *hContext, hash_t *hRequest, recordset_t *rRecordFormat, recordset_t *myFile)
+{
+	int iRet = PD_OK, iDtlRet = PD_OK;
+
+/* non-reusable */
+	char *csFileId = NULL, *csIntBankCode = NULL, *csBankAcctNum = NULL;
+	char *csCountry = NULL;
+	int iValidateIntoTable = 1;
+	int iVer = 0;
+
+	char *csFormatId = NULL;
+	int iStartYear, iNegAmount, iNegBalance, iTolDateTime;
+	int iTmpCount = 0, iSkipCount = 0;
+
+	hash_t *hFormat = NULL;
+
+/* reusable */
+	char *csTmp = NULL;
+	char *csTag = (char*) malloc (64);
+	char *csBalance = NULL, *csBankCharge = NULL;
+	char cs_err_msg_buf[PD_TMP_BUF_LEN] = "";
+
+	int iCurrLine = 0, iSkip = 0;
+	int iError = 0;
+	int iTmp = 0;
+
+	hash_t *hFile = NULL, *hBankCharge = NULL;
+
+	struct node *head = NULL, *tail = NULL, *currentNode = NULL;
+
+/* in_file_name */
+	if (GetField_CString(hContext, "in_file_name", &csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() in_file_name = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() in_file_name NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* file_id */
+	if (GetField_CString(hContext, "file_id", &csFileId)) {
+DEBUGLOG(("ProcessStmtTmp() file_id = [%s]\n", csFileId));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() file_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* ver */
+	if (GetField_Int(hContext, "ver", &iVer)) {
+DEBUGLOG(("ProcessStmtTmp() ver = [%d]\n", iVer));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() ver NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* psp_id */
+	if (GetField_CString(hContext, "psp_id", &csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() psp_id = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() psp_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* baid */
+	if (GetField_CString(hContext, "baid", &csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() baid = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() baid NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ProcessStmtTmp() int_bank_code = [%s]\n", csIntBankCode));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() int_bank_code NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hContext, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("ProcessStmtTmp() bank_acct_num = [%s]\n", csBankAcctNum));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() bank_acct_num NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* format_id */
+	if (GetField_CString(hContext, "format_id", &csFormatId)) {
+DEBUGLOG(("ProcessStmtTmp() format_id = [%s]\n", csFormatId));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() format_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* PHDATE */
+	if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() PHDATE = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() PHDATE NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* country */
+	if (GetField_CString(hContext, "country", &csCountry)) {
+DEBUGLOG(("ProcessStmtTmp() country = [%s]\n", csCountry));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() country NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_ccy */
+	if (GetField_CString(hContext, "acct_ccy", &csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() ccy = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() ccy NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_type */
+	if (GetField_CString(hContext, "bank_acct_type", &csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() type = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() type NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* user */
+	if (GetField_CString(hContext, "create_user", &csTmp)) {
+DEBUGLOG(("ProcessStmtTmp() user = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtTmp() user NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* validate_into_table */
+	if (GetField_Int(hContext, "validate_into_table", &iValidateIntoTable)) {
+DEBUGLOG(("ProcessStmtTmp() ** validate_into_table = [%d]\n", iValidateIntoTable));
+	}
+
+
+/*
+ * Format
+ */
+	if (iRet == PD_OK) {
+		hFormat = RecordSet_GetFirst(rRecordFormat);
+
+		if (hFormat) {
+		/* format_id */
+			if (GetField_CString(hFormat, "format_id", &csFormatId)) {
+DEBUGLOG(("ProcessStmtTmp() format_id[%s]\n",csFormatId));
+			}
+		/* neg_amount */
+			if (!GetField_CString(hFormat, "neg_amount", &csTmp)) {
+				iNegAmount = 0;
+			} else {
+				iNegAmount = atoi(csTmp);
+			}
+		/* neg_balance */
+			if (!GetField_CString(hFormat, "neg_balance", &csTmp)) {
+				iNegBalance = 0;
+			} else {
+				iNegBalance = atoi(csTmp);
+			}
+		/* start_year */
+			if (!GetField_CString(hFormat, "start_year", &csTmp)) {
+				iStartYear = 0;
+			} else {
+				iStartYear = atoi(csTmp);
+			}
+		/* tol_datetime */
+			if (!GetField_CString(hFormat, "tol_datetime", &csTmp)) {
+				iTolDateTime = 2;
+			} else {
+				iTolDateTime = atoi(csTmp);
+			}
+
+			PutField_Int(hContext, "neg_amount", iNegAmount);
+			PutField_Int(hContext, "neg_balance", iNegBalance);
+			PutField_Int(hContext, "start_year", iStartYear);
+			PutField_Int(hContext, "tol_datetime", iTolDateTime);
+
+		/* DATE_FORMAT */
+			if (GetField_CString(hFormat, "DATE_FORMAT", &csTmp)) {
+				PutField_CString(hContext, "DATE_FORMAT", csTmp);
+			}
+		/* TIME_FORMAT */
+			if (GetField_CString(hFormat, "TIME_FORMAT", &csTmp)) {
+				PutField_CString(hContext, "TIME_FORMAT", csTmp);
+			}
+	/* FAIL */
+		} else {
+			iRet = INT_INVALID_FILE_FORMAT;
+			PutField_Int(hContext, "internal_error", iRet); //
+DEBUGLOG(("ProcessStmtTmp() NO FORMAT FOUND!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtTmp() NO FORMAT FOUND!!!\n");
+		}
+	}
+
+
+/*
+ * Timezone
+ */
+	if (iRet == PD_OK) {
+		if (!strcmp(csCountry,PD_JAPAN)) {
+			PutField_CString(hContext,"TIME_ZONE",PD_DESTZONE_JP);
+DEBUGLOG(("ProcessStmtTmp() TIME_ZONE [%s]\n",PD_DESTZONE_JP));
+		} else if (!strcmp(csCountry,PD_INDIA)) {
+			PutField_CString(hContext,"TIME_ZONE",PD_DESTZONE_IN);
+DEBUGLOG(("ProcessStmtTmp() TIME_ZONE [%s]\n",PD_DESTZONE_IN));
+		}
+
+		iRet = GetSystemDate(hContext);
+	}
+
+
+/*
+ * Edit Bank Statement
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtTmp() call DBOLStatementTmp GetDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatementTmp", "GetDetail");
+		if ((unsigned long)(*DBObjPtr)(csFileId,iVer,myFile) != FOUND) {
+			iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtTmp() call DBOLStatementTmp GetDetail() FAILURE!!!\n"));
+ERRLOG(("BOOLBankStmt::ProcessStmtTmp() call DBOLStatementTmp GetDetail() FAILURE!!!\n"));
+		}
+	}
+	if (iRet == PD_OK) {
+		hFile = RecordSet_GetFirst(myFile);
+		while (hFile) {
+			iTmpCount++;
+
+			cs_err_msg_buf[0] = '\0';
+
+			GetField_Int(hFile, "seq", &iCurrLine);
+			GetField_Int(hFile, "skip", &iSkip);
+
+		/* Previous DeDuplication */
+			if (iSkip == 1) {
+				iSkipCount++;
+				PutField_CString(hFile,"as_ind","skip");
+				hFile = RecordSet_GetNext(myFile);
+				continue; //
+			}
+
+			if (GetField_CString(hFile,"raw_date",&csTmp)) {
+				RemoveField_CString(hFile,"raw_date");
+			}
+			if (GetField_CString(hFile,"raw_time",&csTmp)) {
+				RemoveField_CString(hFile,"raw_time");
+			}
+
+		/* Check Field */
+			iDtlRet = CheckDetail(hContext, hFile, cs_err_msg_buf, 1, 1);
+
+		/* Finish */
+			if (iDtlRet != PD_OK) {
+			/* FAILURE */
+				iError++;
+				iRet = INT_DETAIL_FIELD_ERROR;
+				PutField_Int(hContext, "internal_error", iRet); //
+				PutField_Int(hContext, "result_cnt", iError); //
+				sprintf(csTag, "seq_%d", iError);
+				PutField_Int(hContext, csTag, iCurrLine); //
+				sprintf(csTag, "result_%d", iError);
+				PutField_CString(hContext, csTag, cs_err_msg_buf); //
+DEBUGLOG(("ProcessStmtTmp() line %03d FAILURE!!!\n",iCurrLine));
+			} else {
+			/* SUCCEED */
+DEBUGLOG(("ProcessStmtTmp() line %03d success\n",iCurrLine));
+			}
+
+			hFile = RecordSet_GetNext(myFile);
+		} // while
+
+		//
+		PutField_Int(hContext,"skip_count",iSkipCount); //
+		PutField_Int(hContext,"tmp_count",iTmpCount); //
+		PutField_Int(hContext,"total_count",iTmpCount); //
+DEBUGLOG(("ProcessStmtTmp() Summary: Skip: [%d]\n",iSkipCount)); //
+DEBUGLOG(("ProcessStmtTmp() Summary: Tmp:  [%d]\n",iTmpCount)); //
+		//
+
+	/* RecordSet */
+		hFile = RecordSet_GetFirst(myFile);
+		while (hFile) {
+			currentNode = (struct node*) malloc (sizeof(struct node));
+			currentNode->hDtl = hFile;
+			if (head == NULL) {
+				head = currentNode;
+				head->next = NULL;
+				tail = head;
+			} else {
+				tail->next = currentNode;
+				tail = currentNode;
+				tail->next = NULL;
+			}
+			hFile = RecordSet_GetNext(myFile);
+		}
+
+		recordset_destroy(myFile);
+		recordset_init(myFile,0);
+
+	/* Sorting */
+	/*
+		if (iTmpCount > 0) {
+DEBUGLOG(("ProcessStmtTmp() sort records\n"));
+			head = CustomSort(head);
+		}
+	*/
+
+	/* RecordSet */
+		while (head != NULL) {
+			hFile = head->hDtl;
+			RecordSet_Add(myFile, hFile);
+			/* delete */
+			currentNode = head;
+			head = head->next;
+			FREE_ME(currentNode);
+
+			/* bank_charge */
+			if (GetField_Int(hFile,"to_split",&iTmp)) {
+				if (GetField_CString(hFile,"bank_charge",&csBankCharge) &&
+				    GetField_CString(hFile,"balance",&csBalance)) {
+					sprintf(csTag,"%.2lf",atof(csBalance)+atof(csBankCharge));
+					PutField_CString(hFile,"org_balance",csBalance);
+					PutField_CString(hFile,"balance",csTag);
+
+					hBankCharge = (hash_t*) malloc (sizeof(hBankCharge));
+					hash_init(hBankCharge,0);
+
+					if (GetField_Int(hFile,"seq",&iCurrLine)) {
+						PutField_Int(hBankCharge,"seq",iCurrLine);
+					}
+					CopyHash(hFile,CS_BANK_CHARGE_DETAIL,INT_BANK_CHARGE_DETAIL,hBankCharge);
+
+					PutField_Int(hBankCharge,"split",1);
+					PutField_CString(hBankCharge,"format_txn_code",PD_TXN_CODE_BANK_CHARGE);
+					PutField_CString(hBankCharge,"txn_amount",csBankCharge);
+					PutField_CString(hBankCharge,"balance",csBalance);
+ DEBUGLOG(("split record: txn_amount[%s] balance[%s]\n",csBankCharge,csBalance));
+
+					RecordSet_Add(myFile, hBankCharge);
+				}
+			}
+		}
+	}
+
+
+	FREE_ME(csTag);
+
+DEBUGLOG(("ProcessStmtTmp() iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+/*
+ * Statement Upload * * * * * * * * * * * * * * * * * * * *
+ */
+int CheckKeywords(hash_t *hRls, recordset_t *rKeyword);
+
+int ProcessStmtDetail(hash_t *hContext, hash_t *hRequest, recordset_t *myFile)
+{
+	int iRet = PD_OK, iDtlRet = PD_OK;
+
+/* non-reusable */
+	char *csFileId = NULL, *csBAID = NULL, *csIntBankCode = NULL, *csBankAcctNum = NULL;
+	char *csUser = NULL;
+	int iRunningBal = 1;
+	int iValidateRunningBal = 1, iValidateIntoTable = 1;
+	int iSmsCount = 0, iHoldCount = 0, iAcceptCount = 0, iTotalCount = 0, iSplitCount = 0;
+	int i = 0, iMultiMatchCount = 0, iRecCount = 0;
+
+	char *csTxnCode = NULL;
+	char *csLastTxnSeq = NULL, *csLastDate = NULL, *csLastTime = NULL;
+	double dLastFileBal = 0.0, dLastTxnAmt = 0.0;
+
+/* reusable */
+	char *csTmp = NULL;
+	char cs_tmp_input_buf[PD_TMP_MSG_BUF_LEN] = "", cs_err_msg_buf[PD_TMP_BUF_LEN] = "";
+
+	int iTmp = 0;
+	int iCurrLine = 0;
+	int iRecord = 0;
+
+	char *csDate = NULL, *csTime = NULL, *csAmtType = NULL, *csTxnAmt = NULL, *csBalance = NULL;
+	double dCurrFileBal = 0.0, dTxnAmt = 0.0;
+
+	char csTag[PD_TAG_LEN+1];
+
+	hash_t *hFile = NULL;
+
+	recordset_t *rKeywords = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rKeywords, 0);
+
+/* in_file_name */
+	if (GetField_CString(hContext, "in_file_name", &csTmp)) {
+// DEBUGLOG(("ProcessStmtDetail() in_file_name = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() in_file_name NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* file_id */
+	if (GetField_CString(hContext, "file_id", &csFileId)) {
+// DEBUGLOG(("ProcessStmtDetail() file_id = [%s]\n", csFileId));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() file_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* ver */
+	if (GetField_Int(hContext, "ver", &iTmp)) {
+// DEBUGLOG(("ProcessStmtDetail() ver = [%d]\n", iTmp));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() ver NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* psp_id */
+	if (GetField_CString(hContext, "psp_id", &csTmp)) {
+// DEBUGLOG(("ProcessStmtDetail() psp_id = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() psp_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* baid */
+	if (GetField_CString(hContext, "baid", &csBAID)) {
+// DEBUGLOG(("ProcessStmtDetail() baid = [%s]\n", csBAID));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() baid NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hContext, "int_bank_code", &csIntBankCode)) {
+// DEBUGLOG(("ProcessStmtDetail() int_bank_code = [%s]\n", csIntBankCode));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() int_bank_code NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hContext, "bank_acct_num", &csBankAcctNum)) {
+// DEBUGLOG(("ProcessStmtDetail() bank_acct_num = [%s]\n", csBankAcctNum));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() bank_acct_num NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* format_id */
+	if (GetField_CString(hContext, "format_id", &csTmp)) {
+// DEBUGLOG(("ProcessStmtDetail() format_id = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() format_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_ccy */
+	if (GetField_CString(hContext, "acct_ccy", &csTmp)) {
+// DEBUGLOG(("ProcessStmtDetail() ccy = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() ccy NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_type */
+	if (GetField_CString(hContext, "bank_acct_type", &csTmp)) {
+// DEBUGLOG(("ProcessStmtDetail() type = [%s]\n", csTmp));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() type NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* user */
+	if (GetField_CString(hContext, "create_user", &csUser)) {
+// DEBUGLOG(("ProcessStmtDetail() user = [%s]\n", csUser));
+	} else {
+DEBUGLOG(("ProcessStmtDetail() user NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* validate_running_balance */
+	if (GetField_Int(hContext, "validate_running_bal", &iValidateRunningBal)) {
+// DEBUGLOG(("ProcessStmtDetail() ** validate_running_balance = [%d]\n", iValidateRunningBal));
+	}
+
+/* validate_into_table */
+	if (GetField_Int(hContext, "validate_into_table", &iValidateIntoTable)) {
+// DEBUGLOG(("ProcessStmtDetail() ** validate_into_table = [%d]\n", iValidateIntoTable));
+	}
+
+/*
+ * Keywords Search
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStmtFormat::GetTxnCodeKeywords() called\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtFormat", "GetTxnCodeKeywords");
+		iDtlRet = (unsigned long)(*DBObjPtr)(hContext,rKeywords);
+		if (iDtlRet != PD_FOUND) {
+			iRet = INT_FORMAT_KEYWORDS_ERROR;
+			PutField_Int(hContext, "internal_error", iRet); //
+DEBUGLOG(("ProcessStmtDetail() DBOLStmtFormat::GetTxnCodeKeywords() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtDetail() DBOLStmtFormat::GetTxnCodeKeywords() FAILURE!!!\n");
+		}
+	}
+
+/*
+ * ResourceLock
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtDetail() DBOLResourceLock::GetBankAcctForUpdate() called\n")); 
+		DBObjPtr = CreateObj(DBPtr, "DBOLResourceLock", "GetBankAcctForUpdate");
+		if ((unsigned long)(*DBObjPtr)(csIntBankCode,csBankAcctNum) == PD_OK) {
+DEBUGLOG(("ProcessStmtDetail() DBOLResourceLock::GetBankAcctForUpdate() SUCCESS\n")); 
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtDetail() DBOLResourceLock::GetBankAcctForUpdate() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtDetail() DBOLResourceLock::GetBankAcctForUpdate() FAILURE!!!\n");
+		}
+	}
+
+/*
+ * Last Balance
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() called\n")); 
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetLastBalance");
+		iDtlRet = (unsigned long)(*DBObjPtr)(hContext);
+		if (iDtlRet == FOUND) {
+			iRunningBal = 1;
+			if (GetField_CString(hContext,"last_txn_id",&csLastTxnSeq)) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() last_txn_id [%s]\n",csLastTxnSeq));
+			}
+			if (GetField_Double(hContext,"last_balance",&dLastFileBal)) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() last_balance [%.2lf] FOUND\n",dLastFileBal)); 
+			}
+			if (GetField_CString(hContext,"last_statement_date",&csLastDate)) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() last_statement_date [%s]\n",csLastDate));
+			}
+			if (GetField_CString(hContext,"last_statement_time",&csLastTime)) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() last_statement_time [%s]\n",csLastTime));
+			}
+			if (GetField_CString(hContext,"last_amt_type",&csTmp) &&
+			    GetField_Double(hContext,"last_txn_amount",&dLastTxnAmt)) {
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() last_txn_amount [%s %.2lf]\n",csTmp,dLastTxnAmt));
+				if (!strcmp(csTmp,PD_DR)) dLastTxnAmt *= -1.0;
+			}
+
+		} else if (iDtlRet == NOT_FOUND) {
+			iRunningBal = 0;
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() NOT FOUND\n")); 
+
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtDetail() DBOLStatement::GetLastBalance() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtDetail() DBOLStatement::GetLastBalance() FAILURE!!!\n");
+		}
+	}
+
+
+
+/*
+ * Balance
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessStmtDetail() Start Checking Balance...\n"));
+
+	/* Process Balance */
+		hFile = RecordSet_GetFirst(myFile); // File Records
+		while (hFile) {
+
+			if (GetField_CString(hFile,"as_ind",&csTmp)) {
+				hFile = RecordSet_GetNext(myFile);
+				continue; //
+			}
+
+			GetField_Int(hFile,"seq",&iCurrLine);
+
+			GetField_CString(hFile,"statement_date",&csDate);
+			GetField_CString(hFile,"statement_time",&csTime);
+			GetField_CString(hFile,"balance",&csBalance);
+			dCurrFileBal = atof(csBalance);
+			GetField_CString(hFile,"txn_amount",&csTxnAmt);
+			dTxnAmt = atof(csTxnAmt);
+			GetField_CString(hFile,"amt_type",&csAmtType);
+			if (!strcmp(csAmtType, PD_DR)) dTxnAmt *= -1.0;
+
+// DEBUGLOG(("[%s%s%s%s%s]\n",csDate,csTime,csBalance,csAmtType,csTxnAmt));
+
+		/* Running Balance + File Balance */
+			if (!GetField_CString(hFile, "as_ind", &csTmp)) {
+				if ((iRecord == 0 && iRunningBal == 1) ||
+				     iRecord > 0) {
+				/* Balance */
+DEBUGLOG(("ProcessStmtDetail() dLastFileBal = [%lf]\n", dLastFileBal));
+DEBUGLOG(("ProcessStmtDetail() dTxnAmt = [%lf]\n", dTxnAmt));
+DEBUGLOG(("ProcessStmtDetail() dCurrFileBal = [%lf]\n", dCurrFileBal));
+					if (fabs(dLastFileBal+dTxnAmt-dCurrFileBal) > 1E-9) {
+DEBUGLOG(("ProcessStmtDetail() %s Balance Error!!!\n", (iRecord==0?"Running":"File")));
+DEBUGLOG(("ProcessStmtDetail() line %03d %s[%.2lf] + [%.2lf] != [%.2lf]\n", iCurrLine, (iRecord==0?"Running":"File"), dLastFileBal, dTxnAmt, dCurrFileBal));
+						if (iRecord == 0 && iValidateRunningBal == 0) {
+DEBUGLOG(("ProcessStmtDetail() ** No Running Balance Validation\n"));
+						} else {
+							snprintf(cs_tmp_input_buf, sizeof(cs_tmp_input_buf), "[Last %s Balance:%.2lf]", (iRecord==0?"Running":"File"), dLastFileBal);
+							strncat(cs_err_msg_buf, cs_tmp_input_buf, sizeof(cs_err_msg_buf)-strlen(cs_err_msg_buf)-1);
+							iRet = INT_RUNNING_BALANCE_ERROR;
+						}
+					} else {
+DEBUGLOG(("ProcessStmtDetail() line %03d %s[%.2lf] + [%.2lf]=[%.2lf]\n", iCurrLine, (iRecord==0?"Running":"File"), dLastFileBal, dTxnAmt, dCurrFileBal));
+					}
+
+// DEBUGLOG(("ProcessStmtDetail() Absolute Error [%E] Relative Error [%E]\n", (dLastFileBal+dTxnAmt-dCurrFileBal), (dLastFileBal+dTxnAmt-dCurrFileBal)/dCurrFileBal));
+
+				/* Date Time */
+					if ((strcmp(csDate, csLastDate) == 0 && strcmp(csTime, csLastTime) < 0) ||
+					     strcmp(csDate, csLastDate) < 0) {
+DEBUGLOG(("ProcessStmtDetail() %s Date Time Error!!!\n", (iRecord==0?"Running":"File")));
+DEBUGLOG(("ProcessStmtDetail() DateTime curr[%s %s] < last[%s %s]\n", csDate, csTime, csLastDate, csLastTime));
+						if (iRecord == 0 && iValidateRunningBal == 0) {
+DEBUGLOG(("ProcessStmtDetail() ** No Running Balance Validation\n"));
+						} else {
+							snprintf(cs_tmp_input_buf, sizeof(cs_tmp_input_buf), "[Last %s Date Time:%s %s]", (iRecord==0?"Running":"File"), csLastDate, csLastTime);
+							strncat(cs_err_msg_buf, cs_tmp_input_buf, sizeof(cs_err_msg_buf)-strlen(cs_err_msg_buf)-1);
+							iRet = INT_RUNNING_BALANCE_ERROR;
+						}
+					} else {
+// DEBUGLOG(("ProcessStmtDetail() DateTime curr[%s %s] >= last[%s %s]\n", csDate, csTime, csLastDate, csLastTime));
+					}
+				}
+
+			/* FAILURE */
+				if (iRet != PD_OK) {
+					iRet = INT_RUNNING_BALANCE_ERROR;
+					PutField_Int(hContext, "internal_error", iRet); //
+					PutField_Int(hContext, "result_cnt", 1); //
+					PutField_Int(hContext, "seq_1", iCurrLine); //
+					PutField_CString(hContext, "result_1", cs_err_msg_buf); //
+					break; //
+				}
+
+			/* Running Balance + File Balance */
+				iRecord++;
+				dLastFileBal = dCurrFileBal;
+				csLastDate = csDate;
+				csLastTime = csTime;
+			}
+
+			hFile = RecordSet_GetNext(myFile);
+		} // hFile
+	}
+
+
+
+/*
+ * Classify
+ */
+	if (iRet == PD_OK) {
+		iRecCount = 0;
+		hFile = RecordSet_GetFirst(myFile);
+		while (hFile) {
+			if (!GetField_CString(hFile, "as_ind", &csTmp)) {
+				if (CheckKeywords(hFile,rKeywords) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtDetail() CheckKeywords() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::ProcessStmtDetail() CheckKeywords() FAILURE!!!\n");
+					break;
+				}
+
+			}
+			
+			//
+			// Classify
+			//
+			// Support Multimatch: if ok, check next until end of loop;
+			//	
+			if (GetField_Int(hFile, "multi_match_cnt", &iMultiMatchCount)) {
+                       		for (i=0;i<iMultiMatchCount;i++) {	
+					sprintf(csTag,"format_txn_code_%d",i);
+                                        if (GetField_CString(hFile,csTag,&csTxnCode)) {					
+						sprintf(csTag,"%d_format_txn_code_%d",iRecCount,i);
+                   				PutField_CString(hFile,csTag,csTxnCode);
+DEBUGLOG((" ProcessStmtDetail() %d_format_txn_code_%d = [%s]\n",iRecCount,i,csTxnCode));
+					}
+				}				
+			}
+
+			iRecCount++;
+
+			hFile = RecordSet_GetNext(myFile);
+		}
+	}
+
+
+
+/*
+ * Match
+ */
+	if (iRet == PD_OK) {
+		char *csValueTmp = (char*) malloc (128);	
+DEBUGLOG(("ProcessStmtDetail() DBSystemParameter::FindCode() called\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(*DBObjPtr)("OFL_SMS_MATCH_THRESHOLD", csValueTmp) != FOUND) {
+			PutField_Int(hContext,"sms_match_threshold",720);
+DEBUGLOG(("ProcessStmtDetail() OFL_SMS_MATCH_THRESHOLD = [%d] (default)\n",720));
+		} else {
+			PutField_Int(hContext,"sms_match_threshold",atoi(csValueTmp));
+DEBUGLOG(("ProcessStmtDetail() OFL_SMS_MATCH_THRESHOLD = [%d]\n",atoi(csValueTmp)));
+		}
+		FREE_ME(csValueTmp);
+	}
+	if (iRet == PD_OK) {
+		if (iValidateIntoTable == 1) {
+DEBUGLOG(("ProcessStmtDetail() Start Creating Transaction...\n"));
+			iRecCount=0;
+			hFile = RecordSet_GetFirst(myFile);
+			while (hFile) {
+				GetField_Int(hFile, "seq", &iCurrLine);
+				if (!GetField_CString(hFile, "as_ind", &csTmp)) {
+					PutField_CString(hFile, "file_id", csFileId);
+					PutField_Int(hFile, "statement_seq",(iAcceptCount+1));
+					PutField_CString(hFile, "int_bank_code", csIntBankCode);
+					PutField_CString(hFile, "bank_acct_num", csBankAcctNum);
+					PutField_CString(hFile, "baid", csBAID);
+					PutField_CString(hFile, "input_channel", PD_BANK_STATEMENT);
+					PutField_CString(hFile, "create_user", csUser);
+					PutField_CString(hFile, "update_user", csUser);
+				
+				// Support Multimatch
+					if (GetField_Int(hFile, "multi_match_cnt", &iMultiMatchCount)) {
+DEBUGLOG(("ProcessStmtDetail() line %03d BOOLBankStmtMatch::MatchStmtWithSms() multi_match_cnt = [%d]\n",iCurrLine,iMultiMatchCount));
+					}
+					
+					for (i=0;i<iMultiMatchCount;i++) {
+                                		sprintf(csTag,"%d_format_txn_code_%d",iRecCount,i);
+                                		if (GetField_CString(hFile,csTag,&csTxnCode)) {
+DEBUGLOG(("ProcessStmtDetail() line %03d BOOLBankStmtMatch::MatchStmtWithSms() [%s] = [%s]\n",iCurrLine,csTag,csTxnCode));			
+							PutField_CString(hFile,"format_txn_code",csTxnCode);		
+							
+							// first match
+							if (i == 0) {
+								PutField_Int(hFile,"txn_code_first_match",PD_TRUE);
+							} else {
+								PutField_Int(hFile,"txn_code_first_match",PD_FALSE);
+							}
+		
+							BOObjPtr = CreateObj(BOPtr, "BOOLBankStmtMatch", "MatchStmtWithSms");
+							iDtlRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hFile);
+							if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("ProcessStmtDetail() line %03d BOOLBankStmtMatch::MatchStmtWithSms() found\n",iCurrLine));			
+							
+								break; //
+							} else if (iDtlRet == PD_NOT_FOUND) {										
+DEBUGLOG(("ProcessStmtDetail() line %03d BOOLBankStmtMatch::MatchStmtWithSms() not found\n",iCurrLine));			
+
+							} else {
+								iRet = INT_ERR;
+DEBUGLOG(("ProcessStmtDetail() line %03d BOOLBankStmtMatch::MatchStmtWithSms() FAILURE!!!\n",iCurrLine));
+ERRLOG("BOOLBankStmt::ProcessStmtDetail() line %03d BOOLBankStmtMatch::MatchStmtWithSms() FAILURE!!!\n",iCurrLine);
+                                                               	break; //	
+							}		
+                                		}
+                        		}	
+		
+					if ((iDtlRet == PD_FOUND) || (iDtlRet == PD_NOT_FOUND)) {	
+						// Count
+						iAcceptCount++;
+                                              	iTotalCount++;
+
+                                               	if (GetField_Int(hFile,"sms",&iTmp)) iSmsCount++;
+                                               	if (GetField_Int(hFile,"hold",&iTmp)) iHoldCount++;
+                                            	if (GetField_Int(hFile,"split",&iTmp)) iSplitCount++;
+					} else {	
+                                           	break; //
+					}
+				} else {
+					if (!GetField_Int(hFile,"split",&iTmp)) {
+						iTotalCount++;
+					}
+				}
+
+				iRecCount++;				
+
+				hFile = RecordSet_GetNext(myFile);
+			}
+
+			//
+			PutField_Int(hContext,"sms_count",iSmsCount); //
+			PutField_Int(hContext,"hold_count",iHoldCount); //
+			PutField_Int(hContext,"accept_count",iAcceptCount); //
+			PutField_Int(hContext,"total_count",iTotalCount); //
+			PutField_Int(hContext,"split_count",iSplitCount); //
+
+DEBUGLOG(("ProcessStmtDetail() Summary: Accpet: [%d] (Sms:%d)(Hold:%d)(Split:%d)\n",iAcceptCount,iSmsCount,iHoldCount,iSplitCount)); //
+DEBUGLOG(("ProcessStmtDetail() Summary: Total:  [%d]\n",iTotalCount)); //
+			//
+
+		} else {
+DEBUGLOG(("ProcessStmtDetail() ** call BOOLBankStmtMatch::MatchStmtWithSms() Skipped\n"));
+		}
+	}
+
+	_RecordSet_Destroy(rKeywords);
+	FREE_ME(rKeywords);
+
+DEBUGLOG(("ProcessStmtDetail() iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+/*
+ * Add Statement Tmp
+ */
+int AddStmtTmp(hash_t *hContext, hash_t *hRequest, recordset_t *myFile)
+{
+	int iRet = PD_OK;
+
+/* non-reusable */
+	char *csFileId = NULL, *csUser = NULL;
+	int iVer = 0;
+
+	hash_t *hFile;
+
+/* reusable */
+	char *csTmp = NULL;
+	int iTmp = 0;
+
+/* file_id */
+	if (GetField_CString(hContext, "file_id", &csFileId)) {
+// DEBUGLOG(("AddStmtTmp() file_id = [%s]\n", csFileId));
+	} else {
+DEBUGLOG(("AddStmtTmp() file_id NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* ver */
+	if (GetField_Int(hContext, "ver", &iVer)) {
+// DEBUGLOG(("AddStmtTmp() ver = [%d]\n", iVer));
+	} else {
+DEBUGLOG(("AddStmtTmp() ver NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* user */
+	if (GetField_CString(hContext, "create_user", &csUser)) {
+// DEBUGLOG(("AddStmtTmp() user = [%s]\n", csUser));
+	} else {
+DEBUGLOG(("AddStmtTmp() user NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/*
+ * Edit Bank Statement
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("AddStmtTmp() call DBOLStatementTmp::AddDetail()\n"));
+		hFile = RecordSet_GetFirst(myFile);
+		while (hFile) {
+			if (!GetField_Int(hFile,"split",&iTmp)) {
+				// file_id
+				PutField_CString(hFile, "file_id", csFileId);
+				// seq
+				// ver
+				PutField_Int(hFile, "ver", iVer);
+				// latest_ver
+				// disabled
+				PutField_Int(hFile, "disabled", 0);
+				// int_bank_code
+				// bank_acct_num
+				// sys_seq
+				// user_seq
+				if (GetField_Int(hFile, "sys_seq", &iTmp)) {
+					PutField_Int(hFile, "user_seq", iTmp);
+				}
+				// skip
+				if (GetField_CString(hFile, "as_ind", &csTmp))
+					PutField_Int(hFile, "skip", 1);
+				else	PutField_Int(hFile, "skip", 0);
+				// others
+				// bank_charge
+				if (GetField_Int(hFile,"to_split",&iTmp)) {
+					if (GetField_CString(hFile, "org_balance", &csTmp)) {
+						PutField_CString(hFile, "balance", csTmp);
+					}
+				}
+				// user
+				PutField_CString(hFile, "create_user", csUser);
+				PutField_CString(hFile, "update_user", csUser);
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLStatementTmp", "AddDetail");
+				if ((unsigned long)(*DBObjPtr)(hFile) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("AddStmtTmp() call DBOLStatementTmp::AddDetail() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::AddStmtTmp() call DBOLStatementTmp::AddDetail() FAILURE!!!\n");
+					break; //
+				} else {
+// DEBUGLOG(("AddStmtTmp() call DBOLStatementTmp::AddDetail() success\n"));
+				}
+			}
+
+			hFile = RecordSet_GetNext(myFile);
+		}
+	}
+
+DEBUGLOG(("AddStmtTmp() iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+/*
+ * Update Statement Tmp
+ */
+int UpdateStmtTmp(hash_t *hContext, hash_t *hRequest, recordset_t *myFile)
+{
+	int iRet = PD_OK;
+
+/* non-reusable */
+	char cAction = ' ', *csUser = NULL;
+
+	hash_t *hFile;
+
+/* reusable */
+	char *csTmp;
+	//int iTmp;
+
+/* action */
+	if (GetField_Char(hContext, "action", &cAction)) {
+// DEBUGLOG(("UpdateStmtTmp() action = [%c]\n", cAction));
+	} else {
+DEBUGLOG(("UpdateStmtTmp() action NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* user */
+	if (GetField_CString(hContext, "create_user", &csUser)) {
+// DEBUGLOG(("UpdateStmtTmp() user = [%s]\n", csUser));
+	} else {
+DEBUGLOG(("UpdateStmtTmp() user NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+
+/*
+ * Edit Bank Statement
+ */
+	if (iRet == PD_OK) {
+DEBUGLOG(("UpdateStmtTmp() call DBOLStatementTmp::UpdateSystemDetail()\n"));
+		hFile = RecordSet_GetFirst(myFile);
+		while (hFile) {
+			// file_id
+			// seq
+			// ver
+			// sys_seq
+			// skip
+			if (GetField_CString(hFile, "as_ind", &csTmp))
+				PutField_Int(hFile, "skip", 1);
+			else
+				PutField_Int(hFile, "skip", 0);
+			// statement_date
+			// statement_time
+			// user
+			PutField_CString(hFile,"update_user",PD_UPDATE_USER);
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLStatementTmp", "UpdateSystemDetail");
+			if ((unsigned long)(*DBObjPtr)(hFile) != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("UpdateStmtTmp() call DBOLStatementTmp::UpdateSystemDetail() FAILURE!!!\n"));
+ERRLOG("BOOLBankStmt::UpdateStmtTmp() call DBOLStatementTmp::UpdateSystemDetail() FAILURE!!!\n");
+				break; //
+			} else {
+// DEBUGLOG(("UpdateStmtTmp() call DBOLStatementTmp::UpdateSystemDetail() success\n"));
+			}
+
+			hFile = RecordSet_GetNext(myFile);
+		}
+	}
+
+DEBUGLOG(("UpdateStmtTmp() iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+char *CS_DETAIL_TAG[18]  = {"statement_date","statement_time","tfr_bank_name","tfr_bank_acct_num","tfr_type","tfr_channel","tfr_text","tfr_customer_text","sender_name","txn_ref_num","balance","amt_type","txn_amount","txn_ccy","bank_charge","sender_baid_name","recipient_baid_name","client_name"};
+char *CS_DETAIL_NAME[18] = {"Date","Time","Deposit Bank","Bank Account","Txn Category","Txn Channel","Txn Description","Bank Remark","Sender Name","Txn Ref Number","Balance","Credit/Debit","Amount","Currency","Bank Charge","Sender BAID Name","Recipient BAID Name","Client Name"};
+int INT_DETAIL_TAG       = (int)sizeof(CS_DETAIL_TAG) / (int)sizeof(*CS_DETAIL_TAG);
+
+int INT_DETAIL_MAX_LEN[18]         = { 8, 6,-1,-1,-1,-1,-1,-1,-1,-1,15, 2,13, 3,13,100,100,50};
+int INT_DETAIL_MAX_UTF8_LEN[18]    = {-1,-1,50,50,100,50,50,50,50,50,-1,-1,-1,-1,-1, -1 ,-1,-1};
+int INT_DETAIL_CHECK_LEN[18]       = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,  1,  1, 1};
+
+/*
+ * CheckDetail * * * * * * * * * * * * * * * * * * * *
+ */
+
+char *ChangeDateTimeFormat(const char *csDateTime, int iStartYear, const char *csTemplate, const char *csOutTemplate);
+char *ChangeTimeZone(const char *csDateTime, const char *csTemplate, const char *csSrcTimeZone, const char *csDstTimeZone);
+
+int CheckDetail(const hash_t *hContext, hash_t *hRls, char *cs_err_msg_buf, int iLogMsg, int iLogErr)
+{
+	int	iRet = PD_OK;
+	int	i;
+	char	*csTmp = NULL;
+	double	dTmp;
+
+	int	iNegAmount, iNegBalance;
+	int	iStartYear;
+	int	iTolDateTime;
+	char	*csAcctCcy = NULL, *csCountry = NULL;
+	char	*SYS_DATE = NULL, *SYS_TIME = NULL, *LOCAL_SYS_DATE = NULL, *LOCAL_SYS_TIME = NULL, *TOL_DATE = NULL, *TOL_TIME = NULL;
+	char	*TIME_ZONE = NULL, *DATE_FORMAT = NULL, *TIME_FORMAT = NULL;
+	int	iValidatedDate = 0, iValidatedTime = 0;
+
+	char	*csAmtType = NULL;
+	char	*csStmtDate = NULL, *csStmtTime = NULL;
+	char	*csOutStmtDate = NULL, *csOutStmtTime = NULL;
+	char	csStmtDateTime[PD_DATETIME_LEN + 1] = "", *csOutStmtDateTime = NULL;
+
+	char	cs_tmp_buf1[PD_TMP_BUF_LEN] = "";
+	char	cs_tmp_buf2[PD_TMP_BUF_LEN] = "";
+
+/* TIME_ZONE */
+	if (!GetField_CString(hContext,"TIME_ZONE",&TIME_ZONE)) {
+// DEBUGLOG(("  CheckDetail () TIME_ZONE NOT FOUND!!!\n"));
+	}
+/* DATE_FORMAT */
+	if (!GetField_CString(hContext,"DATE_FORMAT",&DATE_FORMAT)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () DATE_FORMAT NOT FOUND!!!\n"));
+	}
+/* TIME_FORMAT */
+	if (!GetField_CString(hContext,"TIME_FORMAT",&TIME_FORMAT)) {
+// DEBUGLOG(("  CheckDetail () TIME_FORMAT NOT FOUND!!!\n"));
+	}
+/* SYS_DATE */
+	if (!GetField_CString(hContext,"SYS_DATE",&SYS_DATE)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () SYS_DATE NOT FOUND!!!\n"));
+	}
+/* SYS_TIME */
+	if (!GetField_CString(hContext,"SYS_TIME",&SYS_TIME)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () SYS_TIME NOT FOUND!!!\n"));
+	}
+/* LOCAL_SYS_DATE */
+	if (!GetField_CString(hContext,"LOCAL_SYS_DATE",&LOCAL_SYS_DATE)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () LOCAL_SYS_DATE NOT FOUND!!!\n"));
+	}
+/* LOCAL_SYS_TIME */
+	if (!GetField_CString(hContext,"LOCAL_SYS_TIME",&LOCAL_SYS_TIME)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () LOCAL_SYS_TIME NOT FOUND!!!\n"));
+	}
+/* TOL_DATE */
+	if (!GetField_CString(hContext,"TOL_DATE",&TOL_DATE)) {
+DEBUGLOG(("  CheckDetail () TOL_DATE NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+/* TOL_TIME */
+	if (!GetField_CString(hContext,"TOL_TIME",&TOL_TIME)) {
+DEBUGLOG(("  CheckDetail () TOL_TIME NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* acct_ccy */
+	if (!GetField_CString(hContext,"acct_ccy",&csAcctCcy)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () acct_ccy NOT FOUND!!!\n"));
+	}
+/* country */
+	if (!GetField_CString(hContext, "country", &csCountry)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () country NOT FOUND!!!\n"));
+	}
+/* neg_amount */
+	if (!GetField_Int(hContext, "neg_amount", &iNegAmount)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () neg_amount NOT FOUND!!!\n"));
+	}
+/* neg_balance */
+	if (!GetField_Int(hContext, "neg_balance", &iNegBalance)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () neg_balance NOT FOUND!!!\n"));
+	}
+/* start_year */
+	if (!GetField_Int(hContext, "start_year", &iStartYear)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () start_year NOT FOUND!!!\n"));
+	}
+/* tol_datetime */
+	if (!GetField_Int(hContext, "tol_datetime", &iTolDateTime)) {
+		iRet = PD_ERR;
+DEBUGLOG(("  CheckDetail () tol_datetime NOT FOUND!!!\n"));
+	}
+
+/* statement_date */
+	i = 0;
+	// Re-upload
+	if (GetField_CString(hRls,"statement_date",&csStmtDate)) {
+
+		csOutStmtDate = ChangeDateTimeFormat(csStmtDate,0,PD_DEFAULT_DATE_FORMAT,PD_DEFAULT_DATE_FORMAT); //
+		if (!strcmp(csOutStmtDate,csStmtDate)) {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () date = [%s]  in[%s][%s]\n",csOutStmtDate,csStmtDate,PD_DEFAULT_DATE_FORMAT));
+
+			iValidatedDate = 1;
+
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () date [%s]  in[%s][%s] Invalid!!!\n",csOutStmtDate,csStmtDate,PD_DEFAULT_DATE_FORMAT));
+		}
+
+	// First Time Upload
+	} else if (GetField_CString(hRls,"raw_date",&csStmtDate)) {
+
+		if (GetField_CString(hContext,"DATE_FORMAT",&DATE_FORMAT)) {
+			csOutStmtDate = ChangeDateTimeFormat(csStmtDate,0,DATE_FORMAT,DATE_FORMAT); //
+			if (!strcmp(csOutStmtDate,csStmtDate)) {
+				if (strcmp(DATE_FORMAT,PD_DEFAULT_DATE_FORMAT)) {
+					csOutStmtDate = ChangeDateTimeFormat(csStmtDate,iStartYear,DATE_FORMAT,PD_DEFAULT_DATE_FORMAT); //
+				}
+
+				iValidatedDate = 1;
+				PutField_CString(hRls,"statement_date",csOutStmtDate);
+
+if (iLogMsg) DEBUGLOG(("  CheckDetail () date = [%s]  in[%s][%s]\n",csOutStmtDate,csStmtDate,DATE_FORMAT));
+
+
+				if (!GetField_CString(hContext,"TIME_FORMAT",&TIME_FORMAT)) {
+
+					if (strcmp(LOCAL_SYS_DATE,csOutStmtDate) > 0) {
+						PutField_CString(hRls,"statement_time","235959");
+if (iLogMsg) DEBUGLOG(("  CheckDetail () added time  in[%s]<sys_date[%s]\n",csOutStmtDate,LOCAL_SYS_DATE));
+
+					} else if (strcmp(LOCAL_SYS_DATE,csOutStmtDate) < 0) {
+						PutField_CString(hRls,"statement_time","000000");
+if (iLogMsg) DEBUGLOG(("  CheckDetail () added time  in[%s]>sys_date[%s]\n",csOutStmtDate,LOCAL_SYS_DATE));
+
+					} else {
+						PutField_CString(hRls,"statement_time",LOCAL_SYS_TIME);
+if (iLogMsg) DEBUGLOG(("  CheckDetail () added time  in[%s]=sys_date[%s]\n",csOutStmtDate,LOCAL_SYS_DATE));
+
+					}
+				}
+
+			} else {
+				INT_DETAIL_CHECK_LEN[i] = 0;
+				iRet = PD_ERR;
+				snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+				strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () date [%s]  in[%s][%s] Invalid!!!\n",csOutStmtDate,csStmtDate,DATE_FORMAT));
+			}
+		}
+
+	} else {
+		INT_DETAIL_CHECK_LEN[i] = 0;
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[%s Not Found]",CS_DETAIL_NAME[i]);
+		strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () date NOT FOUND!!!\n"));
+	}
+
+/* statement_time */
+	i = 1;
+	// Re-upload or Auto
+	if (GetField_CString(hRls,"statement_time",&csStmtTime)) {
+
+		csOutStmtTime = ChangeDateTimeFormat(csStmtTime,0,PD_DEFAULT_TIME_FORMAT,PD_DEFAULT_TIME_FORMAT); //
+		if (!strcmp(csOutStmtTime,csStmtTime)) {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () time = [%s]  in[%s][%s]\n",csOutStmtTime,csStmtTime,PD_DEFAULT_TIME_FORMAT));
+
+			iValidatedTime = 1;
+
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () time [%s]  in[%s][%s] Invalid!!!\n",csOutStmtTime,csStmtTime,PD_DEFAULT_TIME_FORMAT));
+		}
+
+	// First Time Upload
+	} else if (GetField_CString(hRls,"raw_time",&csStmtTime)) {
+
+		if (GetField_CString(hContext,"TIME_FORMAT",&TIME_FORMAT)) {
+			csOutStmtTime = ChangeDateTimeFormat(csStmtTime,0,TIME_FORMAT,TIME_FORMAT); //
+			if (!strcmp(csOutStmtTime,csStmtTime)) {
+				if (strcmp(TIME_FORMAT,PD_DEFAULT_TIME_FORMAT)) {
+					csOutStmtTime = ChangeDateTimeFormat(csStmtTime,0,TIME_FORMAT,PD_DEFAULT_TIME_FORMAT); //
+				}
+
+				iValidatedTime = 1;
+				PutField_CString(hRls,"statement_time",csOutStmtTime);
+
+if (iLogMsg) DEBUGLOG(("  CheckDetail () time = [%s]  in[%s][%s]\n",csOutStmtTime,csStmtTime,TIME_FORMAT));
+			} else {
+				INT_DETAIL_CHECK_LEN[i] = 0;
+				iRet = PD_ERR;
+				snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+				strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () time [%s]  in[%s][%s] Invalid!!!\n",csOutStmtTime,csStmtTime,TIME_FORMAT));
+			}
+		}
+
+	} else {
+		INT_DETAIL_CHECK_LEN[i] = 0;
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[%s Not Found]",CS_DETAIL_NAME[i]);
+		strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () time NOT FOUND!!!\n"));
+	}
+
+/* statement_time */
+	if (iValidatedDate == 1 && iValidatedTime == 1) {
+
+		GetField_CString(hRls,"statement_date",&csStmtDate);
+		GetField_CString(hRls,"statement_time",&csStmtTime);
+
+		// First Time Upload
+		if (GetField_CString(hRls,"raw_date",&csTmp)) {
+
+			/* Time Zone */	
+			if (GetField_CString(hContext,"TIME_ZONE",&TIME_ZONE)) {
+				snprintf(csStmtDateTime,sizeof(csStmtDateTime),"%s",csStmtDate);
+				strncat(csStmtDateTime,csStmtTime,sizeof(csStmtDateTime)-strlen(csStmtDateTime)-1);
+
+				csOutStmtDateTime = ChangeTimeZone(csStmtDateTime,PD_DEFAULT_DATETIME_FORMAT,TIME_ZONE,PD_DESTZONE); //
+if (iLogMsg) DEBUGLOG(("  CheckDetail () change TIME_ZONE [%.*s %s]  in[%s %s]\n",PD_DATE_LEN,csOutStmtDateTime,&csOutStmtDateTime[PD_DATE_LEN],csStmtDate,csStmtTime));
+				PutField_CString(hRls,"statement_time",&csOutStmtDateTime[PD_DATE_LEN]);
+				csOutStmtDateTime[PD_DATE_LEN]='\0';
+				PutField_CString(hRls,"statement_date",csOutStmtDateTime);
+			} else {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () ## No Change TIME_ZONE for %s\n",csCountry));
+			}
+
+		}
+
+		// Any Time Upload
+
+		/* Tolerance Date Time */
+		if (iTolDateTime > 0) {
+
+			if (GetField_CString(hContext,"TIME_FORMAT",&TIME_FORMAT)) {
+
+				if ((strcmp(csStmtDate,TOL_DATE) == 0 && strcmp(csStmtTime,TOL_TIME) > 0) ||
+				     strcmp(csStmtDate,TOL_DATE) > 0) {
+                                        if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+                                        snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Future Date Time]");
+                                        strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () future dateTime curr[%s %s] > tolerance[%s %s]!!!\n",csStmtDate,csStmtTime,TOL_DATE,TOL_TIME));
+
+				} else {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () datetime curr[%s %s] <= tolerance[%s %s]\n",csStmtDate,csStmtTime,TOL_DATE,TOL_TIME));
+				}
+
+			} else {
+
+				if (strcmp(csStmtDate,SYS_DATE) > 0) {
+                                        if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+                                        snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Future Date]");
+                                        strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () future date curr[%s] > tolerance[%s]!!!\n",csStmtDate,SYS_DATE));
+
+				} else {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () date curr[%s] <= tolerance[%s]\n",csStmtDate,SYS_DATE));
+				}
+
+			}
+
+		} else {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () ## No Tolerance Date Time Check\n"));
+		}
+
+		PutField_Int(hRls,"VALIDATED_DATETIME",1);
+
+	} else {
+		RemoveField_CString(hRls,"statement_date");
+		RemoveField_CString(hRls,"statement_time");
+	}
+
+/* txn_ccy */
+	i = 13;
+	// Any Time Upload
+	if (GetField_CString(hRls,"txn_ccy",&csTmp)) {
+
+		// Allow Bank Accts Ccy
+		if (!strcmp(csAcctCcy,csTmp)) {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () txn_ccy = [%s]\n",csTmp));
+
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () txn_ccy [%s] Invalid!!!\n",csTmp));
+		}
+
+	} else {
+		PutField_CString(hRls,"txn_ccy",csAcctCcy);
+if (iLogMsg) DEBUGLOG(("  CheckDetail () txn_ccy = [%s]\n",csAcctCcy));
+	}
+
+/* amt_type */
+	i = 11;
+	// Any Time Upload
+	if (GetField_CString(hRls,"amt_type",&csAmtType)) {
+
+		// Allow CR DR
+		if (!strcmp(csAmtType,PD_CR) ||
+		    !strcmp(csAmtType,PD_DR)) {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () found amt_type [%s]\n",csAmtType));
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () amt_type [%s] Invalid!!!\n",csAmtType));
+		}
+
+	} else {
+		PutField_CString(hRls,"amt_type",PD_CR);
+		
+	}
+
+/* cr_txn_amount */
+	// First Time Upload
+	if (GetField_CString(hRls,"cr_txn_amount",&csTmp)) {
+		_deleteCharacters(csTmp,",");
+
+		if (sscanf(csTmp,"%lf",&dTmp) == 1 ||
+		    sscanf(csTmp,"%*[^0-9+-.]%lf",&dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1,"%.2lf",dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than or less than 0
+			if (dTmp > 1E-9 || dTmp < -1E-9) {
+				PutField_CString(hRls,"amt_type",PD_CR);
+				PutField_CString(hRls,"txn_amount",csTmp);
+if (iLogMsg) DEBUGLOG(("  CheckDetail () found cr_txn_amount [%s]\n",csTmp));
+			}
+		}
+	}
+/* dr_txn_amount */
+	// First Time Upload
+	if (GetField_CString(hRls,"dr_txn_amount",&csTmp)) {
+		_deleteCharacters(csTmp,",");
+
+		if (sscanf(csTmp,"%lf",&dTmp) == 1 ||
+		    sscanf(csTmp,"%*[^0-9+-.]%lf",&dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1,"%.2lf",dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than 0 or less than 0
+			if (dTmp > 1E-9 || dTmp < -1E-9) {
+				PutField_CString(hRls,"amt_type",PD_DR);
+				PutField_CString(hRls,"txn_amount",csTmp);
+if (iLogMsg) DEBUGLOG(("  CheckDetail () found dr_txn_amount [%s]\n",csTmp));
+			}
+		}
+	}
+
+	GetField_CString(hRls,"amt_type",&csAmtType); //
+
+/* txn_amount */
+	i = 12;
+	// Any Time Upload
+	if (GetField_CString(hRls,"txn_amount",&csTmp)) {
+		_deleteCharacters(csTmp,",");
+
+		if (sscanf(csTmp,"%lf",&dTmp) == 1 ||
+		    sscanf(csTmp,"%*[^0-9+-.]%lf",&dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1,"%.2lf",dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than 0
+			if (dTmp > 1E-9) {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () txn_amount = [%s][%s]\n",csAmtType,csTmp));
+
+			// Allow less than 0 when NEG_AMOUNT
+			} else if (dTmp < -1E-9) {
+				if (iNegAmount == 1) {
+
+if (iLogMsg) DEBUGLOG(("  CheckDetail () ## txn_amount = [%s][%s] allowed\n",csAmtType,csTmp));
+
+					if (!strcmp(csAmtType,PD_DR)) {
+						PutField_CString(hRls,"amt_type",PD_CR);
+						PutField_CString(hRls,"txn_amount",++csTmp);
+					} else if (!strcmp(csAmtType,PD_CR)) {
+						PutField_CString(hRls,"amt_type",PD_DR);
+						PutField_CString(hRls,"txn_amount",++csTmp);
+					}
+
+				} else {
+					INT_DETAIL_CHECK_LEN[i] = 0;
+					if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () txn_amount [%s] Invalid!!!\n",csTmp));
+				}
+			} else {
+				INT_DETAIL_CHECK_LEN[i] = 0;
+				if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+				snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+				strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () txn_amount [%s] Invalid!!!\n",csTmp));
+			}
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () txn_amount [%s] Invalid!!!\n",csTmp));
+		}
+
+		PutField_CString(hRls,"txn_amount",csTmp);
+	} else {
+		INT_DETAIL_CHECK_LEN[i] = 0;
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[%s Not Found]",CS_DETAIL_NAME[i]);
+		strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () txn_amount NOT FOUND!!!\n"));
+
+	}
+
+/* bank_charge */
+	i = 14;
+	// Any Time Upload
+	if (GetField_CString(hRls,"bank_charge",&csTmp)) {
+		_deleteCharacters(csTmp,",");
+
+		if (sscanf(csTmp,"%lf",&dTmp) == 1 ||
+		    sscanf(csTmp,"%*[^0-9+-.]%lf",&dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1,"%.2lf",dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than 0
+			if (dTmp > 1E-9) {
+
+				if (!strcmp(csAmtType,PD_DR)) {
+
+					PutField_Int(hRls,"to_split",1);
+if (iLogMsg) DEBUGLOG(("  CheckDetail () found bank_charge [%s]\n",csTmp));
+
+				} else {
+					INT_DETAIL_CHECK_LEN[i] = 0;
+					if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () bank_charge [%s] Invalid!!!\n",csTmp));
+				}
+
+			} else if (dTmp < -1E-9) {
+				INT_DETAIL_CHECK_LEN[i] = 0;
+				if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+				snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+				strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () bank_charge [%s] Invalid!!!\n",csTmp));
+			}
+			// Allow equal to 0
+
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () bank_charge [%s] Invalid!!!\n",csTmp));
+		}
+
+		PutField_CString(hRls,"bank_charge",csTmp);
+	}
+
+/* balance */
+	i = 10;
+	// Any Time Upload
+	if (GetField_CString(hRls,"balance",&csTmp)) {
+		_deleteCharacters(csTmp,",");
+
+		if (sscanf(csTmp,"%lf",&dTmp) == 1 ||
+		    sscanf(csTmp,"%*[^0-9+-.]%lf",&dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1,"%.2lf",dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than or equal to 0
+			if (dTmp > -1E-9) {
+if (iLogMsg) DEBUGLOG(("  CheckDetail () balance = [%s]\n",csTmp));
+
+			// Allow less than 0 when NEG_BALANCE
+			} else {
+				if (iNegBalance == 1) {
+
+if (iLogMsg) DEBUGLOG(("  CheckDetail () ## balance = [%s] allowed\n",csTmp));
+
+				} else {
+					INT_DETAIL_CHECK_LEN[i] = 0;
+					if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+					snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+					strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () balance [%s] Invalid!!!\n",csTmp));
+				}
+			}
+
+		} else {
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[Invalid %s]",CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () balance [%s] Invalid!!!\n",csTmp));
+		}
+
+		PutField_CString(hRls,"balance",csTmp);
+
+	} else {
+		INT_DETAIL_CHECK_LEN[i] = 0;
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[%s Not Found]",CS_DETAIL_NAME[i]);
+		strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr) DEBUGLOG(("  CheckDetail () balance NOT FOUND!!!\n"));
+	}
+
+/* Length */
+	// Any Time Upload
+	for (i=0;i<INT_DETAIL_TAG;i++) {
+
+// if (iLogErr) DEBUGLOG(("  CheckDetail () Tag[%s] Name[%s] Max len[%d] Max UTF8 len[%d] Check[%d]\n",CS_DETAIL_TAG[i],CS_DETAIL_NAME[i],INT_DETAIL_MAX_LEN[i],INT_DETAIL_MAX_UTF8_LEN[i],INT_DETAIL_CHECK_LEN[i]));
+
+		if (INT_DETAIL_CHECK_LEN[i] > 0) {
+			if (GetField_CString(hRls,CS_DETAIL_TAG[i],&csTmp)) {
+				if (INT_DETAIL_MAX_LEN[i] != -1) {
+					if (strlen(csTmp) > INT_DETAIL_MAX_LEN[i]) {
+						if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[%s Too Long]",CS_DETAIL_NAME[i]);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR) DEBUGLOG(("  CheckDetail () %s [%s] TOO LONG!!!\n",CS_DETAIL_NAME[i],csTmp));
+					} else {
+// if (iLogMsg) DEBUGLOG(("  CheckDetail () %s [%s] success\n",CS_DETAIL_NAME[i],csTmp));
+					}
+				}
+
+				if (INT_DETAIL_MAX_UTF8_LEN[i] != -1) {
+					if (strlen_utf8(csTmp) > INT_DETAIL_MAX_UTF8_LEN[i]) {
+						if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+						snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"[%s Too Long]",CS_DETAIL_NAME[i]);
+						strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iLogErr || iRet == PD_OTHER_ERR)DEBUGLOG(("  CheckDetail () %s UTF8[%s] TOO LONG!!!\n",CS_DETAIL_NAME[i],csTmp));
+					} else {
+// if (iLogMsg) DEBUGLOG(("  CheckDetail () %s UTF8[%s] success\n",CS_DETAIL_NAME[i],csTmp));
+					}
+				}
+			}
+		} else {
+// if (iLogMsg) DEBUGLOG(("  CheckDetail () %s ignored\n",CS_DETAIL_NAME[i]));
+		}
+
+		INT_DETAIL_CHECK_LEN[i] = 1;
+	}
+
+	if (iRet != PD_OK) {
+		sprintf(cs_err_msg_buf,"%s",cs_tmp_buf2);
+if (iLogErr) DEBUGLOG(("  CheckDetail () err_msg = %s!!!\n",cs_err_msg_buf));
+	}
+
+if (iLogMsg) DEBUGLOG(("  CheckDetail () Ret = [%d]\n",iRet));
+	return iRet;
+}
+
+/*
+ * CheckKeywords * * * * * * * * * * * * * * * * * * * *
+ */
+int MultiKeywordsSearch(const char *csLine, char *csTemplate, int iFullMatch);
+int AmountKeywordsSearch(const char *csTxnAmt, double dMinAmt, double dMaxAmt, int iMinDp, int iMaxDp);
+
+int CheckKeywords(hash_t *hRls, recordset_t *rKeywords)
+{
+	int iRet = PD_OK;
+
+	char csTag[PD_TAG_LEN+1];
+
+	char *csTmp = NULL;
+
+	int iTmp = 0;
+	int iToMatch = 0, iMatch = 0, iMatchNow = 0;
+	int i = 0, iMultiMatchCount = 0;
+
+	char *csAmtType = NULL, *csTxnAmt = NULL;
+	char cs_keywords_buf[PD_TMP_BUF_LEN * 3] = "";
+	char *csDesc = NULL, *csTxnCode = NULL, *csTemplate = NULL, *csField = NULL;
+	int iFullMatch = 0, iDefault = 0;
+	int iMinDp = 0, iMaxDp = 0, iDisplayOrder = 0;
+	double dMinAmt = 0, dMaxAmt = 0;
+
+	hash_t *hKeywords;
+
+/* amt_type */
+	if (!GetField_CString(hRls,"amt_type",&csAmtType)) {
+		iRet = PD_ERR;
+DEBUGLOG((" CheckKeywords() amt_type NOT FOUND!!!\n"));
+	}
+/* txn_amount */
+	if (!GetField_CString(hRls,"txn_amount",&csTxnAmt)) {
+		iRet = PD_ERR;
+DEBUGLOG((" CheckKeywords() txn_amount NOT FOUND!!!\n"));
+	}
+
+/* Format Keywords */
+	if (iRet == PD_OK) {
+		if (!GetField_CString(hRls,"format_txn_code",&csTxnCode)) {
+			hKeywords = RecordSet_GetFirst(rKeywords); // Format Keywords
+			while (hKeywords) {
+				GetField_CString(hKeywords,"txn_code",&csTxnCode); //
+//DEBUGLOG(("txn_code = [%s]\n", csTxnCode));
+				GetField_CString(hKeywords,"amt_type",&csTmp); //
+//DEBUGLOG(("amt_type = [%s]\n", csTmp));
+				GetField_Int(hKeywords,"default",&iDefault); //
+//DEBUGLOG(("default [%d]\n", iDefault));
+
+				if (strcmp(csAmtType,csTmp)) {
+					hKeywords = RecordSet_GetNext(rKeywords);
+					continue; //
+				}
+
+			/* Default */
+				if (iDefault == 1) {
+					iMatch = 1;
+					iToMatch = 1;
+DEBUGLOG((" CheckKeywords() DBOLStmtFormat::GetTxnCodeKeywords() [%s%s] default\n",csAmtType,csTxnAmt));
+
+					hKeywords = RecordSet_GetNext(rKeywords);
+
+					iMatchNow = 1;
+					
+			/* Others */
+				} else {
+//DEBUGLOG(("testing here\n"));
+					GetField_Int(hKeywords,"full_match",&iFullMatch); //
+					GetField_Double(hKeywords,"min_amt",&dMinAmt); //
+					GetField_Double(hKeywords,"max_amt",&dMaxAmt); //
+					GetField_Int(hKeywords,"min_dp",&iMinDp); //
+					GetField_Int(hKeywords,"max_dp",&iMaxDp); //
+					GetField_Int(hKeywords,"display_order",&iDisplayOrder); //
+					GetField_CString(hKeywords,"cont_desc",&csDesc); //
+					GetField_CString(hKeywords,"format_template",&csTemplate); //
+
+					if (GetField_CString(hRls,csDesc,&csField)) {
+DEBUGLOG((" CheckKeywords() DBOLStmtFormat::GetTxnCodeKeywords() [%s%s] [%s][%s]\n",csAmtType,csTxnAmt,csDesc,csField));
+DEBUGLOG((" CheckKeywords() DBOLStmtFormat::GetTxnCodeKeywords() (%.2lf %.2lf) (%d %d) (%s %d)(%s)\n",dMinAmt,dMaxAmt,iMinDp,iMaxDp,csTxnCode,iDisplayOrder,csTemplate));
+						if (MultiKeywordsSearch(csField,csTemplate,iFullMatch) == FOUND) {
+							if (AmountKeywordsSearch(csTxnAmt,dMinAmt,dMaxAmt,iMinDp,iMaxDp) == FOUND) {
+								iMatch++;
+
+								/* olsd_keywords_mapping */
+								strncat(cs_keywords_buf,csField,sizeof(cs_keywords_buf)-strlen(cs_keywords_buf)-1);
+							}
+						}
+					} else {
+DEBUGLOG((" CheckKeywords() DBOLStmtFormat::GetTxnCodeKeywords() [%s%s] [%s][empty]\n",csAmtType,csTxnAmt,csDesc));
+DEBUGLOG((" CheckKeywords() DBOLStmtFormat::GetTxnCodeKeywords() (%.2lf %.2lf) (%d %d) (%s %d)(%s)\n",dMinAmt,dMaxAmt,iMinDp,iMaxDp,csTxnCode,iDisplayOrder,csTemplate));
+					}
+					iToMatch++;
+
+					/* iMatchNow */
+					hKeywords = RecordSet_GetNext(rKeywords);
+					if (hKeywords != NULL) {
+						GetField_CString(hKeywords,"txn_code",&csTmp); //
+						GetField_Int(hKeywords,"display_order",&iTmp); //
+						if (!strcmp(csTmp,csTxnCode) && iTmp == iDisplayOrder) {
+							iMatchNow = 0; //
+						} else {
+							iMatchNow = 1;
+						}
+					} else {
+						iMatchNow = 1;
+					}
+				}
+DEBUGLOG((" CheckKeywords() DBOLStmtFormat::GetTxnCodeKeywords() iMatchNow = [%d] Match = [%d]/[%d]\n",iMatchNow,iMatch,iToMatch));
+
+			/* Match */
+				if (iMatchNow == 1) {
+					if (iMatch == iToMatch) {
+						PutField_CString(hRls,"keywords_mapping",cs_keywords_buf);
+						//
+						// BOOLBankStmtMatch
+						//
+						// Support Multimatch: if ok, check next until end of loop;
+						//
+						sprintf(csTag,"format_txn_code_%d",iMultiMatchCount);
+						PutField_CString(hRls,csTag,csTxnCode);
+												
+						iMultiMatchCount++;			
+						PutField_Int(hRls,"multi_match_cnt",iMultiMatchCount);
+					}
+					cs_keywords_buf[0] = '\0';
+
+					//Reset Count
+					iMatch = 0;
+					iToMatch = 0;
+				}
+
+			} // while (hKeywords)
+		} else {
+DEBUGLOG((" CheckKeywords() format_txn_code already = [%s]\n", csTxnCode));
+			sprintf(csTag, "format_txn_code_%d", iMultiMatchCount);
+			PutField_CString(hRls, csTag, csTxnCode);
+			iMultiMatchCount++;
+			PutField_Int(hRls, "multi_match_cnt", iMultiMatchCount);
+		}
+
+	/* SUCCESS */
+		// Support Multimatch
+		if (iMultiMatchCount > 0) {
+			for (i=0;i<iMultiMatchCount;i++) {
+				sprintf(csTag,"format_txn_code_%d",i);
+				if (GetField_CString(hRls,csTag,&csTxnCode)) {
+DEBUGLOG((" CheckKeywords() format_txn_code_%d %s %s[%s%s]%s\n",i,csTxnCode,(iDefault==1?"":"*"),csAmtType,csTxnAmt,cs_keywords_buf));
+				}
+        		}
+		
+	/* FAILURE */
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG((" CheckKeywords() format_txn_code NOT FOUND!!!\n"));
+
+		}
+	}
+
+	return iRet;
+}
+
+/*
+ * Other Functions
+ */
+int GetSystemDate(hash_t *hContext)
+{
+	int iRet = PD_OK;
+
+	char csDate[PD_DATE_LEN + 1] = "", csTime[PD_TIME_LEN + 1] = "";
+	char csDateTime[PD_DATETIME_LEN + 1] = "";
+	char *csOutDateTime = NULL;
+
+	char *csCountry = NULL;
+	char *TIME_ZONE = NULL;
+	int iTolDateTime;
+
+/* country */
+	if (GetField_CString(hContext, "country", &csCountry)) {
+// DEBUGLOG((" GetSystemDate() country = [%s]\n", csCountry));
+	} else {
+DEBUGLOG((" GetSystemDate() country NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+/* tol_datetime */
+	if (GetField_Int(hContext, "tol_datetime", &iTolDateTime)) {
+// DEBUGLOG((" GetSystemDate() Tolerance Date Time in Hours = [%d]\n",iTolDateTime));
+	} else {
+DEBUGLOG((" GetSystemDate() Tolerance Date Time NOT FOUND!!!\n"));
+		iRet = PD_ERR;
+	}
+
+/* System date time */
+	time_t	tNow = time(NULL);
+	struct	tm tStruct = *localtime(&tNow);
+
+	strftime(csDate, sizeof(csDate), PD_DEFAULT_DATE_FORMAT, &tStruct);
+	strftime(csTime, sizeof(csTime), PD_DEFAULT_TIME_FORMAT, &tStruct);
+DEBUGLOG((" GetSystemDate() System datetime = [%s %s]\n",csDate,csTime));
+
+	PutField_CString(hContext, "SYS_DATE", csDate);
+	PutField_CString(hContext, "SYS_TIME", csTime);
+
+	strftime(csDateTime, sizeof(csDateTime), PD_DEFAULT_DATETIME_FORMAT, &tStruct);
+
+	if (GetField_CString(hContext,"TIME_ZONE",&TIME_ZONE)) {
+		csOutDateTime = ChangeTimeZone(csDateTime,PD_DEFAULT_DATETIME_FORMAT,PD_DESTZONE,TIME_ZONE); //
+
+		strcpy(csTime,&csOutDateTime[PD_DATE_LEN]);
+		csOutDateTime[PD_DATE_LEN]='\0';
+		strcpy(csDate,csOutDateTime);
+DEBUGLOG((" GetSystemDate() Local System Datetime = [%s %s] at %s %s\n",csDate,csTime,csCountry,TIME_ZONE));
+	}
+
+	PutField_CString(hContext, "LOCAL_SYS_DATE", csDate);
+	PutField_CString(hContext, "LOCAL_SYS_TIME", csTime);
+
+/* Tolerance date time */
+	tStruct.tm_hour += iTolDateTime;
+
+	strftime(csDate, sizeof(csDate), PD_DEFAULT_DATE_FORMAT, &tStruct);
+	strftime(csTime, sizeof(csTime), PD_DEFAULT_TIME_FORMAT, &tStruct);
+DEBUGLOG((" GetSystemDate() Tolerance datetime = [%s %s]\n",csDate,csTime));
+
+	PutField_CString(hContext, "TOL_DATE", csDate);
+	PutField_CString(hContext, "TOL_TIME", csTime);
+
+	return iRet;
+}
+
+void CopyHash(const hash_t *hIn, char *csTag[], int iTagSize, hash_t *hOut)
+{
+	char *csTmp;
+	int iTmp;
+
+	for (iTmp=0;iTmp<iTagSize;iTmp++) {
+		if (GetField_CString(hIn,csTag[iTmp],&csTmp)) {
+			PutField_CString(hOut,csTag[iTmp],csTmp);
+		}
+	}
+}
+
+/*
+ * Other Functions
+ */
+void GetCompareTmpKey(const hash_t *hRls, char *csTag[], int iTagSize, char *csCompareKey)
+{
+	char csTmpCompareKey[PD_TMP_BUF_LEN] = "";
+	char *csTmp;
+	int iTmp;
+
+	for (iTmp=0;iTmp<iTagSize;iTmp++) {
+		if (GetField_CString(hRls,csTag[iTmp],&csTmp)) {
+			strcat(csTmpCompareKey, csTmp);
+// DEBUGLOG(("GetCompareTmpKey() %s %s\n",csTag[iTmp],csTmp));
+		} else {
+// DEBUGLOG(("GetCompareTmpKey() %s is missing!!!\n",csTag[iTmp]));
+		}
+	}
+
+	strcpy(csCompareKey, csTmpCompareKey);
+
+	return;
+}
+
+/*
+ * Other Functions
+ */
+int GetCompareKey(const hash_t *hRls, char *csTag[], int iTagSize, char *csCompareKey)
+{
+	int iRet = PD_OK;
+	char csTmpCompareKey[PD_TMP_BUF_LEN] = "";
+	char *csTmp;
+	int iTmp;
+
+	for (iTmp=0;iTmp<iTagSize;iTmp++) {
+		if (GetField_CString(hRls,csTag[iTmp],&csTmp)) {
+			strcat(csTmpCompareKey, csTmp);
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("GetCompareKey() %s is missing!!!\n",csTag[iTmp]));
+		}
+	}
+
+	strcpy(csCompareKey, csTmpCompareKey);
+
+	return iRet;
+}
+
+/*
+ * Other Functions
+ */
+int SplitLineByhFormat(const char *csLine, const char *csFormatId, const hash_t *hFormat, hash_t *hRls)
+{
+	int iRet = PD_OK;
+	char *csTag = (char*) malloc (64);
+	char csDelimiter[2], *csDesc = NULL, *csTemplate = NULL;
+	int iNextLevel = 0;
+	char *csTmp;
+
+	char *csLineField, *csRemainField;
+	char csNewField[PD_TMP_MSG_BUF_LEN], csNewLine[PD_TMP_MSG_BUF_LEN];
+	char csConcatField[PD_TMP_MSG_BUF_LEN];
+	int iField = 0;
+
+	char *csTmpTemplate = (char*) malloc (64);
+
+/* delimiter */
+	sprintf(csTag, "delimiter_%s", csFormatId);
+	if (!GetField_CString(hFormat, csTag, &csTmp)) {
+		iRet = INT_FORMAT_TEMPLATE_ERROR;
+DEBUGLOG(("SplitLineByhFormat() [%s] NOT FOUND!!!\n", csTag));
+ERRLOG("BOOLBankStmt::SplitLineByhFormat() [%s] NOT FOUND!!!\n", csTag);
+	} else {
+		sprintf(csDelimiter,"%c",atoi(csTmp));
+	}
+
+	strcpy(csNewLine, csLine);
+
+	csLineField = mystrtok_r(csNewLine, csDelimiter, &csRemainField);
+	while (csLineField != NULL && iRet == PD_OK) {
+		strcpy(csNewField, TrimAll((const unsigned char*)csLineField, strlen(csLineField)));
+
+		iField++;
+
+		if (*csNewField == '\0') {
+			csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+			continue; //
+		}
+
+		csDesc = NULL;
+		csTemplate = NULL;
+		iNextLevel = 0;
+
+	/* desc - CONTENT */
+		sprintf(csTag, "content_desc_%s_%d", csFormatId, iField);
+		if (GetField_CString(hFormat, csTag, &csDesc)) {
+			if (GetField_CString(hRls, csDesc, &csTmp)) {
+                		if (GetField_CString(hRls, "tmp_content_temp", &csTmpTemplate)) {
+DEBUGLOG((" desc [%s] [%s]\n", csFormatId, csTmpTemplate));
+					if (strcmp(csFormatId, csTmpTemplate)) {
+						if (*csTmp != '\0') {
+                                                	sprintf(csConcatField,"%s %s",csTmp,csNewField);
+                                                	strcpy(csNewField,csConcatField);
+                                        	}
+					}
+				} else {
+DEBUGLOG((" desc [%s] [%s]\n", csFormatId, csTmpTemplate));
+					if (*csTmp != '\0') {
+                                        	sprintf(csConcatField,"%s %s",csTmp,csNewField);
+                                        	strcpy(csNewField,csConcatField);
+                                	}
+				}
+			}
+			PutField_CString(hRls, csDesc, csNewField);
+DEBUGLOG((" desc %s (%s)[%s]\n", csTag, csDesc, csNewField));
+		}
+
+	/* desc_2 - CONTENT */
+		sprintf(csTag, "content_desc_2_%s_%d", csFormatId, iField);
+		if (GetField_CString(hFormat, csTag, &csDesc)) {
+			if (GetField_CString(hRls, csDesc, &csTmp)) {
+                		if (GetField_CString(hRls, "tmp_content_temp", &csTmpTemplate)) {
+DEBUGLOG((" desc_2 [%s] [%s]\n", csFormatId, csTmpTemplate));
+                                        if (strcmp(csFormatId, csTmpTemplate)) {
+						if (*csTmp != '\0') {
+                                        		sprintf(csConcatField,"%s %s",csTmp,csNewField);
+                                        		strcpy(csNewField,csConcatField);
+                                		}
+                                        }
+                                } else {
+DEBUGLOG((" desc_2 [%s] [%s]\n", csFormatId, csTmpTemplate));
+					if (*csTmp != '\0') {
+                                        	sprintf(csConcatField,"%s %s",csTmp,csNewField);
+                                        	strcpy(csNewField,csConcatField);
+                                	}
+                                }
+			}
+			PutField_CString(hRls, csDesc, csNewField);
+DEBUGLOG((" desc_2 %s (%s)[%s]\n", csTag, csDesc, csNewField));
+		}
+
+	/* template - CONTENT */
+		sprintf(csTag, "content_temp_%s_%d", csFormatId, iField);
+		if (GetField_CString(hFormat, csTag, &csTemplate)) {
+DEBUGLOG((" temp %s [%s]\n", csTag, csTemplate));
+
+			PutField_CString(hRls, "tmp_content_temp", csTemplate);
+
+			iRet = SplitLineByhFormat(csNewField, csTemplate, hFormat, hRls);
+		}
+
+		csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+	}
+
+	FREE_ME(csTag);
+	FREE_ME(csTmpTemplate);
+
+	return iRet;
+}
+
+/*
+ * Other Functions
+ */
+struct node *CustomSort(struct node *head)
+{
+	struct node *p = NULL, *q = NULL, *top = NULL;
+	char csCurrNodeDateTime[PD_DATETIME_LEN + 1] = "", csNextNodeDateTime[PD_DATETIME_LEN + 1] = "";
+	int iCurrSysSeq = 0, iNextSysSeq = 0;
+	int iCurrSeq = 0, iNextSeq = 0;
+	char *csTmp;
+	int iTmp;
+
+	int iMatched = 1;
+	top = (struct node*) malloc (sizeof(struct node));
+	top->next = head;
+
+	if (head != NULL && head->next != NULL) {
+		while (iMatched) {
+DEBUGLOG(("  CustomSort  () do sorting\n"));
+			iMatched = 0;
+			q = top;
+			p = top->next;
+			csCurrNodeDateTime[0] = '\0';
+			csNextNodeDateTime[0] = '\0';
+			while ( p->next != NULL ) {
+				if (GetField_Int(p->hDtl,"VALIDATED_DATETIME",&iTmp)) {
+					GetField_CString(p->hDtl,"statement_date",&csTmp);
+					snprintf(csCurrNodeDateTime,sizeof(csCurrNodeDateTime),"%s",csTmp);
+					GetField_CString(p->hDtl,"statement_time",&csTmp);
+					strncat(csCurrNodeDateTime,csTmp,sizeof(csCurrNodeDateTime)-strlen(csCurrNodeDateTime)-1);
+
+					GetField_Int(p->hDtl,"seq",&iCurrSeq);
+					GetField_Int(p->hDtl,"sys_seq",&iCurrSysSeq);
+				}
+
+				if (GetField_Int(p->next->hDtl,"VALIDATED_DATETIME",&iTmp)) {
+					GetField_CString(p->next->hDtl,"statement_date",&csTmp);
+					snprintf(csNextNodeDateTime,sizeof(csNextNodeDateTime),"%s",csTmp);
+					GetField_CString(p->next->hDtl,"statement_time",&csTmp);
+					strncat(csNextNodeDateTime,csTmp,sizeof(csNextNodeDateTime)-strlen(csNextNodeDateTime)-1);
+
+					GetField_Int(p->next->hDtl,"seq",&iNextSeq);
+					GetField_Int(p->next->hDtl,"sys_seq",&iNextSysSeq);
+				}
+
+				if (strcmp(csCurrNodeDateTime,csNextNodeDateTime) > 0) {
+					PutField_Int(p->hDtl,"sys_seq",iNextSysSeq);
+					PutField_Int(p->next->hDtl,"sys_seq",iCurrSysSeq);
+DEBUGLOG(("  CustomSort  () curr[%s][%d][%d] next[%s][%d][%d] sorted\n",csCurrNodeDateTime,iCurrSeq,iCurrSysSeq,csNextNodeDateTime,iNextSeq,iNextSysSeq));
+
+					q->next = list_switch( p, p->next );
+					iMatched = 1;
+
+					q = q->next;
+				} else {
+// DEBUGLOG(("  CustomSort  () curr[%s][%d][%d] next[%s][%d][%d] no sort\n",csCurrNodeDateTime,iCurrSeq,iCurrSysSeq,csNextNodeDateTime,iNextSeq,iNextSysSeq));
+					q = q->next;
+					if ( p->next != NULL )
+						p = p->next;
+					}
+			}
+		}
+	}
+
+	p = top->next;
+	FREE_ME(top);
+
+	return p;
+}
+
+/*
+ * Other Functions
+ */
+char *ChangeDateTimeFormat(const char *csDateTime, int iStartYear, const char *csTemplate, const char *csOutTemplate)
+{
+	static char csOutDateTime[(PD_DATETIME_LEN)*2 + 1];
+	int nDays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	struct tm tStruct = { 0, 0, 0, 1, 0, 0, 0, 0, -1 };
+
+	strptime(csDateTime, csTemplate, &tStruct);
+
+	if (iStartYear > 0) tStruct.tm_year+=iStartYear;
+	if (isleap(tStruct.tm_year+1900)) nDays[1]=29;
+
+	if (tStruct.tm_mday > nDays[tStruct.tm_mon]) tStruct.tm_mday=0;
+	if (tStruct.tm_sec > 59) tStruct.tm_sec=0;
+
+	strftime(csOutDateTime, sizeof(csOutDateTime), csOutTemplate, &tStruct);
+
+// DEBUGLOG(("ChangeDateTimeFormat: [%s](%s) to [%s](%s)\n",csDateTime,csTemplate,csOutDateTime,csOutTemplate));
+	return csOutDateTime;
+}
+char *ChangeTimeZone(const char *csDateTime, const char *csTemplate, const char *csSrcTimeZone, const char *csDstTimeZone)
+{
+	static char csLocalDateTime[(PD_DATETIME_LEN)*2 + 1];
+	struct tm tStruct = { 0, 0, 0, 1, 0, 0, 0, 0, -1 };
+	time_t time;
+
+	strptime(csDateTime, csTemplate, &tStruct);
+
+	putenv((char*)csSrcTimeZone);
+	time = mktime(&tStruct);
+
+	putenv((char*)csDstTimeZone);
+	tStruct = *localtime(&time);
+
+	strftime(csLocalDateTime, sizeof(csLocalDateTime), csTemplate, &tStruct);
+
+// DEBUGLOG(("ChangeTimeZone: [%s] to [%s]\n",csDateTime,csLocalDateTime));
+	return csLocalDateTime;
+}
+int MultiKeywordsSearch(const char *csLine, char *csTemplate, int iFullMatch)
+{
+	char *csTemplateField;
+	csTemplateField = mystrtok(csTemplate, ",");
+	while (csTemplateField != NULL) {
+		if (iFullMatch == 0 && strstr(csLine, csTemplateField) != NULL) {
+// DEBUGLOG(("MultiKeywordsSearch() Contains\n"));
+			return FOUND;
+
+		} else if (iFullMatch == 1 && !strcmp(csLine, csTemplateField)) {
+// DEBUGLOG(("MultiKeywordsSearch() Full Match\n"));
+			return FOUND;
+		}
+		csTemplateField = mystrtok(NULL, ",");
+	}
+// DEBUGLOG(("MultiKeywordsSearch() NOT Found\n"));
+	return NOT_FOUND;
+}
+int AmountKeywordsSearch(const char *csTxnAmt, double dMinAmt, double dMaxAmt, int iMinDp, int iMaxDp)
+{
+	double dTxnAmt = atof(csTxnAmt);
+
+	if (dMinAmt > -1.0 && dMinAmt > dTxnAmt + 1E-9) {
+		return NOT_FOUND;
+	}
+	if (dMaxAmt > -1.0 && dMaxAmt < dTxnAmt - 1E-9) {
+		return NOT_FOUND;
+	}
+	if (iMinDp > -1 && iMinDp > decimal_places(csTxnAmt)) {
+		return NOT_FOUND;
+	}
+	if (iMaxDp > -1 && iMaxDp < decimal_places(csTxnAmt)) {
+		return NOT_FOUND;
+	}
+	return FOUND;
+}
+

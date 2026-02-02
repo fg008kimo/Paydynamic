@@ -1,0 +1,32 @@
+#ifndef _OLTXNPSPDETAIL_H_
+#define _OLTXNPSPDETAIL_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int Add(const hash_t *hRls);
+
+int Update(const hash_t *hRls);
+
+int GetOLTxnPspDetail(const char *csTxnID, hash_t *myHash);
+
+int GetDepositTxnToHold(hash_t *myHash);
+
+int GetOLTxnPspDetailByDlvId(const unsigned char* csDlvId,
+				const char *csCheckSubStatus,
+                                recordset_t* myRec);
+
+int GetTxnPspDetailByBAID(const char *csBAID, recordset_t* myRec);
+
+int GetTxnCountByBankAcct(const char* csBankCode, const char* csBankAcctNum);
+
+int GetPayoutReconPspTxn(const hash_t* hRls, recordset_t* myRec);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

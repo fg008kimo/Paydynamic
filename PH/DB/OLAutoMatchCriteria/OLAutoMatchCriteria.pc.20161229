@@ -1,0 +1,156 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/11/11              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "OLAutoMatchCriteria.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cDebug;
+
+void OLAutoMatchCriteria(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int GetAutoMatchCriteria(const char *csMerchantId,
+				recordset_t *myRec)
+{
+	int iRet = PD_OK;
+	int iCnt = 0;
+	int iLastPoolId;
+	int iIndex;
+
+	char *csTag = (char*) malloc (64);
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(myHash, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO getautomatchcriteria_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_merchant_id[PD_MERCHANT_ID_LEN];
+		int	v_pool_id;
+		varchar	v_match_rule_type[PD_MATCH_RULE_TYPE_LEN + 1];
+		varchar	v_tag_name[PD_TAG_NAME_LEN + 1];
+
+		short	ind_pool_id = -1;
+		short	ind_match_rule_type = -1;
+		short	ind_tag_name = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_merchant_id.len = strlen(csMerchantId);
+	strncpy((char*)hv_merchant_id.arr, csMerchantId, hv_merchant_id.len);
+DEBUGLOG(("GetAutoMatchCriteria: merchant_id = [%.*s]\n", hv_merchant_id.len, (const char*)hv_merchant_id.arr));
+DEBUGLOG(("\n"));
+
+	EXEC SQL DECLARE c_cursor CURSOR FOR
+		select	amm_pool_id, amp_match_rule_type, amr_tag_name
+		from	OL_AUTO_MATCH_MAPPING, OL_AUTO_MATCH_POOLS, OL_DEF_AUTO_MATCH_RULE
+		where	amm_merchant_id = :hv_merchant_id
+		and	amm_disabled = 0
+		and	amm_pool_id = amp_pool_id
+		and	amp_disabled = 0
+		and	amp_match_rule_type = amr_type
+		order by amm_priority desc, amr_order asc;
+
+	EXEC SQL OPEN c_cursor;
+
+	for (;;) {
+		EXEC SQL FETCH c_cursor
+		INTO	:v_pool_id:ind_pool_id,
+			:v_match_rule_type:ind_match_rule_type,
+			:v_tag_name:ind_tag_name;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+/* pool_id */
+		if (ind_pool_id >= 0) {
+			if (iCnt == 1) {
+DEBUGLOG(("GetAutoMatchCriteria: pool_id = [%d]\n", v_pool_id));
+				PutField_Int(myHash, "pool_id", v_pool_id);
+				iLastPoolId = v_pool_id;
+				iIndex = 0;
+			} else {
+				if (v_pool_id != iLastPoolId) {
+					PutField_Int(myHash, "field_cnt", iIndex);
+					RecordSet_Add(myRec, myHash);
+DEBUGLOG(("GetAutoMatchCriteria: hash added - pool_id = [%d]\n", iLastPoolId));
+DEBUGLOG(("\n"));
+					myHash = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(myHash, 0);
+DEBUGLOG(("GetAutoMatchCriteria: pool_id = [%d]\n", v_pool_id));
+					PutField_Int(myHash, "pool_id", v_pool_id);
+					iLastPoolId = v_pool_id;
+					iIndex = 0;
+				}
+			}
+		}
+
+		iIndex++;
+
+/* match_rule_type */
+		if (ind_match_rule_type >= 0) {
+			v_match_rule_type.arr[v_match_rule_type.len] = '\0';
+			sprintf(csTag, "match_rule_type_%d", iIndex);
+DEBUGLOG(("GetAutoMatchCriteria: [%s] = [%s]\n", csTag, (const char*)v_match_rule_type.arr));
+			PutField_CString(myHash, csTag, (const char*)v_match_rule_type.arr);
+		}
+
+/* tag_name */
+		if (ind_tag_name >= 0) {
+			v_tag_name.arr[v_tag_name.len] = '\0';
+			sprintf(csTag, "tag_name_%d", iIndex);
+DEBUGLOG(("GetAutoMatchCriteria: [%s] = [%s]\n", csTag, (const char*)v_tag_name.arr));
+			PutField_CString(myHash, csTag, (const char*)v_tag_name.arr);
+		}
+	}
+
+	EXEC SQL CLOSE c_cursor;
+
+	if (iCnt > 0 ) {
+		PutField_Int(myHash, "field_cnt", iIndex);
+		RecordSet_Add(myRec, myHash);
+DEBUGLOG(("GetAutoMatchCriteria: hash added - pool_id = [%d]\n", iLastPoolId));
+DEBUGLOG(("\n"));
+		iRet = PD_OK;
+	} else {
+DEBUGLOG(("GetAutoMatchCriteria not found\n"));
+//ERRLOG("OLAutoMatchCriteria:: GetAutoMatchCriteria not found for [%s]\n", csMerchantId);
+		iRet = PD_ERR;
+	}
+
+	FREE_ME(csTag);
+
+DEBUGLOG(("GetAutoMatchCriteria Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+getautomatchcriteria_error:
+DEBUGLOG(("getautomatchcriteria_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLAutoMatchCriteria getautomatchcriteria_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL CLOSE c_cursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+

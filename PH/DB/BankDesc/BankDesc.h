@@ -1,0 +1,36 @@
+#ifndef _BANK_DESC_H_
+#define _BANK_DESC_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
+
+int FindBankCode(const unsigned char* csBankName,
+		const unsigned char* csCountry,
+		char* csBankCode);
+
+
+int GetBankCountry(const unsigned char* csBankCode,
+                   unsigned char* csCountry);
+
+int GetBankDetail(const unsigned char* csBankCode,
+                   hash_t* hRec);
+
+int GetBankAbbrevName(const unsigned char* csBankCode,
+                        hash_t *hRec);
+
+int FindBankCodeByBankAbbrevName(const unsigned char* csAbbrevName,
+                        char* csBankCode);
+
+int FindOfflineBankByBankAbbrevName(const unsigned char* csAbbrevName,
+                                char* csBankCode);
+
+int GetBankByBankName(const char* csBankName, hash_t* hRec);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

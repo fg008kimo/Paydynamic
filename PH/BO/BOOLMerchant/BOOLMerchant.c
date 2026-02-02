@@ -1,0 +1,370 @@
+/*
+Partnerdelight (c)2013. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/09/02              Cody Chan
+Amend GetDepositBankAcct                           2014/09/02              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOOLMerchant.h"
+
+char    cDebug;
+
+void BOOLMerchant(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+OBJPTR(DB);
+
+
+int GetMerchantTxnInfo(hash_t *hContext,
+                const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+	char*	csServiceCode;
+	char*	csMerchantId;
+	char*	csTmp;
+	char*	csMerchantClientId;
+	int	iTmp;
+	double	dTmp;
+	hash_t  *hClient;	
+
+	hash_t  *hRec;	
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	if (GetField_CString(hRequest,"service_code",&csServiceCode)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() service_code = [%s]\n",csServiceCode));
+	}
+	else  {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() service_code is missing!!!\n"));
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() service_code is missing!!!\n");
+		iRet = INT_ERR;
+	}
+
+	if (GetField_CString(hRequest,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() merchant_id = [%s]\n",csMerchantId));
+	}
+	else 
+		iRet = INT_MERCHANT_ID_NOT_FOUND;
+
+
+
+	if (iRet == PD_OK ) {
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchDetail","GetMerchant");
+         	if ((*DBObjPtr)(csMerchantId,
+       	                 rRecordSet) != PD_OK) {
+               	 	iRet = INT_MERCHANT_ID_NOT_FOUND;
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() Merchant Account [%s] not found\n",csMerchantId);
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() Merchant Account [%s] not found\n",csMerchantId));
+               	}               
+		else {
+			
+               	 	iRet = INT_MERCHANT_ID_NOT_FOUND;
+                	hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_Int(hRec,"disabled",&iTmp)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetMerchantDetail - disabled = [%d]\n",iTmp));
+				}
+				if(GetField_CString(hRec,"status",&csTmp)){
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetMerchantDetail - status = [%s]\n",csTmp));
+				}
+
+				if (iTmp != PD_DISABLED) {
+					if(!strcmp(csTmp,PD_ACC_OPEN)){
+						iRet = PD_OK;
+						if (GetField_CString(hRec,"merchant_name",&csTmp)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetMerchantDetail - merchant_name = [%s]\n",csTmp));
+						}
+						if (GetField_CString(hRec,"merchant_client_id",&csMerchantClientId)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetMerchantDetail - merchant_client_id = [%s]\n",csMerchantClientId));
+							PutField_CString(hContext,"merchant_client_id",csMerchantClientId);
+						}
+						if (GetField_Double(hRec,"approximate_fee_rate",&dTmp)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetMerchantDetail - approximate_fee_rate = [%lf]\n",dTmp));
+							PutField_Double(hContext,"approximate_fee_rate",dTmp);
+						}
+					}
+					else{
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() Merchant Account [%s] not opened\n",csMerchantId);
+						iRet = INT_ACCOUNT_DISABLED;
+					}
+				}
+				else {
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() Merchant Account [%s] disabled\n",csMerchantId);
+					iRet = INT_ACCOUNT_DISABLED;
+				}
+
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	//RecordSet_Destroy(rRecordSet);
+
+
+	if(iRet == PD_OK){
+		hClient = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hClient,0);
+		DBObjPtr = CreateObj(DBPtr,"DBClients","GetClients");
+		if ((*DBObjPtr)(csMerchantClientId,hClient) != PD_OK){
+			iRet = INT_ERR;
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() Client ID for Account[%s] not found\n",csMerchantId);
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() Client ID Account[%s] not found\n",csMerchantId));
+		}
+		else{
+			if (GetField_CString(hClient,"status",&csTmp)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetClients - status = [%s]\n",csTmp));
+					if(strcmp(csTmp,PD_ACC_OPEN)){
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() Client Account [%s] not opened\n",csMerchantClientId);
+						iRet = INT_ACCOUNT_DISABLED;
+					}
+			}
+		}
+		FREE_ME(hClient);
+	}
+
+/*	if (iRet == PD_OK ) {
+		recordset_init(rRecordSet,0);
+		DBObjPtr = CreateObj(DBPtr,"DBMerchKeys","GetMerchantKey");
+                if ((*DBObjPtr)(csMerchantId,"PTK",rRecordSet) != PD_OK) {
+			iRet = INT_ERR;
+ERRLOG("BOOLMerchant::GetMerchantTxnInfo() Merchant Key for Account[%s] not found\n",csMerchantId);
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() Merchant key for Account[%s] not found\n",csMerchantId));
+		}
+		else{
+			iRet = INT_ERR;
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while(hRec){
+				if (GetField_CString(hRec,"key_value",&csTmp)) {
+DEBUGLOG(("BOOLMerchant::GetMerchantTxnInfo() GetMerchantKey - merchant_key_value = [%s]\n",csTmp));
+					PutField_CString(hContext,"merchant_key",csTmp);
+					iRet = PD_OK;
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+*/
+
+	if (iRet != PD_OK) {
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	//FREE_ME(hClient);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+int GetMerchantDetail(hash_t *hContext,
+                const hash_t* hRequest)
+{
+        int     iRet = PD_OK;
+	char*	csMerchantId;
+	char*	csMerchantClientId;
+	char*	csTmp;
+	double	dTmp;
+	int	iTmp;
+
+	hash_t  *hClient;	
+	hash_t  *hRec;	
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	if (GetField_CString(hRequest,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("BOOLMerchant: GetMerchatDetail- merchant_id = [%s]\n",csMerchantId));
+	}
+	else 
+		iRet = INT_MERCHANT_ID_NOT_FOUND;
+	if (iRet == PD_OK ) {
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchDetail","GetMerchant");
+         	if ((unsigned long)(*DBObjPtr)(csMerchantId,
+       	                 rRecordSet) != PD_OK) {
+               	 	iRet = INT_MERCHANT_ID_NOT_FOUND;
+ERRLOG("BOOLMerchant: Merchant Account [%s] not found\n",csMerchantId);
+DEBUGLOG(("BOOLMerchant: Merchant Account [%s] not found\n",csMerchantId));
+               	}               
+		else {
+			
+               	 	iRet = INT_MERCHANT_ID_NOT_FOUND;
+                	hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				iRet = PD_OK;
+				if (GetField_Int(hRec,"disabled",&iTmp)) {
+DEBUGLOG(("BOOLMerchant: GetMerchantDetail - disabled = [%d]\n",iTmp));
+				}
+				if(GetField_CString(hRec,"status",&csTmp)){
+DEBUGLOG(("BOOLMerchant: GetMerchantDetail - status = [%s]\n",csTmp));
+					PutField_CString(hContext,"merchant_status",csTmp);
+				}
+				if (iTmp != PD_DISABLED) {
+					if(strcmp(csTmp,PD_ACC_OPEN)){
+DEBUGLOG(("BOOLMerchant:: Merchant Account [%s] not opened\n",csMerchantId));
+//ERRLOG("BOOLMerchant:: Merchant Account [%s] not opened\n",csMerchantId);
+//						iRet = INT_ACCOUNT_DISABLED;
+					}
+				}
+				else {
+ERRLOG("BOOLMerchant:: Merchant Account [%s] disabled\n",csMerchantId);
+					iRet = INT_ACCOUNT_DISABLED;
+				}
+
+				if (GetField_CString(hRec,"merchant_name",&csTmp)) {
+DEBUGLOG(("BOOLMerchant: GetMerchantDetail - merchant_name = [%s]\n",csTmp));
+				}
+				if (GetField_CString(hRec,"merchant_client_id",&csMerchantClientId)) {
+DEBUGLOG(("BOOLMerchant: GetMerchantDetail - merchant_client_id = [%s]\n",csMerchantClientId));
+					PutField_CString(hContext,"merchant_client_id",csMerchantClientId);
+				}
+				if (GetField_Double(hRec,"approximate_fee_rate",&dTmp)) {
+DEBUGLOG(("BOOLMerchant: GetMerchantDetail - approximate_fee_rate = [%lf]\n",dTmp));
+					PutField_Double(hContext,"approximate_fee_rate",dTmp);
+				}
+				if (GetField_Int(hRec,"po_checksum",&iTmp)) {
+DEBUGLOG(("BOOLMerchant: GetMerchantDetail - payout_checksum = [%d]\n",iTmp));
+					PutField_Int(hContext,"po_checksum",iTmp);
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+	if(iRet == PD_OK){
+		hClient = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(hClient,0);
+		DBObjPtr = CreateObj(DBPtr,"DBClients","GetClients");
+		if ((*DBObjPtr)(csMerchantClientId,hClient) != PD_OK){
+			iRet = INT_ERR;
+ERRLOG("BOOLMerchant::Client ID for Account[%s] not found\n",csMerchantId);
+DEBUGLOG(("BOOLMerchant::Client ID Account[%s] not found\n",csMerchantId));
+		}
+		else{
+			if (GetField_CString(hClient,"status",&csTmp)) {
+DEBUGLOG(("BOOLMerchant: GetClients - status = [%s]\n",csTmp));
+					if(strcmp(csTmp,PD_ACC_OPEN)){
+ERRLOG("BOOLMerchant::Client Account [%s] not opened\n",csMerchantClientId);
+						iRet = INT_ACCOUNT_DISABLED;
+					}
+			}
+		}
+	}
+/*
+	if (iRet == PD_OK ) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchKeys","GetMerchantKey");
+                if ((*DBObjPtr)(csMerchantId,"PTK",rRecordSet) != PD_OK) {
+			iRet = INT_ERR;
+ERRLOG("BOOLMerchant: Merchant Key for Account[%s] not found\n",csMerchantId);
+DEBUGLOG(("BOOLMerchant: Merchant key for Account[%s] not found\n",csMerchantId));
+		}
+		else{
+			iRet = INT_ERR;
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while(hRec){
+				if (GetField_CString(hRec,"key_value",&csTmp)) {
+DEBUGLOG(("BOOLMerchant: GetMerchantKey - merchant_key_value = [%s]\n",csTmp));
+					PutField_CString(hContext,"merchant_key",csTmp);
+					iRet = PD_OK;
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+*/
+	if (iRet != PD_OK) {
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int GetDepositBankAcct(hash_t* hContext,
+			const hash_t *hRequest,
+			hash_t* hResponse)
+{
+	int iRet = PD_OK;
+
+	char *csMerchantId;
+	char *csInIntBankCode;
+	char *csCountry;
+	char *csAcctCcy;
+	char *csServiceCode;
+
+DEBUGLOG(("GetDepositBankAcct: Begin\n"));
+
+	if (GetField_CString(hContext, "merchant_id", &csMerchantId)) {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() merchant_id = [%s]\n", csMerchantId));
+	} else {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() merchant_id not found\n"));
+		iRet = INT_MERCHANT_ID_NOT_FOUND;
+	}
+
+	if (GetField_CString(hRequest, "int_bank_code", &csInIntBankCode)) {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() in_int_bank_code = [%s]\n", csInIntBankCode));
+	} else {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() bank_code not found\n"));
+		iRet = INT_BANK_CODE_NOT_FOUND;
+	}
+
+	if (GetField_CString(hContext, "org_txn_country", &csCountry)) {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() country = [%s]\n", csCountry));
+	} else {
+		iRet = INT_TXN_COUNTRY_NOT_FOUND;
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() org_txn_country not found\n"));
+	}
+
+	if (GetField_CString(hContext, "txn_ccy", &csAcctCcy)) {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() acct_ccy = [%s]\n", csAcctCcy));
+	} else {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() txn_ccy not found\n"));
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+	}
+
+	if (GetField_CString(hContext, "org_service_code", &csServiceCode)) {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() service_code = [%s]\n", csServiceCode));
+	} else {
+DEBUGLOG(("BOOLMerchant:: GetDepositBankAcct() service_code not found\n"));
+		iRet = INT_SERVICE_CODE_MISSING;
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOOLMerchant:: call DBOLMerchantBankAcct::GetAvaDepositBankAccts()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLMerchantBankAcct", "GetAvaDepositBankAccts");
+		if ((*DBObjPtr)(csMerchantId, csInIntBankCode, csCountry, csAcctCcy, csServiceCode, PD_AC_ACTION_DEPOSIT_API_REQ,hResponse) != PD_OK) {
+DEBUGLOG(("BOOLMerchant:: call DBOLOtherBankMapping::GetOtherBankList()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLOtherBankMapping", "GetOtherBankList");
+			if ((*DBObjPtr)(csMerchantId, csCountry, csAcctCcy, csServiceCode, PD_AC_ACTION_DEPOSIT_API_REQ, hResponse) != PD_OK) {
+DEBUGLOG(("BOOLMerchant:: call DBOLMerchantBankAcct::GetAvaDepositBankAcctsRandom()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLMerchantBankAcct", "GetAvaDepositBankAcctsRandom");
+				if ((*DBObjPtr)(csMerchantId, csCountry, csAcctCcy, csServiceCode, PD_AC_ACTION_DEPOSIT_API_REQ, hResponse ) != PD_OK) {
+DEBUGLOG(("BOOLMerchant:: no available bank acct found\n"));
+					iRet = PD_ERR;
+				}
+			}
+		}
+	}
+
+DEBUGLOG(("BOOLMerchant:: normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}

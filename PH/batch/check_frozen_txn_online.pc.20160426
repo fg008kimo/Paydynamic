@@ -1,0 +1,485 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/03/31              Dirk Wong 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+//Input argument
+char cs_date[PD_DATE_LEN+1];
+char cs_mode[PD_TMP_BUF_LEN+1];
+char cs_start_time[PD_DATE_LEN+PD_TIME_LEN+1];
+char cs_end_time[PD_DATE_LEN+PD_TIME_LEN+1];
+
+
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+char cDebug;
+int iCnt=0;
+
+int iDynCnt=0;
+
+OBJPTR(BO);
+OBJPTR(DB);
+
+
+//function declare
+int parse_arg(int argc,char **argv);
+int InsertTxnAlertLog(const char* csDate);
+int SendEmail();
+
+
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	if (iRet == SUCCESS) {
+		iRet = InsertTxnAlertLog(cs_date);
+	}
+
+	if (iRet == SUCCESS) {
+		iRet = SendEmail();
+	}
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int InsertTxnAlertLog(const char* csDate)
+{
+	int iRet = SUCCESS;
+
+	hash_t*	hTxnAlertLog = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnAlertLog,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO inserttxn_err;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("check_frozen_txn_online::InsertTxn start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_date[PD_DATE_LEN];
+		varchar	hv_rpt_type[PD_EML_FUNCT_LEN];
+		char	hv_ar_ind;
+
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		short	ind_txn_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_date.len = strlen(csDate);
+	memcpy(hv_date.arr,csDate,hv_date.len);
+
+	hv_rpt_type.len = strlen(PD_EML_FUNCT_FROZEN_TXN_ONLINE);
+	memcpy(hv_rpt_type.arr,PD_EML_FUNCT_FROZEN_TXN_ONLINE,hv_rpt_type.len);
+
+	hv_ar_ind = PD_ACCEPT;
+
+	EXEC SQL DECLARE c_cursor_gettxnlist CURSOR FOR
+		SELECT	th_txn_id
+		  FROM	txn_header
+		 WHERE	th_approval_date >= :hv_date
+		   AND	th_ar_ind = :hv_ar_ind
+		   AND	th_txn_code in (SELECT tatm_txn_code FROM def_txn_alert_txncode_map WHERE tatm_report_type = :hv_rpt_type)
+		   AND	NOT EXISTS
+			    (SELECT null FROM TXN_ALERT_LOG t WHERE t.tal_report_type = :hv_rpt_type
+								AND t.tal_txn_id = th_txn_id)
+		 ORDER BY
+			th_approval_timestamp;
+
+	EXEC SQL OPEN c_cursor_gettxnlist;
+	do {
+		EXEC SQL FETCH c_cursor_gettxnlist INTO
+			:v_txn_id:ind_txn_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		hash_init(hTxnAlertLog,0);
+
+		PutField_CString(hTxnAlertLog,"report_type",PD_EML_FUNCT_FROZEN_TXN_ONLINE);
+
+		if (ind_txn_id >= 0) {
+			v_txn_id.arr[v_txn_id.len] = '\0';
+			PutField_CString(hTxnAlertLog,"txn_seq",(const char*)v_txn_id.arr);
+		}
+
+		PutField_Int(hTxnAlertLog,"alert_sent",PD_FALSE);
+
+DEBUGLOG(("Txn [%s] ready to add\n",(const char*)v_txn_id.arr));
+
+		DBObjPtr = CreateObj(DBObjPtr,"DBTxnAlertLog","Add");
+		iRet = (unsigned long)((*DBObjPtr)(hTxnAlertLog));
+
+		if (iRet!=PD_OK) {
+DEBUGLOG(("Call DBTxnAlertLog::Add FAILED!\n"));
+ERRLOG("check_frozen_txn_online: Call DBTxnAlertLog::Add FAILED!\n");
+		} else {
+DEBUGLOG(("Call DBTxnAlertLog::Add Success\n"));
+		}
+
+	} while (PD_TRUE && iRet == SUCCESS);
+	EXEC SQL CLOSE c_cursor_gettxnlist;
+
+	FREE_ME(hTxnAlertLog);
+
+	return iRet;
+
+inserttxn_err:
+DEBUGLOG(("InsertTxn() error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxnlist;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int SendEmail()
+{
+	int iRet = SUCCESS;
+
+	char	csTxnId[PD_TXN_SEQ_LEN+1];
+
+	hash_t *hContext;
+	hash_t *hTxnToUpdate;
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+	hTxnToUpdate = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnToUpdate,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("check_frozen_txn_online:: SendEmail Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_rpt_type[PD_EML_FUNCT_LEN];
+		int	hv_alert_sent;
+
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		varchar	v_txn_type[PD_DESC_LEN+1];
+		varchar	v_party_name[PD_DESC_LEN+1];
+		varchar	v_party_id[PD_MERCHANT_ID_LEN+1];
+		varchar	v_txn_ccy[PD_CCY_ID_LEN+1];
+		double	v_txn_amt;
+		varchar	v_amt_type[PD_AMT_TYPE_LEN+1];
+		varchar v_approval_ts[PD_TIMESTAMP_LEN+1];
+		varchar v_create_user[PD_USER_LEN+1];
+
+		short	ind_txn_id = -1;
+		short	ind_txn_type = -1;
+		short	ind_party_name = -1;
+		short	ind_party_id = -1;
+		short	ind_txn_ccy = -1;
+		short	ind_txn_amt = -1;
+		short	ind_amt_type = -1;
+		short	ind_approval_ts = -1;
+		short	ind_create_user = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_rpt_type.len = strlen(PD_EML_FUNCT_FROZEN_TXN_ONLINE);
+	memcpy(hv_rpt_type.arr,PD_EML_FUNCT_FROZEN_TXN_ONLINE,hv_rpt_type.len);
+
+	hv_alert_sent = PD_FALSE;
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+
+		SELECT	t2.tal_txn_id,
+			t2.tc_desc,
+			DECODE(tmp_party_type,	'M', (select short_name from MERCH_DETAIL where TH_MERCHANT_ID = MERCHANT_ID),
+						'P', psp_name ,
+						null) adjust_party,
+			DECODE(tmp_party_type,	'M',TH_MERCHANT_ID,
+						'P',tp_psp_id,
+						null) party_id,
+			t2.txn_ccy,
+			t2.amount,
+			tatm_disp_amt_type,
+			approval_ts,
+			th_create_user
+		  FROM 	(SELECT	th_approval_timestamp,
+				TH_MERCHANT_ID,
+				t3.tp_psp_id,
+				psp_name,
+				tal_txn_id,
+				tc_desc,
+				DECODE(tatm_txn_amt_type,'T',te_party_type,
+							 'N',tatm_disp_party_type,
+							  null) tmp_party_type, 
+				DECODE(tatm_txn_amt_type,'T',te_ccy,
+							 'N',th_net_ccy,
+							 null) txn_ccy,
+				DECODE(tatm_txn_amt_type,'T',te_amount,
+							 'N',th_net_amount,
+							 0) amount,
+				tatm_disp_amt_type,
+				TO_CHAR(th_approval_timestamp,'MM/DD/YYYY HH24:MI') approval_ts,
+				th_create_user,
+				TO_CHAR(th_approval_timestamp,'YYYY/MM/DD') approval_date
+			   FROM	txn_alert_log,
+				txn_header,
+				txn_code,
+				(SELECT	psp_name, tp_psp_id, tp_txn_id
+				   FROM	psp_detail, txn_psp_detail
+				  WHERE	tp_psp_id = psp_id) t3,
+				(SELECT	te_txn_id, te_party_type, te_ccy, te_txn_element_type, te_amount, tatm_txn_amt_type, tatm_disp_party_type, tatm_txn_code, tatm_disp_amt_type
+				   FROM	txn_elements, def_txn_alert_txncode_map
+				  WHERE	te_txn_element_type = tatm_element_type (+)) t1
+			  WHERE	tal_report_type = :hv_rpt_type
+			    AND	tal_txn_id=th_txn_id
+			    AND	tal_txn_id=tp_txn_id(+)
+			    AND	tatm_txn_code=tc_code
+			    AND	th_txn_code= tatm_txn_code
+			    AND	tal_alert_sent = :hv_alert_sent
+			    AND	tal_txn_id=te_txn_id (+)) t2
+			  ORDER BY
+				th_approval_timestamp;
+
+
+	EXEC SQL OPEN c_cursor_getinfo;
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_txn_id:ind_txn_id,
+			:v_txn_type:ind_txn_type,
+			:v_party_name:ind_party_name,
+			:v_party_id:ind_party_id,
+			:v_txn_ccy:ind_txn_ccy,
+			:v_txn_amt:ind_txn_amt,
+			:v_amt_type:ind_amt_type,
+			:v_approval_ts:ind_approval_ts,
+			:v_create_user:ind_create_user;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+DEBUGLOG(("No data found!\n"));
+			} else {
+DEBUGLOG(("No more data found!\n"));
+			}
+			break;
+		}
+
+DEBUGLOG(("Record #%d\n",iCnt));
+
+		if (ind_txn_id >= 0) {
+			sprintf(csTag,"ftxn_id-%d",iCnt);
+			sprintf(csTxnId,"%.*s",v_txn_id.len,v_txn_id.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTxnId);
+		}
+
+		if (ind_txn_type >= 0) {
+			sprintf(csTag,"ftxn_type-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_txn_type.len,v_txn_type.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_party_name >= 0) {
+			sprintf(csTag,"fparty_name-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_party_name.len,v_party_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_party_id >= 0) {
+			sprintf(csTag,"fparty_id-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_party_id.len,v_party_id.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_txn_ccy >= 0) {
+			sprintf(csTag,"ftxn_ccy-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_txn_ccy.len,v_txn_ccy.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_txn_amt >= 0) {
+			sprintf(csTag,"ftxn_amt-%d",iCnt);
+			iDynCnt = set_tpl_dyn_double(hContext,iDynCnt,csTag,"DOU","stbl_body-0",v_txn_amt);
+		}
+
+		if (ind_amt_type >= 0) {
+			sprintf(csTag,"famt_type-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_amt_type.len,v_amt_type.arr);
+			if (!strcmp(csTmp,PD_CR))
+				sprintf(csTmp,"%s","Credit");
+			else if (!strcmp(csTmp,PD_DR))
+				sprintf(csTmp,"%s","Debit");
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_approval_ts >= 0) {
+			sprintf(csTag,"fapproval_ts-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_approval_ts.len,v_approval_ts.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_create_user >= 0) {
+			sprintf(csTag,"fcreate_user-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_create_user.len,v_create_user.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		sprintf(csTag,"txnid_%d",iCnt);
+		PutField_CString(hTxnToUpdate,csTag,csTxnId);
+
+		iCnt++;
+DEBUGLOG(("Record add [%s]!\n",csTxnId));
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+	if (iCnt > 0) {
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+		//sprintf(csTmp, "Alert for transaction created on system");
+		//iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+		PutField_CString(hContext,"source","BATCH");
+		PutField_CString(hContext,"funct",PD_EML_FUNCT_FROZEN_TXN_ONLINE);
+		PutField_Char(hContext,"party_type",'G');
+		PutField_CString(hContext,"party_id","000");
+
+		PutField_Int(hContext,"total_dyn",iDynCnt);
+
+		BOObjPtr = CreateObj(BOPtr,"BOAlertEmail","ProcessTpl");
+		if((unsigned long)((*BOObjPtr)(hContext) != PD_OK)){
+			iRet=INT_CODE_ERROR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_frozen_txn_online BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+		}
+		else
+		{
+DEBUGLOG(("BOAlertEmail:ProcessTpl Success\n"));
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		int i=0;
+		char *csTmpTxnId;
+		for (i=0;i<iCnt;i++) {
+			sprintf(csTag,"txnid_%d",i);
+			GetField_CString(hTxnToUpdate,csTag,&csTmpTxnId);
+DEBUGLOG(("TxnID To Update SendAlertTS: [%s]\n",csTmpTxnId));
+
+			PutField_CString(hTxnToUpdate,"report_type",PD_EML_FUNCT_FROZEN_TXN_ONLINE);
+			PutField_CString(hTxnToUpdate,"txn_seq",csTmpTxnId);
+			PutField_CString(hTxnToUpdate,"update_user",PD_UPDATE_USER);
+
+			DBObjPtr = CreateObj(DBPtr,"DBTxnAlertLog","UpdateSendAlertTS");
+			iRet = (unsigned long)((*DBObjPtr)(hTxnToUpdate));
+
+			if (iRet!=PD_OK) {
+DEBUGLOG(("Call DBTxnAlertLog::UpdateSendAlertTS FAILED!\n"));
+ERRLOG("check_frozen_txn_online: Call DBTxnAlertLog::UpdateSendAlertTS FAILED!\n");
+			} else {
+DEBUGLOG(("Call DBTxnAlertLog::UpdateSendAlertTS Success\n"));
+			}
+		}
+	}
+
+
+DEBUGLOG(("check_frozen_txn_online normal exit!\n"));
+
+	FREE_ME(hContext);
+	FREE_ME(hTxnToUpdate);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("check_frozen_txn_online error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+
+        char    c;
+	strcpy(cs_date,"");
+	strcpy(cs_mode,"");
+	strcpy(cs_start_time,"");
+	strcpy(cs_end_time,"");
+
+        if (argc < 4) {
+                return PD_ERR;
+        }
+        while ((c = getopt(argc,argv,"d:m:t:i:s:e:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_date,optarg);
+                                break;
+                        case 'm':
+                                strcpy(cs_mode,optarg);
+                                break;
+                        case 's':
+                                strcpy(cs_start_time,optarg);
+                                break;
+                        case 'e':
+                                strcpy(cs_end_time,optarg);
+                                break;
+                        default:
+                                return PD_ERR;
+                }
+        }
+
+	if (!strcmp(cs_date,""))
+		return FAILURE;
+	if (!strcmp(cs_mode,""))
+		return FAILURE;
+	if (!strcmp(cs_start_time,""))
+		return FAILURE;
+	if (!strcmp(cs_end_time,""))
+		return FAILURE;
+
+        return SUCCESS;
+}
+

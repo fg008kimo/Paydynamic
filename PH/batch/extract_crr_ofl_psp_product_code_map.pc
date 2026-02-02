@@ -1,0 +1,211 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   2015/03/10		   Dirk Wong
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	','
+
+OBJPTR(BO);
+
+char    cs_date[PD_DATE_LEN + 1];
+char	cs_mode[PD_DESC_LEN + 1];
+char    cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+int process_data(const char* csTxnDate, FILE *fp);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 3) {
+        printf("usage:  -d Date -m Mode(FULL/DELTA)\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+        char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+        FILE    *fp;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+		printf("usage:  -d Date -m Mode(FULL/DELTA)\n");
+                return (iRet);
+        }
+
+        char    cs_yyyy[PD_YYYY_LEN+1];
+        char    cs_yyyymm[PD_YYYY_LEN+PD_MM_LEN+1];
+        strncpy(cs_yyyy,cs_date,4);
+        strncpy(cs_yyyymm,cs_date,6);
+
+        sprintf(cs_outfile_name, "%s/%s/%s/%s/crr_ofl_psp_product_code_map_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+        
+        fp = fopen(cs_outfile_name,"w");
+        if (fp == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outfile_name));
+                return FAILURE;
+        }
+        
+        iRet = process_data(cs_date,fp);
+        fclose(fp);
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int process_data(const char* csTxnDate, FILE *fp)
+{               
+        int     iRet = SUCCESS;
+	char	csTmp[PD_TMP_BUF_LEN+1];
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_date[PD_DATE_LEN];
+
+		varchar	v_psp_id[PD_PSP_ID_LEN+1];
+		char	v_business_type;
+		varchar	v_product_code[PD_PRODUCT_CODE_LEN+1];
+
+		short	ind_psp_id = -1;
+		short	ind_business_type = -1;
+		short	ind_product_code = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_date.len = strlen((char*)cs_date);
+	memcpy(hv_date.arr,cs_date,hv_date.len);
+
+	if (!strcmp(cs_mode,"FULL")) {
+		memcpy(hv_date.arr,"19900101",hv_date.len);
+	};
+
+	EXEC SQL DECLARE c_cursor_getpsplist CURSOR FOR
+		SELECT	pm_psp_id,
+			pm_business_type,
+			pm_product_code
+		FROM	crr_psp_product_code_map
+		WHERE	pm_disabled = 0
+		  AND	pm_update_timestamp >= TO_DATE(:hv_date,'YYYYMMDD')
+		ORDER BY pm_psp_id;
+
+	EXEC SQL OPEN c_cursor_getpsplist;
+	do {
+		EXEC SQL FETCH c_cursor_getpsplist
+		INTO	:v_psp_id:ind_psp_id,
+			:v_business_type:ind_business_type,
+			:v_product_code:ind_product_code;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 psp_id */
+		if (ind_psp_id >= 0) {
+			sprintf(csTmp,"%.*s",v_psp_id.len,v_psp_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		}
+		else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #1 business_type */
+		if (ind_business_type >= 0) {
+			fprintf(fp,"%c%c",v_business_type,PD_MY_DELIMITOR);
+		}
+		else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #2 record_date */
+		fprintf(fp,"%s%c",cs_date,PD_MY_DELIMITOR);
+
+/* Field #3 product_code */
+		if (ind_product_code >= 0) {
+			sprintf(csTmp,"%.*s",v_product_code.len,v_product_code.arr);
+			fprintf(fp,"%s",csTmp);
+		}
+
+/* new line */
+		fprintf(fp,"\n");
+
+ 	} while (PD_TRUE);
+	EXEC SQL CLOSE c_cursor_getpsplist;
+
+        return iRet;
+
+sql_error:
+DEBUGLOG(("extract_crr_ofl_psp_product_map error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getpsplist;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_date,"");
+	strcpy(cs_mode,"");
+
+        while ((c = getopt(argc,argv,"d:m:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+			case 'm':
+				strcpy(cs_mode, optarg);
+				break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if ((!strcmp(cs_date,"")) || (!strcmp(cs_mode,"")))
+                return FAILURE;
+
+        return SUCCESS;
+}
+

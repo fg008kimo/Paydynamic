@@ -1,0 +1,418 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission 
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/01/27              Virginia Yun
+Add Function CheckPayoutReconMulti                 2015/06/24              Virginia Yun
+Add Function GetReconPattern                       2015/07/20              David Wong
+SQL Tuning for GetReconPattern                     2018/06/19              Virginia Yun
+*/ 
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <sqlca.h>
+#include "common.h"
+#include "utilitys.h"
+#include "OLPayoutReturn.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+char    cDebug;
+
+void OLPayoutReturn(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+int CheckPayoutRtnAllow(const char* csTxnSeq,
+			hash_t	*hRls)
+{
+	int	iRet = PD_ERR;
+
+
+        EXEC SQL WHENEVER SQLERROR GOTO chkpayoutrtn_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		short	hv_return_value;
+
+		varchar	hv_txn_seq[PD_TXN_SEQ_LEN];
+
+		int	v_recon_cnt;
+		int	v_unrecon_cnt;
+		int	v_level;
+
+		short	ind_recon_cnt = -1;
+		short	ind_unrecon_cnt = -1;
+		short	ind_level = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_txn_seq.len = strlen((const char*)csTxnSeq);
+        memcpy(hv_txn_seq.arr, csTxnSeq, hv_txn_seq.len);
+DEBUGLOG(("CheckPayoutRtnAllow: txn_Seq = [%.*s]\n", hv_txn_seq.len, hv_txn_seq.arr)); 
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_payout_rtn_allow_chk(:hv_txn_seq,
+									:v_recon_cnt:ind_recon_cnt,
+									:v_unrecon_cnt:ind_unrecon_cnt,
+									:v_level:ind_level);
+
+		END;
+	END-EXEC;	
+
+        if (hv_return_value == SP_OK) {
+DEBUGLOG(("CheckPayoutRtnAllow:: Allow To PayoutRtn\n"));
+
+		if (ind_recon_cnt >= 0) {
+DEBUGLOG(("CheckPayoutRtnAllow:: recon_cnt [%d]\n", v_recon_cnt));
+			PutField_Int(hRls, "recon_cnt", v_recon_cnt);
+		}
+
+
+		if (ind_unrecon_cnt >= 0) {
+DEBUGLOG(("CheckPayoutRtnAllow:: unrecon_cnt [%d]\n", v_unrecon_cnt));
+			PutField_Int(hRls, "unrecon_cnt", v_unrecon_cnt);
+		}
+
+		if (ind_level >= 0) {
+DEBUGLOG(("CheckPayoutRtnAllow:: level [%d]\n", v_level));
+			PutField_Int(hRls, "level", v_level);
+		}
+
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("CheckPayoutRtnAllow:: Not Allow To PayoutRtn\n"));
+	}
+
+DEBUGLOG(("CheckPayoutRtnAllow PayoutRtn iRet = [%d]\n",iRet));
+
+	return iRet;
+
+chkpayoutrtn_error:
+DEBUGLOG(("chkpayoutrtn_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;
+}
+
+int GetPayoutRtnList(const char* csTxnSeq,
+			recordset_t *myRec)
+{
+	hash_t	*myHash;
+	int	iCnt = 0;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getpayoutrtnlist_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_txn_seq[PD_TXN_SEQ_LEN];
+
+		varchar	v_txn_seq[PD_TXN_SEQ_LEN + 1];
+		varchar v_txn_code[PD_TXN_CODE_LEN + 1];
+		char	v_status;
+		char	v_ar_ind;
+		char	v_recon_status;
+
+		short	ind_txn_seq = -1;
+		short	ind_txn_code = -1;
+		short	ind_status = -1;
+		short	ind_ar_ind = -1;
+		short	ind_recon_status = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_txn_seq.len = strlen(csTxnSeq);
+	memcpy(hv_txn_seq.arr, csTxnSeq, hv_txn_seq.len);
+
+	EXEC SQL DECLARE c_cursor_get_payoutrtnlist CURSOR FOR
+		SELECT txn_id,
+                       txn_code,
+                       txn_status,
+                       txn_ar_ind,
+		       txn_recon_status
+                FROM   table(sp_ol_payout_rtn_get_list(:hv_txn_seq))
+                order by txn_id;
+
+	EXEC SQL OPEN c_cursor_get_payoutrtnlist;
+	do {
+		EXEC SQL FETCH c_cursor_get_payoutrtnlist
+		INTO	:v_txn_seq:ind_txn_seq,
+			:v_txn_code:ind_txn_code,
+			:v_status:ind_status,
+			:v_ar_ind:ind_ar_ind,
+			:v_recon_status:ind_recon_status;
+		
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash,0);
+
+		if (ind_txn_seq >= 0) {
+			v_txn_seq.arr[v_txn_seq.len] ='\0';
+			PutField_CString(myHash,"txn_seq",(const char*)v_txn_seq.arr);
+DEBUGLOG(("GetPayoutRtnList txn_seq = [%s]\n",v_txn_seq.arr));
+		}
+
+		if (ind_txn_code >= 0) {
+			v_txn_code.arr[v_txn_code.len] ='\0';
+			PutField_CString(myHash,"txn_code",(const char*)v_txn_code.arr);
+DEBUGLOG(("GetPayoutRtnList txn_code = [%s]\n",v_txn_code.arr));
+		}
+
+		if (ind_status >= 0) {
+			 PutField_Char(myHash,"status",v_status);
+DEBUGLOG(("GetPayoutRtnList status = [%c]\n",v_status));
+		}
+
+		if (ind_ar_ind >= 0) {
+			 PutField_Char(myHash,"ar_ind",v_ar_ind);
+DEBUGLOG(("GetPayoutRtnList ar_ind = [%c]\n",v_ar_ind));
+		}
+
+		if (ind_recon_status >= 0) {
+			 PutField_Char(myHash,"recon_status",v_recon_status);
+DEBUGLOG(("GetPayoutRtnList recon_status = [%c]\n",v_recon_status));
+		}
+
+		RecordSet_Add(myRec, myHash);
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_get_payoutrtnlist;
+
+
+	if (iCnt > 0) {
+DEBUGLOG(("GetPayoutRtnList Normal Exit\n"));
+		return PD_OK;
+	} else {
+DEBUGLOG(("GetPayoutRtnList Normal Exit\n"));
+		return PD_ERR;
+	}
+
+getpayoutrtnlist_error:
+DEBUGLOG(("getpayoutrtnlist_error code %d\n", sqlca.sqlcode));
+ERRLOG("OLPayoutReturn::Getpayoutrtnlist_error code %d\n", sqlca.sqlcode);
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_get_payoutrtnlist;
+        return PD_ERR;
+
+}
+			
+
+int CheckPayoutReconMulti(const char* csTxnSeq)
+{
+	int     iRet = PD_ERR;
+
+	EXEC SQL WHENEVER SQLERROR GOTO chkpayoutreconmulti_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		short   hv_return_value;
+
+		varchar hv_txn_seq[PD_TXN_SEQ_LEN];
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_txn_seq.len = strlen((const char*)csTxnSeq);
+	memcpy(hv_txn_seq.arr, csTxnSeq, hv_txn_seq.len);
+DEBUGLOG(("CheckPayoutReconMulti: txn_Seq = [%.*s]\n", hv_txn_seq.len, hv_txn_seq.arr));
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_payout_rtn_rc_multi_chk(:hv_txn_seq);
+		END;
+	END-EXEC;
+
+	if (hv_return_value == SP_OK) {
+DEBUGLOG(("CheckPayoutReconMulti:: Allow To PayoutRtn\n"));
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("CheckPayoutReconMulti:: Not Allow To PayoutRtn\n"));
+	}
+
+DEBUGLOG(("CheckPayoutReconMulti iRet = [%d]\n",iRet));
+
+	return iRet;
+
+chkpayoutreconmulti_error:
+DEBUGLOG(("chkpayoutreconmulti_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLPayoutReturn::chkpayoutreconmulti_error code %d\n", sqlca.sqlcode);
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+int GetReconPattern(hash_t *hTxn, recordset_t *myRec)
+{
+	hash_t *myHash;
+	int iCnt = 0;
+	char *csTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getreconpattern_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_merch_txn_seq[PD_TXN_SEQ_LEN];
+
+		varchar v_tracking_txn_seq[PD_TXN_SEQ_LEN + 1];
+		varchar	v_txn_seq[PD_TXN_SEQ_LEN + 1];
+		varchar	v_baid_txn_seq[PD_TXN_SEQ_LEN + 1];
+		varchar v_stmt_txn_seq[PD_TXN_SEQ_LEN + 1];
+		double	v_txn_amt;
+		varchar	v_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar v_bank_acct_num[PD_BANK_ACCT_NUM_LEN + 1];
+		varchar v_batch_id[PD_TXN_SEQ_LEN + 1];
+
+		short	ind_tracking_txn_seq = -1;
+		short	ind_txn_seq = -1;
+		short	ind_baid_txn_seq = -1;
+		short	ind_stmt_txn_seq = -1;
+		short	ind_txn_amt = -1;
+		short	ind_bank_code = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_batch_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hTxn, "upload_txn_id", &csTmp)) {
+		hv_merch_txn_seq.len = strlen(csTmp);
+		memcpy(hv_merch_txn_seq.arr, csTmp, hv_merch_txn_seq.len);
+DEBUGLOG(("GetReconPattern:: merch_txn_seq = [%.*s]\n", hv_merch_txn_seq.len, hv_merch_txn_seq.arr));
+	}
+
+	EXEC SQL DECLARE c_cursor_get_recon_pattern CURSOR FOR
+		SELECT	otp_tracking_txn_id, oth_txn_id, obt_txn_id, olsd_stat_txn_id, olsd_txn_amount, olsd_int_bank_code, olsd_bank_acct_num, obtr_batch_id
+		FROM	ol_txn_psp_detail,
+			ol_txn_header,
+			ol_stmt_txn_relation,
+			ol_baid_txn,
+			ol_statement_detail,
+			ol_bank_acct_id,
+			ol_batch_txn_relation
+		WHERE otp_grp_tracking_txn_id = :hv_merch_txn_seq
+		AND otp_txn_id = oth_txn_id
+		AND oth_status = 'C'
+		AND oth_ar_ind = 'A'
+		AND oth_recon_status = 'R'
+		AND NOT EXISTS
+			(SELECT 1
+			 FROM txn_code
+			 WHERE tc_code = oth_txn_code
+			 AND (tc_ofl_is_offset = 1 OR tc_ofl_is_void = 1))
+		AND oth_txn_id = ostp_txn_id
+		AND ostp_stmt_txn_id = obt_txn_id
+		AND obt_stat_txn_id = olsd_stat_txn_id
+		AND obt_baid = obai_baid
+		AND obai_category = 'ITL_GEN'
+		AND obtr_batch_type in ('G','C','I')
+		AND obtr_txn_level in ('T', 'S')
+		AND oth_txn_id = obtr_txn_id
+		ORDER BY obtr_batch_id, obtr_relation_timestamp;
+
+	EXEC SQL OPEN c_cursor_get_recon_pattern;
+	do {
+		EXEC SQL FETCH c_cursor_get_recon_pattern
+			INTO	:v_tracking_txn_seq:ind_tracking_txn_seq,
+				:v_txn_seq:ind_txn_seq,
+				:v_baid_txn_seq:ind_baid_txn_seq,
+				:v_stmt_txn_seq:ind_stmt_txn_seq,
+				:v_txn_amt:ind_txn_amt,
+				:v_bank_code:ind_bank_code,
+				:v_bank_acct_num:ind_bank_acct_num,
+				:v_batch_id:ind_batch_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash, 0);
+
+		if (ind_tracking_txn_seq >= 0) {
+			v_tracking_txn_seq.arr[v_tracking_txn_seq.len] = '\0';
+			PutField_CString(myHash, "tracking_txn_seq", (const char*)v_tracking_txn_seq.arr);
+DEBUGLOG(("GetReconPattern:: tracking_txn_seq[%d] = [%s]\n", iCnt, v_tracking_txn_seq.arr));
+		}
+
+		if (ind_txn_seq >= 0) {
+			v_txn_seq.arr[v_txn_seq.len] = '\0';
+			PutField_CString(myHash, "txn_seq", (const char*)v_txn_seq.arr);
+DEBUGLOG(("GetReconPattern:: txn_seq[%d] = [%s]\n", iCnt, v_txn_seq.arr));
+		}
+
+		if (ind_baid_txn_seq >= 0) {
+			v_baid_txn_seq.arr[v_baid_txn_seq.len] = '\0';
+			PutField_CString(myHash, "baid_txn_seq", (const char*)v_baid_txn_seq.arr);
+DEBUGLOG(("GetReconPattern:: baid_txn_seq[%d] = [%s]\n", iCnt, v_baid_txn_seq.arr));
+		}
+
+		if (ind_stmt_txn_seq >= 0) {
+			v_stmt_txn_seq.arr[v_stmt_txn_seq.len] = '\0';
+			PutField_CString(myHash, "stmt_txn_seq", (const char*)v_stmt_txn_seq.arr);
+DEBUGLOG(("GetReconPattern:: stmt_txn_seq[%d] = [%s]\n", iCnt, v_stmt_txn_seq.arr));
+		}
+
+		if (ind_txn_amt >= 0) {
+			PutField_Double(myHash, "txn_amt", v_txn_amt);
+DEBUGLOG(("GetReconPattern:: txn_amt[%d] = [%lf]\n", iCnt, v_txn_amt));
+                }
+
+		if (ind_bank_code >= 0) {
+			v_bank_code.arr[v_bank_code.len] = '\0';
+			PutField_CString(myHash, "bank_code", (const char*)v_bank_code.arr);
+DEBUGLOG(("GetReconPattern:: bank_code[%d] = [%s]\n", iCnt, v_bank_code.arr));
+		}
+
+		if (ind_bank_acct_num >= 0) {
+			v_bank_acct_num.arr[v_bank_acct_num.len] = '\0';
+			PutField_CString(myHash, "bank_acct_num", (const char*)v_bank_acct_num.arr);
+DEBUGLOG(("GetReconPattern:: bank_acct_num[%d] = [%s]\n", iCnt, v_bank_acct_num.arr));
+		}
+
+		if (ind_batch_id >= 0) {
+			v_batch_id.arr[v_batch_id.len] = '\0';
+			PutField_CString(myHash, "batch_id", (const char*)v_batch_id.arr);
+DEBUGLOG(("GetReconPattern:: batch_id[%d] = [%s]\n", iCnt, v_batch_id.arr));
+		}
+
+		RecordSet_Add(myRec, myHash);
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_get_recon_pattern;
+
+	PutField_Int(hTxn, "recon_pair_cnt", iCnt);
+
+	if (iCnt > 0) {
+DEBUGLOG(("GetReconPattern:: Normal Exit, return OK\n"));
+		return PD_OK;
+	} else {
+DEBUGLOG(("GetReconPattern:: Normal Exit, return ERR\n"));
+		return PD_ERR;
+	}
+
+getreconpattern_error:
+DEBUGLOG(("getreconpattern_error code %d\n", sqlca.sqlcode));
+ERRLOG("OLPayoutReturn::getreconpattern_error code %d\n", sqlca.sqlcode);
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_get_recon_pattern;
+	return PD_ERR;
+}
+

@@ -1,0 +1,133 @@
+CREATE OR REPLACE FUNCTION sp_ol_txn_deposit_edit (
+   in_txn_id                    ol_txn_deposit_edit_log.otc_txn_id%TYPE,
+   in_deposit_amount            ol_txn_deposit_edit_log.otc_amount%TYPE,
+   in_cust_deposit_datetime     ol_txn_deposit_edit_log.otc_cust_deposit_datetime%TYPE,
+   in_bank_code                 ol_txn_deposit_edit_log.otc_bank_code%TYPE,
+   in_bank_acct_num             ol_txn_deposit_edit_log.otc_bank_acct_num%TYPE,
+   in_deposit_bank_code         ol_txn_deposit_edit_log.otc_deposit_bank_code%TYPE,
+   in_deposit_bank              ol_txn_deposit_edit_log.otc_deposit_bank%TYPE,
+   in_deposit_ref               ol_txn_deposit_edit_log.otc_deposit_ref%TYPE,
+   in_match                     ol_txn_deposit_edit_log.otc_match%TYPE,
+   in_user                      ol_txn_deposit_edit_log.otc_create_user%TYPE)
+   RETURN NUMBER
+IS
+   old_deposit_amount      ol_txn_deposit_edit_log.otc_amount%TYPE;
+   old_cust_deposit_datetime    ol_txn_deposit_edit_log.otc_cust_deposit_datetime%TYPE;
+   old_bank_code           ol_txn_deposit_edit_log.otc_bank_code%TYPE;
+   old_bank_acct_num       ol_txn_deposit_edit_log.otc_bank_acct_num%TYPE;
+   old_deposit_bank_code   ol_txn_deposit_edit_log.otc_deposit_bank_code%TYPE;
+   old_deposit_bank        ol_txn_deposit_edit_log.otc_deposit_bank%TYPE;
+   old_deposit_ref         ol_txn_deposit_edit_log.otc_deposit_ref%TYPE;
+   old_user                ol_txn_deposit_edit_log.otc_create_user%TYPE;
+   old_timestamp           ol_txn_deposit_edit_log.otc_create_timestamp%TYPE;
+   iCnt                    INTEGER;
+BEGIN
+   SELECT COUNT (*)
+     INTO iCnt
+     FROM ol_txn_deposit_edit_log
+    WHERE otc_txn_id = in_txn_id;
+
+   IF iCnt = 0 THEN
+      SELECT NVL(oth_deposit_amount,0)
+        INTO old_deposit_amount
+        FROM ol_txn_header
+       WHERE oth_txn_id = in_txn_id AND oth_approval_date IS NULL;
+
+      SELECT otd_cust_deposit_datetime,
+             otd_bank_code,
+             otd_bank_acct_num,
+             otd_deposit_bank_code,
+             otd_deposit_bank,
+             otd_deposit_ref,
+             otd_create_user,
+             otd_create_timestamp
+        INTO old_cust_deposit_datetime,
+             old_bank_code,
+             old_bank_acct_num,
+             old_deposit_bank_code,
+             old_deposit_bank,
+             old_deposit_ref,
+             old_user,
+             old_timestamp
+        FROM ol_txn_detail
+       WHERE otd_txn_id = in_txn_id;
+
+      INSERT INTO ol_txn_deposit_edit_log (otc_txn_id,
+                                           otc_exec_seq,
+                                           otc_amount,
+                                           otc_cust_deposit_datetime,
+                                           otc_bank_code,
+                                           otc_bank_acct_num,
+                                           otc_deposit_bank_code,
+                                           otc_deposit_bank,
+                                           otc_deposit_ref,
+                                           otc_match,
+                                           otc_create_user,
+                                           otc_create_timestamp)
+           VALUES (in_txn_id,
+                   1,
+                   old_deposit_amount,
+                   old_cust_deposit_datetime,
+                   old_bank_code,
+                   old_bank_acct_num,
+                   old_deposit_bank_code,
+                   old_deposit_bank,
+                   old_deposit_ref,
+                   0,
+                   old_user,
+                   old_timestamp);
+   END IF;
+
+   UPDATE Ol_txn_header
+      SET oth_update_timestamp = SYSDATE,
+          oth_update_user = in_user,
+          oth_deposit_amount = in_deposit_amount
+    WHERE oth_txn_id = in_txn_id AND oth_approval_date IS NULL;
+
+   UPDATE Ol_txn_detail
+      SET otd_update_timestamp = SYSDATE,
+          otd_update_user = in_user,
+          otd_cust_deposit_datetime = in_cust_deposit_datetime,
+          otd_bank_code = in_bank_code,
+          otd_bank_acct_num = in_bank_acct_num,
+          otd_deposit_bank_code = in_deposit_bank_code,
+          otd_deposit_bank = in_deposit_bank,
+          otd_deposit_ref = in_deposit_ref
+    WHERE otd_txn_id = in_txn_id;
+
+   INSERT INTO ol_txn_deposit_edit_log (otc_txn_id,
+                                        otc_exec_seq,
+                                        otc_amount,
+                                        otc_cust_deposit_datetime,
+                                        otc_bank_code,
+                                        otc_bank_acct_num,
+                                        otc_deposit_bank_code,
+                                        otc_deposit_bank,
+                                        otc_deposit_ref,
+                                        otc_match,
+                                        otc_create_user,
+                                        otc_create_timestamp)
+        VALUES (in_txn_id,
+                (select nvl(max(otc_exec_seq),0)+1 from ol_txn_deposit_edit_log where otc_txn_id = in_txn_id),
+                in_deposit_amount,
+                in_cust_deposit_datetime,
+                in_bank_code,
+                in_bank_acct_num,
+                in_deposit_bank_code,
+                in_deposit_bank,
+                in_deposit_ref,
+                in_match,
+                in_user,
+                SYSDATE);
+
+   IF SQL%ROWCOUNT = 0 THEN
+      RETURN 1;
+   ELSE
+      RETURN 0;
+   END IF;
+EXCEPTION
+   WHEN OTHERS THEN
+      RETURN 9;
+END sp_ol_txn_deposit_edit;
+/
+

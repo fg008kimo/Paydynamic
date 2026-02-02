@@ -1,0 +1,798 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/07/19              LokMan Chow
+Include Mobile Payment (MSI)                       2013/03/12              Virginia Yun
+table updated and support default rule		   2013/05/13		   LokMan Chow
+Add add_psp_check_report_log			   2016/08/03		   Elvis Wong	
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char    cs_rate[PD_DATE_LEN + 1];
+char    cs_count[PD_DATE_LEN + 1];
+char    cs_min_succ[PD_DATE_LEN + 1];
+char    cs_check_period[PD_DATE_LEN + 1];
+char	cs_txn_period[PD_DATE_LEN + 1];
+char	cs_period_from[PD_DATE_LEN + 1];
+char    cs_psp_id[PD_PSP_ID_LEN + 1];
+char    cs_min_total[PD_DATE_LEN + 1];
+char	cs_cutoff_time[PD_DATETIME_LEN+1];
+char	cs_buffer_period[PD_DATE_LEN + 1];
+char    c_rc_ind;
+char	csPspName[PD_PSP_NAME_LEN +1];
+int     i_rpt_id = 0;
+int     i_rpt_seq = 0;
+char    cs_rpt_datetime[PD_DATETIME_LEN + 1];
+char    cs_rpt_type[PD_PSP_REPORT_TYPE_LEN + 1];
+char    cDebug;
+
+OBJPTR(DB);
+int parse_arg(int argc,char **argv);
+int process_txn(unsigned char* csPspId, unsigned char* csCount, unsigned char* csMinCnt);
+int find_checking_parameters(unsigned char* csPspId);
+int update_last_check(unsigned char* csPspId);
+int update_cutoff_auto(unsigned char* csPspId);
+char* getPspName(const unsigned  char* csPspId);
+int add_psp_check_report_log(const hash_t *hRec); 
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 5) {
+        printf("usage: -i rpt_id -d rpt_datetime -t rpt_type -s rpt_seq -p psp_id\n");
+        //return FAILURE;
+    }
+    //else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+        	printf("usage: -i rpt_id -d rpt_datetime -t rpt_type -s rpt_seq -p psp_id\n");
+                return SUCCESS;
+        }
+	
+	strcpy(csPspName,getPspName((const unsigned  char*)cs_psp_id));
+        csPspName[strlen(csPspName)]='\0';
+DEBUGLOG(("batch_proc: psp_name = [%s]\n",csPspName));
+
+DEBUGLOG(("batch_proc: call update_cutoff_auto\n"));
+	iRet = update_cutoff_auto((unsigned char*)cs_psp_id);
+
+	if(iRet == SUCCESS){
+
+DEBUGLOG(("batch_proc: call find_checking_parameters\n"));
+		iRet = find_checking_parameters((unsigned char*)cs_psp_id);
+	}
+
+	if(iRet == SUCCESS){
+
+DEBUGLOG(("batch_proc: call process_txn\n"));
+        	iRet = process_txn((unsigned char*)cs_psp_id,(unsigned char*)cs_count,(unsigned char*)cs_min_succ);
+	}
+
+DEBUGLOG(("batch_proc: iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int find_checking_parameters(unsigned char* csPspId)
+{
+	int     iRet = FAILURE;
+
+	EXEC SQL WHENEVER SQLERROR GOTO find_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		short           hv_return_value;
+
+		varchar hv_psp_id[PD_PSP_ID_LEN];
+
+		int	v_count;
+		int	v_min_succ;
+		int	v_min_total;
+		int	v_buffer_period;
+		varchar	v_cutoff_time[PD_DATETIME_LEN+1];
+
+		short	ind_psp_id = -1;
+		short	ind_count = -1;
+		short	ind_min_succ = -1;
+		short	ind_min_total = -1;
+		short	ind_buffer_period = -1;
+		short	ind_cutoff_time = -1;
+
+		SQL_CURSOR      c_cursor_psp_check;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_psp_id.len = strlen((char*)cs_psp_id);
+        memcpy(hv_psp_id.arr,cs_psp_id,hv_psp_id.len);
+	ind_psp_id = 0;
+
+	EXEC SQL ALLOCATE       :c_cursor_psp_check;
+        EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_psp_txn_check_find(:hv_psp_id:ind_psp_id,
+								  :c_cursor_psp_check);
+
+
+	END;
+        END-EXEC;
+
+	if (hv_return_value > 0)  {
+		EXEC SQL WHENEVER NOTFOUND DO break;
+		for (;;) {
+			ind_count = -1;
+			ind_min_succ = -1;
+			ind_min_total = -1;
+			ind_buffer_period = -1;
+			ind_cutoff_time = -1;
+
+
+                   EXEC SQL FETCH :c_cursor_psp_check
+		   INTO
+			:v_count:ind_count,
+			:v_min_succ:ind_min_succ,
+			:v_min_total:ind_min_total,
+			:v_buffer_period:ind_buffer_period,
+			:v_cutoff_time:ind_cutoff_time;
+
+		   if(ind_count<0)
+			   v_count = 0;
+		   sprintf(cs_count,"%d",v_count);
+
+		   if(ind_min_succ<0)
+			   v_min_succ = 0;
+		   sprintf(cs_min_succ,"%d",v_min_succ);
+
+		   if(ind_min_total<0)
+			   v_min_total= 0;
+		   sprintf(cs_min_total,"%d",v_min_total);
+
+		   if(ind_buffer_period<0)
+			   v_buffer_period= 0;
+		   sprintf(cs_buffer_period,"%d",v_buffer_period);
+
+		   if(ind_cutoff_time>=0){
+			   sprintf(cs_cutoff_time,"%.*s",v_cutoff_time.len,v_cutoff_time.arr);
+		   }
+		}
+		EXEC SQL CLOSE :c_cursor_psp_check;
+                EXEC SQL FREE :c_cursor_psp_check;
+	}
+	else{
+		EXEC SQL CLOSE :c_cursor_psp_check;
+                EXEC SQL FREE :c_cursor_psp_check;
+	}
+
+	if((v_count)!=0)
+		iRet = SUCCESS;
+
+	return iRet;
+
+find_error:
+DEBUGLOG(("find_checking_parameters error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int process_txn(unsigned char* csPspId, unsigned char* csCount, unsigned char* csMinCnt)
+{               
+ 
+        int     iRet = SUCCESS;
+        int	iDtlRet = SUCCESS;
+	int     iChk = 0;
+	int	iPending=0;
+	int	iAccept=0;
+	int	iReject=0;
+	int	iTotal=0;
+	int	iOthers=0;
+	int	iCh=0;
+	int	iCnt = atoi((char*)csCount);
+	int	iMinCnt = atoi((char*)csMinCnt);
+	int	iMinTotal = atoi((char*)cs_min_total);
+	double	dRate=0.0;        
+	double	dSuccRate=0.0;        
+
+	hash_t  *hData;
+        hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_psp_id[PD_PSP_ID_LEN+1];
+		varchar	hv_cutoff_time[PD_DATETIME_LEN+1];
+		varchar	hv_buffer_period[PD_DATE_LEN+1];
+		int	hv_cnt;
+
+		varchar	v_from_time[PD_TMP_BUF_LEN+1];
+		varchar	v_time[PD_TMP_BUF_LEN+1];
+		varchar	v_alert_time[PD_TMP_BUF_LEN+1];
+		char	v_status;
+		char	v_ar_ind;
+		int	v_cnt;
+
+		short	ind_from_time = -1;
+		short	ind_time = -1;
+		short	ind_alert_time = -1;
+		short	ind_status = -1;
+		short	ind_ar_ind = -1;
+		short	ind_cnt = -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_psp_id.len = strlen((char*)csPspId);
+        memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+
+DEBUGLOG(("process_txn: cs_cutoff_time = [%s]\n", cs_cutoff_time));
+	hv_cutoff_time.len = strlen((char*)cs_cutoff_time);
+        memcpy(hv_cutoff_time.arr,cs_cutoff_time,hv_cutoff_time.len);
+
+DEBUGLOG(("process_txn: cs_buffer_period = [%s]\n", cs_buffer_period));
+	hv_buffer_period.len = strlen((char*)cs_buffer_period);
+        memcpy(hv_buffer_period.arr,cs_buffer_period,hv_buffer_period.len);
+
+	hv_cnt=iCnt;
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		SELECT	COUNT(1),
+			TH_STATUS,
+			TH_AR_IND,
+			TO_CHAR(SYSDATE,'DD-MON-YYYY HH24:MI:SS'),
+			TO_CHAR(SYSDATE - (:hv_buffer_period / 1440) ,'DD-MON-YYYY HH24:MI:SS'),
+			TO_CHAR(TO_DATE(:hv_cutoff_time,'YYYYMMDDHH24MISS'),'DD-MON-YYYY HH24:MI:SS')
+		FROM	(SELECT	TH_TXN_ID,
+				TH_STATUS,
+				TH_AR_IND,
+				TH_CREATE_TIMESTAMP
+			FROM	TXN_HEADER
+			WHERE	TH_TXN_CODE = 'DSI'
+			AND	TH_CLIENT_ID NOT IN ('C1000002','C1000013')
+			AND	TH_CREATE_TIMESTAMP between TO_DATE(:hv_cutoff_time,'YYYYMMDDHH24MISS')
+				AND SYSDATE - :hv_buffer_period / 1440
+			AND	EXISTS (SELECT	1
+					FROM	TXN_PSP_DETAIL
+					WHERE	TP_TXN_ID = TH_TXN_ID
+					AND	TP_PSP_ID = :hv_psp_id)
+			ORDER BY TH_CREATE_TIMESTAMP DESC)
+		WHERE ROWNUM <= :hv_cnt
+		GROUP BY TH_STATUS, TH_AR_IND;
+
+/*
+		select  count(*),
+         		th_status,
+         		th_ar_ind,
+			to_char(sysdate,'DD-MON-YYYY HH24:MI:SS'),
+			to_char(sysdate - (:hv_buffer_period/1440) ,'DD-MON-YYYY HH24:MI:SS'),
+			to_char(to_date(:hv_cutoff_time,'YYYYMMDDHH24MISS'),'DD-MON-YYYY HH24:MI:SS')
+		from 	(select th_txn_id,
+				th_status,
+				th_ar_ind,
+				th_create_timestamp
+			 from	txn_header
+    			 where	th_create_timestamp  between to_date(:hv_cutoff_time,'YYYYMMDDHH24MISS') and sysdate-(:hv_buffer_period/1440)
+			 and	th_txn_code in ('DSP','MSI','DSI')
+			 and	th_merchant_id not in ('M8000007','M8000006','M8000021','M8000032', 'M8000033')
+			 order by th_create_timestamp DESC) hd,
+			 (select tp_txn_id,
+                                 tp_psp_id
+                          from   txn_psp_detail
+                          where  tp_create_timestamp  between to_date(:hv_cutoff_time,'YYYYMMDDHH24MISS') and sysdate-(:hv_buffer_period/1440)
+                          and    tp_psp_id = :hv_psp_id
+                         ) pdt
+		where hd.th_txn_id = pdt.tp_txn_id
+		and	rownum <= :hv_cnt
+		group by th_ar_ind,
+			 th_status;
+*/
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO
+		 	:v_cnt:ind_cnt,
+         		:v_status:ind_status,
+         		:v_ar_ind:ind_ar_ind,
+		 	:v_alert_time:ind_alert_time,
+		 	:v_time:ind_time,
+		 	:v_from_time:ind_from_time;
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		iChk ++;
+
+		if(ind_from_time<0){
+			v_from_time.len=0;
+			v_from_time.arr[0]='\0';
+		}
+		if(ind_time<0){
+			v_time.len=0;
+			v_time.arr[0]='\0';
+		}
+
+		if(ind_status>=0){
+			if(v_status==PD_COMPLETE){
+				if(ind_ar_ind>=0){
+					if(v_ar_ind==PD_ACCEPT){
+						if(ind_cnt>=0)
+							iAccept = v_cnt;
+					}
+					else if(v_ar_ind==PD_REJECT){
+						if(ind_cnt>=0)
+							iReject = v_cnt;
+					}
+				}
+				else{
+					v_ar_ind=' ';
+				}
+			}
+			else if(v_status==PD_TO_PSP){
+				v_ar_ind=' ';
+				if(ind_cnt>=0)
+					iPending = v_cnt;
+			}
+			else{
+				if(ind_ar_ind<0){
+					v_ar_ind=' ';
+				}
+				if(ind_cnt>=0)
+					iOthers = v_cnt;
+			}
+		}
+
+ 	}
+        while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_gettxn;
+
+	if(iChk==0){
+		/*
+		printf("=================No Record============================================\n");
+		printf("[PSP Name	]:	%s\n",csPspName);
+		printf("[PSP ID		]:	%s\n",csPspId);
+		printf("======================================================================\n");
+		*/
+		return iRet;
+	}
+
+	iTotal = iAccept+iReject+iPending+iOthers;
+	dRate = (double)iMinCnt/(double)iCnt;
+
+//DEBUGLOG(("process_txn:iChk = [%d]\n",iChk));
+//DEBUGLOG(("process_txn:iCnt = [%d]\n",iCnt));
+//DEBUGLOG(("process_txn:iMinCnt = [%d]\n",iMinCnt));
+//DEBUGLOG(("process_txn:iTotal = [%d]\n",iTotal));
+//DEBUGLOG(("process_txn:iMinTotal = [%d]\n",iMinTotal));
+//DEBUGLOG(("process_txn:iAccept = [%d]\n",iAccept));
+//DEBUGLOG(("process_txn:iReject = [%d]\n",iReject));
+//DEBUGLOG(("process_txn:iPending = [%d]\n",iPending));
+//DEBUGLOG(("process_txn:iOthers = [%d]\n",iOthers));
+
+	if(iTotal>iMinTotal){
+		dSuccRate = (double)(iAccept+iReject)/(double)iTotal;
+		if(iTotal<iCnt){
+			if(dSuccRate<dRate){
+				//printf("<tr><td>-</td><td>Successful rate is low: %.2f (Threshold: %.2f)</td></tr>",dSuccRate*100,dRate*100);
+				iRet = FAILURE;
+			}
+		}
+		else{
+			if((iPending==iTotal) || ((iAccept+iReject) == 0)){
+				//printf("<tr><td>-</td><td>All pending!!!!</td></tr>");
+				iRet = FAILURE;
+			}
+			else{
+				if((iAccept+iReject)<iMinCnt){
+					//printf("<tr><td>-</td><td>Success rate is low: %.2f (Threshold: %.2f)</td></tr>",((double)iAccept/(double)iTotal)*100,dRate*100);
+					iRet = FAILURE;
+				}
+			}
+
+		}
+		if(iRet == FAILURE){
+/*
+			printf("======================================================================\n");
+			printf("[PSP Name	]:	%s\n",csPspName);
+			printf("[PSP ID		]:	%s\n",csPspId);
+			printf("[Success Count	]:	%d\n",iAccept+iReject);
+			printf("[Pending Count]:	%d\n",iPending);
+			printf("[Total Count	]:	%d\n",iTotal);
+			printf("[Success Rate	]:	%.2f%%\n",dSuccRate*100);
+			printf("[Threshold Rate]:	%.2f%%\n",dRate*100);
+			printf("[Duration	]:	%.*s to %.*s\n",v_from_time.len,v_from_time.arr,v_time.len,v_time.arr);
+			printf("======================================================================\n");
+*/
+			printf("<tr align=\"center\"><td><b>%s</b> (%s)</td><td>%d</td><td>%d</td><td>%d</td><td>%.2f%%</td><td>%.2f%%</td></tr>\n",csPspName,csPspId,iAccept+iReject,iPending,iTotal,dSuccRate*100,dRate*100);              
+			printf("<tr><td align=\"right\">Duration:</td><td colspan=\"5\">%.*s to %.*s</td></tr>\n",v_from_time.len,v_from_time.arr,v_time.len,v_time.arr);
+			printf("<tr><td colspan=\"6\"></td></tr>\n");
+		}
+		if(iRet == FAILURE){
+			PutField_Int(hData,"rpt_gen_id",i_rpt_id);
+			PutField_CString(hData,"rpt_gen_datetime",cs_rpt_datetime);
+			PutField_CString(hData,"rpt_type",cs_rpt_type);
+			PutField_Int(hData,"seq",i_rpt_seq);
+			PutField_Char(hData,"party_type",PD_TYPE_PSP);
+			PutField_CString(hData,"party_id",(const char *)csPspId);
+			PutField_CString(hData,"party_name",(const char *)csPspName);
+			PutField_CString(hData,"dur_start",(const char *)v_from_time.arr);
+			PutField_CString(hData,"dur_end",(const char *)v_time.arr);
+			PutField_Int(hData,"succ_cnt",(iAccept+iReject));
+			PutField_Int(hData,"pend_cnt",iPending);
+			PutField_Int(hData,"total_cnt",iTotal);
+			PutField_CString(hData,"create_user","SYSTEM");
+			PutField_Int(hData,"db_commit",PD_TRUE);
+
+			iDtlRet = add_psp_check_report_log(hData);
+		}
+		iCh = update_last_check(csPspId);
+	}
+
+	FREE_ME(hData);
+
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+	i_rpt_id = 0;
+	i_rpt_seq = 0;
+        strcpy(cs_rpt_datetime,"");
+        strcpy(cs_rpt_type,"");
+	strcpy(cs_psp_id,"");
+
+        while ((c = getopt(argc,argv,"i:d:t:s:p:")) != EOF) {
+                switch (c) {
+			case 'i':
+                                i_rpt_id = atoi(optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_rpt_datetime, optarg);
+                                break;
+                        case 't':
+                                strcpy(cs_rpt_type, optarg);
+                                break;
+			case 's':
+                                i_rpt_seq = atoi(optarg);
+                                break;
+                        case 'p':
+                                strcpy(cs_psp_id, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+	if ((i_rpt_id == 0) || (i_rpt_seq == 0) || (!strcmp(cs_rpt_datetime,"")) || (!strcmp(cs_rpt_type,"")) || (!strcmp(cs_psp_id,"")))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+char* getPspName(const unsigned char* csPspId)
+{
+	int iRet = PD_NOT_FOUND;
+	
+	EXEC SQL WHENEVER SQLERROR GOTO getname_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_psp_id[PD_PSP_ID_LEN];
+                varchar         v_name[PD_NAME_LEN + 1];
+                short           ind_name = -1;
+                
+        EXEC SQL END DECLARE SECTION;
+                        
+        hv_psp_id.len = strlen((const char*)csPspId);
+        memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+
+	EXEC SQL DECLARE c_cursor_getname CURSOR FOR
+                select psp_name
+                  from psp_detail
+                 where psp_id = :hv_psp_id;
+
+	EXEC SQL OPEN c_cursor_getname;
+        do {
+                EXEC SQL FETCH c_cursor_getname
+                INTO
+                        :v_name:ind_name;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+/* psp name */
+                if (ind_name >= 0) {
+                        v_name.arr[v_name.len] = '\0';
+			iRet=PD_FOUND;
+                }
+
+	}
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getname;
+
+	if(iRet==PD_FOUND)
+	        return strdup((const char *)v_name.arr);
+	else
+		return strdup("");
+
+getname_error:
+DEBUGLOG(("getname_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getname;
+        return strdup("");
+}
+
+
+int update_last_check(unsigned char* csPspId)
+{
+	int	iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO update_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_psp_id[PD_PSP_ID_LEN];
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_psp_id.len = strlen((char*)csPspId);
+        memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+
+        EXEC SQL UPDATE	psp_txn_check
+		 SET	pc_last_checking_time = sysdate,
+			pc_update_timestamp = sysdate
+		 WHERE	pc_party_id =
+			(select case when ind = 1 
+				then id 
+				else '000' 
+				end as party_id
+			 from 
+			   (select a.party_id as id,
+				   b.ind  as ind
+			    from 
+				(select :hv_psp_id as party_id 
+				 from dual) a 
+				left join 
+				(select pc_party_id, 1 as ind 
+				 from psp_txn_check) b 
+				on a.party_id = b.pc_party_id) 
+			 where id = :hv_psp_id);
+	
+	return iRet;
+
+update_error:
+DEBUGLOG(("update_last_check error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int update_cutoff_auto(unsigned char* csPspId)
+{
+	int	iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatecutoff_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_psp_id[PD_PSP_ID_LEN];
+
+		int	v_time_diff;
+		short	ind_time_diff = -1;
+        EXEC SQL END DECLARE SECTION;
+
+        hv_psp_id.len = strlen((char*)csPspId);
+        memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+
+	EXEC SQL SELECT to_char(sysdate-1/2,'YYYYMMDDHH24MI') - to_char(pc_cutoff_checking_time,'YYYYMMDDHH24MI')
+		 INTO	:v_time_diff:ind_time_diff
+		 FROM	psp_txn_check
+		 WHERE	pc_party_id =
+			(select case when ind = 1 
+				then id 
+				else '000' 
+				end as party_id
+			 from 
+			   (select a.party_id as id,
+				   b.ind  as ind
+			    from 
+				(select :hv_psp_id as party_id 
+				 from dual) a 
+				left join 
+				(select pc_party_id, 1 as ind 
+				 from psp_txn_check) b 
+				on a.party_id = b.pc_party_id) 
+			 where id = :hv_psp_id);
+
+	
+	if(ind_time_diff>=0){
+		if(v_time_diff>0){
+        		EXEC SQL UPDATE	psp_txn_check
+		 		 SET	pc_cutoff_checking_time = sysdate-1/2,
+					pc_update_timestamp = sysdate
+				  WHERE	pc_party_id =
+					(select case when ind = 1 
+						 then id 
+						 else '000' 
+				 		end as party_id
+				 	 from 
+				 	     (select a.party_id as id,
+				  		     b.ind  as ind
+				  		from 
+				  		     (select :hv_psp_id as party_id 
+				   		      from dual) a 
+				  		      left join 
+				  		     (select pc_party_id, 1 as ind 
+				   		      from psp_txn_check) b 
+				  		      on a.party_id = b.pc_party_id) 
+				 	 where id = :hv_psp_id);
+		}
+	}	
+	return iRet;
+
+updatecutoff_error:
+DEBUGLOG(("update_cutoff error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int add_psp_check_report_log(const hash_t *hRec)
+{
+	int	iRet = SUCCESS;
+	
+	int	iTmp = 0;
+	char 	*csTmp = NULL;
+	char 	cTmp;
+
+/* rpt_gen_id */
+	if(GetField_Int(hRec, "rpt_gen_id", &iTmp)) {
+DEBUGLOG(("add_psp_check_report_log:rpt_gen_id = [%d]\n",iTmp));
+        }
+
+/* rpt_gen_datetime */
+	if(GetField_CString(hRec,"rpt_gen_datetime",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:rpt_gen_datetime = [%s]\n",csTmp));
+        }
+
+/* rpt_type */
+	if(GetField_CString(hRec,"rpt_type",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:rpt_type = [%s]\n",csTmp));
+        }
+
+/* seq */
+	if(GetField_Int(hRec, "seq", &iTmp)) {
+DEBUGLOG(("add_psp_check_report_log:seq = [%d]\n",iTmp));
+        }
+
+/* party_type */
+	if (GetField_Char(hRec, "party_type", &cTmp)) {
+DEBUGLOG(("add_psp_check_report_log:party_type = [%c]\n",cTmp));
+        }
+
+/* party_id */
+	if(GetField_CString(hRec,"party_id",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:party_id = [%s]\n",csTmp));
+        }
+
+/* party_name */
+	if(GetField_CString(hRec,"party_name",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:party_name = [%s]\n",csTmp));
+        }
+
+/* bank_code */
+        if(GetField_CString(hRec,"bank_code",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:bank_code = [%s]\n",csTmp));
+        }
+
+/* bank_name */
+        if(GetField_CString(hRec,"bank_name",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:bank_name = [%s]\n",csTmp));
+        }
+
+/* dur_start */
+	if(GetField_CString(hRec,"dur_start",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:dur_start = [%s]\n",csTmp));
+        }
+	
+/* dur_end */
+	if(GetField_CString(hRec,"dur_end",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:dur_end = [%s]\n",csTmp));
+        }
+
+/* succ_cnt */
+	if(GetField_Int(hRec, "succ_cnt", &iTmp)) {
+DEBUGLOG(("add_psp_check_report_log:succ_cnt = [%d]\n",iTmp));
+        }
+
+/* pend_cnt */
+	if(GetField_Int(hRec, "pend_cnt", &iTmp)) {
+DEBUGLOG(("add_psp_check_report_log:pend_cnt = [%d]\n",iTmp));
+        }
+
+/* total_cnt */
+	if(GetField_Int(hRec, "total_cnt", &iTmp)) {
+DEBUGLOG(("add_psp_check_report_log:total_cnt = [%d]\n",iTmp));
+        }
+
+/* create_user */
+	if(GetField_CString(hRec,"create_user",&csTmp)) {
+DEBUGLOG(("add_psp_check_report_log:create_user = [%s]\n",csTmp));
+        }
+
+/* db_commit */
+	if(GetField_Int(hRec,"db_commit",&iTmp)) {
+DEBUGLOG(("add_psp_check_report_log:db_commit = [%d]\n",iTmp));
+        }
+	
+	// Add Psp Txn Check Report Log
+DEBUGLOG(("add_psp_check_report_log:: Call DBPspTxnCheckReportLog:: Add\n"));
+        DBObjPtr = CreateObj(DBPtr,"DBPspTxnCheckReportLog","Add");
+        iRet = (unsigned long)(*DBObjPtr)(hRec);
+        if (iRet != PD_OK) {
+		iRet = FAILURE;
+DEBUGLOG(("add_psp_check_report_log:: Call DBPspTxnCheckReportLog:: Add Error!!!\n"));
+ERRLOG("check_psp_txn_new::add_psp_check_report_log::Call DBPspTxnCheckReportLog::Add Error!!!\n");
+	}
+	
+	return iRet;
+}
+

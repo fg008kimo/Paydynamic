@@ -1,0 +1,195 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/11/06              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sqlca.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_MY_TOKEN	","
+#define	MAX_INFO_FIELD	3
+
+char    c_field_list[MAX_INFO_FIELD][PD_TAG_LEN] = {"customer_tag","from_customer_group","to_customer_group"};
+
+char	cDebug='Y';
+char	cs_filename[PD_MAX_FILE_LEN+1];
+char	cs_merchant_id[PD_MERCHANT_ID_LEN+1];
+//char	cs_date[PD_DATE_LEN+1];
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+int get_customer(FILE *fp_list,recordset_t *rRecordSet);
+void extract(char* log, hash_t *hTxn);
+int change_group(recordset_t *rRecordSet);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet = parse_arg(argc,argv);
+	FILE    *fp_list;
+
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+
+	if (iRet != SUCCESS) {
+printf("usage: -f filename -m merchant_id\n");
+		return FAILURE;
+	}
+	else{
+		fp_list = fopen(cs_filename, "r");
+		if (fp_list== NULL){
+printf("unable to open file %s\n",cs_filename);
+			return FAILURE;
+		}
+	}
+
+	if(iRet==SUCCESS){
+		iRet = get_customer(fp_list,rRecordSet);
+	}
+	
+	if(iRet==SUCCESS){
+		iRet = change_group(rRecordSet);
+	}
+
+	fclose(fp_list);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char	c;
+	strcpy(cs_filename,"");
+	strcpy(cs_merchant_id,"");
+	//strcpy(cs_date,"");
+
+	if (argc < 2) {
+		return PD_ERR;
+	}
+
+	while ((c = getopt(argc,argv,"m:f:")) != EOF) {
+		switch (c) {
+			case 'm':
+				strcpy(cs_merchant_id, optarg);
+				break;
+			case 'f':
+				strcpy(cs_filename, optarg);
+				break;
+			default:
+				return PD_ERR;
+		}
+	}
+
+	if (!strcmp(cs_merchant_id,"")|| !strcmp(cs_filename,""))
+                return FAILURE;
+
+	return SUCCESS;
+}
+
+int get_customer(FILE *fp_list,recordset_t *rRecordSet)
+{
+	int iRet = SUCCESS;
+	char    cs_cust_buf[PD_TMP_MSG_BUF_LEN];
+	hash_t  *hTxn;
+
+	while (fgets(cs_cust_buf, PD_TMP_MSG_BUF_LEN, fp_list) != NULL) {
+		if (cs_cust_buf[strlen(cs_cust_buf) - 1] == 0x0A)
+			cs_cust_buf[strlen(cs_cust_buf) - 1] = '\0';
+
+		hTxn = (hash_t*)  malloc (sizeof(hash_t));
+		hash_init(hTxn,0);
+
+		extract(cs_cust_buf,hTxn);
+		PutField_CString(hTxn,"merchant_id",cs_merchant_id);
+		PutField_CString(hTxn,"service_code","VNC");
+		PutField_CString(hTxn,"txn_country","CN");
+		PutField_CString(hTxn,"txn_ccy","CNY");
+		//PutField_CString(hTxn,"date",cs_date);
+		PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+		RecordSet_Add(rRecordSet,hTxn);
+	}
+
+	return iRet;
+}
+
+
+void extract(char* log, hash_t *hTxn)
+{
+        char    *p;
+        char*   csTmp;
+        char    csGroup[6];
+        int     i = 0;
+
+        csTmp = (char*) malloc (strlen(log) + 1);
+        strcpy(csTmp,log);
+        for (i = 0; i < MAX_INFO_FIELD; i++) {
+                if (i == 0)
+                        p = mystrtok(csTmp, (char*)PD_MY_TOKEN);
+                else
+                        p = mystrtok(NULL, (char*)PD_MY_TOKEN);
+              
+		if(i>0){
+			sprintf(csGroup,"GRP_%s",p);
+			PutField_CString(hTxn,c_field_list[i],csGroup); 
+		}
+		else{
+			PutField_CString(hTxn,c_field_list[i],p); 
+		}
+        }
+        free(csTmp);
+}
+
+int change_group(recordset_t *rRecordSet)
+{
+	int iRet = SUCCESS;
+	char	*csCustTag;
+	char	*csFromGrp;
+	char	*csToGrp;
+	hash_t *hRec;
+
+	hRec = RecordSet_GetFirst(rRecordSet);
+	while (hRec) {
+		if(GetField_CString(hRec,"customer_tag",&csCustTag) &&
+		   GetField_CString(hRec,"from_customer_group",&csFromGrp) &&
+		   GetField_CString(hRec,"to_customer_group",&csToGrp)){
+DEBUGLOG(("change_group::Call BOCustomerGroup:ChangeGroup Customer[%s] [%s]->[%s]\n",csCustTag,csFromGrp,csToGrp));
+			BOObjPtr = CreateObj(BOPtr,"BOCustomerGroup","ChangeGroup");
+			if((unsigned long) (*BOObjPtr)(hRec)!=PD_OK){
+DEBUGLOG(("change_group::ChangeGroup Failed!!!!\n"));
+			}
+		}
+
+		hRec = RecordSet_GetNext(rRecordSet);
+	}
+
+	return iRet;
+}

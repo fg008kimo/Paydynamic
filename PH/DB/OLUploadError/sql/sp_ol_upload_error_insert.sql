@@ -1,0 +1,40 @@
+CREATE OR REPLACE FUNCTION sp_ol_upload_error_insert(
+	in_input_channel	ol_upload_error.ue_input_channel%type,
+	in_file_id		ol_upload_error.ue_file_id%type,
+	in_line			ol_upload_error.ue_line%type,
+	in_result		ol_upload_error.ue_result%type,
+	in_create_user		ol_upload_error.ue_create_user%type)
+  RETURN NUMBER IS
+BEGIN
+
+	INSERT INTO ol_upload_error (
+		ue_error_id,
+		ue_input_channel,
+		ue_file_id,
+		ue_line,
+		ue_result,
+		ue_create_timestamp,
+		ue_create_user
+		)
+	VALUES (/*(select NVL(max(ue_error_id),0)+1 from ol_upload_error)*/
+		ODI_ERROR_SEQ.NEXTVAL,
+		in_input_channel,
+		in_file_id,
+		in_line,
+		in_result,
+		sysdate,
+		in_create_user
+		);
+
+	IF SQL%ROWCOUNT = 0 THEN
+		RETURN 1;
+	ELSE
+		RETURN 0;
+	END IF;
+
+EXCEPTION
+	WHEN OTHERS THEN	
+		RETURN 9;
+
+END sp_ol_upload_error_insert;
+/

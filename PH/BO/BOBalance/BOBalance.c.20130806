@@ -1,0 +1,4202 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/04/14              Cody Chan
+Add ProcessHold					   2011/12/13		   LokMan Chow
+Add GetAvalPspBalanceForUpdate			   2011/12/15	           Virginia Yun	
+Add Txn Elements				   2012/02/02		   Cody Chan
+Void before/after recon, debit float/bal	   2012/07/26		   LokMan Chow 
+Add DebitMerchantResAmount                         2012/08/22              Cody Chan
+Add PayoutVoid same_date_cancel			   2012/09/03		   LokMan Chow
+Void deposit, update available settlement	   2012/11/30		   LokMan Chow
+DebitSebBalance can be negative			   2013/02/08		   LokMan Chow
+Add UpdateAFPOFloat				   2013/02/18		   LokMan Chow
+Check current_bal for Deposit Refund		   2013/02/19		   Stan Poon
+Check allow_bal_neg				   2013/02/22		   David Wong
+Change Calling for shortend the rowlock for        2013/02/25              Cody Chan
+CreditDeposit					
+Check current_bal for Merch Adj(exclude chargeback)2013/03/01		   Stan Poon
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOBalance.h"
+
+char    cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOBalance(char    cdebug)
+{
+        cDebug = cdebug;
+}
+int UpdateMerchantAvalAmt(hash_t* hContext,
+			const char* csCountry,
+                        const char* csServiceCode,
+                        const char* csMerchantCCY,
+                        const char* csMerchantID,
+			double dNetAmt);
+
+int CreditDepositAmount(hash_t *hContext,
+			const char* csPostingDate,
+			const char* csCountry, 
+			const char* csServiceCode, 
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount,
+			const char* csPspCCY,
+			const char* csPspID,
+			double dPspAmount,
+			double dReserveAmount,
+			double dPspFee);
+
+int DebitDepositAmount(hash_t* hContext,
+			const char* csPostingDate,
+                       const char* csCountry,
+		       const char* csServiceCode,
+		       const char* csMerchantCCY,
+		       const char* csMerchantID,
+		       double dNetAmount,
+		       const char* csPspCCY,
+		       const char* csPspID,
+		       double dPspAmount,
+		       double dReserveAmount,
+		       double dPspFee);
+
+int PayoutVoided(hash_t* hContext,
+		const char* csCountry, 
+		const char* csServiceCode, 
+		const char* csMerchantCCY, 
+		const char* csMerchantID,
+		double dNetAmount,
+		const char* csPspCCY,
+		const char* csPspID,
+		double dPspAmount,
+		char   cParty,
+		int iDayOfWeek);
+
+int PayoutSuccess(hash_t* hContext,
+			const char* csCountry, 
+			const char* csServiceCode, 
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount,
+			const char* csPspCCY,
+			const char* csPspID,
+			double dPspAmount,
+			char   cParty,
+			int iDayOfWeek);
+
+int GetAvalPspBalanceForUpdate(const char* csTxnCountry,
+                        const char* csTxnCcy,
+                        const char* csPspId,
+                        double  *dBalance);
+
+int CreditAFPOFloat(hash_t* hContext,
+                        const char* csPostingDate,
+                        const char* csCountry,
+                        const char* csServiceCode,
+                        const char* csMerchantCCY,
+                        const char* csMerchantID,
+                        double dNetAmount);
+
+int DebitAFPOFloat(hash_t* hContext,
+                        const char* csPostingDate,
+                        const char* csCountry,
+                        const char* csServiceCode,
+                        const char* csMerchantCCY,
+                        const char* csMerchantID,
+                        double dNetAmount);
+
+
+int UpdateTxnAmount(hash_t *hContext, const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+	char	*csTxnCode;
+	//char	*csPostingDate = NULL;
+	char	csPostingDate[PD_DATE_LEN + 1];
+	char	*csOrgTxnSeq;
+	char	*csOrgTxnCountry;
+	char	*csOrgTxnCcy;
+	char	*csOrgMerchantId;
+	char	*csOrgDstCcy;
+	char	*csOrgPspId;
+	char	*csOrgServiceCode;
+	//double	dOrgTxnAmt= 0.0;
+	double	dOrgNetAmt= 0.0;
+	double	dOrgDstTxnAmt= 0.0;
+	double	dReserveAmt = 0.0;
+	double	dPspFee = 0.0;
+	double	dTmp= 0.0;
+	int	iRecon = PD_FALSE;
+	int	iReleased = PD_FALSE;
+	hash_t* hVal;
+
+
+DEBUGLOG(("BOBalance:UpdateTxnAmount()\n"));
+/*posting date*/
+/* don't get from parameter 
+	if (GetField_CString(hContext,"PHDATE",&csPostingDate)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() posting_date = [%s]\n",csPostingDate));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() posting_date is missing!!!\n"));
+	}
+*/
+	csPostingDate[0]= '\0';
+/*txn code */
+	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() txn_code = [%s]\n",csTxnCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() txn_code is missing!!!\n"));
+	}
+/*org txn seq */
+	if (GetField_CString(hContext,"org_txn_seq",&csOrgTxnSeq)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_seq = [%s]\n",csOrgTxnSeq));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_seq is missing!!!\n"));
+	}
+
+/*org txn country */
+	if (GetField_CString(hContext,"org_txn_country",&csOrgTxnCountry)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_country = [%s]\n",csOrgTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_country is missing!!!\n"));
+	}
+
+/*org txn ccy */
+	if (GetField_CString(hContext,"org_txn_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_ccy = [%s]\n",csOrgTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_ccy is missing!!!\n"));
+	}
+/*org service Code */
+	if (GetField_CString(hContext,"org_service_code",&csOrgServiceCode)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_service_code = [%s]\n",csOrgServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_service_code is missing!!!\n"));
+	}
+
+/*org merchant id */
+	if (GetField_CString(hContext,"org_merchant_id",&csOrgMerchantId)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_merchant_id = [%s]\n",csOrgMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_merchant_id is missing!!!\n"));
+	}
+
+/*org psp ccy */
+	if (GetField_CString(hContext,"org_dst_txn_ccy",&csOrgDstCcy)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_dst_txn_ccy = [%s]\n",csOrgDstCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_dst_txn_ccy is missing!!!\n"));
+	}
+
+
+/*org psp id */
+	if (GetField_CString(hContext,"org_psp_id",&csOrgPspId)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_psp_id = [%s]\n",csOrgPspId));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_psp_id is missing!!!\n"));
+	}
+
+/*org txn amount 
+	if (GetField_Double(hContext,"org_txn_amt",&dOrgTxnAmt)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_amt = [%lf]\n",dOrgTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_txn_amt is missing!!!\n"));
+	}
+*/
+
+/*org net amount */
+	if (GetField_Double(hContext,"net_amt",&dOrgNetAmt)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() net_amt = [%lf]\n",dOrgNetAmt));
+	}
+	else {
+		if (GetField_Double(hContext,"org_net_amt",&dOrgNetAmt)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_net_amt = [%lf]\n",dOrgNetAmt));
+		}
+		else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_net_amt is missing!!!\n"));
+		}
+	}
+
+/*org psp txn amount */
+	if (GetField_Double(hContext,"org_dst_net_amt",&dOrgDstTxnAmt)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_dst_net_amt = [%lf]\n",dOrgDstTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() org_dst_net_amt is missing!!!\n"));
+	}
+
+/*reserved amt */
+	if (GetField_Double(hContext,"reserve_amt",&dReserveAmt)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() reserve_amt = [%lf]\n",dReserveAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() not reserve_amt\n"));
+	}
+
+/* psp_fee */
+	if (GetField_Double(hContext,"precal_fee",&dPspFee)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() precal_fee = [%lf]\n",dPspFee));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() precal_fee not found, try to get from request\n"));
+		if (GetField_Double(hRequest,"service_fee",&dPspFee)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() service_fee = [%lf]\n",dPspFee));
+		}
+		else {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() service_fee is missing!!!\n"));
+		}
+	}
+
+/* recon_ind */
+	if(GetField_Int(hContext,"recon_ind",&iRecon)){
+DEBUGLOG(("BOBalance:UpdateTxnAmount() recon_ind = [%d]\n",iRecon));
+	}
+
+/*reserve_released*/
+
+	if (GetField_Int(hContext,"reserve_released",&iReleased)) {	
+DEBUGLOG(("BOBalance:UpdateTxnAmount() reserve_released = [%d]\n", iReleased));
+	}
+
+	if (!strcmp(csTxnCode,PD_DEPOSIT_TXN_CODE) || 
+            !strcmp(csTxnCode,PD_INITIAL_TXN_CODE) ||
+	    !strcmp(csTxnCode,PD_MOBILE_DSP_CODE)) {
+DEBUGLOG(("BOBalance:UpdateTxnAmount() Update Deposit Txn\n"));
+		iRet =CreditDepositAmount(hContext,
+					csPostingDate,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					csOrgTxnCcy,
+					csOrgMerchantId,
+					dOrgNetAmt,
+					csOrgDstCcy,
+					csOrgPspId,
+					dOrgDstTxnAmt,
+					dReserveAmt,
+					dPspFee);
+	}
+	else if(!strcmp(csTxnCode,PD_VOID_TXN_CODE)){
+
+DEBUGLOG(("BOBalance:UpdateTxnAmount() Update Deposit Txn (Void)\n"));
+		iRet =DebitDepositAmount(hContext,
+					csPostingDate,
+                                        csOrgTxnCountry,
+                                        csOrgServiceCode,
+                                        csOrgTxnCcy,
+                                        csOrgMerchantId,
+					dOrgNetAmt,
+                                        csOrgDstCcy,
+                                        csOrgPspId,
+                                        dOrgDstTxnAmt,
+                                        dReserveAmt, 
+                                        dPspFee);
+	}
+	else {
+DEBUGLOG(("BOBalance:None DSP txn\n"));
+	}
+	
+	if(iRet==PD_OK){
+
+		hVal = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hVal,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+		if((unsigned long)(*DBObjPtr)(csOrgMerchantId,csOrgTxnCcy,csOrgTxnCountry,csOrgServiceCode,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"current_bal",&dTmp)){
+				PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+				PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+				PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+				PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+				PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+				PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+				PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+				PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+			}
+
+		}
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+		if((unsigned long)(*DBObjPtr)(csOrgPspId,csOrgTxnCountry,csOrgDstCcy,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"balance",&dTmp)){
+				PutField_Double(hContext,"psp_balance",dTmp);
+DEBUGLOG(("BOBalance:psp_balance = [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"psp_total_float",dTmp);
+DEBUGLOG(("BOBalance:psp_total_float = [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"psp_total_hold",dTmp);
+DEBUGLOG(("BOBalance:psp_total_hold = [%f]\n",dTmp));
+			}
+		}
+
+		FREE_ME(hVal);
+	}
+	
+	return iRet;
+}
+
+int CreditDepositAmount(hash_t* hContext,
+			const char* csPostingDate,
+			const char* csCountry, 
+			const char* csServiceCode,
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount,
+			const char* csPspCCY,
+			const char* csPspID,
+			double dPspAmount,
+			double dReserveAmount,
+			double dPspFee) 
+{
+	int iRet = PD_OK;
+	char	csLocalPostingDate[PD_DATE_LEN +1];
+
+DEBUGLOG(("BOBalance:CreditDepositAmount()\n"));
+DEBUGLOG(("BOBalance:CreditDepositAmount() merchant = [%lf], psp = [%lf], res = [%lf]\n",dNetAmount,dPspAmount,dReserveAmount));
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOBalance:CreditDepositAmount CreditPSP Balance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","CreditBalance");
+        	if ((*DBObjPtr)(csPspID,
+				csCountry,
+				csPspCCY,
+				PD_PSP_FLOAT,
+				dPspAmount - dPspFee,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:CreditDepositAmount() UpdateFloat Failed\n"));
+		}
+	}
+
+	if (iRet == PD_OK) {
+/* Add or Update Txn Element */
+/* update txn element for Reserved Amount */
+DEBUGLOG(("BOBalance:CreditDepositAmount() Update Reserve Element\n"));
+        	PutField_Double(hContext,"reserve_amt",dReserveAmount);
+		PutField_CString(hContext,"amount_type",PD_DR);
+                BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddReserveAmtElement");
+                iRet = (unsigned long)(*BOObjPtr)(hContext);
+
+/* update txn element for float Amount */
+                if (iRet == PD_OK) {
+DEBUGLOG(("BOBalance:CreditDepositAmount() UpdateFloat Element\n"));
+                        PutField_Double(hContext,"float_amt",dNetAmount - dReserveAmount);
+                        BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMerchantFloatAmtElement");
+                        iRet = (unsigned long)(*BOObjPtr)(hContext);
+                }
+	}
+
+/* lock opening balance */
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+        	if ((*DBObjPtr)(hContext,
+				csMerchantID,
+				csMerchantCCY,
+				csCountry,
+				csServiceCode) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:CreditDepositAmount() GetOpenBalanceForUpdate Failed\n"));
+		}
+	}
+
+
+/***** update  Context for approval date and approval timestamp */
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+        (*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:CreditDepositAmount()  SystemControl::GetApprovalDT called\n"));
+
+        if (strlen(csPostingDate) == 0) {
+DEBUGLOG(("BOBalance:CreditDepositAmount()  overriding approval_date\n"));
+                char    *csPtr;
+                if (GetField_CString(hContext,"approval_date",&csPtr)) {
+                        strcpy(csLocalPostingDate,csPtr);
+DEBUGLOG(("BOBalance:CreditDepositAmount()  approval_date = [%s]\n",csLocalPostingDate));
+                }
+
+        }
+        else {
+DEBUGLOG(("BOBalance:CreditDepositAmount()  approcal_date [%s] from parameter\n",csPostingDate));
+                strcpy(csLocalPostingDate,csPostingDate);
+        }
+	
+
+        DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","CreditMerchantAmount");
+        if ((*DBObjPtr)(csLocalPostingDate,
+                        csMerchantID,
+                        csCountry,
+                        csMerchantCCY,
+                        csServiceCode,
+                        csPspID,
+                        PD_BUCKET_TYPE_FLOAT,
+                        dNetAmount - dReserveAmount,
+                        PD_UPDATE_USER) != PD_OK) {
+                iRet = INT_ERR;
+DEBUGLOG(("BOBalance:CreditDepositAmount() CreditMerchantAmount [Float]Failed\n"));
+        }
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOBalance:CreditDepositAmount UpdateFloat\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateFloat");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				dNetAmount,
+				dReserveAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:CreditDepositAmount() UpdateFloat Failed\n"));
+		}
+	}
+
+
+
+DEBUGLOG(("BOBalance:CreditDepositAmount() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int UpdatePayoutAmount(hash_t* hContext)
+{
+	char	*csOrgTxnCountry;
+	char	*csOrgTxnCcy;
+	char	*csOrgMerchantId;
+	char	*csOrgServiceCode;
+	char	*csOrgDstCcy;
+	char	*csOrgPspId;
+	char	cRespMode;
+	char	cParty;
+	//double	dOrgTxnAmt=0.0;
+	double	dOrgNetAmt=0.0;
+	double	dOrgDstTxnAmt=0.0;
+	double	dPrecalFee=0.0;
+	double	dTmp;
+	int	iDayOfWeek=0;
+	hash_t* hVal;
+
+	int iRet = PD_OK;
+
+/*org txn country */
+	if (GetField_CString(hContext,"org_txn_country",&csOrgTxnCountry)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_txn_country = [%s]\n",csOrgTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_txn_country is missing!!!\n"));
+	}
+
+/*org txn ccy */
+	if (GetField_CString(hContext,"org_txn_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_txn_ccy = [%s]\n",csOrgTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_txn_ccy is missing!!!\n"));
+	}
+/*org service code */
+	if (GetField_CString(hContext,"org_service_code",&csOrgServiceCode)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_service_code = [%s]\n",csOrgServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_service_code is missing!!!\n"));
+	}
+
+/*org merchant id */
+	if (GetField_CString(hContext,"org_merchant_id",&csOrgMerchantId)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_merchant_id = [%s]\n",csOrgMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_merchant_id is missing!!!\n"));
+	}
+
+/*org net amount
+	if (GetField_Double(hContext,"txn_amt",&dOrgTxnAmt)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() txn_amt = [%lf]\n",dOrgTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() txn_amt is missing!!!\n"));
+	}
+*/
+
+/*org net amount */
+	if (GetField_Double(hContext,"net_amt",&dOrgNetAmt)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() net_amt = [%lf]\n",dOrgNetAmt));
+	}
+	else {
+		if (GetField_Double(hContext,"org_net_amt",&dOrgNetAmt)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_net_amt = [%lf]\n",dOrgNetAmt));
+		}
+		else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_net_amt is missing!!!\n"));
+		}
+	}
+
+/*response_mode*/
+	if (GetField_Char(hContext,"response_mode",&cRespMode)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() response_mode = [%c]\n",cRespMode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() response_mode is missing!!!\n"));
+	}
+	
+/*party_type*/
+	if(GetField_Char(hContext,"party_type",&cParty)){
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() party_type = [%c]\n",cParty));
+	}
+	else{
+		cParty = PD_TYPE_GLOBAL;
+	}
+
+/*org psp id */
+	if (GetField_CString(hContext,"org_psp_id",&csOrgPspId)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_psp_id = [%s]\n",csOrgPspId));
+	}
+	else {
+		if(cParty==PD_TYPE_MERCHANT){
+			csOrgPspId = strdup("000");
+		}
+		else{
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_psp_id is missing!!!\n"));
+		}
+	}
+
+/*org psp ccy */
+	if (GetField_CString(hContext,"org_psp_txn_ccy",&csOrgDstCcy)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_psp_txn_ccy = [%s]\n",csOrgDstCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_psp_txn_ccy is missing!!!\n"));
+	}
+
+/*org psp txn amount */
+	if (GetField_Double(hContext,"org_dst_net_amt",&dOrgDstTxnAmt)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_dst_net_amt = [%lf]\n",dOrgDstTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() org_dst_net_amt is missing!!!\n"));
+	}
+
+/*org psp precal fee*/
+	if (GetField_Double(hContext,"precal_fee",&dPrecalFee)) {	
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() psp precal_fee = [%lf]\n",dPrecalFee));
+	}
+
+/*DayOfWeek*/
+	if (GetField_Int(hContext,"day_of_week",&iDayOfWeek)) {
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() day_of_week = [%d]\n",iDayOfWeek));
+	}
+
+	if(cRespMode==PD_ACCEPT){
+		iRet = PayoutSuccess(hContext,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					csOrgTxnCcy,
+					csOrgMerchantId,
+					dOrgNetAmt,
+					csOrgDstCcy,
+					csOrgPspId,
+					dOrgDstTxnAmt+dPrecalFee,
+					cParty,
+					iDayOfWeek);
+	}
+	else if(cRespMode==PD_REVERSED){
+		iRet = PayoutVoided(hContext,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					csOrgTxnCcy,
+					csOrgMerchantId,
+					dOrgNetAmt,
+					csOrgDstCcy,
+					csOrgPspId,
+					dOrgDstTxnAmt+dPrecalFee,
+					cParty,
+					iDayOfWeek);
+	}
+
+
+	if((iRet==PD_OK) && (cParty!=PD_TYPE_PSP)){
+		hVal = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hVal,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+		if((unsigned long)(*DBObjPtr)(csOrgMerchantId,csOrgTxnCcy,csOrgTxnCountry,csOrgServiceCode,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"current_bal",&dTmp)){
+				PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+				PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+				PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+                                PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+                                PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+                                PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold_settlement= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+                                PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+                                PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+                        }
+		}
+
+		FREE_ME(hVal);
+
+		if(cParty==PD_TYPE_MERCHANT)
+			FREE_ME(csOrgPspId);
+	}
+
+	if((iRet==PD_OK) && (cParty!=PD_TYPE_MERCHANT)){
+
+                hVal = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hVal,0);
+
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+                if((unsigned long)(*DBObjPtr)(csOrgPspId,csOrgTxnCountry,csOrgDstCcy,hVal)!=PD_ERR){
+                        if(GetField_Double(hVal,"balance",&dTmp)){
+                                PutField_Double(hContext,"psp_balance",dTmp);
+DEBUGLOG(("BOBalance:psp_balance = [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_float",&dTmp)){
+                                PutField_Double(hContext,"psp_total_float",dTmp);
+DEBUGLOG(("BOBalance:psp_total_float = [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_hold",&dTmp)){
+                                PutField_Double(hContext,"psp_total_hold",dTmp);
+DEBUGLOG(("BOBalance:psp_total_hold = [%f]\n",dTmp));
+                        }
+                }
+
+                FREE_ME(hVal);
+        }
+
+DEBUGLOG(("BOBalance:UpdatePayoutAmount() iRet = [%d]\n",iRet));
+	return iRet;
+
+}
+
+
+int PayoutSuccess(hash_t* hContext,
+			const char* csCountry, 
+			const char* csServiceCode,
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount,
+			const char* csPspCCY,
+			const char* csPspID,
+			double dPspAmount,
+			char   cParty,
+			int iDayOfWeek)
+{
+	int	iRet = PD_OK;
+	double	dTmp = 0.0;
+	double	dRemainDailyCap = 0.0;
+	double	dDailyCap = 0.0;
+	char	*csEffectDate;
+	char	*csDate;
+	csEffectDate = (char*) malloc (PD_DATETIME_LEN +1 );
+
+	hash_t* hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+DEBUGLOG(("BOBalance:PayoutSuccess()\n"));
+DEBUGLOG(("BOBalance:PayoutSuccess() merchant = [%lf], psp = [%lf]\n",dNetAmount,dPspAmount));
+
+/* lock opening balance */
+	if (cParty!=PD_TYPE_PSP) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+        	if ((*DBObjPtr)(hContext,
+				csMerchantID,
+				csMerchantCCY,
+				csCountry,
+				csServiceCode) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:PayoutSuccess() GetOpenBalanceForUpdate Failed\n"));
+			return iRet;
+		}
+	}
+	
+/***** update  Context for approval date and approval timestamp */
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+        (*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:PayoutSuccess()  SystemControl::GetApprovalDT called\n"));
+	if(GetField_CString(hContext,"approval_date",&csDate)){
+		iDayOfWeek=day_of_week((const unsigned char *)csDate);
+	}
+
+	if (cParty==PD_TYPE_MERCHANT || cParty==PD_TYPE_GLOBAL) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateCurrBal");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				(-1)*dNetAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance::UpdateCurrBal()  Failed\n"));
+			return iRet;
+		}
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","GetDailyCapforUpdate");
+                if ((*DBObjPtr)(csMerchantID,
+                                csCountry,
+                                csMerchantCCY,
+                                csServiceCode,
+                                iDayOfWeek,
+                                &dDailyCap,
+				&dRemainDailyCap,
+                                csEffectDate) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantReservedAmt::GetDailyCapforUpdate()  Failed\n"));
+			return iRet;
+                }
+
+		PutField_CString(hTxn,"merchant_id",csMerchantID);
+		PutField_CString(hTxn,"txn_country",csCountry);
+		PutField_CString(hTxn,"txn_ccy",csMerchantCCY);
+		PutField_CString(hTxn,"service_code",csServiceCode);
+		PutField_Int(hTxn,"dow",iDayOfWeek);
+		PutField_CString(hTxn,"effect_date",csEffectDate);
+		PutField_Double(hTxn,"remain_daily_cap",dRemainDailyCap-dNetAmount);
+		PutField_Char(hTxn,"amt_type",PD_RES_AMT_DAILY_CAP);
+		PutField_Char(hTxn,"status",PD_RES_AMT_STATUS_APPROVE);
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","UpdateAmt");
+                if ((*DBObjPtr)(hTxn) != PD_OK) {
+                        iRet = INT_ERR;
+			FREE_ME(csEffectDate);
+			FREE_ME(hTxn);
+DEBUGLOG(("BOBalance:DBMerchantReservedAmt::UpdateAmt()  Failed\n"));
+			return iRet;
+                }
+
+	}
+	if(cParty==PD_TYPE_MERCHANT){
+		if(GetField_Double(hContext,"deduct_reserved_po",&dTmp)){
+			if(dTmp>0.0){
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdatePayoutReserved");
+				if ((*DBObjPtr)(csMerchantID,
+						csCountry,
+						csMerchantCCY,
+						csServiceCode,
+						(-1)*dTmp,
+						PD_UPDATE_USER) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance::UpdatePayoutReserved()  Failed\n"));
+					return iRet;
+				}
+			}
+		}
+		if(GetField_Double(hContext,"deduct_fundin_po",&dTmp)){
+			if(dTmp>0.0){
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateFundInPayout");
+				if ((*DBObjPtr)(csMerchantID,
+						csCountry,
+						csMerchantCCY,
+						csServiceCode,
+						(-1)*dTmp,
+						PD_UPDATE_USER) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance::UpdateFundInPayout()  Failed\n"));
+					return iRet;
+				}
+			}
+		}
+	}
+
+	if (cParty==PD_TYPE_PSP || cParty==PD_TYPE_GLOBAL) {
+DEBUGLOG(("BOBalance:PayoutSuccess DebitPSP AvalBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+        	if ((*DBObjPtr)(csPspID,
+				csCountry,
+				csPspCCY,
+				PD_PSP_BAL,
+				dPspAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBPspBalance::DebitBalance() Failed\n"));
+		}
+	}
+
+	FREE_ME(csEffectDate);
+	FREE_ME(hTxn);
+DEBUGLOG(("BOBalance:PayoutSuccess() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int PayoutVoided(hash_t* hContext,
+		const char* csCountry, 
+		const char* csServiceCode,
+		const char* csMerchantCCY, 
+		const char* csMerchantID,
+		double dNetAmount,
+		const char* csPspCCY,
+		const char* csPspID,
+		double dPspAmount,
+		char   cParty,
+		int iDayOfWeek)
+{
+	int iRet = PD_OK;
+	int iSameDate = PD_FALSE;
+	double	dRemainDailyCap = 0.0;
+	double	dDailyCap = 0.0;
+	char	*csPostingDate;
+	char	*csEffectDate;
+	csEffectDate = (char*) malloc (PD_DATETIME_LEN +1 );
+
+	hash_t* hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+DEBUGLOG(("BOBalance:PayoutVoided()\n"));
+DEBUGLOG(("BOBalance:PayoutVoided() merchant = [%lf], psp = [%lf]\n",dNetAmount,dPspAmount));
+
+	if(GetField_Int(hContext,"same_date_cancel",&iSameDate)){
+DEBUGLOG(("BOBalance:PayoutVoided() same_date_cancel [%d]\n",iSameDate));
+	}
+
+
+/* lock opening balance */
+	if (cParty!=PD_TYPE_PSP) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+        	if ((*DBObjPtr)(hContext,
+				csMerchantID,
+				csMerchantCCY,
+				csCountry,
+				csServiceCode) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:PayoutVoided() GetOpenBalanceForUpdate Failed\n"));
+			return iRet;
+		}
+	}
+	
+/***** update  Context for approval date and approval timestamp */
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+        (*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:PayoutVoided()  SystemControl::GetApprovalDT called\n"));
+	if(GetField_CString(hContext,"approval_date",&csPostingDate)){
+		iDayOfWeek=day_of_week((const unsigned char *)csPostingDate);
+	}
+
+	if ((cParty==PD_TYPE_MERCHANT) && (iSameDate==PD_TRUE)) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateCurrBal");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				dNetAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance::UpdateCurrBal() Failed\n"));
+		}
+
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","GetDailyCapforUpdate");
+                if ((*DBObjPtr)(csMerchantID,
+                                csCountry,
+                                csMerchantCCY,
+                                csServiceCode,
+                                iDayOfWeek,
+                                &dDailyCap,
+				&dRemainDailyCap,
+                                csEffectDate) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantReservedAmt::GetDailyCapforUpdate()  Failed\n"));
+			return iRet;
+                }
+
+		PutField_CString(hTxn,"merchant_id",csMerchantID);
+		PutField_CString(hTxn,"txn_country",csCountry);
+		PutField_CString(hTxn,"txn_ccy",csMerchantCCY);
+		PutField_CString(hTxn,"service_code",csServiceCode);
+		PutField_Int(hTxn,"dow",iDayOfWeek);
+		PutField_CString(hTxn,"effect_date",csEffectDate);
+		PutField_Double(hTxn,"remain_daily_cap",dRemainDailyCap+dNetAmount);
+		PutField_Char(hTxn,"amt_type",PD_RES_AMT_DAILY_CAP);
+		PutField_Char(hTxn,"status",PD_RES_AMT_STATUS_APPROVE);
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","UpdateAmt");
+                if ((*DBObjPtr)(hTxn) != PD_OK) {
+                        iRet = INT_ERR;
+			FREE_ME(csEffectDate);
+			FREE_ME(hTxn);
+DEBUGLOG(("BOBalance:DBMerchantReservedAmt::UpdateAmt()  Failed\n"));
+			return iRet;
+                }
+
+	}
+	if ((cParty==PD_TYPE_GLOBAL) ||
+	    ((cParty==PD_TYPE_MERCHANT) && (iSameDate==PD_FALSE))) {
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateFloat");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				dNetAmount,
+				0.0,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance::UpdateFloat() Failed\n"));
+			return iRet;
+		}
+/*
+		if(GetField_CString(hContext,"PHDATE",&csPostingDate)){
+DEBUGLOG(("BOBalance::PayoutVoided() posting_date[%s]\n",csPostingDate));
+		}
+*/
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","CreditMerchantAmount");
+		if ((*DBObjPtr)(csPostingDate,
+				csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				csPspID,
+				PD_BUCKET_TYPE_FLOAT,
+				dNetAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:PayoutVoid() CreditMerchantAmount [Float]Failed\n"));
+			return iRet;
+		}
+	}
+
+	if (cParty==PD_TYPE_PSP || cParty==PD_TYPE_GLOBAL) {
+DEBUGLOG(("BOBalance:PayoutVoided CreditPSP AvalBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","CreditBalance");
+        	if ((*DBObjPtr)(csPspID,
+				csCountry,
+				csPspCCY,
+				PD_PSP_BAL,
+				dPspAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBPspBalance::CreditBalance() Failed\n"));
+		}
+	}
+
+	FREE_ME(csEffectDate);
+	FREE_ME(hTxn);
+DEBUGLOG(("BOBalance:PayoutVoided() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int ProcessHold(hash_t *hContext,
+		const hash_t *hRequest)
+{
+	int iRet = PD_OK;
+
+	char	*csTxnCcy;
+	char	*csTxnCountry;
+	char	*csPspId;
+	char	*csMerchantId;
+	char	*csServiceCode;
+	char	*csUser;
+	char	cType;
+	char	cHold;
+	char	cMHind;
+	int	iAllowBalNegative = PD_FALSE;
+	double	dAmt=0.0;
+	double	dBal=0.0;
+	double	dHold=0.0;
+	double	dAval=0.0;
+	double	dTmp=0.0;
+
+	hash_t *hVal;
+	hVal = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hVal,0);
+
+/*party_type*/
+	if(GetField_Char(hContext,"party_type",&cType)){
+DEBUGLOG(("BOBalance:ProcessHold() party_type = [%c]\n",cType));
+	}
+
+/*hold_type*/
+	if(GetField_Char(hContext,"hold_type",&cHold)){
+DEBUGLOG(("BOBalance:ProcessHold() hold_type = [%c]\n",cHold));
+	}
+
+/*txn country */
+	if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {	
+DEBUGLOG(("BOBalance:ProcessHold() txn_country = [%s]\n",csTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessHold() txn_country is missing!!!\n"));
+	}
+
+/*txn ccy */
+	if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {	
+DEBUGLOG(("BOBalance:ProcessHold() txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessHold() txn_ccy is missing!!!\n"));
+	}
+/*service code */
+	if (GetField_CString(hContext,"service_code",&csServiceCode)) {	
+DEBUGLOG(("BOBalance:ProcessHold() service_code = [%s]\n",csServiceCode));
+	}
+
+/*merchant id */
+	if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {	
+DEBUGLOG(("BOBalance:ProcessHold() merchant_id = [%s]\n",csMerchantId));
+	}
+
+/*psp id */
+	if (GetField_CString(hContext,"psp_id",&csPspId)) {	
+DEBUGLOG(("BOBalance:ProcessHold() psp_id = [%s]\n",csPspId));
+	}
+
+/*amount */
+	if (GetField_Double(hContext,"txn_amt",&dAmt)) {	
+DEBUGLOG(("BOBalance:ProcessHold() txn_amt = [%lf]\n",dAmt));
+	}
+
+/*update_user*/
+	if (GetField_CString(hContext,"update_user",&csUser)) {	
+DEBUGLOG(("BOBalance:ProcessHold() update_user = [%s]\n",csUser));
+	}
+
+/* mh_ind */ 
+	if (GetField_Char(hContext, "mh_ind", &cMHind)) {
+		PutField_Char(hContext, "hold_po_st", cMHind);
+DEBUGLOG(("BOBalance:ProcessHold() mh_ind = [%c]\n",cMHind));
+	}
+
+/*allow_bal_negative */
+	if (GetField_Int(hContext, "allow_bal_negative", &iAllowBalNegative)) {
+DEBUGLOG(("BOBalance:ProcessHold() allow_bal_negative = [%d]\n", iAllowBalNegative));
+	}
+
+
+	if(cType==PD_TYPE_MERCHANT){
+//DEBUGLOG(("BOBalance: ProcessHold: DBMerchantBalance->GetCurrentValues\n"));
+//		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+//		if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR)
+//
+
+DEBUGLOG(("BOBalance: ProcessHold: DBMerchantBalance->GetOpenBalanceForUpdate\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+		if((unsigned long)(*DBObjPtr)(hVal, csMerchantId,csTxnCcy,csTxnCountry,csServiceCode)!=PD_ERR) {
+
+/***** update  Context for approval date and approval timestamp */
+			DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+			(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:ProcessHold()  SystemControl::GetApprovalDT called\n"));
+
+			if (cMHind == PD_TYPE_PAYOUT) {
+				if(GetField_Double(hVal,"merchant_open_bal",&dBal)){
+DEBUGLOG(("BOBalance: current_bal (P) = [%lf]\n",dBal));
+				}
+				if(GetField_Double(hVal,"total_hold",&dHold)){
+DEBUGLOG(("BOBalance: total_hold (P) = [%lf]\n",dHold));
+				}
+				dAval=dBal-dHold;
+			}
+			else {
+				if(GetField_Double(hVal,"merchant_open_bal_settlement",&dBal)){
+DEBUGLOG(("BOBalance: current_bal (S) = [%lf]\n",dBal));
+				}
+				if(GetField_Double(hVal,"total_hold_settlement",&dHold)){
+DEBUGLOG(("BOBalance: total_hold (S) = [%lf]\n",dHold));
+				}
+				dAval=dBal-dHold;
+			}
+		}
+                else{
+DEBUGLOG(("BOBalance: ProcessHold: DBMerchantBalance->GetOpenBalanceForUpdate Failed\n"));
+ERRLOG("BOBalance: ProcessHold: DBMerchantBalance->GetOpenBalanceForUpdate Failed\n");
+                        iRet=PD_ERR;
+                }
+
+		if (iRet == PD_OK) {
+			if(GetField_Double(hVal,"merchant_open_bal",&dTmp)){
+DEBUGLOG(("BOBalance: open_bal = [%f]\n",dTmp));
+				PutField_Double(hContext, "merchant_open_bal", dTmp);
+			}
+
+			if(GetField_Double(hVal,"merchant_open_bal_settlement",&dTmp)){
+DEBUGLOG(("BOBalance: open_bal_settlement = [%f]\n",dTmp));
+				PutField_Double(hContext, "merchant_open_bal_settlement", dTmp);
+			}
+		}
+	}
+        else if(cType==PD_TYPE_PSP){
+DEBUGLOG(("BOBalance: ProcessHold: DBPspBalance->GetBalance\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalanceForUpdate");
+                if ((unsigned long)(*DBObjPtr)(csPspId,csTxnCountry,csTxnCcy,hVal)==PD_OK) {
+
+/***** update  Context for approval date and approval timestamp */
+                        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+                        (*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:ProcessHold() PSP SystemControl::GetApprovalDT called\n"));
+
+
+                        if (GetField_Double(hVal,"balance",&dBal)) {
+DEBUGLOG(("BOBalance::balance = [%f]\n",dBal));
+                        }
+                        if (GetField_Double(hVal,"total_hold",&dHold)) {
+DEBUGLOG(("BOBalance::total_hold = [%f]\n",dHold));
+                        }
+                        dAval=dBal-dHold;
+                }
+                else{
+DEBUGLOG(("BOBalance: ProcessHold: DBPspBalance->GetBalance Failed\n"));
+ERRLOG("BOBalance: ProcessHold: DBPspBalance->GetBalance Failed\n");
+                        iRet=INT_ERR;
+                }
+        }
+
+	if(iRet==PD_OK){
+                if(cHold==PD_HOLD){
+			if (iAllowBalNegative == PD_FALSE) {
+				if(dAval<dAmt){
+DEBUGLOG(("BOBalance: ProcessHold: Hold Amount[%lf] > Balance[%lf]\n",dAmt,dAval));
+ERRLOG("BOBalance: ProcessHold: Hold Amount[%lf] > Balance[%lf]\n",dAmt,dAval);
+					iRet = INT_INVALID_PAY_AMOUNT;
+				}
+			}
+		}
+		else if(cHold==PD_UNHOLD){
+			if(dHold<dAmt){
+DEBUGLOG(("BOBalance: ProcessHold: Original Hold[%lf] < Unhold Amt[%lf]\n",dHold,dAmt));
+ERRLOG("BOBalance: ProcessHold: Original Hold[%lf] < Unhold Amt[%lf]\n",dHold,dAmt);
+				iRet = INT_INVALID_PAY_AMOUNT;
+			}
+		}
+	}
+
+	if(iRet==PD_OK){
+		if(cType==PD_TYPE_MERCHANT){
+DEBUGLOG(("BOBalance: ProcessHold: DBMerchantBalance->HoldBalance\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateHoldBalance");
+                	iRet = (unsigned long)(*DBObjPtr)(csMerchantId,
+							  csTxnCountry,
+							  csTxnCcy,
+							  csServiceCode,
+							  cMHind,
+							  cHold,
+							  dAmt,
+							  csUser);
+
+			if(iRet==PD_OK){
+				hash_init(hVal,0);
+				DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+				if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+
+					if(GetField_Double(hVal,"current_bal",&dTmp)){
+						PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_float",&dTmp)){
+						PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+						PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+						PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+						PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_hold",&dTmp)){
+						PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+						PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold_settlement= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+						PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+						PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+						PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+					}
+				}
+			}
+
+
+		}
+		else if(cType==PD_TYPE_PSP){
+			hash_init(hVal,0);
+DEBUGLOG(("BOBalance: ProcessHold: DBPspBalance->HoldBalance\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBPspBalance","UpdateHoldBalance");
+                	iRet = (unsigned long)(*DBObjPtr)(csPspId,
+							  csTxnCountry,
+							  csTxnCcy,
+							  cHold,
+							  dAmt,
+							  csUser);
+
+			if(iRet==PD_OK){
+				DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+				if((unsigned long)(*DBObjPtr)(csPspId,csTxnCountry,csTxnCcy,hVal)!=PD_ERR){
+					if(GetField_Double(hVal,"balance",&dTmp)){
+						PutField_Double(hContext,"bal",dTmp);
+DEBUGLOG(("BOBalance:psp_balance = [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_float",&dTmp)){
+						PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance:psp_total_float = [%f]\n",dTmp));
+					}
+					if(GetField_Double(hVal,"total_hold",&dTmp)){
+						PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance:psp_total_hold = [%f]\n",dTmp));
+					}
+				}
+			}
+		}
+	}
+	FREE_ME(hVal);
+
+
+	if(iRet==PD_OK){
+		if(cHold==PD_HOLD){
+			PutField_CString(hContext, "amount_type", PD_DR);
+		} else {
+			PutField_CString(hContext, "amount_type", PD_CR);
+		}
+DEBUGLOG(("BOBalance:ProcessHold() AddHold Element\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddHoldAmtElement");
+		iRet = (unsigned long)(*BOObjPtr)(hContext);
+	}
+
+	return iRet;
+}
+
+
+
+int DebitDepositAmount(hash_t* hContext,
+			const char* csPostingDate,
+			const char* csCountry, 
+			const char* csServiceCode,
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount,
+			const char* csPspCCY,
+			const char* csPspID,
+			double dPspAmount,
+			double dReserveAmount,
+			double dPspFee) 
+{
+	int iRet = PD_OK;
+	int iRecon = PD_FALSE;
+	int iReleased = PD_FALSE;
+	double dAvaBalance = 0.0;
+	double dTmp = 0.0;
+
+DEBUGLOG(("BOBalance:DebitDepositAmount()\n"));
+DEBUGLOG(("BOBalance:DebitDepositAmount() merchant = [%lf], psp = [%lf], res = [%lf]\n",dNetAmount,dPspAmount,dReserveAmount));
+
+	GetField_Int(hContext,"reserve_released",&iReleased);
+
+	if(GetField_Int(hContext,"recon_ind",&iRecon)){
+DEBUGLOG(("BOBalance:DebitDepositAmount() recon_ind = [%d]\n",iRecon));
+	}
+	if(iRecon){
+DEBUGLOG(("BOBalance:DebitDepositcsEffectDateGetAvalPspBalanceForUpdate\n"));
+		if(GetAvalPspBalanceForUpdate(csCountry, csPspCCY, csPspID, &dAvaBalance)!=PD_OK) {
+DEBUGLOG(("BOBalance:GetAvalPspBalanceForUpdate Failed\n"));
+ERRLOG("BOBalance:GetAvalPspBalanceForUpdate Failed\n");
+			iRet=INT_ERR;
+		}
+		else {
+DEBUGLOG(("BOBalance::DebitDepositAmount() PSP Balance [%lf]\n", dAvaBalance));
+			if(dAvaBalance<(dPspAmount-dPspFee)){
+DEBUGLOG(("BOBalance::DebitDepositAmount() PSP Balance [%lf] < debit balance [%lf]\n", dAvaBalance,(dPspAmount-dPspFee)));
+ERRLOG("BOBalance::DebitDepositAmount() PSP Balance [%lf] < debit balance [%lf]\n", dAvaBalance,(dPspAmount-dPspFee));
+				iRet = INT_INSUFFICIENT_FUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+
+/*
+	if(iReleased==PD_FALSE){
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","CreditMerchantAmount");
+        	if ((*DBObjPtr)(csPostingDate,
+			csMerchantID,
+			csCountry,
+			csMerchantCCY,
+			csServiceCode,
+			csPspID,
+			PD_BUCKET_TYPE_FLOAT,
+			- dNetAmount + dReserveAmount,
+			PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() CreditMerchantAmount [Float]Failed\n"));
+		}
+	}
+*/
+/* don't need reserve bucket anymore 
+	if (iRet == PD_OK && dReserveAmount > 0) {
+ 	       if ((*DBObjPtr)(csPostingDate,
+			csMerchantID,
+			csCountry,
+			csMerchantCCY,
+			csServiceCode,
+			csPspID,
+			PD_BUCKET_TYPE_RESERVED,
+			(-1)*dReserveAmount,
+			PD_UPDATE_USER) != PD_OK) {
+		iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() CreditMerchantAmount [Reserved]Failed\n"));
+		}
+	}
+*/
+
+	/* Use Current Balance instead of Settlement Balance */
+	/*if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr, "DBMerchantBalance", "GetSettAvalBalance");
+                if((unsigned long)(*DBObjPtr)(hContext,
+					      csMerchantID,
+					      csMerchantCCY,
+					      csCountry,
+					      csServiceCode,
+					      &dTmp) != PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() GetSettAvalBalance Failed\n"));
+		}
+		else{
+			dTmp = 0.0;
+			if(GetField_Double(hContext,"merchant_open_bal_settlement",&dTmp)){
+DEBUGLOG(("BOBalance:DebitDepositAmount() GetSettAvalBalance merchant_open_bal_settlement = [%lf]\n",dTmp));
+			}
+			if(dNetAmount>dTmp){
+DEBUGLOG(("BOBalance::DebitDepositAmount() Merchant Settlement Balance [%lf] < debit balance [%lf]\n", dTmp,dNetAmount));
+ERRLOG("BOBalance::DebitDepositAmount() Merchant Settlement Balance [%lf] < debit balance [%lf]\n", dTmp,dNetAmount);
+				iRet = INT_INSUFFICIENT_FUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}*/
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr, "DBMerchantBalance", "GetCurrBalance");
+                if((unsigned long)(*DBObjPtr)(hContext,
+					      csMerchantID,
+					      csMerchantCCY,
+					      csCountry,
+					      csServiceCode,
+					      &dTmp) != PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() GetCurrBalance Failed\n"));
+		}
+		else{
+
+DEBUGLOG(("BOBalance:DebitDepositAmount() GetCurrBalance current_bal = [%lf]\n",dTmp));
+			if(dNetAmount>dTmp){
+DEBUGLOG(("BOBalance::DebitDepositAmount() Merchant Current Balance [%lf] < debit balance [%lf]\n", dTmp,dNetAmount));
+ERRLOG("BOBalance::DebitDepositAmount() Merchant Current Balance [%lf] < debit balance [%lf]\n", dTmp,dNetAmount);
+				iRet = INT_INSUFFICIENT_FUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+
+/* lock opening balance */
+        if (iRet == PD_OK) {
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                if ((*DBObjPtr)(hContext,
+                                csMerchantID,
+                                csMerchantCCY,
+                                csCountry,
+                                csServiceCode) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() GetOpenBalanceForUpdate Failed\n"));
+                }
+        }
+/***** update  Context for approval date and approval timestamp */
+		DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+		(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:DebitDepositAmount()  SystemControl::GetApprovalDT called\n"));
+/*
+	if (iRet==PD_OK  && iReleased==PD_FALSE) {
+DEBUGLOG(("BOBalance:DebitDepositAmount UpdateFloat\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateFloat");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				(-1)*dNetAmount,
+				(-1)*dReserveAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() UpdateFloat Failed\n"));
+		}
+	}
+	else if(iRet==PD_OK  && iReleased==PD_TRUE) {
+*/
+	if(iRet==PD_OK){
+		//update available settlement
+DEBUGLOG(("BOBalance:DebitDepositAmount() Call DBMerchantBalance:UpdateSettBal[%c]\n",PD_IND_DEBIT));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateSettBal");
+		iRet = (unsigned long)(*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				dNetAmount,
+				0.0,
+				PD_IND_DEBIT,
+				PD_UPDATE_USER);
+DEBUGLOG(("BOBalance:DebitDepositAmount() UpdateSettBal iRet = [%d]\n",iRet));
+	}
+
+	if(iRet==PD_OK && iReleased==PD_FALSE){
+DEBUGLOG(("BOBalance:DebitDepositAmount UpdateReserved\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateReserved");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				-dReserveAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() UpdateFloat Failed\n"));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if(iRecon){
+DEBUGLOG(("BOBalance:DebitDepositAmount DebitPSP Ava Balance\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+        		if ((*DBObjPtr)(csPspID,
+					csCountry,
+					csPspCCY,
+					PD_PSP_BAL,
+					dPspAmount - dPspFee,
+					PD_UPDATE_USER) != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() DebitBalance Failed\n"));
+			}
+		}
+		else{
+DEBUGLOG(("BOBalance:DebitDepositAmount DebitPSP Float\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+        		if ((*DBObjPtr)(csPspID,
+					csCountry,
+					csPspCCY,
+					PD_PSP_FLOAT,
+					dPspAmount - dPspFee,
+					PD_UPDATE_USER) != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DebitDepositAmount() DebitBalance Failed\n"));
+			}
+		}
+	}
+
+DEBUGLOG(("BOBalance:DebitDepositAmount() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int UpdateSettlementAmount(hash_t *hContext)
+{
+	int	iRet = PD_OK;
+	char	*csTxnCode;
+	char	*csSubTxnCode;
+	char	*csOrgTxnSeq;
+	char	*csOrgTxnCountry;
+	char	*csOrgTxnCcy;
+	char	*csOrgMerchantId;
+	char	*csOrgServiceCode;
+	double	dOrgNetAmt=0.0;
+	//double	dOrgTxnAmt=0.0;
+	double	dFee=0.0;
+	//double	dMarkupAmt=0.0;
+	double	dTmp;
+	//char	cTmp;
+	hash_t* hVal;
+
+
+DEBUGLOG(("BOBalance:UpdateSettlementAmount()\n"));
+
+//txn code 
+	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_code = [%s]\n",csTxnCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_code is missing!!!\n"));
+	}
+//org txn seq 
+	if (GetField_CString(hContext,"txn_seq",&csOrgTxnSeq)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_seq = [%s]\n",csOrgTxnSeq));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_seq is missing!!!\n"));
+	}
+
+//org txn country 
+	if (GetField_CString(hContext,"txn_country",&csOrgTxnCountry)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_country = [%s]\n",csOrgTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_country is missing!!!\n"));
+	}
+
+///org txn ccy 
+	if (GetField_CString(hContext,"request_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_ccy = [%s]\n",csOrgTxnCcy));
+	}
+	else {
+		if (GetField_CString(hContext,"txn_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_ccy = [%s]\n",csOrgTxnCcy));
+		}
+		else{
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_ccy is missing!!!\n"));
+		}
+	}
+///org service Code 
+	if (GetField_CString(hContext,"service_code",&csOrgServiceCode)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() service_code = [%s]\n",csOrgServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() service_code is missing!!!\n"));
+	}
+
+///org merchant id 
+	if (GetField_CString(hContext,"merchant_id",&csOrgMerchantId)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() merchant_id = [%s]\n",csOrgMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() merchant_id is missing!!!\n"));
+	}
+
+/*
+///org txn amount //
+	if (GetField_Double(hContext,"txn_amt",&dOrgTxnAmt)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_amt = [%lf]\n",dOrgTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() txn_amt is missing!!!\n"));
+	}
+*/
+
+///org net amount //
+	if (GetField_Double(hContext,"net_amt",&dOrgNetAmt)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() net_amt = [%lf]\n",dOrgNetAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() net_amt is missing!!!\n"));
+	}
+
+///markup//
+//	if (GetField_Double(hContext,"markup_amt",&dMarkupAmt)) {	
+//DEBUGLOG(("BOBalance:UpdateSettlementAmount() markup_amt = [%lf]\n",dMarkupAmt));
+//	}
+
+///fee//
+	if (GetField_Double(hContext,"src_txn_fee",&dFee)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() fee = [%lf]\n",dFee));
+	}
+
+//sub_txn_code
+	if (GetField_CString(hContext,"sub_txn_code",&csSubTxnCode)) {	
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() sub_txn_code = [%s]\n",csSubTxnCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() sub_txn_code is missing!!!\n"));
+	}
+
+
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() Update Avi Settlement Balance\n"));
+
+	if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)){
+		iRet = PD_OK;
+	}
+
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_CANCEL)){
+		iRet = PD_OK;
+	}
+
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_DELIVERY)){
+		iRet = PD_OK;
+	}
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_APPROVAL)){
+
+/* lock opening balance */
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                if ((*DBObjPtr)(hContext,
+                                csOrgMerchantId,
+                                csOrgTxnCcy,
+                                csOrgTxnCountry,
+                                csOrgServiceCode) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() GetOpenBalanceForUpdate Failed\n"));
+                }
+		else {
+/***** update  Context for approval date and approval timestamp */
+			DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+			(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:UpdateSettlementAmount()  SystemControl::GetApprovalDT called\n"));
+
+			/* merchant_open_bal */
+			if (GetField_Double(hContext, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() merchant_open_bal = [%lf]\n",dTmp));
+				PutField_Double(hContext, "open_bal", dTmp);
+			}
+		
+			/* merchant_open_bal_settlement */	
+			if (GetField_Double(hContext, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() merchant_open_bal_settlement = [%lf]\n",dTmp));
+				PutField_Double(hContext, "open_bal_settlement", dTmp);
+			}
+		}
+
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() Call DBMerchantBalance:UpdateSettBal[%c]\n",PD_IND_DEBIT));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateSettBal");
+		iRet = (unsigned long)(*DBObjPtr)(csOrgMerchantId,
+						csOrgTxnCountry,
+						csOrgTxnCcy,
+						csOrgServiceCode,
+						dOrgNetAmt,
+						dFee,
+						PD_IND_DEBIT,
+						PD_UPDATE_USER); 
+	}
+/*
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_APPROVAL)){
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() Call DBMerchantBalance:Settlement2InTransit[%c]\n",PD_S2I));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","Settlement2InTransit");
+		iRet = (unsigned long)(*DBObjPtr)(csOrgMerchantId,
+						csOrgTxnCountry,
+						csOrgTxnCcy,
+						csOrgServiceCode,
+						dOrgNetAmt,
+						dFee,
+						PD_S2I,
+						PD_UPDATE_USER); 
+
+	}
+*/
+/*
+	else if(!strcmp(csTxnCode,PD_SETTLEMENT_DELIVERY)){
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() Call DBMerchantBalance:UpdateIntransit\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateIntransit");
+			iRet = (unsigned long)(*DBObjPtr)(csOrgMerchantId,
+                                                csOrgTxnCountry,
+                                                csOrgTxnCcy,
+                                                csOrgServiceCode,
+                                                (dOrgNetAmt)*(-1),
+                                                PD_UPDATE_USER);
+
+	}
+*/
+	else if (!strcmp(csTxnCode, PD_VOID_TXN_CODE) && !strcmp(csSubTxnCode, PD_SETTLEMENT_VOID))  {
+/* lock opening balance */
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                if ((*DBObjPtr)(hContext,
+                                csOrgMerchantId,
+                                csOrgTxnCcy,
+                                csOrgTxnCountry,
+                                csOrgServiceCode) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() GetOpenBalanceForUpdate Failed\n"));
+                }
+		
+/***** update  Context for approval date and approval timestamp */
+		DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+		(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:UpdateSettlementAmount()  SystemControl::GetApprovalDT called\n"));
+
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() Call DBMerchantBalance:UpdateSettBal[%c]\n",PD_IND_CREDIT));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateSettBal");
+		iRet = (unsigned long)(*DBObjPtr)(csOrgMerchantId,
+						csOrgTxnCountry,
+						csOrgTxnCcy,
+						csOrgServiceCode,
+						dOrgNetAmt,
+						dFee,
+						PD_IND_CREDIT,
+						PD_UPDATE_USER); 
+	}
+
+	else {
+DEBUGLOG(("BOBalance:None Settlement txn\n"));
+		return iRet;
+	}
+
+	//if(iRet==PD_OK){
+
+		hVal = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hVal,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+		if((unsigned long)(*DBObjPtr)(csOrgMerchantId,csOrgTxnCcy,csOrgTxnCountry,csOrgServiceCode,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"current_bal",&dTmp)){
+				PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+				PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+				PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+				PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+				PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+				PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+				PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+				PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+			}
+		}
+
+		FREE_ME(hVal);
+	//}
+	
+DEBUGLOG(("BOBalance iRet=[%d]\n",iRet));
+	return iRet;
+}
+
+int GetAvalBalanceForUpdate(const char* csTxnCountry,
+                        const char* csTxnCcy,
+                        const char* csService,
+                        const char* csMerchantId,
+                        double  *dBalance)
+{
+	int	iRet = PD_OK;
+DEBUGLOG(("BOBalance:GetBalanceForUpdate()\n"));
+
+DEBUGLOG(("BOBalance:GetBalanceForUpdate() mid=[%s]\n",csMerchantId));
+DEBUGLOG(("BOBalance:GetBalanceForUpdate() txn_ccy=[%s]\n",csTxnCcy));
+DEBUGLOG(("BOBalance:GetBalanceForUpdate() txn_country=[%s]\n",csTxnCountry));
+DEBUGLOG(("BOBalance:GetBalanceForUpdate() service=[%s]\n",csService));
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetSettAvalBalance");
+        if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csService,dBalance)==PD_OK){
+DEBUGLOG(("Balance = [%lf]\n",*dBalance));
+        }
+        else{
+DEBUGLOG(("BOBalance:GetBalanceForUpdate()  balance for [%s] [%s] [%s] not found\n",csMerchantId,csTxnCcy,csService));
+ERRLOG("BOBalance:GetBalanceForUpdate()  balance for [%s] [%s] [%s] not found\n",csMerchantId,csTxnCcy,csService);
+		*dBalance = 0.0;
+        }
+	
+
+	return iRet;
+}
+
+
+int GetTotalReverseForUpdate(hash_t* hContext,
+			const char* csTxnCountry,
+                        const char* csTxnCcy,
+                        const char* csService,
+                        const char* csMerchantId,
+                        double  *dBalance)
+{
+        int     iRet = PD_OK;
+	double	dReserveAmt = 0.0;
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate()\n"));
+        *dBalance = 0.0;
+
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate() mid=[%s]\n",csMerchantId));
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate() txn_ccy=[%s]\n",csTxnCcy));
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate() txn_country=[%s]\n",csTxnCountry));
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate() service=[%s]\n",csService));
+        DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+        if((unsigned long)(*DBObjPtr)(hContext,csMerchantId,csTxnCcy,csTxnCountry,csService)==PD_OK){
+		if (GetField_Double(hContext,"reserved_amount",&dReserveAmt)) {
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate() reserve amount =[%f]\n",dReserveAmt));
+			*dBalance = dReserveAmt;
+		}
+        }
+        else{
+DEBUGLOG(("BOBalance:GetTotalReverseForUpdate()  balance for [%s] [%s] [%s] not found\n",csMerchantId,csTxnCcy,csService));
+ERRLOG("BOBalance:GetTotalReverseForUpdate()  balance for [%s] [%s] [%s] not found\n",csMerchantId,csTxnCcy,csService);
+        }
+
+
+        return iRet;
+}
+
+int GetAvalPayoutBalance(hash_t *hContext, 
+			const hash_t *hRequest, 
+			double *dActualBalance, 
+			double *dAvalBalance)
+{
+	int	iRet = PD_OK;
+	char	*csOrgTxnCountry;
+	char	*csOrgTxnCcy;
+	char	*csOrgMerchantId;
+	char	*csOrgServiceCode;
+	//double	dReservedAmt=0;
+	double	dTmp=0.0;
+	double	dBal=0.0;
+	double	dFeeRate=0.0;
+	int	iDayOfWeek;
+	
+//org txn country 
+	if (GetField_CString(hContext,"txn_country",&csOrgTxnCountry)) {	
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() txn_country = [%s]\n",csOrgTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() txn_country is missing!!!\n"));
+	}
+
+///org txn ccy 
+	if (GetField_CString(hContext,"txn_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() txn_ccy = [%s]\n",csOrgTxnCcy));
+	}
+	else{
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() txn_ccy is missing!!!\n"));
+	}
+///org service Code 
+	if (GetField_CString(hContext,"service_code",&csOrgServiceCode)) {	
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() service_code = [%s]\n",csOrgServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() service_code is missing!!!\n"));
+	}
+
+///org merchant id 
+	if (GetField_CString(hContext,"merchant_id",&csOrgMerchantId)) {	
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() merchant_id = [%s]\n",csOrgMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() merchant_id is missing!!!\n"));
+	}
+
+///day of week
+	if (GetField_Int(hContext,"day_of_week",&iDayOfWeek)) {	
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() day_of_week = [%d]\n",iDayOfWeek));
+	}
+	else {
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() day_of_week is missing!!!\n"));
+	}
+
+///approximate_fee_rate
+	if (GetField_Double(hContext,"approximate_fee_rate",&dFeeRate)) {	
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() approximate_fee_rate = [%lf]\n",dFeeRate));
+	}
+	else {
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() approximate_fee_rate is missing!!!\n"));
+	}
+
+/*
+	if(iRet ==PD_OK){
+DEBUGLOG(("BOBalance::Call DBMerchantReservedAmt:GetDailyCap\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantReservedAmt","GetDailyCap");
+                if((unsigned long)(*DBObjPtr)(csOrgMerchantId,
+                                                csOrgTxnCountry,
+                                                csOrgTxnCcy,
+                                                csOrgServiceCode,
+                                                iDayOfWeek,
+                                                &dReservedAmt)==PD_OK){
+DEBUGLOG(("GetReservedAmt reserved_amt =[%lf]\n",dReservedAmt));
+                        *dActualBalance = dReservedAmt;
+                }
+                else{
+DEBUGLOG(("GetReservedAmt Error\n"));
+ERRLOG("BOBalance:GetAvalPayoutBalance::GetReservedAmt Error!!\n");
+                        *dActualBalance = 0.0;
+                        *dAvalBalance= 0.0;
+			iRet = PD_ERR;
+                }
+	}
+
+	if(iRet ==PD_OK){
+DEBUGLOG(("BOBalance::Call DBMerchantBalance:GetPOAvalBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetPOAvalBalance");
+        	if((unsigned long)(*DBObjPtr)(hContext,
+					csOrgMerchantId,
+					csOrgTxnCcy,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					&dBal)==PD_OK){
+DEBUGLOG(("GetAvalBalance balance = [%lf]\n",dBal));
+			if(dBal<*dActualBalance || *dActualBalance==0.0){
+                                *dActualBalance = dBal;
+				PutField_Int(hContext,"merchant_balance",PD_TRUE);
+                        }
+			else
+				PutField_Int(hContext,"reserved_amount",PD_TRUE);
+        	}
+        	else{
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance()  balance for [%s] [%s] [%s] not found\n",csOrgMerchantId,csOrgTxnCcy,csOrgServiceCode));
+ERRLOG("BOBalance:GetAvalPayoutBalance()  balance for [%s] [%s] [%s] not found\n",csOrgMerchantId,csOrgTxnCcy,csOrgServiceCode);
+			*dActualBalance = 0.0;
+			*dAvalBalance= 0.0;
+			iRet = PD_ERR;
+        	}
+	}
+*/
+	if(iRet ==PD_OK){
+DEBUGLOG(("BOBalance::Call DBMerchantBalance:GetRemainPOBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetRemainPOBalance");
+        	if((unsigned long)(*DBObjPtr)(hContext,
+					csOrgMerchantId,
+					csOrgTxnCcy,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					&dBal)==PD_OK){
+DEBUGLOG(("GetAvalBalance remain payout balance = [%lf]\n",dBal));
+			*dActualBalance = dBal;
+        	}
+        	else{
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance()  balance for [%s] [%s] [%s] not found\n",csOrgMerchantId,csOrgTxnCcy,csOrgServiceCode));
+ERRLOG("BOBalance:GetAvalPayoutBalance()  balance for [%s] [%s] [%s] not found\n",csOrgMerchantId,csOrgTxnCcy,csOrgServiceCode);
+			*dActualBalance = 0.0;
+			*dAvalBalance= 0.0;
+			iRet = PD_ERR;
+        	}
+	}
+	if(iRet==PD_OK){
+			GetField_Double(hContext,"merchant_remain_po_with_fee",&dTmp);
+			*dAvalBalance = dTmp;
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() Aval balance = [%lf]\n",*dAvalBalance));
+DEBUGLOG(("BOBalance:GetAvalPayoutBalance() Actual balance = [%lf]\n",*dActualBalance));
+	}
+
+	
+	return iRet;
+}
+
+int UpdateMerchantAvalAmt(hash_t* hContext,
+			const char* csCountry,
+                        const char* csServiceCode,
+                        const char* csMerchantCCY,
+                        const char* csMerchantID,
+			double dNetAmt)
+{
+	int	iRet = PD_OK;
+	
+DEBUGLOG(("BOBalance:UpdateMerchantAvalAmt Amount to be updated = [%lf]\n",dNetAmt));
+        if (iRet == PD_OK) {
+/* lock opening balance */
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                if ((*DBObjPtr)(hContext,
+                                csMerchantID,
+                                csMerchantCCY,
+                                csCountry,
+                                csServiceCode) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() GetOpenBalanceForUpdate Failed\n"));
+                }
+
+DEBUGLOG(("BOBalance:UpdateSettlementAmount() Call DBMerchantBalance:UpdateSettBal[%c]\n",PD_IND_DEBIT));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateSettBal");
+DEBUGLOG(("BOBalance:UpdateMerchantAvalAmt: UpdateCurrBal\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateCurrBal");
+                if ((*DBObjPtr)(csMerchantID,
+                                csCountry,
+                                csMerchantCCY,
+                                csServiceCode,
+				dNetAmt,
+                                PD_UPDATE_USER) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:UpdateMerchantAvalAmt() UpdateCurrBal Failed\n"));
+                }
+        }
+
+	
+
+	return iRet;
+}
+
+
+int DebitMerchantAvalAmount(hash_t *hContext, const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csMerchantId;
+	char	*csServiceCode;
+	double	dNetAmt=0.0;
+	//double	dTxnAmt=0.0;
+	double	dTmp;
+	hash_t* hVal;
+
+
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount()\n"));
+
+/*txn country */
+	if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {	
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() txn_country = [%s]\n",csTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() txn_country is missing!!!\n"));
+	}
+
+/*txn ccy */
+	if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {	
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() txn_ccy is missing!!!\n"));
+	}
+/*service Code */
+	if (GetField_CString(hContext,"service_code",&csServiceCode)) {	
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() service_code = [%s]\n",csServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() service_code is missing!!!\n"));
+	}
+
+/*merchant id */
+	if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {	
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() merchant_id = [%s]\n",csMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() merchant_id is missing!!!\n"));
+	}
+
+
+/* txn amount 
+	if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {	
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() txn_amt = [%lf]\n",dTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() txn_amt is missing!!!\n"));
+	}
+*/
+
+/* net amount */
+	if (GetField_Double(hContext,"net_amt",&dNetAmt)) {	
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() net_amt = [%lf]\n",dNetAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() net_amt is missing!!!\n"));
+	}
+
+
+
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount() Update merchant aval balance \n"));
+	iRet = UpdateMerchantAvalAmt(hContext,
+				csTxnCountry,
+				csServiceCode,
+				csTxnCcy,
+				csMerchantId,
+				dNetAmt * (-1));
+		
+	hVal = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hVal,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+	if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+		if(GetField_Double(hVal,"current_bal",&dTmp)){
+			PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_float",&dTmp)){
+			PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+			PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+			PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+			PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_hold",&dTmp)){
+			PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+			PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold_settlement= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+			PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+			PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+			PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+		}
+	}
+	FREE_ME(hVal);
+DEBUGLOG(("BOBalance:DebitMerchantAvalAmount()  exit = [%d]\n",iRet));
+	
+	return iRet;
+}
+
+int CreditMerchantAvalAmount(hash_t *hContext, const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csMerchantId;
+	char	*csServiceCode;
+	double	dNetAmt=0.0;
+	double	dTxnAmt=0.0;
+	double	dTmp;
+	hash_t* hVal;
+
+
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount()\n"));
+
+/* txn country */
+	if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_country = [%s]\n",csTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_country is missing!!!\n"));
+	}
+
+/*txn ccy */
+	if (GetField_CString(hContext,"bal_ccy",&csTxnCcy)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_ccy is missing!!!\n"));
+	}
+/*service Code */
+	if (GetField_CString(hContext,"service_code",&csServiceCode)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() service_code = [%s]\n",csServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() service_code is missing!!!\n"));
+	}
+
+/*merchant id */
+	if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() merchant_id = [%s]\n",csMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() merchant_id is missing!!!\n"));
+	}
+
+/* txn amount */
+	if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_amt = [%lf]\n",dTxnAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() txn_amt is missing!!!\n"));
+	}
+
+
+/*net amount */
+	if (GetField_Double(hContext,"net_amt",&dNetAmt)) {	
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() net_amt = [%lf]\n",dNetAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() net_amt is missing!!!\n"));
+	}
+
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount() Update merchant aval balance \n"));
+	iRet = UpdateMerchantAvalAmt(hContext,
+				csTxnCountry,
+				csServiceCode,
+				csTxnCcy,
+				csMerchantId,
+				dNetAmt);
+
+
+		
+	hVal = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hVal,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+	if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+		if(GetField_Double(hVal,"current_bal",&dTmp)){
+			PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_float",&dTmp)){
+			PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+			PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+			PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+			PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_hold",&dTmp)){
+			PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+			PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold_settlement= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+			PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+			PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+		}
+		if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+			PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+		}
+	}
+	FREE_ME(hVal);
+
+
+DEBUGLOG(("BOBalance:CreditMerchantAvalAmount()  exit = [%d]\n",iRet));
+	
+	return iRet;
+}
+
+
+
+int TransferPspBalance(hash_t *hContext, const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+	char	*csOrgTxnCountry;
+	char	*csOrgTxnCcy;
+	char	*csOrgPspId;
+	char	cTmp;
+	double	dAmt;
+	double	dPspFee = 0;
+	double	dTmp;
+	hash_t* hVal;
+
+
+DEBUGLOG(("BOBalance:TransferPspBalance()\n"));
+
+/*txn country */
+	if (GetField_CString(hContext,"txn_country",&csOrgTxnCountry)) {	
+DEBUGLOG(("BOBalance:TransferPspBalance() txn_country = [%s]\n",csOrgTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:TransferPspBalance() txn_country is missing!!!\n"));
+	}
+
+/*txn ccy */
+	if (GetField_CString(hContext,"txn_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:TransferPspBalance() txn_ccy = [%s]\n",csOrgTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:TransferPspBalance() txn_ccy is missing!!!\n"));
+	}
+
+/*psp id */
+	if (GetField_CString(hContext,"psp_id",&csOrgPspId)) {	
+DEBUGLOG(("BOBalance:TransferPspBalance() psp_id = [%s]\n",csOrgPspId));
+	}
+	else {
+DEBUGLOG(("BOBalance:TransferPspBalance() psp_id is missing!!!\n"));
+	}
+
+/*net amount */
+	if (GetField_Double(hContext,"txn_amt",&dAmt)) {	
+DEBUGLOG(("BOBalance:TransferPspBalance() txn_amt = [%lf]\n",dAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:TransferPspBalance() txn_amt is missing!!!\n"));
+	}
+
+/* psp_fee */
+	if (GetField_Double(hContext,"service_fee",&dPspFee)) {	
+DEBUGLOG(("BOBalance:TransferPspBalance() service_fee = [%lf]\n",dPspFee));
+	}
+	else {
+DEBUGLOG(("BOBalance:TransferPspBalance() service_fee is missing!!!\n"));
+	}
+
+/* transfer from */
+	if(GetField_Char(hContext,"transfer_from",&cTmp)){
+DEBUGLOG(("BOBalance:TransferPspBalance() transfer_from = [%c]\n",cTmp));
+	}
+	else {
+DEBUGLOG(("BOBalance:TransferPspBalance() transfer_from is missing!!!\n"));
+	}
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBPspBalance","TransferBalance");
+	if((unsigned long)(*DBObjPtr)(csOrgPspId,
+				      csOrgTxnCountry,
+				      csOrgTxnCcy,
+				      dAmt-dPspFee,
+				      cTmp,
+				      PD_UPDATE_USER)!=PD_OK){
+DEBUGLOG(("BOBalance:TransferPspBalance() Failed\n"));
+		iRet = INT_ERR;
+	}
+	
+	if(iRet==PD_OK){
+
+		hVal = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hVal,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+		if((unsigned long)(*DBObjPtr)(csOrgPspId,csOrgTxnCountry,csOrgTxnCcy,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"balance",&dTmp)){
+				PutField_Double(hContext,"psp_balance",dTmp);
+DEBUGLOG(("BOBalance:psp_balance = [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"psp_total_float",dTmp);
+DEBUGLOG(("BOBalance:psp_total_float = [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"psp_total_hold",dTmp);
+DEBUGLOG(("BOBalance:psp_total_hold = [%f]\n",dTmp));
+			}
+		}
+
+		FREE_ME(hVal);
+	}
+	
+	return iRet;
+}
+
+int GetAvalPspBalanceForUpdate(const char* csTxnCountry,
+                        const char* csTxnCcy,
+                        const char* csPspId,
+                        double  *dBalance)
+{
+        int     iRet = PD_OK;
+DEBUGLOG(("BOBalance:GetAvalPspBalanceForUpdate()\n"));
+
+DEBUGLOG(("BOBalance:GetAvalPspBalanceForUpdate() psp_id = [%s]\n",csPspId));
+DEBUGLOG(("BOBalance:GetAvalPspBalanceForUpdate() txn_ccy=[%s]\n",csTxnCcy));
+DEBUGLOG(("BOBalance:GetAvalPspBalanceForUpdate() txn_country=[%s]\n",csTxnCountry));
+        DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetAvalPspBalance");
+        if((unsigned long)(*DBObjPtr)(csPspId,csTxnCcy,csTxnCountry,dBalance)==PD_OK){
+DEBUGLOG(("Balance = [%lf]\n",*dBalance));
+        }
+        else{
+DEBUGLOG(("BOBalance:GetAvalPspBalanceForUpdate()  balance for [%s] [%s] not found\n",csPspId,csTxnCcy));
+ERRLOG("BOBalance:GetAvalpspBalanceForUpdate()  balance for [%s] [%s] not found\n",csPspId,csTxnCcy);
+                *dBalance = 0.0;
+        }
+
+        return iRet;
+}
+
+int ProcessMerchantAdjAmount(hash_t *hContext)
+{
+	int	iRet = PD_OK;
+	char	*csOrgTxnCode;
+	char	*csTxnCountry;
+	char	*csTxnCcy;
+	char	*csMerchantId;
+	char	*csServiceCode;
+	char	cDCType;
+	double	dNetAmt=0.0;
+	char	*csUser;
+	double	dTmp;
+	double	dBal = 0.0;
+	int	iAllowBalNegative = PD_FALSE;
+	int	iAllowModify = PD_FALSE;
+
+	hash_t* hVal;
+	hVal = (hash_t*) malloc (sizeof(hash_t));
+
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount()\n"));
+
+/* txn_code */
+	if(GetField_CString(hContext,"txn_code",&csOrgTxnCode)){
+DEBUGLOG(("Authorize::txn_code = [%s]\n",csOrgTxnCode));
+	}
+	else{
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() txn_code not found!!\n"));
+        }
+
+/*txn country */
+	if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {	
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() txn_country = [%s]\n",csTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() txn_country is missing!!!\n"));
+	}
+
+/*txn ccy */
+	if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {	
+DEBUGLOG(("BOBalance:ProcesseMerchantAdjAmount() txn_ccy = [%s]\n",csTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() txn_ccy is missing!!!\n"));
+	}
+
+/*service Code */
+	if (GetField_CString(hContext,"service_code",&csServiceCode)) {	
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() service_code = [%s]\n",csServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() service_code is missing!!!\n"));
+	}
+
+/*merchant id */
+	if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {	
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() merchant_id = [%s]\n",csMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() merchant_id is missing!!!\n"));
+	}
+
+/* net amount */
+	if (GetField_Double(hContext,"net_amt",&dNetAmt)) {	
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() net_amt = [%lf]\n",dNetAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() net_amt is missing!!!\n"));
+	}
+
+/* credit or debit - real action */
+	if (GetField_Char(hContext, "dc_type", &cDCType)) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() cDCType = [%c]\n",cDCType));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() cDCType is missing !!!\n"));
+	}
+
+	if (GetField_CString(hContext, "add_user", &csUser)) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() User = [%s]\n",csUser));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() User is missing !!!\n"));
+	}
+
+/* allow_bal_neg */
+	if (GetField_Int(hContext, "allow_bal_neg", &iAllowBalNegative)) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() allow_bal_neg= [%d]\n", iAllowBalNegative));
+	}
+
+/* allow_modify */
+	if (GetField_Int(hContext, "allow_modify", &iAllowModify)) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() allow_Modify = [%d]\n", iAllowModify));
+	}
+
+	if (iRet == PD_OK) {
+		hash_init(hVal, 0);
+
+		if(iAllowModify == PD_FALSE && iAllowBalNegative == PD_FALSE){
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount(): GetSettAvalBalance\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBMerchantBalance", "GetSettAvalBalance");
+		}
+		else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount(): GetCurrBalance\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBMerchantBalance", "GetCurrBalance");
+		}
+		if((unsigned long)(*DBObjPtr)(hVal, csMerchantId, csTxnCcy, csTxnCountry, csServiceCode, &dBal) != PD_OK){
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() GetBalance Failed !\n"));
+			iRet = INT_ERR;
+		} else {
+
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() GetBalance [%lf]\n", dBal));
+			dBal = newround(dBal, 2);
+
+
+			if (GetField_Double(hVal, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() GetOpenBalanceForUpdate open_bal = [%f]\n",dTmp));
+				PutField_Double(hContext, "merchant_open_bal", dTmp);
+			}
+			else {
+				PutField_Double(hContext, "merchant_open_bal", 0.0);
+			}
+
+			if (GetField_Double(hVal, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() GetOpenBalanceForUpdate open_bal_settlement = [%f]\n",dTmp));
+				PutField_Double(hContext, "merchant_open_bal_settlement", dTmp);
+			}
+			else {
+				PutField_Double(hContext, "merchant_open_bal_settlement", 0.0);
+			}
+
+                        /*** Update Context for approval date and approval timestamp ****/
+			DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+			(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() GetApprovalDT called\n"));
+
+
+		}
+		hash_destroy(hVal);
+	}
+
+	if (iRet == PD_OK && cDCType == PD_IND_DEBIT) {
+		if(iAllowModify == PD_FALSE && iAllowBalNegative == PD_TRUE){
+			if(!strcmp(csOrgTxnCode,PD_MERCHANT_ADJUSTMENT)){
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() Charge back\n"));
+			} else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() Not Charge back Failed !\n"));
+			iRet = INT_ERR;
+			}
+		} else {
+			if (dNetAmt <= dBal) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() [%lf] [%lf] sufficient fund\n",dBal,dNetAmt));
+			} else {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() [%lf] [%lf] INSUFFICIENT_FUND\n",dBal,dNetAmt));
+				iRet = INT_INSUFFICIENT_FUND;
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() Call UpdateAdjBal\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateAdjBal");
+		if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCountry,csTxnCcy, csServiceCode, dNetAmt, cDCType, csUser)!= PD_OK){
+DEBUGLOG(("BOBalance:ProcessMerchantAdjAmount() UpdateSettBal Failed !\n"));
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		hash_init(hVal,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+		if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"current_bal",&dTmp)){
+				PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() current_bal= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() total_float= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+				PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() current_bal_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+				PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() total_float_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+				PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() total_reserved_amount= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() total_hold= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+				PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() total_hold_settlement= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+				PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() total_float_after_payout= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+				PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() fundin_payout= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+				PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: UpdateMerchantAdjAmount() reserved_payout= [%f]\n",dTmp));
+			}
+		}
+		else {
+DEBUGLOG(("BOBalance:UpdateMerchantAdjAmount() GetCurrentValue Failed !\n"));
+			iRet = INT_ERR;
+		}
+
+		hash_destroy(hVal);
+	}
+
+
+	FREE_ME(hVal);
+
+DEBUGLOG(("BOBalance:UpdateMerchantAdjAmount()  exit = [%d]\n",iRet));
+	
+	return iRet;
+}
+
+int  ProcessFundinPayout(hash_t *hContext)
+{
+        int iRet = PD_OK;
+
+        char    *csTxnCcy;
+        char    *csTxnCountry;
+	char	cPartyType;
+        char    *csPspId;
+        char    *csMerchantId;
+        char    *csServiceCode;
+        char    *csUser;
+	char	cDCInd;
+	int	iChgBalMode;
+	int	iVoidFlag = PD_FALSE;
+	double	dFundinAmt = 0.0;
+	double	dFee = 0.0;
+
+	double	dTmp = 0.0;
+	double	dPspBal = 0.0;
+	double  dOrgFundinAmt = 0.0;
+	double	dNetFundinAmt = 0.0;
+	double  dBalInPsp = 0.0;
+	char	*csTmp;
+	double	dMarkupAmt = 0.0;
+
+        hash_t *hVal;
+        hVal = (hash_t*) malloc (sizeof(hash_t));
+
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: txn_seq [%s]\n", csTmp));
+		PutField_CString(hContext, "from_txn_seq", csTmp);
+	}
+
+/* party_type */
+        if(GetField_Char(hContext,"party_type",&cPartyType)){
+DEBUGLOG(("BOBalance:ProcessFundinPayout() party_type = [%c]\n",cPartyType));
+        }
+
+/*merchant id */
+        if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() merchant_id = [%s]\n",csMerchantId));
+        }
+
+/*psp id */
+        if (GetField_CString(hContext,"psp_id",&csPspId)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout () psp_id = [%s]\n",csPspId));
+        }
+
+/*txn country */
+        if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() txn_country = [%s]\n",csTxnCountry));
+        }
+        else {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() txn_country is missing!!!\n"));
+        }
+
+/* txn ccy */
+        if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() txn_ccy = [%s]\n",csTxnCcy));
+		PutField_CString(hContext, "org_txn_ccy", csTxnCcy);
+        }
+        else {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() txn_ccy is missing!!!\n"));
+        }
+
+/*service code */
+        if (GetField_CString(hContext,"service_code",&csServiceCode)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() service_code = [%s]\n",csServiceCode));
+        }
+
+/* dc_ind */
+	if (GetField_Char(hContext, "dc_ind", &cDCInd)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() dc_ind = [%c]\n",cDCInd));
+	} 
+	else {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() dc_ind is missing!!!\n"));
+		iRet = INT_ERR;
+		//PutField_Int(hContext, "fn_internal_error", iRet);
+        }
+
+/* chg_bal_mode */
+	if (GetField_Int(hContext, "chg_bal_mode", &iChgBalMode)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() chg_bal_mode = [%d]\n",iChgBalMode));
+	}
+	else {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() chg_bal_mode is missing!!!\n"));
+		iRet = INT_ERR;
+		//PutField_Int(hContext, "fn_internal_error", iRet);
+	}
+
+/*amount */
+        if (GetField_Double(hContext,"txn_amt",&dFundinAmt)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() fundin_amt = [%lf]\n",dFundinAmt));
+		PutField_Double(hContext, "org_txn_amt", dFundinAmt);
+        }
+
+/* fee */
+	if (GetField_Double(hContext, "src_txn_fee", &dFee)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() fundin_fee = [%lf]\n",dFee));
+	}
+
+/* fee_ccy */
+	if (GetField_CString(hContext, "src_txn_fee_ccy", &csTmp)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() fundin_fee_ccy = [%s]\n",csTmp));
+	}
+
+
+/*update_user*/
+        if (GetField_CString(hContext,"update_user",&csUser)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() update_user = [%s]\n",csUser));
+        }
+
+/* void_flag */
+        if (GetField_Int(hContext,"void_flag",&iVoidFlag)) {
+DEBUGLOG(("BOBalance:ProcessFundinPayout() void_flag  = [%d]\n",iVoidFlag));
+        }
+	
+
+
+	// Check Valid to process
+	if (cPartyType == PD_TYPE_MERCHANT) {
+        	hash_init(hVal,0);
+
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBMerchantBalance->GetOpenBalanceForUpdate\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                if((unsigned long)(*DBObjPtr)(hVal, csMerchantId,csTxnCcy,csTxnCountry,csServiceCode)!=PD_ERR) {
+
+			if (GetField_Double(hVal, "merchant_open_bal", &dBalInPsp)) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout open_bal = [%f]\n",dBalInPsp));
+				PutField_Double(hContext, "merchant_open_bal", dBalInPsp);
+			}
+
+			if (GetField_Double(hVal, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout open_bal_settlement = [%f]\n",dTmp));
+				PutField_Double(hContext,"merchant_open_bal_settlement",dTmp);
+			}
+
+			if (GetField_Double(hVal, "fundin_payout", &dOrgFundinAmt)) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout fundin_payout = [%f]\n",dOrgFundinAmt));
+			}
+			
+			
+			if (cDCInd == PD_IND_CREDIT) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout Credit, no need check org fundin_payout\n"));
+			} else if (cDCInd == PD_IND_DEBIT) {
+
+				if (dOrgFundinAmt < dFundinAmt) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Original Fundin [%lf] < Debit Fundin [%lf]\n",dOrgFundinAmt, dFundinAmt));
+ERRLOG("BOBalance: ProcessFundinPayout: Original Fundin [%lf] < Debit Fundin [%lf]\n",dOrgFundinAmt, dFundinAmt);
+	                                iRet = INT_INVALID_PAY_AMOUNT;
+					//PutField_Int(hContext, "fn_internal_error", iRet);
+				}
+
+				if (dBalInPsp < dFundinAmt) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Original BalInPsp[%lf] < Debit Fundin [%lf]\n",dBalInPsp, dFundinAmt));
+ERRLOG("BOBalance: ProcessFundinPayout: Original BalInPsp [%lf] < Debit Fundin [%lf]\n",dBalInPsp, dFundinAmt);
+	                                iRet = INT_INVALID_PAY_AMOUNT;
+					//PutField_Int(hContext, "fn_internal_error", iRet);
+				}
+			}
+			else if (cDCInd == PD_IND_OVERWRITE){
+				if (dOrgFundinAmt < dFundinAmt) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Original Fundin [%lf] < Debit Fundin [%lf]\n",dOrgFundinAmt, dFundinAmt));
+ERRLOG("BOBalance: ProcessFundinPayout: Original Fundin [%lf] < Debit Fundin [%lf]\n",dOrgFundinAmt, dFundinAmt);
+                                        iRet = INT_INVALID_PAY_AMOUNT;
+				}
+			}
+		}
+		else {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBMerchantBalance->GetOpenBalanceForUpdate Failed\n"));
+ERRLOG("BOBalance: ProcessFundinPayout: DBMerchantBalance->GetOpenBalanceForUpdate Failed\n");
+                        iRet=PD_ERR;
+                }
+
+		hash_destroy(hVal);
+				
+	} else if (cPartyType == PD_TYPE_PSP) {
+        	hash_init(hVal,0);
+
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBPspBalance->GetBalanceForUpdate\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalanceForUpdate");
+                if ((unsigned long)(*DBObjPtr)(csPspId,csTxnCountry,csTxnCcy,hVal)==PD_OK) {
+
+                        if (GetField_Double(hVal,"balance",&dPspBal)) {
+DEBUGLOG(("BOBalance::ProcessFundinPayout PSP balance = [%f]\n",dPspBal));
+                        }
+                        if (GetField_Double(hVal,"total_hold",&dTmp)) {
+DEBUGLOG(("BOBalance::ProcessFundinPayout PSP total_hold = [%f]\n",dTmp));
+                        }
+
+			// PSP no amend to Debit, just having fund-in only!!!
+		}
+		else {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBPspBalance->GetBalance Failed\n"));
+ERRLOG("BOBalance: ProcessFundinPayout: DBPspBalance->GetBalance Failed\n");
+                        iRet=INT_ERR;
+			//PutField_Int(hContext, "fn_internal_error", iRet);
+                }
+
+		hash_destroy(hVal);
+
+		if (cDCInd == PD_IND_DEBIT) {
+
+			if (dPspBal < dFundinAmt) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Not enought Bal [%lf] Fundin [%lf]\n", dPspBal, dFundinAmt));
+ERRLOG("BOBalance: ProcessFundinPayout: Not enouthg Bal [%lf] Fundin [%lf]\n", dPspBal, dFundinAmt);
+	                        iRet=INT_ERR;
+				//PutField_Int(hContext, "fn_internal_error", iRet);
+			}
+		}
+	}
+
+	// Handle Balance / Fundin payout
+	if (iRet == PD_OK) {
+
+		/***** update  Context for approval date and approval timestamp */
+		DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+		(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:ProcessFundinPayout()  SystemControl::GetApprovalDT called\n"));
+
+		if (cPartyType == PD_TYPE_MERCHANT) {
+
+			if (iChgBalMode == PD_TRUE) {
+
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBMerchantBalance->SetFundInPayout\n"));
+                        	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","SetFundInPayout");
+				if (cDCInd == PD_IND_DEBIT) {
+					dTmp = (-1) * (dFundinAmt - dFee);
+					PutField_Double(hContext, "net_amt", (dFundinAmt - dFee));
+				}
+				else  {
+					dTmp = dFundinAmt - dFee;
+					PutField_Double(hContext, "net_amt", dTmp);
+				}
+				iRet = (unsigned long)(*DBObjPtr)(csMerchantId,
+       	                        	                          csTxnCountry,
+								  csTxnCcy,
+	                                                          csServiceCode,
+       	                                                          dTmp,
+                                                                  csUser);
+			} else {
+				if (cDCInd == PD_IND_CREDIT) {
+
+					dNetFundinAmt = dOrgFundinAmt + dFundinAmt;
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Credit NetAmount = [%lf]\n", dNetFundinAmt));
+                                        dTmp = dFundinAmt;
+
+				} else if (cDCInd == PD_IND_DEBIT) {
+					dNetFundinAmt = dOrgFundinAmt - dFundinAmt;
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Debit NetAmount = [%lf]\n", dNetFundinAmt));
+                                        dTmp = (-1) * dFundinAmt;
+				}
+				else if (cDCInd == PD_IND_OVERWRITE){
+					dNetFundinAmt = dFundinAmt;
+DEBUGLOG(("BOBalance: ProcessFundinPayout: NetAmount = [%lf]\n", dNetFundinAmt));
+					dTmp = (-1) * (dOrgFundinAmt - dFundinAmt);
+				}
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBMerchantBalance->UpdateFundInPayout\n"));
+                        	DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateFundInPayout");
+                        	iRet = (unsigned long)(*DBObjPtr)(csMerchantId,
+                               	                          	  csTxnCountry,
+                                                                  csTxnCcy,
+                                                                  csServiceCode,
+                                                                  dTmp,
+                                                                  csUser);
+			}
+
+                        if(iRet==PD_OK){
+				hash_init(hVal, 0);
+
+                                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+                                if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+                                        if(GetField_Double(hVal,"current_bal",&dTmp)){
+                                                PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout current_bal= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_float",&dTmp)){
+                                                PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout total_float = [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+                                                PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout current_bal_settlement= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+                                                PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout total_float_settlement= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+                                                PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout total_reserved_amount= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_hold",&dTmp)){
+                                                PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout total_hold= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+                                                PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout total_hold_settlement= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+                                                PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout total_float_after_payout= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+                                                PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout fundin_payout= [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+                                                PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: ProcessFundinPayout reserved_payout= [%f]\n",dTmp));
+                                        }
+				} else {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: DBPspBalance->GetBalance Failed\n"));
+ERRLOG("BOBalance: ProcessFundinPayout: DBPspBalance->GetBalance Failed\n");
+					iRet = PD_ERR;
+				}
+				hash_destroy(hVal);
+			}
+		} 
+		else if (cPartyType == PD_TYPE_PSP) {
+                        hash_init(hVal,0);
+
+			if (cDCInd == PD_IND_DEBIT) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout : DBPspBalance->DebitBalance\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+
+			} else if (cDCInd == PD_IND_CREDIT) {
+DEBUGLOG(("BOBalance: ProcessFundinPayout : DBPspBalance->CreditBalance\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBPspBalance","CreditBalance");
+			}
+
+                        iRet = (unsigned long)(*DBObjPtr)(csPspId,
+                                                          csTxnCountry,
+                                                          csTxnCcy,
+                                                          PD_PSP_BAL,
+                                                          dFundinAmt,
+                                                          csUser);
+
+                        if(iRet==PD_OK){
+                                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+                                if((unsigned long)(*DBObjPtr)(csPspId,csTxnCountry,csTxnCcy,hVal)!=PD_ERR){
+                                        if(GetField_Double(hVal,"balance",&dTmp)){
+                                                PutField_Double(hContext,"bal",dTmp);
+DEBUGLOG(("BOBalance:ProcessFundinPayout psp_balance = [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_float",&dTmp)){
+                                                PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance:ProcessFundinPayout psp_total_float = [%f]\n",dTmp));
+                                        }
+                                        if(GetField_Double(hVal,"total_hold",&dTmp)){
+                                                PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance:ProcessFundinPayout psp_total_hold = [%f]\n",dTmp));
+                                        }
+                                }
+                        }
+			hash_destroy(hVal);
+		}
+	}
+	FREE_ME(hVal);
+
+	if (iRet == PD_OK) {
+
+		if (iVoidFlag == PD_FALSE) {
+			if (iChgBalMode == PD_TRUE) {
+				if (cDCInd == PD_IND_CREDIT) {
+
+					if (GetField_Double(hContext, "markup_amt", &dMarkupAmt)) {
+						if (dMarkupAmt > 0.0) {
+							//dFundinAmt = dFundinAmt + dMarkupAmt;
+							PutField_Double(hContext, "org_txn_amt", dFundinAmt);
+						}
+					}
+
+					PutField_CString(hContext, "amount_type", PD_CR);
+
+DEBUGLOG(("BOBalance:ProcessFundinPayout() Add Element\n"));
+					BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnAmtElement");
+					iRet = (unsigned long)(*BOObjPtr)(hContext);
+
+
+					if (iRet == PD_OK) {
+
+						if (dMarkupAmt > 0.0) {
+							//PutField_Char(hContext, "org_party_type", PD_TYPE_MERCHANT);
+							PutField_Char(hContext, "org_party_type", PD_TYPE_CUSTOMER);
+							PutField_CString(hContext, "amount_type", PD_DR);
+DEBUGLOG(("BOBalance:ProcessFundinPayout() Add Markup Element\n"));
+							BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMarkupAmtElement");
+							iRet = (unsigned long)(*BOObjPtr)(hContext);
+						}
+					}
+
+					if (iRet == PD_OK) {
+						PutField_CString(hContext, "amount_type", PD_DR);	
+DEBUGLOG(("BOBalance:ProcessFundinPayout() Add Fee Element\n"));
+						BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+						iRet = (unsigned long)(*BOObjPtr)(hContext);
+					}
+
+
+				}  else {
+DEBUGLOG(("BOBalance: ProcessFundinPayout: Unexpected case \n"));
+ERRLOG("BOBalance: ProcessFundinPayout: Unexpected case \n");
+				// Not expect debit
+					iRet = INT_ERR;
+				}
+			}
+		}
+	}
+
+	return iRet;
+}
+int ReleaseMerchantResAmount(const char* csMerchantID,
+				const char* csCountry,
+				const char* csMerchantCCY,
+				const char* csServiceCode,
+				double	dAmount)
+{
+	int iRet = PD_OK;
+
+DEBUGLOG(("BOBalance:ReleaseMerchantResAmount()\n"));
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOBalance:ReleaseMerchantResAmount\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","ReleaseReserve");
+        	if ((*DBObjPtr)(csMerchantID,
+				csCountry,
+				csMerchantCCY,
+				csServiceCode,
+				dAmount,
+				PD_UPDATE_USER) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:ReleaseDepositAmount()Failed\n"));
+		}
+	}
+	return iRet;
+}
+
+int	ProcessTransferAvaPayout(hash_t *hContext)
+{
+	int	iRet = PD_OK;
+
+        char    *csMerchantId;
+        char    *csTxnCcy;
+        char    *csTxnCountry;
+        char    *csServiceCode;
+        char    *csUser;
+	char	cDCType;
+
+	double	dFundin = 0.0;
+	double	dResvPO = 0.0;
+	double	dNetAmt = 0.0;
+
+	double 	dOrgFundin = 0.0;
+	double 	dOrgResvPO = 0.0;
+	double 	dOrgPrevFt= 0.0;
+	
+	double	dFee = 0.0;
+	char	*csFeeCcy;
+
+	double	dMarkupAmt = 0.0;
+	double	dRemainMarkupAmt = 0.0;
+	char	*csMarkupCcy;
+
+	char	*csTmp;
+	//char	cTmp;
+	double	dTmp = 0.0;
+	
+	hash_t *hVal, *hElement;
+
+	hVal = (hash_t*) malloc (sizeof(hash_t));
+	hElement = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_init(hElement, 0);
+
+/* txn_seq */
+	if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout: txn_seq [%s]\n", csTmp));
+
+		PutField_CString(hElement, "from_txn_seq", csTmp);
+	}
+
+/*merchant id */
+        if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("BOBalance:ProcessTransferPayout() merchant_id = [%s]\n",csMerchantId));
+        }
+
+/*txn country */
+        if (GetField_CString(hContext,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() txn_country = [%s]\n",csTxnCountry));
+        }
+
+/* txn ccy */
+        if (GetField_CString(hContext,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() txn_ccy = [%s]\n",csTxnCcy));
+                PutField_CString(hElement, "org_txn_ccy", csTxnCcy);
+        }
+
+/*service code */
+        if (GetField_CString(hContext,"service_code",&csServiceCode)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() service_code = [%s]\n",csServiceCode));
+        }
+
+/* dc_type */
+	if (GetField_Char(hContext, "dc_type", &cDCType)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() dc_type = [%c]\n",cDCType));
+	}
+
+/* fundin_amt */
+	if (GetField_Double(hContext, "actual_fundin", &dFundin)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() fundin = [%lf]\n",dFundin));
+	}
+
+/* reserved payout */
+	if (GetField_Double(hContext, "actual_resv_po", &dResvPO)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() resv_po = [%lf]\n",dResvPO));
+	}
+
+/* net amt */
+	if (GetField_Double(hContext, "actual_net_amt", &dNetAmt)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() net_amt = [%lf]\n",dNetAmt));
+	}
+
+/* markup */
+	if (GetField_Double(hContext, "markup_amt", &dMarkupAmt)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() markup amt = [%lf]\n",dMarkupAmt));
+		dRemainMarkupAmt = dMarkupAmt;
+		PutField_Double(hElement, "markup_amt", dMarkupAmt);
+	}
+
+/* for element - org fundin */
+	if (GetField_Double(hContext, "org_actual_fundin", &dOrgFundin)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() org fundin = [%lf]\n",dOrgFundin));
+		PutField_Double(hElement, "org_fundin", dOrgFundin);
+	}
+
+/* for element - org resv po*/
+	if (GetField_Double(hContext, "org_actual_resv_po", &dOrgResvPO)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() org resv po = [%lf]\n",dOrgResvPO));
+		PutField_Double(hElement, "org_resv_po", dOrgResvPO);
+	}
+	
+/* for element - org prev ft */
+	if (GetField_Double(hContext, "org_actual_prev_ft", &dOrgPrevFt)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() org prev ft = [%lf]\n",dOrgPrevFt));
+		PutField_Double(hElement, "org_perv_float", dOrgPrevFt);
+}
+
+/* markup ccy */
+	if (GetField_CString(hContext, "markup_ccy", &csMarkupCcy)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() markup_ccy = [%s]\n", csMarkupCcy));
+	}
+
+
+/* fee */
+	if (GetField_Double(hContext, "actual_txn_fee", &dFee)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() txn_fee = [%lf]\n",dFee));
+		PutField_Double(hElement, "src_txn_fee", dFee);
+	}
+
+/* fee ccy */
+	if (GetField_CString(hContext, "actual_txn_fee_ccy", &csFeeCcy)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() txn_fee_ccy = [%s]\n",csFeeCcy));
+		PutField_CString(hElement, "src_txn_fee_ccy", csFeeCcy);
+	}
+
+/*update_user*/
+        if (GetField_CString(hContext,"update_user",&csUser)) {
+DEBUGLOG(("BOBalance:ProcessTransferAvapayout() update_user = [%s]\n",csUser));
+		PutField_CString(hElement, "update_user", csUser);
+        }
+
+	/***** update  Context for approval date and approval timestamp */
+	DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+	(*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:ProcessTransferAvapayout()  SystemControl::GetApprovalDT called\n"));
+
+	if (cDCType == PD_IND_DEBIT) {
+		dFundin = (-1) * dFundin;
+		dResvPO = (-1) * dResvPO;
+		dNetAmt = (-1) * dNetAmt;
+	}
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() fundin [%lf] ResvPO [%lf] NetAmt [%lf]\n", dFundin, dResvPO, dNetAmt));
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout(): DBMerchantBalance->TransferAvaPayout\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","TransferAvaPayout");
+
+		iRet = (unsigned long)(*DBObjPtr)(csMerchantId,
+							csTxnCountry,
+							csTxnCcy,
+							csServiceCode,
+                                                        dFundin,
+							dResvPO,
+							dNetAmt,
+							csUser);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout(): DBMerchantBalance->TransferAvaPayout FAILED!\n"));
+ERRLOG("BOBalance: ProcessTransferAvaPayout: DBMerchantBalance->TransferAvaPayout FAILED!\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		hash_init(hVal, 0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+                if((unsigned long)(*DBObjPtr)(csMerchantId,csTxnCcy,csTxnCountry,csServiceCode,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"current_bal",&dTmp)){
+				PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout current_bal= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout total_float = [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+				PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout current_bal_settlement= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+				PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout total_float_settlement= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+				PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout total_reserved_amount= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout total_hold= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+				PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout total_hold_settlement= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+				PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout total_float_after_payout= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+				PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout fundin_payout= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+				PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout reserved_payout= [%f]\n",dTmp));
+			}
+		} else {
+DEBUGLOG(("BOBalance: ProcessTransferAvaPayout : DBMerchantBalance->GetCurrentValues Failed\n"));
+ERRLOG("BOBalance: ProcessTransferAvaPayout : DBMerchantBalance->GetCurrentValues Failed\n");
+			iRet = PD_ERR;
+		}
+		hash_destroy(hVal);
+	}
+
+
+	if (cDCType == PD_IND_CREDIT) {
+		if (dOrgPrevFt > 0.0) {
+			if (dRemainMarkupAmt > 0.0) {
+				if (dOrgPrevFt >= dRemainMarkupAmt) {
+					dOrgPrevFt = dOrgPrevFt - dRemainMarkupAmt;
+					dRemainMarkupAmt = 0.0;
+					PutField_Double(hElement, "org_perv_float", dOrgPrevFt);
+				} else {
+					dRemainMarkupAmt = dRemainMarkupAmt - dOrgPrevFt;
+					dOrgPrevFt = 0.0;
+					RemoveField_Double(hElement, "org_perv_float");
+				}
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() prev ft = [%lf]\n",dOrgPrevFt));
+			}
+		}
+
+		if (dOrgResvPO > 0.0) {
+			if (dRemainMarkupAmt > 0.0) {
+				if (dOrgResvPO >= dRemainMarkupAmt) {
+					dOrgResvPO = dOrgResvPO - dRemainMarkupAmt;
+					dRemainMarkupAmt = 0.0;
+					PutField_Double(hElement, "org_resv_po", dOrgResvPO);
+				} else {
+					dRemainMarkupAmt = dRemainMarkupAmt - dOrgResvPO;
+					dOrgResvPO = 0.0;
+					RemoveField_Double(hElement, "org_resv_po");
+				}
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() resv po = [%lf]\n",dOrgResvPO));
+			}
+		}
+
+		if (dOrgFundin > 0.0) {
+			if (dRemainMarkupAmt > 0.0) {
+				if (dOrgFundin >= dRemainMarkupAmt) {
+					dOrgFundin = dOrgFundin - dRemainMarkupAmt;
+					dRemainMarkupAmt = 0.0;
+					PutField_Double(hElement, "org_fundin", dOrgFundin);
+				}
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() fundin = [%lf]\n",dOrgFundin));
+			}
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		/* Add Element */
+		PutField_Char(hElement, "party_type", PD_TYPE_MERCHANT);
+		if (cDCType == PD_IND_DEBIT) {
+			PutField_CString(hElement, "amount_type", PD_DR);
+		} else {
+			PutField_CString(hElement, "amount_type", PD_CR);
+		}
+
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() Add TransferAvaPayout Element\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTransferAvaPOElement");
+		iRet = (unsigned long)(*BOObjPtr)(hElement);
+	}
+
+	if (iRet == PD_OK) {
+		/* Add Markup */
+		if (dMarkupAmt > 0.0) {
+			//PutField_Char(hElement, "org_party_type", PD_TYPE_MERCHANT); 
+			PutField_Char(hElement, "org_party_type", PD_TYPE_CUSTOMER); 
+			PutField_CString(hElement, "amount_type", PD_DR);
+			
+			if (GetField_Double(hContext, "markup_rate", &dTmp)) {
+				PutField_Double(hElement, "markup_rate", dTmp);
+			}
+			/******/
+			PutField_CString(hElement, "dst_txn_ccy", csMarkupCcy);
+			/******/
+
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() Add AddMarkupAmtElement\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddMarkupAmtElement");
+			iRet = (unsigned long)(*BOObjPtr)(hElement);
+		}
+	}
+
+	if (iRet == PD_OK) {
+		/* Add Fee */
+		PutField_CString(hElement, "amount_type", PD_DR);
+
+DEBUGLOG(("BOBalance:ProcessTransferAvaPayout() Add AddTxnFeeElements\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOTxnElements","AddTxnFeeElements");
+		iRet = (unsigned long)(*BOObjPtr)(hElement);
+
+	}
+
+
+	FREE_ME(hVal);
+	return iRet;
+}
+
+int DebitSebBalance(hash_t *hContext, const hash_t *hRequest)
+{
+        int     iRet = PD_OK;
+        int     iCnt = 0;
+        char*   csBankCcy;
+        char*   csTxnId;
+        char*   csTmp;
+        char    csTag[PD_TAG_LEN+1];
+        double  dNetAmt;
+        double  dTmp;
+        double  dBal;
+        double  dRate;
+        double  dRatio;
+        double  dTotalAmt=0;
+        hash_t* hRec;
+        hash_t* hVal;
+        hVal = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hVal,0);
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("BOBalance:DebitSebBalance()\n"));
+
+//txn_seq
+        if (GetField_CString(hContext,"txn_seq",&csTxnId)) {
+                PutField_CString(hVal,"txn_id",csTxnId);
+DEBUGLOG(("BOBalance:DebitSebBalance()txn_seq = [%s]\n",csTxnId));
+        }
+        else {
+DEBUGLOG(("BOBalance:DebitSebBalance() txn_seq is missing!!!\n"));
+        }
+
+//bank_ccy
+        if (GetField_CString(hContext,"bank_ccy",&csBankCcy)) {
+DEBUGLOG(("BOBalance:DebitSebBalance() bank_ccy = [%s]\n",csBankCcy));
+        }
+        else {
+DEBUGLOG(("BOBalance:DebitSebBalance() bank_ccy is missing!!!\n"));
+        }
+
+
+///net amount
+        if (GetField_Double(hContext,"bank_bal",&dNetAmt)) {
+DEBUGLOG(("BOBalance:DebitSebBalance() bank_bal = [%lf]\n",dNetAmt));
+        }
+        else {
+DEBUGLOG(("BOBalance:DebitSebBalance() bank_bal is missing!!!\n"));
+        }
+
+        DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBankBalanceInfo");
+        if ((*DBObjPtr)(csBankCcy,rRecordSet) == PD_OK) {
+DEBUGLOG(("FindBankBalanceInfo::found record = [%s]\n",csBankCcy));
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        if(GetField_CString(hRec,"from_ccy",&csTmp)){
+                                sprintf(csTag,"from_ccy_%d",iCnt);
+                                PutField_CString(hVal,csTag,csTmp);
+                                PutField_CString(hContext,csTag,csTmp);
+DEBUGLOG(("FindBankBalanceInfo::%s= [%s]\n",csTag,csTmp));
+                        }
+                        if(GetField_Double(hRec,"bank_bal",&dTmp)){
+                                sprintf(csTag,"bank_bal_%d",iCnt);
+                                PutField_Double(hVal,csTag,dTmp);
+                                sprintf(csTag,"old_bal_%d",iCnt);
+                                PutField_Double(hContext,csTag,dTmp);
+DEBUGLOG(("FindBankBalanceInfo::%s= [%lf]\n",csTag,dTmp));
+
+                                dTotalAmt += dTmp;
+                        }
+                        if(GetField_Double(hRec,"rate",&dTmp)){
+                                sprintf(csTag,"rate_%d",iCnt);
+                                PutField_Double(hVal,csTag,dTmp);
+DEBUGLOG(("FindBankBalanceInfo::%s= [%lf]\n",csTag,dTmp));
+                        }
+                        if(GetField_Double(hRec,"ratio",&dTmp)){
+                                sprintf(csTag,"ratio_%d",iCnt);
+                                PutField_Double(hVal,csTag,dTmp);
+DEBUGLOG(("FindBankBalanceInfo::%s= [%lf]\n",csTag,dTmp));
+                        }
+
+                        iCnt++;
+			PutField_Int(hContext,"seb_ccy_cnt",iCnt);
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+                if(dTotalAmt<dNetAmt){
+DEBUGLOG(("BOBalance:DebitSebBalance:Not enought amount[%s][%lf]\n",csBankCcy,dTotalAmt));
+                        //iRet=INT_INSUFFICIENT_FUND;
+                }
+		PutField_Double(hContext,"bal_after_fo",dTotalAmt-dNetAmt);
+        }
+        else{
+                iRet=PD_SKIP_OK;
+DEBUGLOG(("BOBalance:DebitSebBalance:FindBankBalanceInfo::record not found[%s]\n",csBankCcy));
+        }
+
+
+        if(iRet==PD_OK){
+                int i;
+                for(i=0;i<iCnt;i++){
+                        sprintf(csTag,"from_ccy_%d",i);
+                        GetField_CString(hVal,csTag,&csTmp);
+                        PutField_CString(hVal,"txn_ccy",csTmp);
+
+                        sprintf(csTag,"bank_bal_%d",i);
+                        GetField_Double(hVal,csTag,&dBal);
+
+                        sprintf(csTag,"rate_%d",i);
+                        GetField_Double(hVal,csTag,&dRate);
+                        PutField_Double(hVal,"rate",dRate);
+
+                        sprintf(csTag,"ratio_%d",i);
+                        GetField_Double(hVal,csTag,&dRatio);
+                        PutField_Double(hVal,"ratio",dRatio);
+			//if(dBal > (dNetAmt*dRatio)){
+				dTmp = dBal-(dNetAmt*dRatio);
+				PutField_Double(hVal,"txn_amt",(dNetAmt*dRatio));
+                                sprintf(csTag,"fundout_amt_%d",i);
+                                PutField_Double(hContext,csTag,(dNetAmt*dRatio));
+                                sprintf(csTag,"new_bal_%d",i);
+                                PutField_Double(hContext,csTag,dTmp);
+			//}
+			//else{
+			//	dTmp = 0.0;
+			//	PutField_Double(hVal,"txn_amt",dBal);
+			//}
+
+DEBUGLOG(("BOBalance:DebitSebBalance:Call DBSebBalance:UpdateBankBalance[%s][%s][%lf]\n",csTmp,csBankCcy,dTmp));
+                        DBObjPtr = CreateObj(DBPtr,"DBSebBalance","UpdateBankBalance");
+                        if((*DBObjPtr)(csTmp,csBankCcy,dTmp)!=PD_OK){
+DEBUGLOG(("BOBalance:DebitSebBalance:UpdateBankBalance[%s][%s][%lf] Failed\n",csTmp,csBankCcy,dTmp));
+                                iRet = PD_ERR;
+                                break;
+                        }
+                        else{
+DEBUGLOG(("BOBalance:DebitSebBalance:Call TxnSetContributors:Add\n"));
+                                PutField_CString(hVal,"add_user",PD_UPDATE_USER);
+                                DBObjPtr = CreateObj(DBPtr,"DBTxnSetContributors","Add");
+                                if((*DBObjPtr)(hVal)!=PD_OK){
+DEBUGLOG(("BOBalance:DebitSebBalance:TxnSetContributors:Add Failed\n"));
+                                        iRet = PD_ERR;
+                                        break;
+                                }
+                        }
+                }
+        }
+
+	if(iRet==PD_SKIP_OK)
+		iRet = PD_OK;
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(hVal);
+        return  iRet;
+}
+
+int RestoreSebBalance(hash_t *hContext, const hash_t *hRequest)
+{
+        int     iRet = PD_OK;
+        int     i, iCnt = 0;
+        char    *csOrgTxnSeq;
+        char    *csTxnCode;
+        char    *csFromCcy;
+        char    *csToCcy;
+        char    csTag[PD_TAG_LEN+1];
+        double  dTmp,dRate,dRatio,dAmt,dCalRate,dOrgBankAmt,dOrgRate,dOrgRatio;
+        double  dCalRatio_D=0;
+        hash_t  *hRec, *hVal, *hTxn;
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+        hVal = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hVal,0);
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        //recordset_t     *rSeb_RecordSet;
+        //rSeb_RecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        //recordset_init(rSeb_RecordSet,0);
+
+        if (GetField_CString(hContext,"org_txn_seq",&csOrgTxnSeq)) {
+DEBUGLOG(("BOBalance:RestoreSebBalance() org_txn_seq = [%s]\n",csOrgTxnSeq));
+        }
+        else{
+DEBUGLOG(("BOBalance:RestoreSebBalance() org_txn_seq is missing!!!\n"));
+        }
+
+        if (GetField_CString(hContext,"new_txn_code",&csTxnCode)) {
+DEBUGLOG(("BOBalance:RestoreSebBalance() new_txn_code = [%s]\n",csTxnCode));
+        }
+        else{
+DEBUGLOG(("BOBalance:RestoreSebBalance() new_txn_code is missing!!!\n"));
+        }
+
+	if(!strcmp(csTxnCode,PD_SETTLEMENT_VOID)){
+DEBUGLOG(("Authorize::Call DBMerchantSettlementDetail:GetSettlementDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantSettlementDetail","GetSettlementDetail");
+		if((unsigned long)(*DBObjPtr)(csOrgTxnSeq,rRecordSet)==PD_OK){
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"deliver_ccy",&csToCcy)){
+					PutField_CString(hTxn,"bank_ccy",csToCcy);
+DEBUGLOG(("GetSettlementDetail::to_ccy = [%s]\n",csToCcy));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	else{ //if(!strcmp(csTxnCode,PD_FUND_IN_PAYOUT_MERCHANT_VOID)){
+DEBUGLOG(("Authorize::Call DBTransaction:GetTxnDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+		if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"txn_ccy",&csToCcy)) {
+					PutField_CString(hTxn,"bank_ccy",csToCcy);
+DEBUGLOG(("GetTxnDetail::to_ccy = [%s]\n",csToCcy));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+DEBUGLOG(("BOBalance:RestoreSebBalance:Call TxnSetContributors:GetContributors\n"));
+        recordset_init(rRecordSet,0);
+        DBObjPtr = CreateObj(DBPtr,"DBTxnSetContributors","GetContributors");
+        if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet)==PD_OK){
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        sprintf(csTag,"txn_ccy_%d",iCnt);
+                        if (GetField_CString(hRec,"txn_ccy",&csFromCcy)) {
+                                PutField_CString(hTxn,csTag,csFromCcy);
+DEBUGLOG(("GetContributors::%s = [%s]\n",csTag,csFromCcy));
+                        }
+                        sprintf(csTag,"rate_%d",iCnt);
+                        if (GetField_Double(hRec,"rate",&dRate)) {
+DEBUGLOG(("GetContributors::%s = [%lf]\n",csTag,dRate));
+                        }
+                        sprintf(csTag,"ratio_%d",iCnt);
+                        if (GetField_Double(hRec,"ratio",&dRatio)) {
+DEBUGLOG(("GetContributors::%s = [%lf]\n",csTag,dRatio));
+                        }
+                        sprintf(csTag,"txn_amt_%d",iCnt);
+                        if (GetField_Double(hRec,"txn_amt",&dAmt)) {
+DEBUGLOG(("GetContributors::%s = [%lf]\n",csTag,dAmt));
+                        }
+
+                        dCalRatio_D += dAmt;
+
+DEBUGLOG(("BOBalance:RestoreSebBalance:Call DBSebBalance:FindBalanceByCcy\n"));
+                        DBObjPtr = CreateObj(DBPtr,"DBSebBalance","FindBalanceByCcy");
+                        if ((unsigned long)(*DBObjPtr)(csFromCcy,csToCcy,hVal) == PD_FOUND) {
+				if (GetField_Double(hVal,"bank_bal",&dOrgBankAmt)) {
+DEBUGLOG(("FindBalanceByCcy : org_bank_amt = [%f]\n", dOrgBankAmt));
+				}
+				if (GetField_Double(hVal,"rate",&dOrgRate)) {
+DEBUGLOG(("FindBalanceByCcy : org_rate = [%f]\n", dOrgRate));
+				}
+				if (GetField_Double(hVal,"ratio",&dOrgRatio)) {
+DEBUGLOG(("FindBalanceByCcy : org_ratio = [%f]\n", dOrgRatio));
+				}
+
+                                dCalRate = newround(((dRate*dAmt)+(dOrgRate*dOrgBankAmt))/(dAmt+dOrgBankAmt),PD_ROUND_UP_DEC);
+                                dCalRatio_D += dOrgBankAmt;
+
+                                sprintf(csTag,"rate_%d",iCnt);
+                                PutField_Double(hTxn,csTag,dCalRate);
+                                sprintf(csTag,"amt_%d",iCnt);
+                                PutField_Double(hTxn,csTag,(dAmt+dOrgBankAmt));
+
+                        }
+                        else{
+                                iRet = PD_ERR;
+DEBUGLOG(("BOBalance:RestoreSebBalance:FindBalanceByCcy ERROR!!!\n"));
+                                break;
+                        }
+
+                        iCnt++;
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+
+                for(i=0; i<iCnt; i++){
+                        sprintf(csTag,"txn_ccy_%d",i);
+                        if(GetField_CString(hTxn,csTag,&csFromCcy)){
+                                PutField_CString(hTxn,"from_ccy",csFromCcy);
+DEBUGLOG(("BOBalance:RestoreSebBalance:[%s][%s]\n",csFromCcy,csToCcy));
+                        }
+                        sprintf(csTag,"rate_%d",i);
+                        if(GetField_Double(hTxn,csTag,&dTmp)){
+                                PutField_Double(hTxn,"rate",dTmp);
+DEBUGLOG(("BOBalance:RestoreSebBalance:new rate=[%lf]\n",dTmp));
+                        }
+                        sprintf(csTag,"amt_%d",i);
+                        if(GetField_Double(hTxn,csTag,&dTmp)){
+                                dRatio = newround((dTmp/dCalRatio_D),PD_ROUND_UP_DEC);
+                                PutField_Double(hTxn,"ratio",dRatio);
+DEBUGLOG(("BOBalance:RestoreSebBalance:new ratio=[%lf]\n",dRatio));
+
+                                PutField_Double(hTxn,"bank_bal",dTmp);
+DEBUGLOG(("BOBalance:RestoreSebBalance:new bank_bal=[%lf]\n",dTmp));
+                        }
+
+DEBUGLOG(("BOBalance:RestoreSebBalance:Update SebBalance table\n"));
+                        DBObjPtr = CreateObj(DBPtr,"DBSebBalance","Add");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+
+                }
+        }
+
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        //RecordSet_Destroy(rSeb_RecordSet);
+        //FREE_ME(rSeb_RecordSet);
+        FREE_ME(hTxn);
+        FREE_ME(hVal);
+        return iRet;
+}
+
+
+
+int UpdateAFPOFloat(hash_t* hContext)
+{
+	char	*csOrgTxnCountry;
+	char	*csOrgTxnCcy;
+	char	*csOrgMerchantId;
+	char	*csOrgServiceCode;
+	//char	*csPostingDate;
+
+	char	cDCInd;
+	double	dOrgNetAmt=0.0;
+	double	dTmp = 0.0;
+	hash_t* hVal;
+
+	int iRet = PD_OK;
+
+	char    csPostingDate[PD_DATE_LEN + 1];
+	char	*csTmp = NULL;
+	char    csLocalPostingDate[PD_DATE_LEN + 1];
+
+
+/*txn country */
+	if (GetField_CString(hContext,"txn_country",&csOrgTxnCountry)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() txn_country = [%s]\n",csOrgTxnCountry));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() txn_country is missing!!!\n"));
+	}
+
+/*txn ccy */
+	if (GetField_CString(hContext,"txn_ccy",&csOrgTxnCcy)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() txn_ccy = [%s]\n",csOrgTxnCcy));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() txn_ccy is missing!!!\n"));
+	}
+/*org service code */
+	if (GetField_CString(hContext,"service_code",&csOrgServiceCode)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() service_code = [%s]\n",csOrgServiceCode));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() service_code is missing!!!\n"));
+	}
+
+/*org merchant id */
+	if (GetField_CString(hContext,"merchant_id",&csOrgMerchantId)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() merchant_id = [%s]\n",csOrgMerchantId));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() merchant_id is missing!!!\n"));
+	}
+
+/*net amount*/
+	if (GetField_Double(hContext,"net_amt",&dOrgNetAmt)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() net_amt = [%lf]\n",dOrgNetAmt));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() net_amt is missing!!!\n"));
+	}
+
+/*dc_ind*/
+	if (GetField_Char(hContext,"dc_ind",&cDCInd)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() dc_ind = [%c]\n",cDCInd));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() dc_ind is missing!!!\n"));
+	}
+
+/*posting date*/
+/* don't get from parameter
+	if (GetField_CString(hContext,"PHDATE",&csPostingDate)) {	
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() posting_date = [%s]\n",csPostingDate));
+	}
+	else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() posting_date is missing!!!\n"));
+	}
+*/
+	csPostingDate[0]= '\0';
+
+////lock opening balance
+        if (iRet == PD_OK) {
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetOpenBalanceForUpdate");
+                if ((*DBObjPtr)(hContext,
+                                csOrgMerchantId,
+                                csOrgTxnCcy,
+                                csOrgTxnCountry,
+                                csOrgServiceCode) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() GetOpenBalanceForUpdate Failed\n"));
+                }
+        }
+
+	/***** update  Context for approval date and approval timestamp */
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+        (*DBObjPtr)(hContext);
+DEBUGLOG(("BOBalance:UpdateAFPOFloat ()  SystemControl::GetApprovalDT called\n"));
+
+	if (GetField_CString(hContext, "approval_date", &csTmp)) {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() get approval_date [%s]\n", csTmp));
+	}
+	if (GetField_CString(hContext, "approval_timestamp", &csTmp)) {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() get approval_timestamp [%s]\n", csTmp));
+	}
+	
+	
+        if (iRet == PD_OK) {
+		// already clear csPostingDate
+        	if (strlen(csPostingDate) == 0) {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat()  overriding approval_date\n"));
+			char    *csPtr;
+
+			if (GetField_CString(hContext,"approval_date",&csPtr)) {
+				strcpy(csLocalPostingDate,csPtr);
+DEBUGLOG(("BOBalance:UpdateAFPOFloat()  posting_date = [%s]\n",csLocalPostingDate));
+                	}
+        	}
+	        else {
+DEBUGLOG(("BOBalance:UpdateAFPOFloat()  posting_date [%s] from parameter\n",csPostingDate));
+			strcpy(csLocalPostingDate,csPostingDate);
+		}
+
+		if(cDCInd==PD_IND_CREDIT){
+			iRet = CreditAFPOFloat(hContext,
+					//csPostingDate,
+					csLocalPostingDate,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					csOrgTxnCcy,
+					csOrgMerchantId,
+					dOrgNetAmt);
+		}
+		else{
+			iRet = DebitAFPOFloat(hContext,
+					//csPostingDate,
+					csLocalPostingDate,
+					csOrgTxnCountry,
+					csOrgServiceCode,
+					csOrgTxnCcy,
+					csOrgMerchantId,
+					dOrgNetAmt);
+		}
+	}
+
+
+	if(iRet==PD_OK){
+		hVal = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hVal,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+		if((unsigned long)(*DBObjPtr)(csOrgMerchantId,csOrgTxnCcy,csOrgTxnCountry,csOrgServiceCode,hVal)!=PD_ERR){
+			if(GetField_Double(hVal,"current_bal",&dTmp)){
+				PutField_Double(hContext,"current_bal",dTmp);
+DEBUGLOG(("BOBalance: current_bal= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float",&dTmp)){
+				PutField_Double(hContext,"total_float",dTmp);
+DEBUGLOG(("BOBalance: total_float= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+				PutField_Double(hContext,"total_reserved_amount",dTmp);
+DEBUGLOG(("BOBalance: total_reserved_amount= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_hold",&dTmp)){
+				PutField_Double(hContext,"total_hold",dTmp);
+DEBUGLOG(("BOBalance: total_hold= [%f]\n",dTmp));
+			}
+			if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+				PutField_Double(hContext,"total_float_after_payout",dTmp);
+DEBUGLOG(("BOBalance: total_float_after_payout= [%f]\n",dTmp));
+			}
+
+			if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+                                PutField_Double(hContext,"current_bal_settlement",dTmp);
+DEBUGLOG(("BOBalance: current_bal_settlement= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+                                PutField_Double(hContext,"total_float_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_float_settlement= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+                                PutField_Double(hContext,"total_hold_settlement",dTmp);
+DEBUGLOG(("BOBalance: total_hold_settlement= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+                                PutField_Double(hContext,"fundin_payout",dTmp);
+DEBUGLOG(("BOBalance: fundin_payout= [%f]\n",dTmp));
+                        }
+                        if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+                                PutField_Double(hContext,"reserved_payout",dTmp);
+DEBUGLOG(("BOBalance: reserved_payout= [%f]\n",dTmp));
+                        }
+		}
+
+		FREE_ME(hVal);
+	}
+
+
+DEBUGLOG(("BOBalance:UpdateAFPOFloat() iRet = [%d]\n",iRet));
+	return iRet;
+
+}
+
+int CreditAFPOFloat(hash_t* hContext,
+			const char* csPostingDate,
+			const char* csCountry, 
+			const char* csServiceCode,
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount) 
+{
+	int iRet = PD_OK;
+	char *csUser = strdup("");
+
+DEBUGLOG(("BOBalance:CreditAFPOFloat() [%s][%s][%s][%s][%s][%lf]\n",csMerchantID,csServiceCode,csMerchantCCY,csCountry,csPostingDate,dNetAmount));
+
+	if(GetField_CString(hContext,"add_user",&csUser)){
+DEBUGLOG(("BOBalance:CreditAFPOFloat() user = [%s]\n",csUser));
+	}
+	else{
+		csUser = strdup(PD_UPDATE_USER);
+	}
+
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","CreditMerchantAmount");
+        if ((*DBObjPtr)(csPostingDate,
+			csMerchantID,
+			csCountry,
+			csMerchantCCY,
+			csServiceCode,
+			PD_DEFAULT_PSP,
+			PD_BUCKET_TYPE_AFTER_PAYOUT_FLOAT,
+			dNetAmount,
+			csUser) != PD_OK) {
+		iRet = INT_ERR;
+DEBUGLOG(("BOBalance:CreditAFPOFloat() CreditMerchantAmount [AFPO Float]Failed\n"));
+	}
+
+	if(iRet == PD_OK){
+		//credit total after payout flost from merchant balance
+DEBUGLOG(("BOBalance:Call DBMerchantBalance:UpdateAfterPayoutFloat\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateAfterPayoutFloat");
+		if((*DBObjPtr)(csMerchantID,
+			   csCountry,
+			   csMerchantCCY,
+			   csServiceCode,
+			   dNetAmount,
+			   csUser)!= PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance:UpdateAfterPayoutFloat Failed!!!!\n"));
+		}
+	}
+
+	FREE_ME(csUser);	
+DEBUGLOG(("BOBalance:CreditAFPOFloat() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int DebitAFPOFloat(hash_t* hContext,
+			const char* csPostingDate,
+			const char* csCountry, 
+			const char* csServiceCode,
+			const char* csMerchantCCY, 
+			const char* csMerchantID,
+			double dNetAmount) 
+{
+	int	iRet = PD_OK;
+	int	i = 0;
+	int	iTotal = 0;
+	char	*csUser = strdup("");
+	char	*csOrgPostingDate; 
+	char	*csPspId; 
+	//char	*csTmp; 
+	char	csTag[PD_TAG_LEN+1];
+	double	dTmp = 0.0;
+	double	dTotalAmt = 0.0;
+	double	dRemainAmt = 0.0;
+	double	dAmount = 0.0;
+
+        hash_t* hRec;
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("BOBalance:DebitAFPOFloat() [%s][%s][%s][%s][%s][%lf]\n",csMerchantID,csServiceCode,csMerchantCCY,csCountry,csPostingDate,dNetAmount));
+
+	if(GetField_CString(hContext,"add_user",&csUser)){
+DEBUGLOG(("BOBalance:DebitAFPOFloat() user = [%s]\n",csUser));
+	}
+	else{
+		csUser = strdup(PD_UPDATE_USER);
+	}
+
+	//Check total AFPO float is greater than the request amount
+DEBUGLOG(("BOBalance:Call DBMerchantBucket:GetTotalAFPOFloat\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","GetTotalAFPOFloat");
+	iRet = (unsigned long)(*DBObjPtr)(csMerchantID,
+			   csCountry,
+			   csMerchantCCY,
+			   csServiceCode, rRecordSet);
+	if(iRet == PD_OK){
+                hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec){
+			if(GetField_CString(hRec,"post_date",&csOrgPostingDate)){
+				sprintf(csTag,"post_date_%d",iTotal);
+				PutField_CString(hContext,csTag,csOrgPostingDate);
+			}
+			if(GetField_CString(hRec,"psp_id",&csPspId)){
+				sprintf(csTag,"psp_id_%d",iTotal);
+				PutField_CString(hContext,csTag,csPspId);
+			}
+			if(GetField_Double(hRec,"balance",&dTmp)){
+				sprintf(csTag,"balance_%d",iTotal);
+				PutField_Double(hContext,csTag,dTmp);
+				dTotalAmt += dTmp;
+			}
+DEBUGLOG(("BOBalance:GetTotalAFPOFloat [%s][%s][%f]\n",csOrgPostingDate,csPspId,dTmp));
+			iTotal++;
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+		dTotalAmt = newround(dTotalAmt,PD_DECIMAL_LEN);
+		dNetAmount = newround(dNetAmount,PD_DECIMAL_LEN);
+
+		if(dTotalAmt < dNetAmount){
+DEBUGLOG(("BOBalance:Total AFPO Float[%f] < Request Amount[%f]\n",dTotalAmt, dNetAmount));
+			iRet = INT_INSUFFICIENT_FUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+	//debit AFPO float from oldest to newest from merchant bucket
+	if(iRet == PD_OK){
+		dAmount = 0.0;
+		dRemainAmt = dNetAmount;
+		for(i=0; i<iTotal; i++){
+			if(dRemainAmt==0.0)
+				break;
+
+			dTmp = 0.0;
+			sprintf(csTag,"balance_%d",i);
+			GetField_Double(hContext,csTag,&dTmp);
+			if(dRemainAmt>dTmp){
+				dRemainAmt = dRemainAmt - dTmp;
+				dAmount = dTmp;
+			}
+			else{
+				dAmount = dRemainAmt;
+				dRemainAmt = 0.0;
+			}
+DEBUGLOG(("BOBalance: debit AF bucket: Amount[%f]\n",dAmount));
+
+			sprintf(csTag,"post_date_%d",i);
+			if(GetField_CString(hContext,csTag,&csOrgPostingDate)){
+DEBUGLOG(("BOBalance: debit AF bucket: post_date[%s]\n",csOrgPostingDate));
+				sprintf(csTag,"psp_id_%d",i);
+				if(GetField_CString(hContext,csTag,&csPspId)){
+DEBUGLOG(("BOBalance: debit AF bucket: psp_id[%s]\n",csPspId));
+
+DEBUGLOG(("BOBalance:Call DBMerchantBucket:DebitMerchantAmount\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","DebitMerchantAmount");
+					if ((unsigned long)(*DBObjPtr)(csOrgPostingDate,
+								csMerchantID,
+								csCountry,
+								csMerchantCCY,
+								csServiceCode,
+								csPspId,
+								PD_BUCKET_TYPE_AFTER_PAYOUT_FLOAT,
+								dAmount,
+								csUser) != PD_OK) {
+						iRet = INT_ERR;
+						break;
+DEBUGLOG(("BOBalance:DebitAFPOFloat() DebitMerchantAmount [AFPO Float]Failed\n"));
+					}
+				}
+			}
+		}
+	}
+
+
+	if(iRet == PD_OK){
+		//debit total after payout flost from merchant balance
+DEBUGLOG(("BOBalance:Call DBMerchantBalance:UpdateAfterPayoutFloat\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateAfterPayoutFloat");
+		if((unsigned long)(*DBObjPtr)(csMerchantID,
+			   csCountry,
+			   csMerchantCCY,
+			   csServiceCode,
+			   (-1)*dNetAmount,
+			   csUser)!= PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("BOBalance:DBMerchantBalance:UpdateAfterPayoutFloat Failed!!!!\n"));
+		}
+	}
+
+	FREE_ME(csUser);	
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+DEBUGLOG(("BOBalance:DebitAFPOFloat() iRet = [%d]\n",iRet));
+	return iRet;
+}

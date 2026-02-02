@@ -1,0 +1,304 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "expat.h"
+#include "curl/curl.h"
+#include "getrate.h"
+
+
+//char    cDebug = 'Y';
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+
+size_t writefunc(void *ptr, size_t size, size_t nmemb, FILE *pFile)
+{
+  printf("write function\n");
+  size_t write_size;
+ 
+  write_size = fwrite(ptr, size, nmemb, pFile);
+  return write_size;
+}
+
+/*
+void getRespfile(char *pBuffer)
+{
+        FILE * pRespfile;
+        pRespfile = fopen(RESP_FILE, "r");
+        if(pRespfile==NULL)
+        {
+                printf("Response file not found\n");
+                return;
+        }
+
+        fgets(pBuffer, 1024, pRespfile);
+        fclose(pRespfile);
+}
+*/
+
+int checkRespFile(rData *oResp)
+{
+   FILE * pRespfile;
+   char sBuffer[RESP_FILE_LEN]={0};
+   char sRespHeader[RESP_HEADER_LEN]={0};
+   int nLine = 1;
+   int nCheckLine = 4;
+   int bResult = 0;
+
+   pRespfile = fopen(RESP_FILE, "r");
+   if(pRespfile==NULL)
+   {
+	printf("Response file not found\n");
+	return 0;
+   }
+
+   while(!feof(pRespfile))
+   {
+   	fgets(sBuffer, RESP_FILE_LEN, pRespfile);
+	//printf("Line %d: %s\n", nLine, sBuffer);
+	if(nLine==1)
+	{
+		strncpy(sRespHeader,sBuffer,RESP_HEADER_LEN);
+	
+		if(strncmp(RESP_HEADER,sRespHeader,RESP_HEADER_LEN)!=0)
+		{
+			printf("Error: %s\n", sBuffer);
+			break;
+		}
+	}
+	else if(nLine==nCheckLine)
+	{
+
+		char *sRate;
+		sRate = strstr(sBuffer,"GMT");
+
+		strncpy(oResp->sDate, sRate-strlen("dd mon yyyy hh:mi:ss "), strlen("dd mon yyyy hh:mi:ss"));
+
+		int rc =sscanf(sRate+4,"%s %s %s %s %s %s", oResp->min_bid, oResp->bid, oResp->max_bid, oResp->min_ask, oResp->ask, oResp->max_ask);	
+		if( (rc!=6))
+		{
+			printf("Output Invalid: %s\n",sRate+4);
+			break;
+		}
+		else
+		{
+			if((strncmp("na",oResp->bid,2)!=0)&&(strncmp("na",oResp->ask,2)!=0))
+			{
+				if(strncmp("na",oResp->min_bid,2)==0) strcpy(oResp->min_bid,oResp->bid);
+				if(strncmp("na",oResp->max_bid,2)==0) strcpy(oResp->max_bid,oResp->bid);
+				if(strncmp("na",oResp->min_ask,2)==0) strcpy(oResp->min_ask,oResp->ask);
+				if(strncmp("na",oResp->max_ask,2)==0) strcpy(oResp->max_ask,oResp->ask);
+			
+				bResult=1;
+			}
+			else
+				printf("All return values are 'na'\n");
+		}
+	}
+	else
+	{
+		//do nothing//
+	}
+	
+
+	nLine ++;
+   }
+
+   fclose(pRespfile);
+   return bResult;
+
+}
+
+
+
+int batch_init(int argc, char* argv[])
+{
+/*    if (argc < 2)
+        return FAILURE;
+      else
+*/
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+    	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+    	EXEC SQL BEGIN DECLARE SECTION;
+		varchar from_ccy_id[4];
+		varchar to_ccy_id[4];
+		varchar effect_date[50];
+		varchar user[50];
+
+		//struct values_t{
+		  double nRate;
+		  double nBid;
+		  double nMaxBid;
+		  double nMedBid;
+		  double nMinBid;
+		  double nMaxAsk;
+		  double nMedAsk;
+		  double nMinAsk;
+		  double nMinMax;
+		  double nMeanMinMax;
+		//}values;
+
+		short   return_value;
+    	EXEC SQL END DECLARE SECTION;
+
+	CURL *curl;
+	CURLcode res;
+	char sReqString[REQ_STRING_LEN];
+	char sDate[DATE_LEN]={0};
+	rData oRespData;
+
+		
+
+	///////should have the two currency id//////
+	if(argc<3)
+	{
+		printf("Please input enought arguments\n");
+		return FAILURE;
+	}
+	printf("Input Quotecurrency=[%s][%d], Basecurrency=[%s][%d]\n",argv[1], (int)strlen(argv[1]),argv[2], (int)strlen(argv[2]));
+
+
+	//////get the local time and change to GMT time//////
+	int rc;
+	time_t temp;
+	struct tm *timeptr;
+
+	temp = time(NULL);
+	timeptr = localtime(&temp);
+
+	int nGMT = timeptr->tm_hour - 8;
+	if(nGMT<0)
+		nGMT += 24;
+	timeptr->tm_hour = nGMT;
+
+	mktime(timeptr);
+
+	rc = strftime(sDate,sizeof(sDate),"%a %d %b %Y %H:%M:%S", timeptr); //i.e. Mon 26 Aug 2010 03:23:49
+
+	//////construct the request URL with all parameters//////
+	snprintf(sReqString,sizeof(sReqString), "%s%s&Quotecurrency: %s&Basecurrency: %s&Date: %s GMT&Quotetype: %s",REQUEST_URL,REQUEST_HEADER,argv[1],argv[2],sDate,QUOTE_TYPE);
+	printf("The request string = [%s]\n", sReqString);
+
+	curl = curl_easy_init();
+	if(curl)
+	{
+		curl_easy_setopt(curl, CURLOPT_URL,sReqString);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+
+		FILE *wFILE;
+		wFILE = fopen(RESP_FILE,"w");
+		if(wFILE==NULL)
+		{
+			curl_easy_cleanup(curl);
+			return FAILURE;
+		}
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, wFILE);
+		res = curl_easy_perform(curl);
+
+		fclose(wFILE);
+		curl_easy_cleanup(curl);
+
+		//////check the response code which stored in the file//////
+		if(checkRespFile(&oRespData))
+		{
+
+			from_ccy_id.len = strlen(argv[1]);
+			memcpy(from_ccy_id.arr, argv[1], from_ccy_id.len);
+			from_ccy_id.arr[from_ccy_id.len] = '\0';
+			
+			to_ccy_id.len = strlen(argv[2]);
+			memcpy(to_ccy_id.arr, argv[2], to_ccy_id.len);
+			to_ccy_id.arr[to_ccy_id.len] = '\0';
+		
+			nMaxBid =  atof(oRespData.max_bid);
+			nMedBid =  atof(oRespData.bid);
+			nMinBid =  atof(oRespData.min_bid);
+			nBid =  atof(oRespData.bid);
+			nMaxAsk =  atof(oRespData.max_ask);
+			nMedAsk =  atof(oRespData.ask);
+                        nMinAsk =  atof(oRespData.min_ask);
+
+			printf("id[%s %s] date[%s] values[%f %f %f %f %f %f]\n",from_ccy_id.arr, to_ccy_id.arr, oRespData.sDate, nMinBid, nMedBid, nMaxBid, nMinAsk, nMedAsk, nMaxAsk);
+
+			nRate =1;
+			nMeanMinMax=1;
+			nMinMax=1;
+			
+			user.len = strlen(" ");
+			strncpy(user.arr," ",user.len);
+		
+			effect_date.len = strlen(oRespData.sDate);
+			strncpy(effect_date.arr,oRespData.sDate, effect_date.len);
+	
+			EXEC SQL EXECUTE
+				BEGIN
+					:return_value := sp_exchange_rate_insert(
+							:from_ccy_id,
+							:to_ccy_id,
+							:nRate,
+							:nBid,
+							:nMaxAsk,
+							:nMedAsk,
+							:nMinAsk,
+							:nMaxBid,
+                                                        :nMedBid,
+                                                        :nMinBid,
+							:nMeanMinMax,
+							:nMinMax,
+							to_date(:effect_date,'DD-Mon-yyyy HH24:MI:SS'),
+							:user);
+					
+				END;
+			END-EXEC;
+
+			if (return_value == 0) {
+				printf("return 0\n");
+				return PD_OK;
+			}
+			if (return_value == 1) {
+				printf("return 1\n");
+				return PD_OK;
+			}
+			if (return_value == 9) {
+				printf("return 9\n");
+				return PD_OK;
+			}
+
+			//EXEC SQL COMMIT WORK RELEASE;
+	
+		}
+	}
+
+	return FAILURE;
+
+
+sql_error:
+    printf("SQL Error: %.*s\n",sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+    //DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    //DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;    
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+

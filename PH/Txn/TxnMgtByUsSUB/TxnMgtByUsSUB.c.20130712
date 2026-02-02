@@ -1,0 +1,121 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/11              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsSUB.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+char cDebug;
+OBJPTR(DB);
+
+
+void TxnMgtByUsSUB(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	*csOrgTxnSeq;
+	char	*csSubStatus;
+	char	*csTmp;
+	char	cStatus;
+	hash_t	*hRec, *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	recordset_t     *rRecordSet;	
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	if (GetField_CString(hRequest,"org_txn_seq",&csOrgTxnSeq)) {
+                PutField_CString(hTxn,"txn_seq",csOrgTxnSeq);
+DEBUGLOG(("Authorize::org txn seq = [%s]\n",csOrgTxnSeq));
+	}
+	else {
+		iRet = INT_TXN_ID_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnMgtByUsSUB: Authorize::org txn seq is missing\n");
+	}
+
+	if (GetField_CString(hRequest,"sub_status",&csTmp)){
+		PutField_CString(hTxn,"sub_status",csTmp);
+DEBUGLOG(("Authorize::sub status = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_STATUS_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnMgtByUsSUB: Authorize::sub_status is missing\n");
+	}
+
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hTxn,"add_user",csTmp);
+DEBUGLOG(("Authorize::user = [%s]\n",csTmp));
+	}
+	else{
+		PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+	}
+
+	if(iRet == PD_OK){
+//check txn status = 'W' and sub-status = 'Send To PSP'
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("Authorize::found record = [%s]\n",csOrgTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_Char(hRec,"status",&cStatus)){
+DEBUGLOG(("Authorize::status = [%c]\n",cStatus));
+				}
+				if (GetField_CString(hRec,"sub_status",&csSubStatus)) {
+DEBUGLOG(("Authorize::sub_status = [%s]\n",csSubStatus));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+			if(cStatus!=PD_TO_PSP || strcmp(csSubStatus,PD_SENT_TO_PSP)){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::invalid status, cannot change sub-status\n"));
+ERRLOG("TxnMgtByUsSUB: Authorize::invalid status, cannot change sub-status\n");
+			}
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBTransaction:Update\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+                if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::DBTransaction:Update Failed\n"));
+ERRLOG("TxnMgtByUsSUB: Authorize::DBTransaction:Update Failed\n");
+                }
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+	FREE_ME(hTxn);
+DEBUGLOG(("TxnMgtByUsSUB Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

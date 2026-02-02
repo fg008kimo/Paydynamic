@@ -1,0 +1,5 @@
+INSERT INTO OL_DEF_COST_GROUPING_TYPE VALUES ('S','Single',sysdate,sysdate,'SYSTEM','SYSTEM');
+INSERT INTO OL_DEF_COST_GROUPING_TYPE VALUES ('T','Total',sysdate,sysdate,'SYSTEM','SYSTEM');
+
+commit;
+

@@ -1,0 +1,1833 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/07/04              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "../batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "par_txn_handler.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "par_deposit_handler.h"
+#include "pr_par_funct.h"
+#include "pr_bo_funct.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+#define	PD_CHAR		0x0D
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+
+char    cDebug;
+
+
+//int format_deposit_data(hash_t *hMyHash, hash_t *hTxnHeader, hash_t *hContext, hash_t *hRequest);
+int handle_deposit_balance(hash_t *hMyHash);
+
+int	 CheckSkipDepositTxn(hash_t *hMyHash, hash_t *hTxnHeader);
+int	 CreateNewDepositTxn(hash_t *hMyHash);
+int	GetPSPRelatedInfo(hash_t *hMyHash);
+
+int	process_deposit_pending(hash_t *hMyHash);
+int	process_deposit_declined(hash_t *hMyHash);
+int	process_deposit_approve(hash_t *hMyHash);
+int	process_deposit_reverse(hash_t *hMyHash);
+
+int deposit_handler(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+	int iTmpRet;
+
+	hash_t		*hTxnHeader;
+
+	recordset_t	*rRecordSet;
+	hash_t		*hRec;
+
+	char	*csTmp = NULL;
+	//double	dTmp = 0.0;
+	//int	iTmp = 0;
+
+	char	*csMerchNmb = NULL;
+	char	*csVNCRefNum = NULL;
+	char	csCountry [PD_COUNTRY_LEN + 1]; 
+	char	*csService = NULL;
+
+	//char	*csPspID = NULL;	
+	//char	*csPspTypeCode = NULL;
+	//char	*csGateID = NULL;
+
+	char	*csTxnStatus = NULL;
+
+	int	iRecExists = PD_FALSE;
+	//char	csTxnSeq[PD_TXN_SEQ_LEN +1];
+	//char	*csTxnSeq;
+
+	//char	*csOrgTxnSeq;
+
+	/*
+	char	cRecStatus;
+	char	cRecARInd;
+	char	*csRecTxnCode;
+	*/
+
+	int	iSkip = PD_FALSE;
+	
+	//int 	iInternalErr;
+
+	hash_t 	*hContext, *hRequest, *hResponse;
+
+	hTxnHeader = (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxnHeader, 0);
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+	hash_init (hContext, 0);
+	hash_init (hRequest, 0);
+	hash_init (hResponse, 0);
+
+
+
+	// Chk PH MID
+	if (GetField_CString(hMyHash, "txn_merch_nmb", &csMerchNmb)) {
+DEBUGLOG(("deposit_handler: txn_merch_nmb [%s]\n", csMerchNmb));
+	}
+	else {
+DEBUGLOG(("deposit_handler: txn_merch_nmb missing!\n"));
+		iRet = FAILURE;
+	}
+
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+
+	recordset_init(rRecordSet, 0);
+	if (iRet == SUCCESS) {
+
+		if (ParMerchProfile_GetMerchant(csMerchNmb, rRecordSet) != PD_OK) {
+
+DEBUGLOG(("Calling ParMerchProfile.GetMerchant FAILED!\n"));
+		} else {
+//DEBUGLOG(("Calling ParMerchProfile.GetMerchant SUCC!\n"));
+
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec, "service", &csTmp)) {
+//DEBUGLOG(("deposit_handler: ParMerchProfile.GetMerchant service [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "service", csTmp);
+				}
+
+				if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+//DEBUGLOG(("deposit_handler: ParMerchProfile.GetMerchant merchant_id [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "merchant_id", csTmp);
+				}
+
+				if (GetField_CString(hRec, "client_id", &csTmp)) {
+//DEBUGLOG(("deposit_handler: ParMerchProfile.GetMerchant client_id [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "merchant_client_id", csTmp);
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "service", &csService)) {
+			csCountry[0] = '\0';
+
+			if (Service_FindCountryByService((const unsigned char*) csService, csCountry) != FOUND) {
+DEBUGLOG(("deposit_handler: DBService.FindCountryByService FAILED\n"));
+				iRet = FAILURE;
+			} else {
+//DEBUGLOG(("deposit_handler: DBService.FindCountryByService country [%s]\n", csCountry));
+
+				PutField_CString(hMyHash, "country", csCountry);
+			}
+
+
+			recordset_init(rRecordSet, 0);
+			if (iRet == SUCCESS) {
+
+				if (ServicePayMethod_FindPayMethod(csService, rRecordSet) != PD_OK) {
+//DEBUGLOG(("deposit_handler: DBServicePayMethod:FindPayMethod FAILED!\n"));
+				} else {
+//DEBUGLOG(("deposit_handler: DBServicePayMethod:FindPayMethod SUCC!\n"));
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while (hRec) {
+						if (GetField_CString(hRec, "pay_method", &csTmp)) {
+//DEBUGLOG(("deposit_handler: DBServicePayMethod:FindPayMethod pay_method [%s]!\n", csTmp));
+							PutField_CString(hMyHash, "pay_method", csTmp);
+						}
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+				}
+
+			}
+			RecordSet_Destroy(rRecordSet);
+
+		}
+	}
+	
+
+
+	// Chk if exists in txn_header
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+DEBUGLOG(("deposit_handler: txn_nmb [%s]\n", csVNCRefNum));
+		}
+		else {
+DEBUGLOG(("deposit_handler: txn_nmb not found!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+
+		iTmpRet = ParTxnData_ChkExist(csVNCRefNum);
+		
+		if (iTmpRet == PD_FOUND) {
+			iRecExists = PD_TRUE;
+
+DEBUGLOG(("deposit_handler: DBParTxnData:ChkExist (record_exists)!\n"));
+
+			PutField_Int(hMyHash, "record_exists", PD_TRUE);
+
+		} else if (iTmpRet == PD_NOT_FOUND) {
+			iRecExists = PD_FALSE;
+
+//DEBUGLOG(("deposit_handler: DBParTxnData:ChkExist (record not exists)!\n"));
+
+			PutField_Int(hMyHash, "record_exists", PD_FALSE);
+
+		} else {
+DEBUGLOG(("deposit_handler: DBParTxnData:ChkExist FAILED!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet  == SUCCESS) {
+		if (iRecExists == PD_TRUE) {
+			iRet = GetOrgTxnID(hMyHash, hTxnHeader);
+		}
+		if (iRet == SUCCESS) {
+			iRet = CheckSkipDepositTxn(hMyHash, hTxnHeader);
+			if (GetField_Int(hMyHash, "skip_record", &iSkip)) {
+//DEBUGLOG(("deposit_handler: skip_record [%d]\n", iSkip));
+			}
+			else {
+				iSkip = PD_FALSE;
+			}
+		}
+	}
+
+DEBUGLOG(("deposit_handler: iRet [%d] iSkip [%d] iRecExists [%d]\n", iRet, iSkip, iRecExists));
+
+	if (iRet == SUCCESS && iSkip == PD_FALSE) {
+
+		PutField_Int(hMyHash, "db_commit", PD_FALSE);
+
+		if (iRecExists == PD_FALSE) {
+
+			PutField_Int(hMyHash, "init_mode", PD_TRUE);
+
+DEBUGLOG(("deposit_handler: CreateNewDepositTxn\n"));
+
+			iRet = CreateNewDepositTxn(hMyHash); // to 'I' status
+
+			if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+
+DEBUGLOG(("deposit_handler: CreateNewDepositTxn txn_seq [%s]\n", csTmp));
+
+				PutField_CString(hTxnHeader, "txn_seq", csTmp);
+			}
+		}
+		else {
+			//iRet = GetOrgTxnID(hMyHash, hTxnHeader);
+			if (GetField_CString(hTxnHeader, "txn_id", &csTmp)) {
+				PutField_CString(hMyHash, "txn_seq", csTmp);
+				PutField_CString(hTxnHeader, "txn_seq", csTmp);
+			}
+		}
+
+
+		if (iRet == SUCCESS) {
+			iRet = GetPSPRelatedInfo(hMyHash);
+		}
+	
+		// Chk Status 
+		if (iRet == SUCCESS) {
+
+			GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+DEBUGLOG(("deposit_handler: TxnStatus [%s] iRet [%d]\n", csTxnStatus, iRet));
+			// PENDING
+			if (!strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_PENDING_PSP") && (iRecExists == PD_TRUE)) {
+				iRet = FAILURE;	
+			}
+
+
+
+			// all status, need to create a pending record first! 
+			if (iRecExists == PD_FALSE) {
+//DEBUGLOG(("deposit_handler: prepare pending case!\n"));
+
+				iRet = process_deposit_pending(hMyHash);
+			}
+		}
+
+		if (iRet == SUCCESS) {
+			//DECLINED
+			if (!strcmp(csTxnStatus, "LIMIT_DECLINED") || !strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_DECLINED")) {
+				iRet = process_deposit_declined(hMyHash);
+			}
+		}
+	
+		if (iRet == SUCCESS) {
+			// APPROVE
+
+			if (!strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_APPROVED")) {
+
+//DEBUGLOG(("deposit_handler: prepare approve case!\n"));
+				iRet = process_deposit_approve(hMyHash);
+			}
+		}
+
+		if (iRet == SUCCESS) {
+			// REVERSE
+			if (!strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_REVERSED")) {
+//DEBUGLOG(("deposit_handler: prepare reverse case!\n"));
+				iRet = process_deposit_reverse(hMyHash);
+			}
+		}
+	}
+
+
+	if (iRet == SUCCESS) {
+		if (iSkip == PD_FALSE) {
+			iRet = UpdateProcessResult(hMyHash, "COMPLETE");
+		} else {
+			iRet = UpdateProcessResult(hMyHash, "SKIP");
+		}
+	}
+
+	hash_destroy(hTxnHeader);
+	FREE_ME(hTxnHeader);
+	
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+	FREE_ME(rRecordSet);
+
+
+	return iRet;
+}
+
+
+
+
+
+int handle_deposit_balance(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csMID = NULL;
+	char	*csCcy = NULL;
+	char	*csCountry = NULL;
+	char	*csService = NULL;
+	double	dAmount = 0.0;
+	double	dTmp = 0.0;
+	int	iVoidFlag = PD_FALSE;
+	double	dFee = 0.0;
+	double  dMarkupAmt = 0.0;
+
+	char	*csPspID = NULL;
+	char	*csPspCountry = NULL;
+	double	dToAmount = 0.0;
+	double	dPreCalFee = 0.0;
+	char	*csToCcy = NULL;
+	
+	char	cAutoRecon;
+
+	hash_t	*hMerchRec;
+	hash_t	*hPspRec;
+
+	hMerchRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMerchRec ,0);
+
+	hPspRec = (hash_t*) malloc(sizeof(hash_t));
+	hash_init(hPspRec, 0);
+	
+	if (GetField_CString(hMyHash, "merchant_id", &csMID)) {
+DEBUGLOG(("handle_deposit_balance: merchant_id [%s]\n", csMID));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: merchant_id missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_CString(hMyHash, "ccy", &csCcy)) {
+DEBUGLOG(("handle_deposit_balance: ccy [%s]\n", csCcy));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: ccy missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_CString(hMyHash, "country", &csCountry)) {
+//DEBUGLOG(("handle_deposit_balance: country [%s]\n", csCountry));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: country missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_CString(hMyHash, "service", &csService)) {
+DEBUGLOG(("handle_deposit_balance: service [%s]\n", csService));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: service missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_Double(hMyHash, "amount", &dAmount)) {
+DEBUGLOG(("handle_deposit_balance: amount [%lf]\n", dAmount));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: amount missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_Double(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("handle_deposit_balance: fee[%lf]\n", dFee));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: fee missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_CString(hMyHash, "psp_id", &csPspID)) {
+DEBUGLOG(("handle_deposit_balance: psp_id [%s]\n", csPspID));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: psp_id missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_CString(hMyHash, "psp_country", &csPspCountry)) {
+DEBUGLOG(("handle_deposit_balance: psp_country [%s]\n", csPspCountry));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: psp_country missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_CString(hMyHash, "to_ccy", &csToCcy)) {
+DEBUGLOG(("handle_deposit_balance: to_ccy [%s]\n", csToCcy));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: to_ccy missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_Double(hMyHash, "to_amount", &dToAmount)) {
+DEBUGLOG(("handle_deposit_balance: to_amount [%lf]\n", dToAmount));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: to_amount missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_Double(hMyHash, "markup_amt", &dMarkupAmt)) {
+DEBUGLOG(("handle_deposit_balance: markup_amt [%lf]\n", dMarkupAmt));
+	}
+	else {
+DEBUGLOG(("handle_deposit_balance: markup_amt missing\n"));
+		iRet = FAILURE;
+	}
+
+	if (GetField_Double(hMyHash, "precal_fee", &dPreCalFee)) {
+DEBUGLOG(("handle_deposit_balance: precal_fee [%lf]\n", dPreCalFee));
+	}
+
+
+	if (iRet == SUCCESS) {
+		if (GetOpenBalanceForUpdate(hMerchRec, csMID, csCcy, csCountry, csService) == PD_OK) {
+
+			if (GetField_Double(hMerchRec, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: merchant_open_bal [%lf]\n", dTmp));
+				PutField_Double(hMyHash, "merchant_open_bal", dTmp);
+			}
+			
+			if (GetField_Double(hMerchRec, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: merchant_open_bal_settlement [%lf]\n", dTmp));
+				PutField_Double(hMyHash, "merchant_open_bal_settlement", dTmp);
+			}
+		}
+		else {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetOpenBalanceForUpdate FAIL!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+
+		if (GetField_Int(hMyHash, "void_flag", &iVoidFlag)) {
+			if (iVoidFlag == PD_TRUE) {
+				dAmount = (-1) * (dAmount - dFee);
+			}
+			else {
+				dAmount = dAmount - dFee;
+			}
+		}
+		else {
+			dAmount = dAmount - dFee;
+		}
+DEBUGLOG(("handle_deposit_balance: Merchant amount [%lf]\n", dAmount));
+
+
+		if (UpdateFloat(csMID, csCountry, csCcy, csService, dAmount, dAmount, PD_UPDATE_USER) == PD_OK) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.UpdateFloat(Balance) SUCC!\n"));
+		} else {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.UpdateFloat(Balance) FAIL!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_Int(hMyHash, "void_flag", &iVoidFlag)) {
+			if (iVoidFlag == PD_TRUE) {
+				dToAmount = (-1)*(dToAmount + dPreCalFee);
+			}
+			else {
+				dToAmount = dToAmount - dPreCalFee ; 
+			}
+		} else {
+			dToAmount = dToAmount - dPreCalFee;
+		}
+DEBUGLOG(("handle_deposit_balance: PSP amount [%lf]\n", dToAmount));
+
+		
+		GetField_Char(hMyHash, "auto_recon", &cAutoRecon);
+		if (cAutoRecon == PD_YES) {
+DEBUGLOG(("handle_deposit_balance: auto_recon [%c]\n", cAutoRecon));
+
+			// auto_recon -> update bal
+
+	                if (CreditBalance(csPspID, csPspCountry, csToCcy, PD_PSP_BAL, dToAmount, PD_UPDATE_USER) == PD_OK) {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.UpdateFloat(Balance) SUCC!\n"));
+			} else {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.UpdateFloat(Balance) FAIL!\n"));
+				iRet = FAILURE;
+                	}
+
+		} else {
+
+			// manual recon -> update float
+
+	                if (CreditBalance(csPspID, csPspCountry, csToCcy, PD_PSP_FLOAT, dToAmount, PD_UPDATE_USER) == PD_OK) {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.UpdateFloat(Balance) SUCC!\n"));
+			} else {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.UpdateFloat(Balance) FAIL!\n"));
+				iRet = FAILURE;
+                	}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetCurrentValues(csMID, csCcy, csCountry, csService, hMerchRec) == PD_OK) {
+
+			if (GetField_Double(hMerchRec, "total_float", &dTmp)) {
+//DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues total_float [%lf]!\n", dTmp));
+				PutField_Double(hMyHash, "merchant_total_float", dTmp);
+			}
+
+			if (GetField_Double(hMerchRec, "current_bal", &dTmp)) {
+//DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues current_bal [%lf]!\n", dTmp));
+				PutField_Double(hMyHash, "merchant_current_bal", dTmp);
+			}
+
+			if (GetField_Double(hMerchRec, "total_reserved_amount" , &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues total_reserved_amount [%lf]!\n", dTmp));
+				PutField_Double(hMyHash, "merchant_total_reserved_amount", dTmp);
+			}
+
+			if (GetField_Double(hMerchRec, "total_hold", &dTmp)) {
+//DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues total_hold [%lf]!\n", dTmp));
+				PutField_Double(hMyHash, "merchant_total_hold", dTmp);
+			}
+
+			if (GetField_Double(hMerchRec, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues total_float_settlement [%lf]!\n", dTmp));
+				PutField_Double(hMyHash, "merchant_total_float_settlement", dTmp);
+			}
+
+                        if (GetField_Double(hMerchRec, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues current_bal_settlement [%lf]!\n", dTmp));
+                                PutField_Double(hMyHash, "merchant_current_bal_settlement", dTmp);
+                        }
+
+                        if (GetField_Double(hMerchRec, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues total_hold_settlement [%lf]!\n", dTmp));
+                                PutField_Double(hMyHash, "merchant_total_hold_settlement", dTmp);
+                        }
+
+                        if (GetField_Double(hMerchRec, "total_float_after_payout", &dTmp)) {
+//DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues total_float_after_payout [%lf]!\n", dTmp));
+                                PutField_Double(hMyHash, "merchant_total_float_after_payout", dTmp);
+                        }
+
+                        if (GetField_Double(hMerchRec, "fundin_payout", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues fundin_payout [%lf]!\n", dTmp));
+                                PutField_Double(hMyHash, "merchant_fundin_payout", dTmp);
+                        }
+
+                        if (GetField_Double(hMerchRec, "reserved_payout", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues reserved_payout [%lf]!\n", dTmp));
+                                PutField_Double(hMyHash, "merchant_reserved_payout", dTmp);
+                        }
+
+
+		}
+		else {
+DEBUGLOG(("handle_deposit_balance: DBMerchantBalance.GetCurrentValues FAIL!\n"));
+			iRet = FAILURE;
+		}	
+	}
+
+	if (iRet == SUCCESS) {
+                if (GetBalance(csPspID, csPspCountry, csToCcy, hPspRec) == PD_OK) {
+			if (GetField_Double(hPspRec, "balance", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.GetBalance balance [%lf]\n", dTmp));
+				PutField_Double(hMyHash, "psp_balance", dTmp);
+			}
+			
+			if (GetField_Double(hPspRec, "total_float", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.GetBalance total_float [%lf]\n", dTmp));
+				PutField_Double(hMyHash, "psp_total_float", dTmp);
+			}
+
+			if (GetField_Double(hPspRec, "total_hold", &dTmp)) {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.GetBalance total_hold [%lf]\n", dTmp));
+				PutField_Double(hMyHash, "psp_total_hold", dTmp);
+			}
+		}
+		else {
+DEBUGLOG(("handle_deposit_balance: DBPspBalance.GetBalance FAIL!\n"));
+			iRet = FAILURE;
+		}
+		
+	}
+
+	hash_destroy(hMerchRec);
+	hash_destroy(hPspRec);
+
+	FREE_ME(hMerchRec);
+	FREE_ME(hPspRec);
+
+	return iRet;
+ 	
+}
+
+int   CheckSkipDepositTxn(hash_t *hMyHash, hash_t *hTxnHeader)
+{
+	int     iRet = SUCCESS;
+
+        char    cRecStatus = 'x';
+        char    cRecARInd = 'x';
+        char    *csSubStatus = NULL;
+        char    *csTxnCode = NULL;
+        char    *csTxnStatus = NULL;
+
+        int     iRecordExists = PD_TRUE;
+
+        if (GetField_Int(hMyHash, "record_exists", &iRecordExists)) {
+DEBUGLOG(("CheckSkipDepositTxn record_exists [%d]\n", iRecordExists));
+        }
+
+        if (iRecordExists == PD_TRUE) {
+                if (GetField_Char(hTxnHeader, "status", &cRecStatus)) {
+DEBUGLOG(("CheckSkipDepositTxn status [%c]\n", cRecStatus));
+                }
+
+                if (GetField_Char(hTxnHeader, "ar_ind", &cRecARInd)) {
+DEBUGLOG(("CheckSkipDepositTxn ar_ind [%c]\n", cRecARInd));
+                }
+
+                if (GetField_CString(hTxnHeader, "sub_status", &csSubStatus)) {
+DEBUGLOG(("CheckSkipDepositTxn sub_status [%s]\n", csSubStatus));
+                }
+
+                if (GetField_CString(hTxnHeader, "txn_code", &csTxnCode)) {
+DEBUGLOG(("CheckSkipDepositTxn txn_code [%s]\n", csTxnCode));
+                }
+
+		if (GetField_CString(hMyHash, "txn_status", &csTxnStatus)) {
+			if (!strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_PENDING_PSP")) {
+				if (GetField_Char(hTxnHeader, "status", &cRecStatus)) {
+					if (cRecStatus == PD_TO_PSP) {
+						PutField_Int(hMyHash, "skip_record", PD_TRUE);
+                                        }
+				}
+			}
+			
+			if (!strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_APPROVED")) {
+				if (GetField_Char(hTxnHeader, "status", &cRecStatus)) {
+					if (cRecStatus == PD_COMPLETE) {
+						if (GetField_Char(hTxnHeader, "ar_ind", &cRecARInd)) {
+							if (cRecARInd == PD_ACCEPTED) {
+								PutField_Int(hMyHash, "skip_record", PD_TRUE);
+                                                        }
+                                                }
+                                        }
+				}
+			}
+
+                        if (!strcmp(csTxnStatus, "LIMIT_DECLINED") ||
+                            !strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_DECLINED")) {
+
+				if (GetField_Char(hTxnHeader, "status", &cRecStatus)) {
+					if (cRecStatus == PD_COMPLETE) {
+						if (GetField_Char(hTxnHeader, "ar_ind", &cRecARInd)) {
+							if (cRecARInd == PD_REJECTED) {
+								PutField_Int(hMyHash, "skip_record", PD_TRUE);
+							}
+						}
+					}
+				}
+			}
+
+                        if (!strcmp(csTxnStatus, "DEPOSIT_DEBIT_CARD_REVERSED")) {
+                        	if (GetField_CString(hTxnHeader, "txn_code", &csTxnCode)) {
+                                	if (!strcmp(csTxnCode, "VDS")) {
+						PutField_Int(hMyHash, "skip_record", PD_TRUE);
+                                	}
+                        	}
+                        }
+		}
+	}
+	else {
+		PutField_Int(hMyHash, "skip_record", PD_FALSE);
+	}
+
+	return iRet;
+}
+
+int	GetPSPRelatedInfo(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csPspTypeCode;
+	char	*csTmp;
+	char	*csGateID;
+
+	if (GetField_CString(hMyHash, "psp_type_code", &csPspTypeCode)) {
+//DEBUGLOG(("GetPSPRelatedInfo: psp_id mapping...\n"));
+
+		if (ParPspClientMap_GetPspID(hMyHash) == FOUND) {
+			if (GetField_CString(hMyHash, "psp_id", &csTmp)) {
+DEBUGLOG(("GetPSPRelatedInfo: psp_id [%s]\n", csTmp));
+			}
+
+			if (GetField_CString(hMyHash, "psp_country", &csTmp)) {
+//DEBUGLOG(("GetPSPRelatedInfo: psp_country [%s]\n", csTmp));
+			}
+		}
+		else {
+DEBUGLOG(("GetPSPRelatedInfo: DBParPspClientMap.GetPspID FAIL!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	// Get Bank Code
+	if ((GetField_CString(hMyHash, "psp_type_code", &csPspTypeCode)) &&
+            (GetField_CString(hMyHash, "gate_id", &csGateID))) {
+
+		if (ParPspClientMap_GetBankCode(hMyHash) == FOUND) {
+			if (GetField_CString(hMyHash, "int_bank_code", &csTmp)) {
+DEBUGLOG(("GetPSPRelatedInfo: DBParPspClientMap.GetBankCode [%s]\n", csTmp));
+			}
+		}
+/*
+		else {
+DEBUGLOG(("GetPSPRelatedInfo: DBParPspClientMap.GetBankCode FAIL!\n"));
+		}
+*/
+	}
+
+	return iRet;
+}
+
+
+int 	CreateNewDepositTxn(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+	char	*csTxnSeq;
+
+	int	iInitMode = PD_TRUE;
+	int	iTmp;
+	char	*csVNCRefNum;
+	char	*csTmp;
+        char	*csTxnDateTime;
+
+	char	csDate[PD_DATE_LEN + 1];
+	char	csTime[PD_TIME_LEN + 1];
+
+	double	dTmp = 0.0;
+
+	hash_t	*hHeader, *hDetail, *hPspDetail;
+
+        hHeader = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hHeader, 0);
+
+        hDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hDetail, 0);
+
+        hPspDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hPspDetail, 0);
+	
+
+	if (GetField_Int(hMyHash, "init_mode", &iInitMode)) {
+//DEBUGLOG(("CreateNewDepositTxn: init_mode [%d]\n", iInitMode));
+	}
+	
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+//DEBUGLOG(("CreateNewDepositTxn: db_commit [%d]\n", iTmp));
+		PutField_Int(hHeader, "db_commit", iTmp);
+	}
+
+
+	if (iInitMode == PD_TRUE) {
+		csTxnSeq = strdup((char* )GetNextTxnSeq());
+DEBUGLOG(("CreateNewDepositTxn: Generate (WEB) Txn Seq [%s]\n", csTxnSeq));
+	}
+	else {
+		csTxnSeq = strdup((char* )GetNextMgtTxnSeq());
+DEBUGLOG(("CreateNewDepositTxn: Generate (MGT) Txn Seq [%s]\n", csTxnSeq));
+	}
+	PutField_CString(hMyHash,"txn_seq",csTxnSeq);
+
+
+	PutField_CString(hHeader, "txn_seq", csTxnSeq);
+	PutField_CString(hDetail, "txn_seq", csTxnSeq);
+	PutField_CString(hPspDetail, "txn_seq", csTxnSeq);
+
+	if (GetField_CString(hMyHash, "org_txn_seq", &csTmp)) {
+DEBUGLOG(("CreateNewDepositTxn: org_txn_seq [%s]\n", csTxnSeq)); 
+		PutField_CString(hHeader, "org_txn_seq", csTmp);
+	}
+
+
+	if (iInitMode == PD_TRUE) {
+		PutField_CString(hHeader, "channel_code", "XPY");
+		PutField_CString(hHeader, "process_type", "0200");
+		PutField_CString(hHeader, "process_code", "200002");
+
+
+	} else {
+		PutField_CString(hHeader, "channel_code", "MGT");
+		PutField_CString(hHeader, "process_type", "0000");
+		PutField_CString(hHeader, "process_code", "000000");
+	}
+
+	PutField_Char(hHeader, "status", PD_PROCESSING);
+
+	if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+//DEBUGLOG(("CreateNewDepositTxn txn_code [%s]\n", csTmp));
+		PutField_CString(hHeader, "txn_code", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+DEBUGLOG(("CreateNewDepositTxn merchant_id[%s]\n", csTmp));
+		PutField_CString(hHeader, "merchant_id", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "merch_ref", &csTmp)) {
+DEBUGLOG(("CreateNewDepositTxn merchant_ref [%s]\n", csTmp));
+		PutField_CString(hHeader, "merchant_ref", csTmp);
+	}
+
+        if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+DEBUGLOG(("CreateNewDepositTxn post_date [%s]\n", csTmp));
+                PutField_CString(hHeader, "PHDATE", csTmp);
+		PutField_CString(hHeader, "host_posting_date", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "post_datetime", &csTxnDateTime)) {
+DEBUGLOG(("CreateNewDepositTxn txn_date [%s]\n", csTxnDateTime));
+                PutField_CString(hHeader, "transmission_datetime", csTxnDateTime);
+	}
+
+
+        if (GetField_CString(hMyHash, "post_datetime", &csTxnDateTime)) {
+DEBUGLOG(("CreateNewDepositTxn post_datetime [%s]\n", csTxnDateTime));
+
+                csDate[0] = '\0';
+                csTime[0] = '\0';
+
+                strncpy(csDate, csTxnDateTime, PD_DATE_LEN);
+                csDate[PD_DATE_LEN]='\0';
+                strncpy(csTime, csTxnDateTime + PD_DATE_LEN, PD_TIME_LEN);
+
+
+DEBUGLOG(("CreateNewDepositTxn tm_date [%s] tm_time [%s]\n", csDate, csTime));
+
+                PutField_CString(hHeader, "tm_date", csDate);
+                PutField_CString(hHeader, "tm_time", csTime);
+
+                PutField_CString(hPspDetail, "txn_date", csDate);
+                PutField_CString(hPspDetail, "txn_time", csTime);
+        }
+
+	
+
+
+	if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+		PutField_CString(hHeader, "local_tm_date", csTmp);
+	}
+	if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+		PutField_CString(hHeader, "local_tm_time", csTmp);
+	}
+
+	PutField_CString(hHeader, "add_user", PD_UPDATE_USER);	
+	PutField_CString(hDetail, "add_user", PD_UPDATE_USER);	
+	PutField_CString(hPspDetail, "add_user", PD_UPDATE_USER);	
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);	
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);	
+	PutField_CString(hPspDetail, "update_user", PD_UPDATE_USER);	
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+		PutField_CString(hDetail, "txn_ccy", csTmp);
+	}
+	if (GetField_CString(hMyHash, "pay_method", &csTmp)) {
+		PutField_CString(hDetail, "pay_method", csTmp);
+		PutField_CString(hDetail, "selected_pay_method", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "country", &csTmp)) {
+		PutField_CString(hDetail, "txn_country", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "service", &csTmp)) {
+		PutField_CString(hHeader, "service_code", csTmp);
+	}
+
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+	iRet = (unsigned long)(*DBObjPtr)(hHeader);
+
+	if (iRet == SUCCESS) {
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hDetail);
+	}
+
+
+	if (iRet == SUCCESS) {
+		PutField_CString(hPspDetail, "psp_id", PD_DEFAULT_PSP);
+		PutField_CString(hPspDetail, "desc", "DSP Initial Mode");
+
+		DBObjPtr = CreateObj(DBPtr, "DBTxnPspDetail", "Add");
+		iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+	}	
+
+	////////////////////////////////////////////////
+
+
+	PutField_Char(hHeader, "stauts", PD_INIT);
+	//PutField_CString(hHeader, "sub_status", PD_HAND_SHAKEN);
+	if (iInitMode == PD_TRUE) {
+		PutField_CString(hHeader, "sub_status", PD_INITIATED);
+	}
+
+	if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+		PutField_CString(hHeader, "client_id", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+		PutField_CString(hHeader, "net_ccy", csTmp);
+	}
+
+	if (GetField_Double(hMyHash, "amount", &dTmp)) {
+		PutField_Double(hHeader, "txn_amt", dTmp);
+	}
+
+	if (iRet == SUCCESS) {
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hHeader);
+	}
+
+	if (iRet == SUCCESS) {
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hDetail);
+	}
+
+        if (iRet == PD_OK) {
+                if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+                        PutField_CString(hHeader, "vnc_ref_num", csVNCRefNum);
+
+                        if (UpdateHeaderVNCRef(hHeader) == PD_OK) {
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num succ!\n"));
+                        }
+                        else {  
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num fail!\n"));
+                                iRet = FAILURE; 
+                        }               
+                }
+        }
+
+
+
+        hash_destroy(hHeader);
+        FREE_ME(hHeader);
+
+        hash_destroy(hDetail);
+        FREE_ME(hDetail);
+
+        hash_destroy(hPspDetail);
+        FREE_ME(hPspDetail);
+
+        FREE_ME(csTxnSeq);
+
+	return	iRet;
+}
+
+
+int	 process_deposit_pending(hash_t *hMyHash)
+{
+	int 	iRet = SUCCESS;
+
+	char	*csTmp;
+	double	dTmp = 0.0;
+	int	iTmp;
+
+	hash_t	*hHeader, *hDetail, *hPspDetail, *hTxnElement;
+
+	double  dAmount = 0.0;
+	double  dFee= 0.0;
+	
+
+        hHeader = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hHeader, 0);
+
+        hDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hDetail, 0);
+
+        hPspDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hPspDetail, 0);
+
+        hTxnElement = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hTxnElement, 0);
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+	PutField_CString(hPspDetail, "update_user", PD_UPDATE_USER);
+
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+		PutField_Int(hHeader, "db_commit", iTmp);
+	}
+
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+		PutField_CString(hHeader, "txn_seq", csTmp);
+		PutField_CString(hDetail, "txn_seq", csTmp);
+		PutField_CString(hPspDetail, "txn_seq", csTmp);
+		PutField_CString(hTxnElement, "from_txn_seq", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+		PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		PutField_CString(hTxnElement, "src_txn_fee_ccy", csTmp);
+	}
+
+	if (GetField_Double(hMyHash, "amount", &dTmp)) {
+		PutField_Double(hTxnElement, "org_txn_amt", dTmp);
+	}
+
+	PutField_Char(hTxnElement, "party_type", PD_TYPE_MERCHANT);
+	PutField_CString(hTxnElement, "amount_type", PD_CR);
+
+	// TxnElement
+DEBUGLOG(("process_deposit_pending: AddTxnAmtElement\n"));
+	iRet = AddTxnAmtElement(hTxnElement);
+
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hMyHash, "markup_amt", &dTmp)) {
+			PutField_Double(hTxnElement, "markup_amt", dTmp);
+
+DEBUGLOG(("process_deposit_pending: AddMarkupAmtelement [%lf]\n", dTmp));
+
+			// use to_ccy
+			if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+				PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+			}
+
+			if (dTmp > 0.0) {
+				PutField_CString(hTxnElement, "amount_type", PD_DR);
+				iRet = AddMarkupAmtElement(hTxnElement);
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+
+		if (GetField_Double(hMyHash, "fee", &dTmp)) {
+DEBUGLOG(("process_deposit_pending: AddTxnFeeElements [%lf]\n", dTmp));
+
+			if (dTmp > 0.0) {
+				PutField_Double(hTxnElement, "src_txn_fee", dTmp);
+				PutField_Char(hTxnElement, "party_type", PD_TYPE_MERCHANT);
+				PutField_CString(hTxnElement, "amount_type", PD_DR);
+
+				iRet = AddTxnFeeElements(hTxnElement);
+			}
+		}
+	}
+
+	if (GetField_Double(hMyHash, "amount", &dAmount)) {
+		if (GetField_Double(hMyHash, "fee", &dFee)) {
+			dTmp = dAmount - dFee;
+		}
+		else {
+			dTmp = dAmount;
+		}
+		PutField_Double(hHeader, "net_amt", dTmp);
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Char(hHeader, "status", PD_TO_PSP);
+		PutField_CString(hHeader, "sub_status", PD_SENT_TO_PSP);
+
+		if (GetField_Double(hMyHash, "ex_rate", &dTmp)) {
+//DEBUGLOG(("process_deposit_pending: org ex_rate [%lf]\n", dTmp)); 
+
+			dTmp = 1/dTmp;
+			dTmp =  newround(dTmp, 5);
+
+DEBUGLOG(("process_deposit_pending: new ex_rate [%lf]\n", dTmp)); 
+
+			PutField_Double(hHeader, "ex_rate", dTmp);
+
+		}
+
+		if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+			PutField_CString(hHeader, "ip_addr", csTmp);
+		}
+
+//DEBUGLOG(("process_deposit_pending: Transaction Update\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hHeader);
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "int_bank_code", &csTmp)) {
+			PutField_CString(hDetail, "bank_code", csTmp);
+		}
+		
+//DEBUGLOG(("process_deposit_pending: Transaction UpdateDetail\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hDetail);
+		
+		
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "psp_id", &csTmp)) {
+			PutField_CString(hPspDetail, "psp_id", csTmp);
+		}
+
+		if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+			PutField_CString(hPspDetail, "txn_ccy", csTmp);
+		}
+
+		if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+			PutField_Double(hPspDetail, "txn_amount", dTmp);
+			/* (amount + markup) * rate ??*/
+		}
+
+		if (GetField_CString(hMyHash, "int_bank_code", &csTmp)) {
+			PutField_CString(hPspDetail, "bank_code", csTmp);
+		}
+
+//DEBUGLOG(("process_deposit_pending: TxnPspDetail Update\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+	}
+
+
+DEBUGLOG(("process_deposit_pending: return [%d]\n", iRet));
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	hash_destroy(hPspDetail);
+	FREE_ME(hPspDetail);
+
+	hash_destroy(hTxnElement);
+	FREE_ME(hTxnElement);
+
+	return 	iRet;
+}
+
+int	process_deposit_declined(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+	char	*csTmp = NULL;
+	int	iTmp;
+
+	hash_t	*hHeader;
+
+        hHeader = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hHeader, 0);
+
+	if (GetField_CString(hMyHash, "txn_seq", csTmp)) {
+		PutField_CString(hHeader, "txn_seq", csTmp);
+	}
+
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+		PutField_Int(hHeader, "db_commit", iTmp);
+	}
+	
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+
+	PutField_Char(hHeader,"status",PD_COMPLETE);
+	PutField_Char(hHeader,"ar_ind",PD_REJECT);
+	PutField_CString(hHeader, "sub_status", PD_PSP_REJECT);
+
+DEBUGLOG(("process_deposit_declined: Transaction Update\n"));
+
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+	iRet = (unsigned long)(*DBObjPtr)(hHeader);
+
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	return iRet;
+
+}
+
+int	process_deposit_approve(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp;
+	char	*csTxnDateTime;
+	double	dTmp=0.0;
+	int	iTmp;
+
+	char	*csOrderId;
+
+	char	csDate[PD_DATE_LEN + 1];
+	char	csTime[PD_TIME_LEN + 1];
+	char	cAutoRecon;
+	
+
+	hash_t	*hHeader, *hDetail, *hPspDetail, *hBalance;
+
+        hHeader = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hHeader, 0);
+
+	hDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hDetail, 0);
+
+	hPspDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hPspDetail, 0);
+
+	hBalance = (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hBalance, 0);
+
+DEBUGLOG(("start process_deposit_approve\n"));
+
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+		PutField_Int(hHeader, "db_commit", iTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+DEBUGLOG(("process_deposit_approve: txn_seq [%s]\n", csTmp));
+		PutField_CString(hHeader ,"txn_seq", csTmp);
+		PutField_CString(hDetail,"txn_seq", csTmp);
+		PutField_CString(hPspDetail,"txn_seq", csTmp);
+	}
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+	PutField_CString(hPspDetail, "update_user", PD_UPDATE_USER);
+
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+//DEBUGLOG(("process_deposit_approve: approve_date [%s]\n", csTmp));
+
+		strncpy(csDate, csTmp, PD_DATE_LEN);
+		csDate[PD_DATE_LEN] = '\0';
+
+DEBUGLOG(("process_deposit_approve: re-format approve_date [%s]\n", csDate));
+
+		PutField_CString(hHeader, "approval_date", csDate);
+	}
+
+        if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: to_amount [%lf]\n", dTmp));
+		PutField_Double(hBalance, "org_dst_net_amt", dTmp);
+	}
+
+	if (GetField_CString(hMyHash, "psp_id", &csTmp)) {
+DEBUGLOG(("process_deposit_approve: psp_id [%s]\n", csTmp));
+		PutField_CString(hBalance, "org_psp_id", csTmp);
+	}
+
+	PutField_Char(hBalance, "txn_type", 'D');
+
+DEBUGLOG(("process_deposit_approve: CalPspCosts\n")); 
+	iRet = CalPspCosts(hBalance, hBalance);
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hBalance, "precal_fee", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: precal_fee [%lf]\n", dTmp));
+			PutField_Double(hMyHash, "precal_fee", dTmp);
+
+		}
+	}
+	
+
+	if (iRet == SUCCESS) {
+		iRet = handle_deposit_balance(hMyHash);
+		if (iRet != SUCCESS) {
+DEBUGLOG(("process_deposit_approve: handle_deposit_balance FAIL!!\n"));
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Char(hHeader,"status",PD_COMPLETE);
+		PutField_Char(hHeader,"ar_ind",PD_ACCEPT);
+		PutField_CString(hHeader, "sub_status", PD_ACK_TO_MERCHANT);
+
+DEBUGLOG(("process_deposit_approve :: Call Update Transaction !\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hHeader);
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hMyHash, "merchant_current_bal", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_current_bal [%lf]\n", dTmp));
+			PutField_Double(hDetail, "current_bal", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_current_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_current_bal_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "current_bal_settlement", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_open_bal [%lf]\n", dTmp));
+			PutField_Double(hDetail, "open_bal", dTmp);
+		}
+		else {
+			PutField_Double(hDetail, "open_bal", 0.0);
+		}
+
+		if (GetField_Double(hMyHash, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_open_bal_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "open_bal_settlement", dTmp);
+		}
+		else {
+			PutField_Double(hDetail, "open_bal_settlement", 0.0);
+		}
+
+
+		if (GetField_Double(hMyHash, "merchant_total_float", &dTmp)) {
+DEBUGLOG(("process_depoist_approve: merchant_total_float [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_float", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_float_settlement", &dTmp)) {
+DEBUGLOG(("process_depoist_approve: merchant_total_float_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_float_settlement", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_float_after_payout", &dTmp)) {
+DEBUGLOG(("process_depoist_approve: merchant_total_float_after_payout [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_float_after_payout", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "merchant_total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_total_reserved_amount [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_reserved_amount", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "merchant_total_hold", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_total_hold [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_hold", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_hold_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_settlement_total_hold_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_hold_settlement", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_fundin_payout", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_fundin_payout [%lf]\n", dTmp));
+			PutField_Double(hDetail, "fundin_payout", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_reserved_payout", &dTmp)) {
+DEBUGLOG(("process_deposit_approve: merchant_reserved_payout [%lf]\n", dTmp));
+			PutField_Double(hDetail, "reserved_payout", dTmp);
+		}
+
+
+//DEBUGLOG(("process_deposit_approve:: Call Transaction UpdateDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hDetail);
+	}
+
+	if (iRet == SUCCESS) {
+
+		if (GetField_Double(hMyHash, "precal_fee", &dTmp)) {
+			PutField_Double(hPspDetail, "service_fee", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "psp_balance", &dTmp)) {
+			PutField_Double(hPspDetail, "bal", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "psp_total_float", &dTmp)) {
+			PutField_Double(hPspDetail, "total_float", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "psp_total_hold", &dTmp)) {
+			PutField_Double(hPspDetail, "total_hold", dTmp);
+		}
+
+		if (GetField_CString(hMyHash, "txn_date", &csTxnDateTime)) {
+			PutField_CString(hPspDetail, "fundin_date", csTxnDateTime);
+
+			csDate[0] = '\0';
+			csTime[0] = '\0';
+
+			strncpy(csDate, csTxnDateTime, PD_DATE_LEN);
+			csDate[PD_DATE_LEN] = '\0';
+			strncpy(csTime, csTxnDateTime + PD_DATE_LEN, PD_TIME_LEN);
+
+			//PutField_CString(hPspDetail, "txn_date", csDate);
+			PutField_CString(hPspDetail, "fundin_date_short", csDate);
+			PutField_CString(hPspDetail, "txn_time", csTime);
+		}
+
+		/*
+		if (GetField_CString(hMyHash, "psp_order_id", &csTmp)) {
+			PutField_CString(hPspDetail, "tid", csTmp);
+		}
+		*/
+
+		if (GetField_CString(hMyHash, "psp_tid", &csTmp)) {
+			PutField_CString(hPspDetail, "tid", csTmp);
+		}
+
+		GetField_Char(hMyHash, "auto_recon", &cAutoRecon);
+		if (cAutoRecon == PD_YES) {
+			PutField_Int(hPspDetail, "recon_ind", PD_TRUE);
+			PutField_CString(hPspDetail, "recon_date", csDate);
+		}
+	
+		if (GetField_CString(hMyHash, "psp_txn_date", &csTmp)) {
+			PutField_CString(hPspDetail, "txn_date", csTmp);
+		}
+
+//DEBUGLOG(("process_deposit_approve:: Call TxnPspDetail Update\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+	}
+
+	if (iRet == SUCCESS) {
+		iRet = UpdateApprovalTimestamp(hHeader);
+	}
+
+	if (iRet == SUCCESS) {
+
+		if (GetField_CString(hMyHash, "psp_order_id", &csOrderId)) {
+			PutField_CString(hHeader ,"order_id", csOrderId);
+		}
+		if (GetField_CString(hHeader, "txn_seq", &csTmp)) {
+			PutField_CString(hHeader ,"conv_txn_seq", csTmp);
+		}
+		
+		if (TxnSeqMap_Exists(csOrderId) == PD_NOT_FOUND) {
+			iRet = AddTxnSeqMap(hHeader);
+		}
+	}
+
+
+DEBUGLOG(("process_deposit_approve:: return [%d]\n", iRet));
+
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	hash_destroy(hPspDetail);
+	FREE_ME(hPspDetail);
+
+	hash_destroy(hBalance);
+	FREE_ME(hBalance);
+
+	return iRet;
+}
+
+int	process_deposit_reverse(hash_t *hMyHash)
+{
+	int 	iRet = SUCCESS;
+
+	char	*csTxnSeq = NULL;
+	char	*csTmp = NULL;
+	int	iTmp;
+	double	dTmp = 0.0;
+	double	dAmount = 0.0;
+	double	dFee = 0.0;
+
+	hash_t	*hHeader;
+	hash_t	*hDetail;
+	hash_t	*hPspDetail;
+	hash_t	*hTxnElement;
+
+	char	csDate[PD_DATE_LEN + 1];
+
+	int iRecordExists = PD_TRUE;
+
+	hHeader = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hHeader, 0);
+
+        hDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hDetail, 0);
+
+        hPspDetail = (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hPspDetail, 0);
+
+        hTxnElement= (hash_t *) malloc (sizeof(hash_t));
+        hash_init(hTxnElement, 0);
+
+
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+DEBUGLOG(("process_deposit_reverse: db_commit [%d]\n", iTmp));
+		PutField_Int(hHeader, "db_commit", iTmp);
+	}
+
+	// Handle Org txn
+	if (GetField_CString(hMyHash, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("process_deposit_reverse: org txn_seq [%s]\n", csTxnSeq));
+		PutField_CString(hHeader, "txn_seq", csTxnSeq);
+	}
+
+	PutField_Char(hHeader, "status", PD_REVERSED);
+	PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+	PutField_CString(hHeader, "sub_status", PD_VOID);
+
+	PutField_CString(hHeader, "add_user", PD_UPDATE_USER);	
+	PutField_CString(hDetail, "add_user", PD_UPDATE_USER);	
+	PutField_CString(hPspDetail, "add_user", PD_UPDATE_USER);	
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);	
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);	
+	PutField_CString(hPspDetail, "update_user", PD_UPDATE_USER);	
+
+	if (GetField_Int(hMyHash, "record_exists", &iRecordExists)) {
+DEBUGLOG(("process_deposit_reverse:: RecordExists [%d]\n", iRecordExists));
+	}
+
+	if (iRecordExists == PD_FALSE) {	
+DEBUGLOG(("process_deposit_reverse:: special cater recordexists!!\n"));
+
+		//GetField_CString(hMyHash, "cutoff_date", &csTmp);
+		GetField_CString(hMyHash, "post_date", &csTmp);
+
+		PutField_CString(hHeader, "host_posting_date", csTmp);
+		PutField_CString(hHeader, "approval_date", csTmp);
+	}
+
+DEBUGLOG(("process_deposit_reverse:: Call Transaction Update\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+	iRet = (unsigned long)(*DBObjPtr)(hHeader);
+
+
+	if (iRet == SUCCESS) {
+		iRet = UpdateApprovalTimestamp(hHeader);
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Char(hHeader, "status", PD_COMPLETE);
+		PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+		RemoveField_CString(hHeader, "sub_status");
+
+		PutField_Int(hMyHash, "init_mode", PD_FALSE);
+		PutField_CString(hMyHash, "org_txn_seq", csTxnSeq);
+		PutField_CString(hMyHash, "txn_code", "VDS");
+
+		PutField_CString(hHeader, "txn_code", "VDS");
+
+		iRet = CreateNewDepositTxn(hMyHash);
+
+
+		if (GetField_CString(hMyHash, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("process_deposit_reverse:: new txn_seq [%s]\n", csTxnSeq)); 
+			PutField_CString(hHeader, "txn_seq", csTxnSeq);
+			PutField_CString(hDetail, "txn_seq", csTxnSeq);
+			PutField_CString(hPspDetail, "txn_seq", csTxnSeq);
+			PutField_CString(hTxnElement, "txn_seq", csTxnSeq);
+		}
+
+	}
+
+
+	if (iRet == SUCCESS) {
+		
+		GetField_CString(hMyHash, "post_date", &csTmp);
+		PutField_CString(hHeader, "host_posting_date", csTmp);
+
+		GetField_CString(hMyHash, "txn_date", &csTmp);
+		strncpy(csDate, csTmp, PD_DATE_LEN);
+		csDate[PD_DATE_LEN] = '\0';
+
+		PutField_CString(hHeader, "approval_date", csDate);
+
+
+
+		if (GetField_Double(hMyHash, "ex_rate", &dTmp)) {
+			PutField_Double(hHeader, "ex_rate", dTmp);
+		}
+
+		if (GetField_CString(hMyHash, "psp_id", &csTmp)) {
+			PutField_CString(hPspDetail, "psp_id", csTmp);
+		}
+
+
+		if (GetField_CString(hMyHash, "int_bank_code", &csTmp)) {
+			PutField_CString(hDetail, "bank_code", csTmp);
+			PutField_CString(hPspDetail, "bank_code", csTmp);
+		}
+
+		if (GetField_CString(hMyHash, "psp_order_id", &csTmp)) {
+			PutField_CString(hPspDetail, "tid", csTmp);
+		}
+
+		if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+			PutField_CString(hHeader, "ip_addr", csTmp);
+		}
+
+		if (GetField_Double(hMyHash, "amount", &dAmount)) {
+			if (GetField_Double(hMyHash, "fee", &dFee)) {
+				dTmp = dAmount - dFee;
+			} else {
+				dTmp = dAmount;
+			}
+			PutField_Double(hHeader, "net_amt", dTmp);
+		}
+
+		PutField_CString(hPspDetail, "desc", "Void Deposit");
+
+//DEBUGLOG(("process_deposit_reverse:: Call Transaction Update\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hHeader);
+
+
+/*!!!!!!!!!!!!!!!!!!!!!!!*/
+		if (iRet == SUCCESS) {
+			if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+				PutField_CString(hPspDetail, "txn_ccy", csTmp);
+			}
+
+			if (GetField_Double(hMyHash, "to_amount", &dTmp)) {
+				PutField_Double(hPspDetail, "txn_amount", dTmp);
+			}
+			
+
+//DEBUGLOG(("process_deposit_reverse:: Call TxnPspDetail Update\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+			iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		PutField_Int(hMyHash, "void_flag", PD_TRUE);
+DEBUGLOG(("process_deposit_reverse:: Call handle_deposit_balance\n"));
+
+		iRet = handle_deposit_balance(hMyHash);
+	}
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("process_deposit_reverse:: Get merchant balance information\n")); 
+
+		if (GetField_Double(hMyHash, "merchant_current_bal", &dTmp)) {
+			PutField_Double(hDetail, "current_bal", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_current_bal_settlement", &dTmp)) {
+			PutField_Double(hDetail, "current_bal_settlement", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_open_bal", &dTmp)) {
+			PutField_Double(hDetail, "open_bal", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_open_bal_settlement", &dTmp)) {
+			PutField_Double(hDetail, "open_bal_settlement", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_float", &dTmp)) {
+			PutField_Double(hDetail, "total_float", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_float_settlement", &dTmp)) {
+			PutField_Double(hDetail, "total_float_settlement", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_float_after_payout", &dTmp)) {
+			PutField_Double(hDetail, "total_float_after_payout", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_reserved_amount", &dTmp)) {
+			PutField_Double(hDetail, "total_reserved_amount", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_hold", &dTmp)) {
+			PutField_Double(hDetail, "total_hold", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_total_hold_settlement", &dTmp)) {
+			PutField_Double(hDetail, "total_hold_settlement", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_fundin_payout", &dTmp)) {
+			PutField_Double(hDetail, "fundin_payout", dTmp);
+		}
+		if (GetField_Double(hMyHash, "merchant_reserved_payout", &dTmp)) {
+			PutField_Double(hDetail, "reserved_payout", dTmp);
+		}
+
+DEBUGLOG(("process_deposit_reverse:: Call Transaction UpdateDetail!\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hDetail);
+	}
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("process_deposit_reverse:: Get psp balance information\n")); 
+	
+		if (GetField_Double(hMyHash, "precal_fee", &dTmp)) {
+			PutField_Double(hPspDetail, "service_fee", dTmp);
+		}
+		if (GetField_Double(hMyHash, "psp_balance", &dTmp)) {
+			PutField_Double(hPspDetail, "bal", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "psp_total_float", &dTmp)) {
+			PutField_Double(hPspDetail, "total_float", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "psp_total_hold", &dTmp)) {
+			PutField_Double(hPspDetail, "total_hold", dTmp);
+		}
+
+		/*
+		if (GetField_CString(hMyHash, "psp_txn_date", &csTmp)) {
+DEBUGLOG(("process_deposit_reverse:: psp_txn_date [%s]\n", csTmp));
+			PutField_CString(hPspDetail, "txn_date", csTmp);
+		}
+		*/
+
+DEBUGLOG(("process_deposit_reverse:: Call TxnPspDetail Update\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+	}	
+
+
+	// Element
+	if (iRet == SUCCESS) {
+DEBUGLOG(("process_deposit_reverse:: Prepare TxnElement \n"));
+		PutField_CString(hTxnElement, "from_txn_seq", csTxnSeq);
+
+		if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+			PutField_CString(hTxnElement, "src_txn_fee_ccy", csTmp);
+			PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		}
+		PutField_Char(hTxnElement,"party_type",PD_TYPE_MERCHANT);
+		PutField_CString(hTxnElement, "amount_type", PD_CR);
+
+		if (GetField_Double(hMyHash, "fee", &dTmp)) {
+			PutField_Double(hTxnElement, "src_txn_fee", dTmp);
+
+			if (dTmp > 0.0) {
+DEBUGLOG(("process_deposit_reverse:: AddTxnFeeElements \n"));
+				iRet = AddTxnFeeElements(hTxnElement);
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hMyHash, "markup_amt", &dTmp)) {
+
+			// use to_ccy
+			if (GetField_CString(hMyHash, "to_ccy", &csTmp)) {
+				PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+			}
+
+			PutField_Double(hTxnElement, "markup_amt", dTmp);
+
+			if (dTmp > 0.0) {
+				iRet = AddMarkupAmtElement(hTxnElement);
+			}
+		}
+	}
+
+
+	if (iRet == SUCCESS) {
+		// use to_ccy
+		if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+			PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		}
+
+		PutField_CString(hTxnElement,"amount_type",PD_DR);
+
+		if (GetField_Double(hMyHash, "amount", &dTmp)) {
+			PutField_Double(hTxnElement, "org_txn_amt", dTmp);
+		}
+		iRet = AddTxnAmtElement(hTxnElement);
+	}
+
+	if (iRet == SUCCESS) {
+		iRet = UpdateApprovalTimestamp(hHeader);
+	}
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	hash_destroy(hPspDetail);
+	FREE_ME(hPspDetail);
+
+	hash_destroy(hTxnElement);
+	FREE_ME(hTxnElement);
+
+DEBUGLOG(("process_deposit_reverse:: return [%d]\n", iRet));
+
+	return iRet;
+}

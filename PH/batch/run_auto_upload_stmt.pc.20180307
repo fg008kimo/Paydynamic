@@ -1,0 +1,213 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/02/08              [WWK] 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_PROCESS_ALL_BANK	"ALL"
+#define	PD_SERVER_ID_LEN	3
+
+char cs_server_id[PD_SERVER_ID_LEN+1];
+
+//char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+char csKey[PD_TMP_BUF_LEN+1];
+char csBank[PD_TMP_BUF_LEN+1];
+char csNaturePath[PD_TMP_BUF_LEN+1];
+char* csProcessList;
+
+char cDebug;
+
+
+
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	hash_t *hProcessBank;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	hProcessBank = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hProcessBank,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("run_auto_upload_stmt Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_server_id[PD_SERVER_ID_LEN];
+
+		varchar	v_prov_pathname[PD_CLIENT_NAME_LEN+1];
+		varchar	v_nature[PD_ACCT_TYPE_LEN+1];
+		varchar	v_process_bank[PD_BANK_CODE_LEN+1];
+
+		short	ind_prov_pathname = -1;
+		short	ind_nature = -1;
+		short	ind_process_bank = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_server_id.len = strlen(cs_server_id);
+	memcpy(hv_server_id.arr,cs_server_id,hv_server_id.len);
+DEBUGLOG(("hv_server_id = [%.*s]\n",hv_server_id.len,hv_server_id.arr));
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		SELECT	OAUS_PROVIDER_PATHNAME,
+			OAUS_NATURE,
+			OAUS_PROCESS_BANK 
+		FROM 	OL_AUTO_UPLOAD_STMT_SETTING
+		WHERE	OAUS_SERVER_ID = :hv_server_id
+		AND	OAUS_DISABLED = 0
+		ORDER BY
+			OAUS_PROVIDER_PATHNAME,
+			OAUS_NATURE,
+			OAUS_LEVEL;
+	
+	EXEC SQL OPEN c_cursor_getinfo;
+
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_prov_pathname:ind_prov_pathname,
+			:v_nature:ind_nature,
+			:v_process_bank:ind_process_bank;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_prov_pathname >= 0 && ind_nature >= 0 && ind_process_bank >= 0) {
+
+			sprintf(csKey,"%.*s_%.*s",v_prov_pathname.len, v_prov_pathname.arr, v_nature.len, v_nature.arr);
+DEBUGLOG(("[%s]\n",csKey));
+
+			sprintf(csBank,"%.*s",v_process_bank.len,v_process_bank.arr);
+DEBUGLOG(("  Next Bank[%s]\n",csBank));
+
+			sprintf(csTmp,"%.*s",v_nature.len,v_nature.arr);
+			if (!strcmp((char*)csTmp,PD_NATURE_DEPOSIT)) {
+				strcpy(csNaturePath,PD_AUTO_UPLOAD_NATURE_DSI);
+			} else if (!strcmp((char*)csTmp,PD_NATURE_PAYOUT)) {
+				strcpy(csNaturePath,PD_AUTO_UPLOAD_NATURE_POA);
+			} else if (!strcmp((char*)csTmp,PD_NATURE_INTERMEDIATE)) {
+				strcpy(csNaturePath,PD_AUTO_UPLOAD_NATURE_ITM);
+			}
+
+			char *csCmd = (char*) malloc (PD_MAX_FILE_LEN  +1);
+			if (strcmp(csBank,PD_PROCESS_ALL_BANK) == 0) {
+				if (GetField_CString(hProcessBank,csKey,&csProcessList)) {
+DEBUGLOG(("  - Found, List[%s]\n",csProcessList));
+					sprintf(csCmd, "auto_upload_stmt_process.sh %s %.*s %s 1 >/dev/null 2>&1 &", csNaturePath, v_prov_pathname.len,v_prov_pathname.arr, csProcessList);
+				} else {
+					sprintf(csCmd, "auto_upload_stmt_process.sh %s %.*s %s 0 >/dev/null 2>&1 &", csNaturePath, v_prov_pathname.len,v_prov_pathname.arr, csBank);
+				}
+DEBUGLOG(("  !!!CALL system(%s);\n",csCmd));
+				system(csCmd);
+			} else {
+				if (GetField_CString(hProcessBank,csKey,&csProcessList)) {
+					sprintf(csTmp,"%s_%s",csProcessList,csBank);
+					PutField_CString(hProcessBank,csKey,csTmp);
+DEBUGLOG(("  - Found, List[%s]\n",csProcessList));
+				} else {
+					PutField_CString(hProcessBank,csKey,csBank);
+DEBUGLOG(("  - NOT FOUND, insert [%s] into new list [%s]\n",csBank, csKey));
+				}
+
+				sprintf(csCmd, "auto_upload_stmt_process.sh %s %.*s %s 0 >/dev/null 2>&1 &", csNaturePath, v_prov_pathname.len,v_prov_pathname.arr, csBank);
+DEBUGLOG(("  !!!CALL system(%s);\n",csCmd));
+				system(csCmd);
+			}
+			FREE_ME(csCmd);
+		}
+
+
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+
+DEBUGLOG(("Normal exit!\n"));
+
+	FREE_ME(hProcessBank);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("run_auto_upload_stmt error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /*EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;*/
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_server_id,"");
+
+	if (argc < 2) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"s:")) != EOF) {
+		switch (c) {
+			case 's':
+				strcpy(cs_server_id,optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_server_id,""))
+		return FAILURE;
+
+
+        return SUCCESS;
+}

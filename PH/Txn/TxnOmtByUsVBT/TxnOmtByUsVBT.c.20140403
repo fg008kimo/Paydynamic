@@ -1,0 +1,776 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/03/03              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsVBT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+int FormBAIDVoidTxn(const char *csVoidBAIDTxnSeq, const char *csOrgBAIDTxnSeq, const char *csVoidBAIDTxnCode,
+			hash_t *hContext, hash_t *hOrgBAIDTxn, hash_t *hVoidBAIDTxn);
+
+int GetTxnInfo(const char* csTxnSeq, hash_t *hContext, hash_t *hTxn);
+int FormVoidTxn(const char *csVoidTxnSeq, const char *csOrgDstTxnSeq, hash_t *hContext, hash_t *hOrgTxn, hash_t *hVoidTxn);
+
+
+void TxnOmtByUsVBT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csOrgBAIDTxnSeq;
+	char	*csOrgBAIDTxnCode;
+	char	*csStmtTxnID;
+	char	*csUser;
+
+	char	*csVoidBAIDTxnCode;
+	char    csVoidBAIDTxnSeq[PD_TXN_SEQ_LEN +1];
+
+	char	*csOrgDstTxnSeq = NULL;
+	char    csVoidTxnSeq[PD_TXN_SEQ_LEN +1];
+
+	int	iConvertType = PD_FALSE;
+	int	iPostedInd = PD_FALSE;
+	char	*csTmp;
+	int	iTmp;
+	char	cTmp;
+
+	hash_t  *hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t	*hOrgBAIDTxn, *hVoidBAIDTxn;
+	hash_t  *hOrgTxn, *hVoidTxn;
+
+	hash_t  *hBAIDTxnCodeDtl;
+
+	hOrgBAIDTxn = (hash_t*) malloc (sizeof(hash_t));
+	hVoidBAIDTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOrgBAIDTxn,0);
+	hash_init(hVoidBAIDTxn,0);
+
+	hOrgTxn = (hash_t*) malloc (sizeof(hash_t));
+	hVoidTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOrgTxn,0);
+	hash_init(hVoidTxn,0);
+
+	hBAIDTxnCodeDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBAIDTxnCodeDtl,0);
+
+
+	
+DEBUGLOG(("Authorize\n"));
+	// Get call from Convert Type
+	if (GetField_Int(hContext, "fr_convert_type", &iConvertType)) {
+DEBUGLOG(("Authorize:: fr_convert_type [%d]\n", iConvertType));
+	}
+	
+
+
+	// BAID //
+	if(GetField_CString(hRequest,"baid_txnid", &csOrgBAIDTxnSeq)) {
+		PutField_CString(hOrgBAIDTxn,"baid_txn_seq",csOrgBAIDTxnSeq);
+DEBUGLOG(("Authorize:: (hRequest) baid_txn_seq = [%s]\n", csOrgBAIDTxnSeq));
+	} else {
+		if (GetField_CString(hContext, "baid_txn_seq", &csOrgBAIDTxnSeq)) {
+			PutField_CString(hOrgBAIDTxn,"baid_txn_seq", csOrgBAIDTxnSeq);
+DEBUGLOG(("Authorize:: (hContext) baid_txn_seq = [%s]\n", csOrgBAIDTxnSeq));
+		} else {
+DEBUGLOG(("Authorize::baid_txnid not found!!\n"));
+ERRLOG("TxnOmtByUsVBT:Authorize::baid_txnid not found!!\n");
+
+			iRet=INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+	if (GetField_CString(hRequest, "add_user", &csUser)) {
+DEBUGLOG(("Authorize:: user [%s]\n", csUser));
+	} else {
+		if (GetField_CString(hContext, "add_user", csUser)) {
+DEBUGLOG(("Authorize:: user [%s]\n", csUser));
+		} else {
+			iRet = INT_USER_NOT_FOUND;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() user is missing\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() user is missing\n");
+
+		}
+
+	}
+
+
+        if (iRet == PD_OK) {
+		// select BAID Txn for update, expect status = 'C'
+DEBUGLOG(("Authorize::call DBOLBAIDTxn:: MatchRespTxn()\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "MatchRespTxn");
+                if ((unsigned long)(*DBObjPtr)(csOrgBAIDTxnSeq, PD_COMPLETE) != PD_FOUND) {
+                        iRet = INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+
+DEBUGLOG(("Authorize::call DBOLBAIDTxn MatchRespTxn [%s] FAILURE!!!\n", csOrgBAIDTxnSeq));
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLBAIDTxn MatchRespTxn [%s] FAILURE!!!\n", csOrgBAIDTxnSeq);
+                }
+        }
+
+
+	if (iRet == PD_OK) {
+		// Get BAID Txn Detail 
+DEBUGLOG(("Authorize::call DBOLBAIDTxn:: GetBaidTxn()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+                if ((unsigned long)(*DBObjPtr)(csOrgBAIDTxnSeq, hOrgBAIDTxn) != PD_OK) {
+                        iRet = INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::call DBOLBAIDTxn GetBaidTxn [%s] FAILURE!!!\n", csOrgBAIDTxnSeq));
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLBAIDTxn GetBaidTxn[%s] FAILURE!!!\n", csOrgBAIDTxnSeq);
+
+		} else {
+			GetField_CString(hOrgBAIDTxn, "txn_code", &csOrgBAIDTxnCode);
+DEBUGLOG(("Authorize::call DBOLBAIDTxn:: txn_code [%s]\n", csOrgBAIDTxnCode));
+
+			if (GetField_CString(hOrgBAIDTxn, "dst_txn_id", &csOrgDstTxnSeq)) {
+DEBUGLOG(("Authorize::call DBOLBAIDTxn:: dst_txn_id [%s]\n", csOrgDstTxnSeq));
+			}
+
+			if (GetField_Int(hOrgBAIDTxn, "posted_ind", &iPostedInd)) {
+DEBUGLOG(("Authorize::call DBOLBAIDTxn:: posted_ind [%d]\n", iPostedInd));
+			}
+
+			//*** Check if change transaction type and stmt ref is null then not allow void/
+			if (iConvertType) {
+						// Get ol_statement_detail.olsd_statement_ref by olsd_stat_txn_id
+						
+						hash_init (hRec, 0);
+
+						GetField_CString(hOrgBAIDTxn, "stat_txn_id", &csStmtTxnID);
+
+DEBUGLOG(("Authorize::call OLStatement:: GetStmtDtl()\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtl");
+				                if ((unsigned long)(*DBObjPtr)(csStmtTxnID, hRec) != PD_OK) {
+							iRet = INT_INVALID_TXN;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::call DBOLStatement GetStmtDtl[%s] FAILURE!!!\n", csStmtTxnID));
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLStatement GetStmtDtl [%s] FAILURE!!!\n", csStmtTxnID);
+						} else {
+
+							if (!GetField_CString(hRec, "stmt_ref", &csTmp)) {
+								iRet = INT_INVALID_TXN;
+								PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::call DBOLStatement stmt ref not found\n")); 
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLStatement stmt ref not found!\n");
+							}
+						}
+			}
+	
+		
+			
+DEBUGLOG(("Authorize::call OLBAIDTxnCode:: GetBAIDTxnCodeDtl()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxnCode", "GetBAIDTxnCodeDtl");
+	                if ((unsigned long)(*DBObjPtr)(csOrgBAIDTxnCode, hBAIDTxnCodeDtl) != PD_FOUND) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+
+DEBUGLOG(("Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl\n")); 
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl\n");
+			} else {
+				if (GetField_Int(hBAIDTxnCodeDtl, "voidable", &iTmp)) {
+					if (iTmp == PD_FALSE) {
+						iRet = INT_INVALID_TXN;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl not voidable\n")); 
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl not voidable\n");
+					}
+				}
+	
+				if (GetField_CString(hBAIDTxnCodeDtl, "void_code", &csVoidBAIDTxnCode)) {
+DEBUGLOG(("Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl void_code [%s]\n", csVoidBAIDTxnCode));
+				} else {
+					iRet = INT_INVALID_TXN;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl void_code not found \n")); 
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLBAIDTxn GetBAIDTxnCodeDtl void_code not found\n");
+				}
+
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		// Check BAID Txn valid
+		if (GetField_Char(hOrgBAIDTxn, "status", &cTmp)) {
+DEBUGLOG(("Authorize:: Org BAID txn status [%c]\n", cTmp));
+			if (cTmp != PD_COMPLETE) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+
+		if (GetField_Char(hOrgBAIDTxn, "ar_ind", &cTmp)) {
+DEBUGLOG(("Authorize:: Org BAID txn ar_ind [%c]\n", cTmp));
+			if (cTmp != PD_ACCEPT) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+
+		if (GetField_CString(hOrgBAIDTxn, "sub_status", &csTmp)) {
+DEBUGLOG(("Authorize:: Org BAID txn sub_status [%s]\n", csTmp));
+			if (strcmp(csTmp, PD_APPROVED)) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+		
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: org BAID pass checking can process!\n"));
+		}
+	
+	}
+
+	// PSP Txn 
+	if (iRet == PD_OK) {
+
+		if (iPostedInd == PD_TRUE) {
+
+DEBUGLOG(("Authorize:: Need to handle PSP Txn!!!!\n"));
+
+DEBUGLOG(("Authorize::call DBOLTransaction:: MatchRespTxn()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "MatchRespTxn");
+			if ((unsigned long)(*DBObjPtr)(csOrgDstTxnSeq, PD_COMPLETE) != PD_FOUND) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+
+DEBUGLOG(("Authorize::call DBOLTransaction MatchRespTxn [%s] FAILURE!!!\n", csOrgDstTxnSeq));
+ERRLOG("TxnOmtByUsVBT::Authorize::call DBOLTransaction MatchRespTxn [%s] FAILURE!!!\n", csOrgDstTxnSeq);
+                	}
+
+			if (iRet == PD_OK) {
+				iRet = GetTxnInfo(csOrgDstTxnSeq, hContext, hOrgTxn);
+
+				if (iRet == PD_OK) {
+					if (GetField_CString(hOrgTxn, "txn_code", &csTmp)) {
+
+						if (!strcmp(csTmp, "OBD")) {
+							PutField_CString(hVoidTxn, "txn_code", "VDI");
+						}
+					}
+				}
+	
+				// Handle Balance
+				// create Txn ID
+				if (iRet == PD_OK) {
+					DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+					strcpy(csVoidTxnSeq, (*DBObjPtr)());
+
+					// Void Org
+					hash_init (hRec, 0);
+					PutField_CString(hRec, "txn_seq", csOrgDstTxnSeq);
+					PutField_CString(hRec, "update_user", csUser);
+					PutField_Char(hRec, "status", PD_REVERSED);
+					//PutField_Char(hRec, "ar_ind", PD_REJECT);
+					PutField_CString(hRec, "sub_status", PD_UNDO); //PD_VOID?
+
+DEBUGLOG(("Authorize() call DBOLTransaction::Update()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+					if ((unsigned long)(*DBObjPtr)(hRec) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTransaction::Update() failed\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() call DBOLTransaction::Update() failed\n");
+       		         		}
+					hash_destroy(hRec);
+				}
+
+				if (iRet == PD_OK) {
+					// Create Void Txn  + BOOLTxnElements.VoidOrdTxnEleemtns
+				
+					iRet = FormVoidTxn(csVoidTxnSeq, csOrgDstTxnSeq, hContext, hOrgTxn, hVoidTxn);
+				}
+
+                		PutField_CString(hVoidTxn, "add_user", csUser);
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLTransaction::Add()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Add");
+					if ((unsigned long)(*DBObjPtr)(hVoidTxn) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTransaction::Add() failed\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() call DBOLTransaction::Add() failed\n");
+                        		}
+                		}
+
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLTxnPspDetail::Add()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+					if ((unsigned long)(*DBObjPtr)(hVoidTxn) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTxnPspDetail::Add() failed\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() call DBOLTxnPspDetail::Add() failed\n");
+                        		}
+                		}
+
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call BOOLTxnElements::VoidOrgTxnElements()\n"));
+					BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","VoidOrgTxnElements");
+					iRet = (unsigned long)(*BOObjPtr)(hVoidTxn, hVoidTxn);
+				}
+
+				if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLTransaction::Add()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+					if ((unsigned long)(*DBObjPtr)(hVoidTxn) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTransaction::Update() failed\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() call DBOLTransaction::Upate() failed\n");
+                        		}
+                		}
+			}
+		} else {
+DEBUGLOG(("Authorize() Not Posted to PSP Txn \n"));
+		}
+
+	}
+
+
+	if (iRet == PD_OK) {
+		// Create New BAID Txn ID
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextBaidTxnSeq");
+		strcpy(csVoidBAIDTxnSeq, (*DBObjPtr)());
+
+		// Update Org BAID obt_org_txn_id, obt_status, obt_ar_ind, obt_sub_status
+		hash_init(hRec, 0);
+		PutField_CString(hRec, "txn_seq", csOrgBAIDTxnSeq);
+		PutField_CString(hRec, "update_user", csUser);
+		PutField_Char(hRec, "status", PD_REVERSED);
+		//PutField_Char(hRec, "ar_ind", PD_REJECT);
+		PutField_CString(hRec, "sub_status", PD_UNDO); //PD_VOID?
+
+DEBUGLOG(("Authorize() call DBOLBAIDTxn::Update()\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+                if ((unsigned long)(*DBObjPtr)(hRec) != PD_OK) {
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLBAIDTxn::Update() failed\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() call DBOLBAIDTxn::Update() failed\n");
+                }
+
+		hash_destroy(hRec);
+		
+		// Form Voided BAID Txn
+
+		if (iRet == PD_OK)  {
+			iRet = FormBAIDVoidTxn(csVoidBAIDTxnSeq, csOrgBAIDTxnSeq, csVoidBAIDTxnCode, hContext, hOrgBAIDTxn, hVoidBAIDTxn);
+			PutField_CString(hVoidBAIDTxn, "add_user", csUser);
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLBAIDTxn::Add()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Add");
+				if ((unsigned long)(*DBObjPtr)(hVoidBAIDTxn) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLBAIDTxn::Add() failed\n"));
+ERRLOG("TxnOmtByUsVBT::Authorize() call DBOLBAIDTxn::Add() failed\n");
+				}
+			}
+		}
+
+		
+	}
+
+
+	hash_destroy(hOrgBAIDTxn);
+	FREE_ME(hOrgBAIDTxn);
+
+	hash_destroy(hVoidBAIDTxn);
+	FREE_ME(hVoidBAIDTxn);
+
+	hash_destroy(hOrgTxn);
+	FREE_ME(hOrgTxn);
+
+	hash_destroy(hVoidTxn);
+	FREE_ME(hVoidTxn);
+
+	hash_destroy(hBAIDTxnCodeDtl);
+	FREE_ME(hBAIDTxnCodeDtl);
+
+/*
+iRet = PD_ERR;
+DEBUGLOG(("Authorize() simulate error case!\n"));
+*/
+
+DEBUGLOG(("Authorize() iRet [%d]!\n", iRet));
+
+	return iRet;	
+
+}
+
+
+int FormBAIDVoidTxn(const char *csVoidBAIDTxnSeq, const char *csOrgBAIDTxnSeq, const char *csVoidBAIDTxnCode,
+			hash_t *hContext, hash_t *hOrgBAIDTxn, hash_t *hVoidBAIDTxn)
+{
+	int iRet = PD_OK;
+
+	char	*csTmp;
+	char	csTxnDateTime[PD_DATETIME_LEN + 1];
+	double	dTmp = 0.0;
+	int	iTmp;
+
+
+	PutField_Int(hVoidBAIDTxn, "db_commit", PD_FALSE);
+
+	PutField_CString(hVoidBAIDTxn, "txn_seq", csVoidBAIDTxnSeq);
+	PutField_CString(hVoidBAIDTxn, "org_txn_seq", csOrgBAIDTxnSeq);
+
+	if (GetField_CString(hContext, "channel_code", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "channel_code", csTmp);
+	}
+
+	PutField_Char(hVoidBAIDTxn, "status", PD_COMPLETE);
+	PutField_Char(hVoidBAIDTxn, "ar_ind", PD_ACCEPT);
+	PutField_CString(hVoidBAIDTxn, "sub_status", PD_APPROVED);
+
+	if (GetField_CString(hOrgBAIDTxn, "stat_txn_id", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "stat_txn_id", csTmp);
+	}
+
+ 	PutField_CString(hVoidBAIDTxn, "txn_code", csVoidBAIDTxnCode);
+
+	if (GetField_CString(hOrgBAIDTxn, "pid", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "pid", csTmp);
+	}
+
+	if (GetField_CString(hOrgBAIDTxn, "baid", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "baid", csTmp);
+	}
+
+	if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "posting_date", csTmp);
+	}
+
+	if (GetField_CString(hContext, "local_tm_date", &csTmp)) {
+		strcpy(csTxnDateTime, csTmp);
+		PutField_CString(hVoidBAIDTxn, "transmission_datetime", csTxnDateTime);
+
+		if (GetField_CString(hContext, "local_tm_time", &csTmp)) {
+			strcat(csTxnDateTime, csTmp);
+			PutField_CString(hVoidBAIDTxn, "transmission_datetime", csTxnDateTime);
+                }
+	}
+
+	if (GetField_CString(hOrgBAIDTxn, "txn_ccy", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "txn_ccy", csTmp);
+	}
+
+	if (GetField_Double(hOrgBAIDTxn, "txn_amt", &dTmp)) {
+		PutField_Double(hVoidBAIDTxn, "txn_amt", dTmp);
+	}
+
+	/** Need to amend later **/
+	PutField_Double(hVoidBAIDTxn, "open_bal", 0.0);
+	PutField_Double(hVoidBAIDTxn, "curr_bal", 0.0);
+
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+        (*DBObjPtr)(hVoidBAIDTxn);
+	
+	if (GetField_CString(hOrgBAIDTxn, "bank_code", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "bank_code", csTmp);
+	}
+
+	if (GetField_CString(hOrgBAIDTxn, "bank_acct_num", &csTmp)) {
+		PutField_CString(hVoidBAIDTxn, "bank_acct_num", csTmp);
+	}
+
+	if (GetField_Int(hOrgBAIDTxn, "pid_txn_hold_ind", &iTmp)) {
+		PutField_Int(hVoidBAIDTxn, "pid_txn_hold_ind", iTmp);
+	}
+
+	if (GetField_Int(hOrgBAIDTxn, "pid_sys_match_ind", &iTmp)) {
+		PutField_Int(hVoidBAIDTxn, "pid_sys_match_ind", iTmp);
+	}
+
+	PutField_Int(hVoidBAIDTxn, "posted_ind", PD_TRUE);
+
+	return iRet;
+
+}
+
+int GetTxnInfo(const char* csTxnSeq, hash_t *hContext, hash_t *hTxn)
+{
+	int	iRet = PD_OK;
+
+	hash_t  *hRec;
+
+	char	*csTmp;
+	char	cTmp;
+	double	dTmp = 0.0;
+	int	iTmp;
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	hash_t	*hTxnPspDetail;
+	hTxnPspDetail = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxnPspDetail, 0);
+	
+
+DEBUGLOG(("Authorize::Call DBOLTransaction:GetTxnHeader\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnHeader");
+	if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+                        if (GetField_CString(hRec,"txn_code",&csTmp)) {
+                                PutField_CString(hTxn,"txn_code",csTmp);
+DEBUGLOG(("GetTxnInfo (Header)::txn_code = [%s]\n",csTmp));
+                        }
+
+			if (GetField_Char(hRec, "status", &cTmp)) {
+				PutField_Char(hTxn, "status", cTmp);
+DEBUGLOG(("GetTxnInfo (Header)::status = [%c]\n",cTmp));
+				
+				if (cTmp != PD_COMPLETE) {
+					iRet = INT_INVALID_TXN;
+					PutField_Int(hContext,"internal_error",iRet);
+				} else {
+					if (GetField_Char(hRec, "ar_ind", &cTmp)) {
+DEBUGLOG(("GetTxnInfo (Header)::ar_ind = [%c]\n",cTmp));
+						PutField_Char(hTxn, "ar_ind", cTmp);
+
+						if (cTmp != PD_ACCEPT) {
+							iRet = INT_INVALID_TXN;
+							PutField_Int(hContext,"internal_error",iRet);
+						}
+					}
+				}
+			}
+
+			if (GetField_CString(hRec, "sub_status", &csTmp)) {
+				PutField_CString(hTxn, "sub_status", csTmp);
+
+DEBUGLOG(("GetTxnInfo (Header)::sub_status= [%s]\n",csTmp));
+
+				if (strcmp(csTmp, PD_UNALLOCATED)) {
+					iRet = INT_INVALID_TXN;
+					PutField_Int(hContext,"internal_error",iRet);
+				}
+			}
+                        if (GetField_Double(hRec, "txn_amt", &dTmp)) {
+                                PutField_Double(hTxn,"txn_amt",dTmp);
+DEBUGLOG(("GetTxnInfo (Header)::txn_amt = [%lf]\n",dTmp));
+                        }
+                        if (GetField_Double(hRec, "net_amt", &dTmp)) {
+                                PutField_Double(hTxn,"net_amt",dTmp);
+DEBUGLOG(("GetTxnInfo (Header)::net_amt = [%lf]\n",dTmp));
+                        }
+			if (GetField_CString(hRec, "net_ccy", &csTmp)) {
+                                PutField_CString(hTxn,"net_ccy",csTmp);
+DEBUGLOG(("GetTxnInfo (Header)::net_ccy = [%lf]\n",csTmp));
+                        }
+
+			if (GetField_Double(hRec, "deposit_amt", &dTmp)) {
+                                PutField_Double(hTxn,"deposit_amt",dTmp);
+DEBUGLOG(("GetTxnInfo (Header)::deposit_amt = [%lf]\n",dTmp));
+                        }
+
+			if (GetField_Double(hRec, "display_amt", &dTmp)) {
+                                PutField_Double(hTxn,"display_amt",dTmp);
+DEBUGLOG(("GetTxnInfo (Header)::display_amt= [%lf]\n",dTmp));
+                        }
+
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+
+	} else {
+DEBUGLOG(("GetTxnHeader:: not found record for [%s]\n",csTxnSeq));
+		iRet = INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call OLTxnPspDetail:GetTxnPspDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLTxnPspDetail","GetTxnPspDetail");
+		if ((*DBObjPtr)(csTxnSeq,hTxnPspDetail) == PD_OK) {
+			if (GetField_CString(hTxnPspDetail, "psp_id", &csTmp)) {
+				PutField_CString(hTxn, "psp_id", csTmp);
+			}
+
+			if (GetField_CString(hTxnPspDetail, "baid", &csTmp)) {
+				PutField_CString(hTxn, "baid", csTmp);
+			}
+		
+			if (GetField_CString(hTxnPspDetail, "txn_ccy", &csTmp)) {
+				PutField_CString(hTxn, "txn_ccy", csTmp);
+			}
+
+			if (GetField_Double(hTxnPspDetail, "txn_amount", &dTmp)) {
+				PutField_Double(hTxn, "txn_amount", dTmp);
+			}
+
+			if (GetField_CString(hTxnPspDetail, "bank_code", &csTmp)) {
+				PutField_CString(hTxn, "bank_code", csTmp);
+			}
+
+			if (GetField_CString(hTxnPspDetail, "bank_acct_num", &csTmp)) {
+				PutField_CString(hTxn, "bank_acct_num", csTmp);
+			}
+
+			if (GetField_Double(hTxnPspDetail, "cost", &dTmp)) {
+				PutField_Double(hTxn, "cost", dTmp);
+			}
+
+			if (GetField_Int(hTxnPspDetail, "txn_hold_ind", &iTmp)) {
+				PutField_Int(hTxn, "txn_hold_ind", iTmp);
+			}
+
+			if (GetField_Int(hTxnPspDetail, "sys_match_ind", &iTmp)) {
+				PutField_Int(hTxn, "sys_match_ind", iTmp);
+			}
+		} else {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		
+	
+	}
+
+
+	hash_destroy(hTxnPspDetail);
+        FREE_ME(hTxnPspDetail);
+
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+	return iRet;
+}
+
+int FormVoidTxn(const char *csVoidTxnSeq, const char *csOrgDstTxnSeq, hash_t *hContext, hash_t *hOrgTxn, hash_t *hVoidTxn)
+{
+	int	iRet = PD_OK;
+
+	char	*csTmp;
+	char	csTxnDateTime[PD_DATETIME_LEN + 1];
+	double	dTmp = 0.0;
+	int	iTmp;
+
+	PutField_Int(hVoidTxn, "db_commit", PD_FALSE);
+
+	if (GetField_CString(hOrgTxn, "txn_code", &csTmp)) {
+		PutField_CString(hVoidTxn, "org_txn_code", csTmp);
+	}
+
+
+	PutField_CString(hVoidTxn, "txn_seq", csVoidTxnSeq);
+	PutField_CString(hVoidTxn, "org_txn_seq", csOrgDstTxnSeq);
+
+	if (GetField_CString(hContext, "channel_code", &csTmp)) {
+		PutField_CString(hVoidTxn, "channel_code", csTmp);
+	}
+
+	PutField_Char(hVoidTxn, "status", PD_COMPLETE);
+	PutField_Char(hVoidTxn, "ar_ind", PD_ACCEPT);
+	PutField_CString(hVoidTxn, "sub_status", PD_APPROVED);
+
+	PutField_CString(hVoidTxn, "process_type", PD_PROCESS_TYPE_DEF);
+	PutField_CString(hVoidTxn, "process_code", PD_PROCESS_CODE_DEF);
+
+	if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+		PutField_CString(hVoidTxn, "host_posting_date", csTmp);
+	}
+
+	if (GetField_CString(hContext, "local_tm_date", &csTmp)) {
+		PutField_CString(hVoidTxn, "local_tm_date", csTmp);
+		strcpy(csTxnDateTime, csTmp);
+		PutField_CString(hVoidTxn, "transmission_datetime", csTxnDateTime);
+
+		if (GetField_CString(hContext, "local_tm_time", &csTmp)) {
+			PutField_CString(hVoidTxn, "local_tm_time", csTmp);
+			strcat(csTxnDateTime, csTmp);
+			PutField_CString(hVoidTxn, "transmission_datetime", csTxnDateTime);
+                }
+	}
+
+	if (GetField_Double(hOrgTxn, "txn_amt", &dTmp)) {
+		PutField_Double(hVoidTxn,"txn_amt",dTmp);
+	}
+
+	if (GetField_Double(hOrgTxn, "net_amt", &dTmp)) {
+		PutField_Double(hVoidTxn,"net_amt",dTmp);
+	}
+
+	if (GetField_CString(hOrgTxn, "net_ccy", &csTmp)) {
+		PutField_CString(hVoidTxn,"net_ccy",csTmp);
+	}
+
+	if (GetField_Double(hOrgTxn, "deposit_amt", &dTmp)) {
+		PutField_Double(hVoidTxn,"deposit_amt",dTmp);
+	}
+	if (GetField_Double(hOrgTxn, "display_amt", &dTmp)) {
+		PutField_Double(hVoidTxn,"display_amt",dTmp);
+	}
+
+
+
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+        (*DBObjPtr)(hVoidTxn);
+
+	PutField_Char(hVoidTxn, "upd_match_ts", PD_FALSE);
+
+
+	// For txn psp detail
+	if (GetField_CString(hOrgTxn, "psp_id", &csTmp)) {
+		PutField_CString(hVoidTxn, "psp_id", csTmp);
+	}
+        if (GetField_CString(hOrgTxn, "baid", &csTmp)) {
+                PutField_CString(hVoidTxn, "baid", csTmp);
+        }
+        if (GetField_CString(hOrgTxn, "txn_ccy", &csTmp)) {
+                PutField_CString(hVoidTxn, "txn_ccy", csTmp);
+        }
+	if (GetField_Double(hOrgTxn, "txn_amount", &dTmp)) {
+                PutField_Double(hVoidTxn, "txn_amount", dTmp);
+	}
+        if (GetField_CString(hOrgTxn, "bank_code", &csTmp)) {
+                PutField_CString(hVoidTxn, "bank_code", csTmp);
+        }
+        if (GetField_CString(hOrgTxn, "bank_acct_num", &csTmp)) {
+                PutField_CString(hVoidTxn, "bank_acct_num", csTmp);
+        }
+	if (GetField_Double(hOrgTxn, "cost", &dTmp)) {
+                PutField_Double(hVoidTxn, "cost", dTmp);
+	}
+	PutField_Double(hVoidTxn, "open_bal", 0.0);
+
+	if (GetField_Int(hOrgTxn, "txn_hold_ind", &iTmp)) {
+		PutField_Int(hVoidTxn, "txn_hold_int", iTmp);
+	}
+
+	if (GetField_Int(hOrgTxn, "sys_match_ind", &iTmp)) {
+		PutField_Int(hVoidTxn, "sys_match_ind", iTmp);
+	}
+
+
+	return iRet;
+
+}

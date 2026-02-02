@@ -1,0 +1,878 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/06/08              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "par_txn_handler.h"
+#include "ObjPtr.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	","
+#define	PD_MY_TOKEN	'"'
+
+/*
+#define	PD_MY_QS_TOEKN	'	'
+#define	PD_MY_QE_TOEKN	'	'
+#define	PD_MY_DAY_TOKEN	"-"
+*/
+
+#define	PD_CHAR		0x0D
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+char    cDebug='Y';
+
+
+char    cs_inputfile[PD_MAX_FILE_LEN + 1];
+
+int parse_arg(int argc,char **argv);
+int start_process();
+int start_handle_txn(int iTxnSeqID, char *csTxnSeqType);
+
+int process_txn(hash_t *hMyHash, hash_t *hOrgContext, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int format_hash(hash_t *hMyHash, hash_t *hOrgContext, hash_t *hContext, hash_t *hRequest, hash_t *hResponse); 
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet;
+
+	iRet = start_process();
+
+	return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+                        
+int parse_arg(int argc,char **argv)
+{               
+        char    c;
+        strcpy(cs_inputfile,"");
+                        
+        while ((c = getopt(argc,argv,"f:")) != EOF) {
+                switch (c) {
+                        case 'f':
+                                strcpy(cs_inputfile, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }       
+        
+//DEBUGLOG(("[%s]\n",cs_inputfile));
+        if (!strcmp(cs_inputfile,""))
+                return FAILURE;
+                
+        return SUCCESS; 
+}               
+
+
+int start_process() 
+{
+	int	iRet = SUCCESS;
+
+	int	iTxnSeqID;
+	char	csTxnSeqType[PAR_TXN_SEQ_TYPE_CD_LEN + 1];
+
+        EXEC SQL WHENEVER SQLERROR GOTO start_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int	v_txn_seq_id;
+		varchar	v_txn_seq_type_cd[PAR_TXN_SEQ_TYPE_CD_LEN + 1];
+
+		short	ind_txn_seq_id;
+		short	ind_txn_seq_type_cd;
+
+	EXEC SQL END DECLARE SECTIoN;	
+
+	EXEC SQL DECLARE c_cursor_getseq CURSOR FOR
+		select ptd_txn_seq_id, 
+		       ptd_txn_seq_type_desc 
+		from par_txn_data
+		group by ptd_txn_seq_id, ptd_txn_seq_type_desc
+		order by ptd_txn_seq_id, ptd_txn_seq_type_desc;
+
+	EXEC SQL OPEN c_cursor_getseq;
+	do {
+		EXEC SQL FETCH c_cursor_getseq
+		INTO 	:v_txn_seq_id:ind_txn_seq_id,
+			:v_txn_seq_type_cd:ind_txn_seq_type_cd;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_txn_seq_id >= 0) {
+DEBUGLOG(("get seq_id [%d]\n", v_txn_seq_id));
+			iTxnSeqID = v_txn_seq_id;
+		}
+		else {
+			iTxnSeqID = 0;
+		}
+			
+
+		if (ind_txn_seq_type_cd >= 0) {
+			v_txn_seq_type_cd.arr[v_txn_seq_type_cd.len] = '\0';
+DEBUGLOG(("get seq_type_cd [%.*s]\n", v_txn_seq_type_cd.len, v_txn_seq_type_cd.arr));
+			memset(csTxnSeqType, 0, sizeof(csTxnSeqType));
+			strcpy(csTxnSeqType, (const char *)v_txn_seq_type_cd.arr);
+		}
+
+		
+		iRet = start_handle_txn(iTxnSeqID, csTxnSeqType);
+		if (iRet !=  SUCCESS) {
+			//TxnAbort();
+			break;
+		}
+		else {
+			//TxnCommit();
+		}
+
+	} while (PD_TRUE);
+	EXEC SQL CLOSE c_cursor_getseq;
+
+
+	return iRet; 
+
+start_error:
+DEBUGLOG(("start_process error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getseq;
+	return PD_ERR;
+
+}
+
+
+
+int start_handle_txn(int iTxnSeqID, char *csTxnSeqType)
+{
+DEBUGLOG(('iTxnSeqID [%d] csTxnSeqType [%s]\n", iTxnSeqID, csTxnSeqType));
+
+
+
+/*
+        int     iRet = FAILURE; 
+	int	iTmpRet = SUCCESS;
+	int	iCnt;
+
+	hash_t  *myHash;
+        hash_t   *hContext, *hRequest, *hResponse;
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		SQL_CURSOR	c_cursor_txn_data;
+
+		short   hv_return_value;
+
+		int    	v_txn_element_id;
+		double  v_ex_rate;
+		varchar v_create_datetime[PD_DATE_LEN + PD_TIME_LEN + 1];
+		varchar	v_update_datetime[PD_DATE_LEN + PD_TIME_LEN + 1];
+		double  v_markup_amt;
+		varchar	v_dc_ind[PAR_DC_IND_LEN + 1];
+		double  v_amount;
+		varchar	v_ccy[PD_CURRENCY_ID_LEN + 1];
+		varchar v_psp_channel_desc[PAR_CHANNEL_DESC_LEN + 1];
+		varchar	v_gate_id[PAR_GATE_ID_LEN + 1];
+		varchar v_bank_cd[PAR_BANK_CD_LEN + 1];
+		varchar v_psp_id_desc[PAR_PSP_ID_DESC_LEN + 1];
+ 		varchar	v_mid_desc[PAR_MID_DESC_LEN + 1];
+		varchar v_merchant_ref[PD_MERCHANT_REF_LEN + 1];
+		int	v_fee_txn_element_id;
+		double  v_fee_amt;
+		varchar	v_fee_dc_ind[PAR_DC_IND_LEN + 1];
+		varchar	v_fee_ccy[PD_CURRENCY_ID_LEN + 1];
+		varchar	v_ph_txn_code[PD_TXN_CODE_LEN + 1];
+		varchar	v_ph_adj_code[PD_TXN_CODE_LEN + 1];
+		char	v_ph_status;
+		char	v_ar_ind;
+		varchar	v_sub_status[PD_SUB_STATUS_LEN + 1];
+
+		short   ind_txn_element_id = -1;
+		short   ind_ex_rate = -1;
+		short   ind_create_datetime = -1;
+		short  	ind_update_datetime = -1;
+		short   ind_markup_amt = -1;
+		short	ind_dc_ind = -1;
+		short   ind_amount = -1;
+		short  	ind_ccy = -1;
+		short   ind_psp_channel_desc = -1;
+		short  	ind_gate_id = -1;
+		short   ind_bank_cd = -1;
+		short   ind_psp_id_desc = -1;
+ 		short  	ind_mid_desc = -1;
+		short   ind_merchant_ref = -1;
+		short  	ind_fee_txn_element_id = -1;
+		short   ind_fee_amt = -1;
+		short	ind_fee_dc_ind = -1;
+		short  	ind_fee_ccy = -1;
+		short  	ind_ph_txn_code = -1;
+		short  	ind_ph_adj_code = -1;
+		short	ind_ph_status = -1;
+		short	ind_ar_ind = -1;
+		short  	ind_sub_status = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE :c_cursor_txn_data;
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_par_txn_data(:c_cursor_txn_data);
+		END;
+	END-EXEC;
+
+	if (hv_return_value == 1) {
+DEBUGLOG(("get_txn no more record to be processed!\n"));
+	} 
+	else if (hv_return_value == SP_OK) {
+		iCnt = 0;
+
+		for (;;) {
+			iTmpRet = SUCCESS;
+
+			myHash = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(myHash,0);
+
+		        hNewContext = (hash_t *)malloc(sizeof(hash_t));
+		        hNewRequest = (hash_t *)malloc(sizeof(hash_t));
+		        hNewResponse= (hash_t *)malloc(sizeof(hash_t));
+
+		        hash_init(hNewContext,   0);
+		        hash_init(hNewRequest,  0);
+		        hash_init(hNewResponse, 0);
+
+			ind_txn_element_id = -1;
+			ind_ex_rate = -1;
+			ind_create_datetime = -1;
+			ind_update_datetime = -1;
+			ind_markup_amt = -1;
+			ind_dc_ind = -1;
+			ind_amount = -1;
+			ind_ccy = -1;
+			ind_psp_channel_desc = -1;
+			ind_gate_id = -1;
+			ind_bank_cd = -1;
+			ind_psp_id_desc = -1;
+			ind_mid_desc = -1;
+			ind_merchant_ref = -1;
+			ind_fee_txn_element_id = -1;
+			ind_fee_amt = -1;
+			ind_fee_dc_ind = -1;
+			ind_fee_ccy = -1;
+			ind_ph_txn_code = -1;
+			ind_ph_adj_code = -1;
+			ind_ph_status = -1;
+			ind_ar_ind = -1;
+			ind_sub_status = -1;
+
+			EXEC SQL WHENEVER NOTFOUND DO break;
+			EXEC SQL FETCH :c_cursor_txn_data
+			INTO	:v_txn_element_id:ind_txn_element_id,
+				:v_ex_rate:ind_ex_rate,
+				:v_create_datetime:ind_create_datetime,
+				:v_update_datetime:ind_update_datetime,
+				:v_markup_amt:ind_markup_amt,
+				:v_dc_ind:ind_dc_ind,
+				:v_amount:ind_amount,
+				:v_ccy:ind_ccy,
+				:v_psp_channel_desc:ind_psp_channel_desc,
+				:v_gate_id:ind_gate_id,
+				:v_bank_cd:ind_bank_cd,
+				:v_psp_id_desc:ind_psp_id_desc,
+				:v_mid_desc:ind_mid_desc,
+				:v_merchant_ref:ind_merchant_ref,
+				:v_fee_txn_element_id:ind_fee_txn_element_id,
+				:v_fee_amt:ind_fee_amt,
+				:v_fee_dc_ind:ind_fee_dc_ind,
+				:v_fee_ccy:ind_fee_ccy,
+				:v_ph_txn_code:ind_ph_txn_code,
+				:v_ph_adj_code:ind_ph_adj_code,
+				:v_ph_status:ind_ph_status,
+				:v_ar_ind:ind_ar_ind,
+				:v_sub_status:ind_sub_status;
+
+                        if (SQLCODE == SQL_NOT_FOUND) {
+                                break;
+                        }
+
+DEBUGLOG(("par_txn_handler >>>>>>>>>>>>>>>>>>>>>>\n"));
+
+                        if (ind_txn_element_id >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] txn_element_id = [%d]\n",iCnt, v_txn_element_id));
+                                PutField_Int(myHash,"txn_element_id",v_txn_element_id);
+                        }
+
+			if (ind_ex_rate >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] ex_rate = [%lf]\n",iCnt, v_ex_rate));
+				PutField_Double(myHash, "ex_rate", v_ex_rate);
+			}
+
+			if (ind_update_datetime >= 0) {
+				v_update_datetime.arr[v_update_datetime.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] update_datetime = [%.*s]\n",iCnt, v_update_datetime.len,v_update_datetime.arr));
+				PutField_CString(myHash, "update_datetime", (const char *) v_update_datetime.arr);
+			}
+
+			if (ind_markup_amt >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] markup_amt = [%lf]\n",iCnt, v_markup_amt));
+				PutField_Double(myHash, "markup_amt", v_markup_amt);
+			}
+			
+			if (ind_dc_ind >= 0) {
+				v_dc_ind.arr[v_dc_ind.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] dc_ind = [%*.s]\n",iCnt, v_dc_ind.len, v_dc_ind.arr));
+				PutField_CString(myHash, "dc_ind", (const char *)v_dc_ind.arr);
+			}
+
+			if (ind_amount >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] amount = [%lf]\n",iCnt, v_amount));
+				PutField_Double(myHash, "amount", v_amount);
+			}
+
+			if (ind_ccy >= 0) {
+				v_ccy.arr[v_ccy.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] ccy = [%.*s]\n",iCnt, v_ccy.len,v_ccy.arr));
+				PutField_CString(myHash, "ccy", (const char *) v_ccy.arr);
+			}
+
+			if (ind_psp_channel_desc >= 0) {
+				v_psp_channel_desc.arr[v_psp_channel_desc.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] psp_channel_desc = [%.*s]\n",iCnt, v_psp_channel_desc.len,v_psp_channel_desc.arr));
+				PutField_CString(myHash, "psp_channel_desc", (const char *) v_psp_channel_desc.arr);
+			}
+		
+			if (ind_gate_id >= 0) {
+				v_gate_id.arr[v_gate_id.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] gate_id = [%.*s]\n",iCnt, v_gate_id.len,v_gate_id.arr));
+				PutField_CString(myHash, "gate_id", (const char *) v_gate_id.arr);
+			}
+
+			if (ind_bank_cd >= 0) {
+				v_bank_cd.arr[v_bank_cd.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] bank_cd = [%.*s]\n",iCnt, v_bank_cd.len,v_bank_cd.arr));
+				PutField_CString(myHash, "bank_cd", (const char *) v_bank_cd.arr);
+			}
+		
+			if (ind_psp_id_desc >= 0) {
+				v_psp_id_desc.arr[v_psp_id_desc.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] psp_id_desc = [%.*s]\n",iCnt, v_psp_id_desc.len,v_psp_id_desc.arr));
+				PutField_CString(myHash, "psp_type_cd ", (const char *) v_psp_id_desc.arr);
+			}
+
+			if (ind_mid_desc >= 0) {
+				v_mid_desc.arr[v_mid_desc.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] mid_desc = [%.*s]\n",iCnt, v_mid_desc.len,v_mid_desc.arr));
+				PutField_CString(myHash, "mid_nmb", (const char *) v_mid_desc.arr);
+			}
+
+			if (ind_merchant_ref >= 0) {
+				v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+DEBUGLOG(("par_txn_handlor : [%d] merchant_ref = [%.*s]\n",iCnt, v_merchant_ref.len, v_merchant_ref.arr));
+				PutField_CString(myHash, "merchant_ref", (const char *) v_merchant_ref.arr);
+			}
+
+
+			if (ind_fee_txn_element_id >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] fee_txn_element_id = [%d]\n",iCnt, v_fee_txn_element_id));
+                                PutField_Int(myHash,"fee_txn_element_id",v_fee_txn_element_id);
+			}
+
+			if (ind_fee_amt >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] fee_amt = [%lf]\n",iCnt, v_fee_amt));
+				PutField_Double(myHash, "fee_amt", v_fee_amt);
+			}
+	
+			if (ind_fee_dc_ind >= 0) {
+				v_fee_dc_ind.arr[v_fee_dc_ind.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] fee_dc_ind = [%.*s]\n",iCnt, v_fee_dc_ind.len, v_fee_dc_ind.arr));
+				PutField_CString(myHash, "fee_dc_ind", (const char *)v_fee_dc_ind.arr);
+			}
+
+			if (ind_fee_ccy >= 0) {
+				v_fee_ccy.arr[v_fee_ccy.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] fee_ccy = [%.*s]\n",iCnt, v_fee_ccy.len,v_fee_ccy.arr));
+				PutField_CString(myHash, "fee_ccy", (const char *) v_fee_ccy.arr);
+			}
+
+
+			if (ind_ph_txn_code >=0) {
+				v_ph_txn_code.arr[v_ph_txn_code.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] ph_txn_code = [%.*s]\n",iCnt, v_ph_txn_code.len,v_ph_txn_code.arr));
+				PutField_CString(myHash, "ph_txn_code", (const char *) v_ph_txn_code.arr);
+			}
+
+			if (ind_ph_adj_code >=0) {
+				v_ph_adj_code.arr[v_ph_adj_code.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] ph_adj_code = [%.*s]\n",iCnt, v_ph_adj_code.len,v_ph_adj_code.arr));
+				PutField_CString(myHash, "ph_adj_code", (const char *) v_ph_adj_code.arr);
+			}
+
+			if (ind_ph_status >= 0) {
+DEBUGLOG(("par_txn_handler : [%d] ph_status = [%c]\n",iCnt, v_ph_status));
+				PutField_Char(myHash, "ph_status", v_ph_status);
+			}
+
+			if (ind_ar_ind >= 0) {	
+DEBUGLOG(("par_txn_handler : [%d] ar_ind = [%c]\n",iCnt, v_ar_ind));
+				PutField_Char(myHash, "ph_ar_ind", v_ar_ind);
+			}
+			
+			if (ind_sub_status >=0) {
+				v_sub_status.arr[v_sub_status.len] = '\0';
+DEBUGLOG(("par_txn_handler : [%d] sub_status = [%.*s]\n",iCnt, v_sub_status.len,v_sub_status.arr));
+				PutField_CString(myHash, "sub_status", (const char *) v_sub_status.arr);
+			}
+	
+
+			iTmpRet=process_txn(myHash, hContext, hNewContext, hNewRequest, hNewResponse);
+
+
+			if (iTmpRet != SUCCESS) {
+				break;
+			}
+
+			iCnt++;
+
+		}
+		EXEC SQL CLOSE :c_cursor_txn_data;
+
+
+		if (iTmpRet == FAILURE) {
+DEBUGLOG(("par_txn_handle : fetching failed \n"));
+			iRet = FAILURE;
+		}
+		else {
+DEBUGLOG(("par_txn_handle : fetching ok\n"));
+			iRet = SUCCESS;
+		}
+
+	} else if (hv_return_value == SP_OTHER_ERR) {
+                EXEC SQL CLOSE :c_cursor_txn_data;
+DEBUGLOG(("par_txn_handle : exit with error\n"));
+                iRet = FAILURE;
+	}
+	else {
+		EXEC SQL CLOSE :c_cursor_txn_data;
+DEBUGLOG(("par_txn_hanele : exit with ok, no record\n"));
+                iRet = FAILURE;
+	}
+
+
+	EXEC SQL CLOSE :c_cursor_txn_data;
+DEBUGLOG(("RET = [%d]\n", iRet));
+
+	hash_destroy(myHash);
+	FREE_ME(myHash);
+
+	hash_destroy(hNewContext);
+	hash_destroy(hNewRequest);
+	hash_destroy(hNewResponse);
+
+	FREE_ME(hNewContext);
+	FREE_ME(hNewRequest);
+	FREE_ME(hNewResponse);
+
+	return iRet;
+
+// Get txn_data
+// compare to run which handler
+// Chk if exists by ref_no (by seq_id? element_id?)
+// if already exists, just run the handler
+// else select the seq for handler
+// input value into hContext, handle 1 by 1
+	
+
+get_error:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE :c_cursor_txn_data;
+
+    return PD_ERR;
+
+*/
+	return SUCCESS;
+
+}
+
+int process_txn(hash_t *hMyHash, hash_t *hOrgContext, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int iRet = SUCCESS;
+	int iTmpRet = FAILURE;
+
+	recordset_t 	*rRecordSet;
+	hash_t		*hRec;
+
+	char	*csTxnCode = NULL;
+	char	cStatus;
+	char	cARInd;
+	char	*csSubStatus = NULL;
+	char	*csHandlerName = NULL;
+	
+	char	*csMidNmb = NULL;
+	char	*csTmp = NULL;
+
+	char   csTxnSeq[PD_TXN_SEQ_LEN +1];
+	int	iTmp;
+
+	char 	*csPspIDDesc = NULL;
+	char	*csPspChannelCode = NULL;
+	char 	*csGateID = NULL;
+
+	// Format Sys DateTime
+
+	time_t	ct;
+	struct	tm *sct;
+	char	sys_date[PD_DATE_LEN + 1];
+	char	sys_time[PD_TIME_LEN + 1];	
+
+	char	csTranDateTime[PD_DATE_LEN + PD_TIME_LEN + 1];
+
+	ct = time((time_t *) 0);
+	sct = localtime(&ct);
+
+	memset(sys_date, 0, sizeof(sys_date));
+	memset(sys_time, 0, sizeof(sys_time));
+	memset(csTranDateTime, 0, sizeof(csTranDateTime));
+
+	sprintf(sys_date, "%04d%02d%02d",
+		sct->tm_year + 1900,
+		sct->tm_mon + 1,
+		sct->tm_mday);
+
+	sprintf(sys_time, "%02d%02d%02d",
+		sct->tm_hour,
+		sct->tm_min,
+		sct->tm_sec);
+
+DEBUGLOG(("sys_date [%s] sys_time [%s]\n", sys_date, sys_time));
+	
+	PutField_CString(hMyHash, "local_tm_date", sys_date);
+	PutField_CString(hMyHash, "local_tm_time", sys_time);
+
+
+	// Determine call which Txn Handler...
+
+	if (GetField_CString(hMyHash, "ph_txn_code", &csTxnCode)) {
+DEBUGLOG(("txn_code [%s]\n", csTxnCode));
+	}
+	else {
+		iRet = FAILURE;
+DEBUGLOG(("txn_code not found\n")); 
+	}	
+		
+	if (GetField_Char(hMyHash, "ph_status", &cStatus)) {
+DEBUGLOG(("ph_status [%c]\n", cStatus));
+	}
+	else {
+		iRet = FAILURE;
+DEBUGLOG(("status not found\n")); 
+	}
+
+	if (GetField_Char(hMyHash, "ph_ar_ind", &cARInd)) {
+DEBUGLOG(("ar_ind [%c]\n", cARInd));
+	}
+	else {
+DEBUGLOG(("ar_ind is NULL\n"));
+	}
+
+	if (GetField_CString(hMyHash, "sub_status", &csSubStatus)) {
+DEBUGLOG(("sub_status [%s]\n", csSubStatus));
+	} 
+	else {
+		iRet = FAILURE;
+DEBUGLOG(("sub_status not found\n"));
+	}
+
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("Calling ParTxnHandler.GetHandlerName\n"));	
+		DBObjPtr = CreateObj(DBPtr,"DBParTxnHandler","GetHandlerName");
+		iTmpRet = (unsigned long)(*DBObjPtr)(hMyHash);
+
+		if (iTmpRet != FOUND) {
+			iRet = FAILURE;
+DEBUGLOG(("ParTxnHandler.GetHandler Name FAILED\n"));	
+		} else {
+			if (GetField_CString(hMyHash, "handler_name", &csHandlerName)) {
+DEBUGLOG(("Handler_name [%s]\n", csHandlerName));	
+			}
+		}
+
+	}
+
+	rRecordSet = (recordset_t *) malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+	if (iRet == SUCCESS) {
+
+		if (GetField_CString(hMyHash, "mid_nmb", &csMidNmb)) {
+
+DEBUGLOG(("Calling ParMerchProfile.GetMerchant [%s]\n", csMidNmb));	
+			DBObjPtr = CreateObj(DBPtr, "DBParMerchProfile", "GetMerchant");
+			if ((unsigned long) (*DBObjPtr)(csMidNmb, rRecordSet) != PD_OK) {
+DEBUGLOG(("Calling ParMerchProfile.GetMerchant FAILED!\n"));	
+			}
+			else {
+DEBUGLOG(("Calling ParMerchProfile.GetMerchant SUCC!\n"));	
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if (GetField_CString(hRec, "service", &csTmp)) {
+DEBUGLOG(("ParMerchProfile.GetMerchant service [%s]!\n", csTmp));	
+						PutField_CString(hMyHash, "service", csTmp);
+					}
+
+					if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+DEBUGLOG(("ParMerchProfile.GetMerchant merchant_id [%s]!\n", csTmp));	
+						PutField_CString(hMyHash, "merchant_id", csTmp);
+					}
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+				
+
+			}
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "psp_type_cd", &csPspIDDesc)) {
+
+DEBUGLOG(("Calling ParPspClientMap.GetPSPChannelCode [%s]\n", csPspIDDesc));
+
+			DBObjPtr = CreateObj(DBPtr, "DBParClientMap", "GetPspChannelCode");
+			if ((unsigned long) (*DBObjPtr)(hMyHash) != FOUND) {
+
+DEBUGLOG(("Calling ParPspClientMap.GetPSPChannelCode FAIL\n"));
+				iRet = FAILURE;
+			}	
+			else {
+				if (GetField_CString(hMyHash, "psp_channel_code", &csTmp)) {
+DEBUGLOG(("ParPspClientMap.GetPSPChannelCode channel_code [%s]\n", csTmp));
+				}
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "psp_channel_code", &csPspChannelCode)) {
+
+		}
+	}
+	
+
+	if (iRet == SUCCESS) {
+		if (strcmp(csTxnCode, "DSI") == 0) {
+DEBUGLOG(("prepare web channel seq\n"));
+
+			// WEB Channel Seq.	
+			memset(csTxnSeq, 0, sizeof(csTxnSeq));
+
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+			strcpy(csTxnSeq,(*DBObjPtr)());
+			PutField_CString(hMyHash,"txn_seq",csTxnSeq);
+DEBUGLOG(("WEB Txn Seq [%s]\n", csTxnSeq));
+
+
+		} else {
+			//MGT Channel Seq.
+			memset(csTxnSeq, 0, sizeof(csTxnSeq));
+
+		        DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+		        strcpy(csTxnSeq,(*DBObjPtr)());
+		        PutField_CString(hMyHash,"txn_seq",csTxnSeq);
+DEBUGLOG(("MGT Txn Seq [%s]\n", csTxnSeq));
+		}
+
+		// Check Exists -> if not exists, run in seq
+		// get from txn_header, by vnc_ref_num and txn_code (handler_name)
+
+		// Get the previous txn_handler
+
+		rRecordSet = (recordset_t *) malloc(sizeof(recordset_t));
+		recordset_init(rRecordSet, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBParTxnHandlerSeq", "GetTxnHandlerSeq");
+		if ((unsigned long) (*DBObjPtr)(csHandlerName, rRecordSet) == PD_OK) {
+
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if (GetField_Int(hRec, "handler_seq", &iTmp)) {
+DEBUGLOG(("ParTxnHandlerSeq.GetTxnHandlerSeq seq [%d]!\n", iTmp));	
+					}
+
+					if (GetField_CString(hRec, "prev_handler_name", &csTmp)) {
+DEBUGLOG(("ParTxnHandlerSeq.GetTxnHandlerSeq prev_handler_name [%s]!\n", csTmp));	
+						PutField_CString(hMyHash, "current_handler_name", csTmp);
+					}
+
+DEBUGLOG(("Format Hash....\n"));
+					
+					iRet = format_hash(hMyHash, hOrgContext, hContext, hRequest, hResponse);
+
+					if (iRet != SUCCESS) {
+DEBUGLOG(("Format Hash Problem\n"));
+						break;
+					}
+
+DEBUGLOG(("Prev Handler Calling.........\n"));
+
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+		}
+		RecordSet_Destroy(rRecordSet);
+		
+
+		// Process the org txn handler 
+			
+				
+
+
+	}
+		
+
+
+	//PutField_CString(hRequest, "txn_ccy", "CNY");
+	//PutField_CString(hRequest, "txn_country", "CN");
+	//PutField_CString(hRequest, "pay_method", "001");
+	//PutField_CString(hRequest, "success_url", "http://test");
+	//PutField_CString(hRequest, "encrypt_type", "1");
+	//PutField_Int(hRequest, "version_no", 1);
+	
+
+	//TxnObjPtr = CreateObj(TxnPtr,"TxnParDSIHand","Authorize");
+	//iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+
+	/*	
+	if (iRet == PD_OK) {
+		if (GetField_Int(hContext, "internal_error", &iIntError)) {
+DEBUGLOG(("Calling TxnParDSIHand::Authorize Return internal_error [%d]\n", iIntError));
+			iRet = FAILURE;
+		}
+	}
+	*/
+
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+/*
+	hash_destroy(hClient);
+	FREE_ME(hClient);
+
+	hash_destroy(hMerchProfile);
+	FREE_ME(hMerchProfile);
+
+	FREE_ME(csClientID);	
+*/
+
+DEBUGLOG(("process_txn iRet [%d]\n", iRet));
+
+	return iRet;
+}
+
+int format_hash(hash_t *hMyHash, hash_t *hOrgContext, hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int	iRet = SUCCESS;
+
+	char	*csHandlerName = NULL;
+	char	*csTmp = NULL;
+
+	char    csTxnDate[PD_DATE_LEN+1];
+	char    csTxnTime[PD_TIME_LEN+1];
+
+
+	PutField_CString(hContext, "add_user", PD_UPDATE_USER);
+
+	if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+		PutField_CString(hContext, "local_tm_date", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+		PutField_CString(hContext, "local_tm_time", csTmp);
+	}
+
+	if (GetField_CString(hOrgContext, "PHDATE", &csTmp)) {
+		PutField_CString(hContext, "PHDATE", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "update_datetime", &csTmp)) {
+		memset(csTxnDate, 0, sizeof(csTxnDate));
+		memset(csTxnTime, 0, sizeof(csTxnTime));
+		
+		strncpy(csTxnDate, csTmp, PD_DATE_LEN);
+		strncpy(csTxnTime, csTmp + PD_DATE_LEN, PD_TIME_LEN);
+
+DEBUGLOG(("format_hash TxnDate[%s]\n", csTxnDate));
+DEBUGLOG(("format_hash Txntime[%s]\n", csTxnTime));
+
+	}
+
+
+	if (GetField_CString(hMyHash, "current_handler_name", &csHandlerName)) {
+DEBUGLOG(("format_hash handler_name [%s]\n", csHandlerName));
+	}
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+DEBUGLOG(("format_hash merchant_id [%s]\n", csTmp));
+		PutField_CString(hRequest, "merchant_id", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "merchant_ref", &csTmp)) {
+DEBUGLOG(("format_hash merchant_ref [%s]\n", csTmp));
+		PutField_CString(hRequest, "merchant_ref", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "service", &csTmp)) {
+DEBUGLOG(("format_hash service_code [%s]\n", csTmp));
+		PutField_CString(hRequest, "service_code", csTmp);
+
+		// find country!
+	}
+
+
+
+	return iRet;
+}

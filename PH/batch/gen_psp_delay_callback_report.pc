@@ -1,0 +1,274 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/08/01              David Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_OPEN_TAG             "<tr><td>"
+#define PD_OPEN_TAG_CS          "<tr><td style='mso-number-format:\\@'>"
+#define PD_NEXT_TAG             "</td><td>"
+#define PD_NEXT_TAG_CS          "</td><td style='mso-number-format:\\@'>"
+#define PD_END_TAG              "</td></tr>"
+
+char cDebug = 'Y';
+char csOutputFileName[PD_MAX_FILE_LEN + 1];
+char csFullOutputFileName[PD_MAX_FILE_LEN + 1];
+char csFromApprovalDatetime[PD_DATETIME_LEN + 1];
+char csToApprovalDatetime[PD_DATETIME_LEN + 1];
+FILE *fp;
+time_t tNow;
+struct tm tStruct;
+char csBuf[PD_TMP_BUF_LEN];
+
+int parse_arg(int argc, char **argv);
+int process_main();
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 7) {
+		printf("***usage:  -o [output file name] -f [from approval datetime] -t [to approval datetime]\n");
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("***usage:  -o [output file name] -f [from approval datetime] -t [to approval datetime]\n");
+		return (iRet);
+	}
+
+	tNow = time(0);
+	tStruct = *localtime(&tNow);
+	strftime(csBuf, sizeof(csBuf), "%Y%m%d", &tStruct);
+	CreateReportPathCustomized((unsigned char*)csFullOutputFileName, csBuf);
+DEBUGLOG(("batch_proc() path = [%s]\n", csFullOutputFileName));
+	sprintf(csFullOutputFileName, "%s/%s", csFullOutputFileName, csOutputFileName);
+DEBUGLOG(("batch_proc() file = [%s]\n", csFullOutputFileName));
+
+	fp = fopen(csFullOutputFileName, "w");
+	if (fp == NULL) {
+DEBUGLOG(("batch_proc() unable to open [%s]\n", csFullOutputFileName));
+		return FAILURE;
+	} else {
+		fprintf(fp, "%s", "<table>\n");
+		iRet = process_main();
+DEBUGLOG(("batch_proc() iRet = [%d]\n", iRet));
+	}
+
+	fprintf(fp, "%s", "</table>\n");
+	fclose(fp);
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_main()
+{
+	int iRet = SUCCESS;
+	int iCnt = 0;
+
+	fprintf(fp, "<tr><td colspan=\"5\"><b>PSP Long Delay Callback Report</b></td></tr>\n");
+
+	memset(&tStruct, 0, sizeof(struct tm));
+	strptime(csFromApprovalDatetime, "%Y%m%d%H%M%S", &tStruct);
+	strftime(csBuf, sizeof(csBuf), "%m/%d/%Y %H:%M:%S", &tStruct);
+	fprintf(fp, "<tr><td><b>From</b></td><td style='mso-number-format:\\@'>%s</td></tr>\n", csBuf);
+
+	memset(&tStruct, 0, sizeof(struct tm));
+	strptime(csToApprovalDatetime, "%Y%m%d%H%M%S", &tStruct);
+	strftime(csBuf, sizeof(csBuf), "%m/%d/%Y %H:%M:%S", &tStruct);
+	fprintf(fp, "<tr><td><b>To</b></td><td style='mso-number-format:\\@'>%s</td></tr>\n", csBuf);
+
+	tNow = time(0);
+	tStruct = *localtime(&tNow);
+	strftime(csBuf, sizeof(csBuf), "%m/%d/%Y %H:%M:%S", &tStruct);
+	fprintf(fp, "<tr><td><b>Generated on</b></td><td style='mso-number-format:\\@'>%s</td></tr>\n", csBuf);
+
+	fprintf(fp, "<tr></tr>\n<tr></tr>\n<tr><td><b>PSP</b></td><td><b>Merchant Ref.</b></td><td><b>Transaction Nmb</b></td><td><b>Currency</b></td><td><b>Amount</b></td><td><b>Request Date and Time</b></td><td><b>Complete Date and Time</b></td><td><b>callback time (in hour)</b></td></tr>\n");
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_from_approval_timestamp[PD_DATETIME_LEN + 1];
+		varchar hv_to_approval_timestamp[PD_DATETIME_LEN + 1];
+
+		varchar v_psp_name[PD_PSP_NAME_LEN + 1];
+		varchar v_merchant_ref[PD_MERCHANT_REF_LEN + 1];
+		varchar v_txn_id[PD_TXN_ID_LEN + 1];
+		varchar v_txn_ccy[PD_CCY_ID_LEN + 1];
+		double v_txn_amount;
+		varchar v_create_timestamp[PD_TIMESTAMP_LEN + 1];
+		varchar v_approval_timestamp[PD_TIMESTAMP_LEN + 1];
+		double v_callback_time;
+
+		short ind_psp_name = -1;
+		short ind_merchant_ref = -1;
+		short ind_txn_id = -1;
+		short ind_txn_ccy = -1;
+		short ind_txn_amount = -1;
+		short ind_create_timestamp = -1;
+		short ind_approval_timestamp = -1;
+		short ind_callback_time = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_from_approval_timestamp.len = strlen(csFromApprovalDatetime);
+	memcpy(hv_from_approval_timestamp.arr, csFromApprovalDatetime, hv_from_approval_timestamp.len);
+DEBUGLOG(("process_main() from_approval_timestamp = [%.*s]\n", hv_from_approval_timestamp.len, hv_from_approval_timestamp.arr));
+
+	hv_to_approval_timestamp.len = strlen(csToApprovalDatetime);
+	memcpy(hv_to_approval_timestamp.arr, csToApprovalDatetime, hv_to_approval_timestamp.len);
+DEBUGLOG(("process_main() hv_to_approval_timestamp = [%.*s]\n", hv_to_approval_timestamp.len, hv_to_approval_timestamp.arr));
+
+	EXEC SQL DECLARE c_cursor CURSOR FOR
+		SELECT	psp_name,
+			th_merchant_ref,
+			th_txn_id,
+			tp_txn_ccy,
+			tp_txn_amount,
+			to_char(th_create_timestamp, 'mm/dd/yyyy hh24:mi:ss'),
+			to_char(th_approval_timestamp, 'mm/dd/yyyy hh24:mi:ss'),
+			round((to_date(to_char(th_approval_timestamp, 'yyyymmddhh24miss'), 'yyyymmddhh24miss') - th_create_timestamp) * 24, 2) "callback time"
+		FROM	txn_header, txn_psp_detail, psp_detail
+		WHERE	1 = 1
+		AND	th_merchant_id IN ('M8000016', 'M8000017')
+		AND	th_txn_code = 'DSI'
+		AND	th_status = 'C'
+		AND	th_ar_ind = 'A'
+		AND	round((to_date(to_char(th_approval_timestamp, 'yyyymmddhh24miss'), 'yyyymmddhh24miss') - th_create_timestamp) * 24, 2) >= 8
+		AND	th_approval_timestamp >= to_date(:hv_from_approval_timestamp, 'yyyymmddhh24miss')
+		AND	th_approval_timestamp <= to_date(:hv_to_approval_timestamp, 'yyyymmddhh24miss')
+		AND	th_txn_id = tp_txn_id
+		AND	tp_psp_id = psp_id;
+
+	EXEC SQL OPEN c_cursor;
+	do {
+		EXEC SQL FETCH c_cursor
+		INTO
+			:v_psp_name:ind_psp_name,
+			:v_merchant_ref:ind_merchant_ref,
+			:v_txn_id:ind_txn_id,
+			:v_txn_ccy:ind_txn_ccy,
+			:v_txn_amount:ind_txn_amount,
+			:v_create_timestamp:ind_create_timestamp,
+			:v_approval_timestamp:ind_approval_timestamp,
+			:v_callback_time:ind_callback_time;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			iCnt++;
+
+			if (ind_psp_name >= 0) {
+				v_psp_name.arr[v_psp_name.len] = '\0';
+				fprintf(fp, "%s%.*s%s", PD_OPEN_TAG, v_psp_name.len, v_psp_name.arr, PD_NEXT_TAG_CS);
+			}
+
+			if (ind_merchant_ref >= 0) {
+				v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+				fprintf(fp, "%.*s%s", v_merchant_ref.len, v_merchant_ref.arr, PD_NEXT_TAG_CS);
+			}
+
+			if (ind_txn_id >= 0) {
+				v_txn_id.arr[v_txn_id.len] = '\0';
+				fprintf(fp, "%.*s%s", v_txn_id.len, v_txn_id.arr, PD_NEXT_TAG);
+			}
+
+			if (ind_txn_ccy >= 0) {
+				v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+				fprintf(fp, "%.*s%s", v_txn_ccy.len, v_txn_ccy.arr, PD_NEXT_TAG);
+			}
+
+			if (ind_txn_amount >= 0) {
+				fprintf(fp, "%f%s", v_txn_amount, PD_NEXT_TAG_CS);
+			}
+
+			if (ind_create_timestamp >= 0) {
+				v_create_timestamp.arr[v_create_timestamp.len] = '\0';
+				fprintf(fp, "%.*s%s", v_create_timestamp.len, v_create_timestamp.arr, PD_NEXT_TAG_CS);
+			}
+
+			if (ind_approval_timestamp >= 0) {
+				v_approval_timestamp.arr[v_approval_timestamp.len] = '\0';
+				fprintf(fp, "%.*s%s", v_approval_timestamp.len, v_approval_timestamp.arr, PD_NEXT_TAG);
+			}
+
+			if (ind_callback_time >= 0) {
+				fprintf(fp, "%f%s\n", v_callback_time, PD_END_TAG);
+			}
+	}
+	while (PD_TRUE && iRet == SUCCESS);
+	EXEC SQL CLOSE c_cursor;
+
+DEBUGLOG(("process_main() rec cnt = [%d]\n", iCnt));
+	fprintf(fp, "<tr></tr>\n<tr></tr>\n<tr><td colspan=\"5\"><b>Total long delay callback record count:</b> %d</td></tr>\n", iCnt);
+
+	return iRet;
+
+sql_error:
+	DEBUGLOG(("process_main error code %d\n", sqlca.sqlcode));
+	DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor;
+	EXEC SQL ROLLBACK RELEASE;
+	fprintf(fp, "<tr></tr>\n<tr></tr>\n<tr><td colspan=\"5\"><b>Total long delay callback record count:</b> %d</td></tr>\n", iCnt);
+	return FAILURE;
+}
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+
+	while ((c = getopt(argc, argv, "o:f:t:")) != EOF) {
+		switch (c) {
+			case 'o':
+				strcpy(csOutputFileName, optarg);
+				break;
+			case 'f':
+				strcpy(csFromApprovalDatetime, optarg);
+				break;
+			case 't':
+				strcpy(csToApprovalDatetime, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csOutputFileName, "") || !strcmp(csFromApprovalDatetime, "") || !strcmp(csToApprovalDatetime, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}

@@ -1,0 +1,909 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/04/30              LokMan Chow
+Add CR/DR Checking				   2015/06/10		   LokMan Chow
+*/
+
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsPTI.h"
+#include "myrecordset.h"
+#include "math.h"
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+#define PD_FILE_DELIMITER	","
+char *csDetailTagType[7] = {PD_STRING_TYPE,PD_STRING_TYPE,PD_STRING_TYPE,PD_DOUBLE_TYPE,PD_DOUBLE_TYPE,PD_STRING_TYPE,  PD_STRING_TYPE};
+int  iDetailMaxLength[7] = {PD_DATE_LEN,   PD_CCY_ID_LEN, PD_DESC_LEN,   PD_AMOUNT_LEN, PD_AMOUNT_LEN, PD_BAID_NAME_LEN,PD_REMARK_LEN};
+int  iDetailMinLength[7] = {    0       ,   PD_CCY_ID_LEN, PD_TXN_CODE_LEN,1,            1,             1,               0};
+char *csDetailField[7] =   {"Report Date","Currency",   "Txn Type",    "Debit Amount","Credit Amount","BAID Name",    "Remark"};
+char *csAmtType[7] =	   {" "		 ," "	    ,   " ",		PD_DR,	       PD_CR,	      " ",	      " "};
+char *csDetailTagVerN[7] = {"report_date",   "ccy",     "txn_type",    "debit_amt",   "credit_amt",   "baid_name",    "remark"};
+
+
+int     Verify_Acct(const char* csBAIDName, const char* csCcy);
+int	Verify_BAIDName(const char* csField);
+int	Verify_TxnType(const char* csField);
+int	Verify_Ccy(const char* csField);
+int	Verify_Date(const char* csField);
+int	Verify_Amount(const int iPos, const char* csTxnType,const char* csField, double * dAmt);
+int	CreatePendingFundTxn(const char* csFileId, hash_t* hContext, const hash_t* hDtl);
+
+
+void TxnOmtByUsPTI(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	char	*csInFileName = NULL, *csInFilePath = NULL;
+	char	csNewFileName[PD_UPLOAD_FILENAME_LEN + 1];
+	char	csNewFileId[PD_TXN_SEQ_LEN + 1] = "\0";
+	char	*csFileId = NULL;
+	//char	*csMerchantId = NULL;
+	char	*csUser = NULL;
+	char	cAction;
+
+	char	csInFullName[PD_TMP_BUF_LEN];
+	char	csNewFullName[PD_TMP_BUF_LEN];
+
+	int	iTotalCount=0, iAcceptCount=0;
+	//double	dAcceptAmt=0.0;
+
+	char	*csTmp = NULL;
+	//int	iTmp;
+	FILE	*fin = NULL;
+
+	char csSysCmd[PD_TMP_BUF_LEN*3] = "\0";
+
+	PutField_Char(hContext,"status",PD_DEPOSIT_FILE_PENDING);
+
+/* action*/// U - Upload; C - Cancel; A - Approve;
+	if(GetField_CString(hRequest,"action",&csTmp)){
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize() action = [%c]\n", cAction));
+	}
+	else{
+		iRet = INT_ACTION_NOT_FOUND;
+		PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() action is missing!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() action is missing!!!\n");
+	}
+
+/* user */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "add_user", &csUser)) {
+			PutField_CString(hContext,"create_user",csUser);
+			PutField_CString(hContext,"update_user",csUser);
+DEBUGLOG(("Authorize() user = [%s]\n", csUser));
+		} else {
+			iRet = INT_USER_NOT_FOUND;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() user is missing!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() user is missing!!!\n");
+		}
+	}
+
+	if (GetField_CString(hRequest, "ip_addr", &csTmp)) {
+		PutField_CString(hContext,"ip_addr",csTmp);
+	}
+
+///upload///
+	if(cAction == PD_ACTION_UPLOAD){
+/* in_file_path */
+		if (iRet == PD_OK) {
+			if (GetField_CString(hRequest, "in_file_path", &csInFilePath)) {
+				PutField_CString(hContext,"in_file_path",csInFilePath);
+DEBUGLOG(("Authorize() in_file_path = [%s]\n", csInFilePath));
+
+				/* security check for running system() in ConvertStmtFile */
+				csTmp = csInFilePath;
+				while (*csTmp) {
+					if (!(*csTmp >= 'a' && *csTmp <= 'z') &&
+					    !(*csTmp >= 'A' && *csTmp <= 'Z') &&
+					    !(*csTmp >= '0' && *csTmp <= '9') &&
+					    !(*csTmp == '/' || *csTmp == '-' || *csTmp == '_')) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() in_file_path char[%c] NOT MATCH [a-zA-Z0-9/-_]!!!\n",*csTmp));
+ERRLOG("TxnOmtByUSPTI::Authorize() in_file_path char[%c] NOT MATCH [a-zA-Z0-9/-_]!!!\n",*csTmp);
+						break;
+					} else {
+// DEBUGLOG(("Authorize() in_file_path [%c]\n",*csTmp));
+					}
+					csTmp++;
+				}
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() in_file_path is missing!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() in_file_path is missing!!!\n");
+			}
+		}
+
+/* in_file_name */
+		if (iRet == PD_OK) {
+			if (GetField_CString(hRequest, "in_file_name", &csInFileName)) {
+				PutField_CString(hContext,"in_file_name",csInFileName);
+				PutField_CString(hContext,"filename",csInFileName);
+DEBUGLOG(("Authorize() in_file_name = [%s]\n", csInFileName));
+
+				/* security check for running system() in ConvertStmtFile */
+				csTmp = csInFileName;
+				while (*csTmp) {
+					if (!(*csTmp >= 'a' && *csTmp <= 'z') &&
+					    !(*csTmp >= 'A' && *csTmp <= 'Z') &&
+					    !(*csTmp >= '0' && *csTmp <= '9') &&
+					    !(*csTmp == '.' || *csTmp == '-' || *csTmp == '_')) {
+						iRet = INT_INVALID_FILE_NAME;
+DEBUGLOG(("Authorize() in_file_name [%c] NOT MATCH [a-zA-Z0-9.-_]!!!\n",*csTmp));
+ERRLOG("TxnOmtByUSPTI::Authorize() in_file_name [%c] NOT MATCH [a-zA-Z0-9.-_]!!!\n",*csTmp);
+						break;
+					} else {
+// DEBUGLOG(("Authorize() in_file_name [%c]\n",*csTmp));
+					}
+					csTmp++;
+				}
+			} else {
+				iRet = INT_FILE_ID_NOT_FOUND;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() in_file_name is missing!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() in_file_name is missing!!!\n");
+			}
+		}
+
+
+/* open org file */
+		if (iRet == PD_OK) {
+			snprintf(csInFullName,sizeof(csInFullName),"%s/%s",csInFilePath,csInFileName);
+			fin = fopen(csInFullName, "r");
+			if (fin == NULL) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() cannot open file [%s]!!!\n", csInFileName));
+ERRLOG("TxnOmtByUsPTI::Authorize() cannot open file [%s]!!!\n", csInFileName);
+			} else {
+				fclose(fin);
+				fin = NULL;
+			}
+			PutField_CString(hContext,"in_file",csInFullName);
+			PutField_CString(hContext,"in_file_name",csInFileName);
+DEBUGLOG(("Authorize() in_file [%s]\n", csInFullName));
+		}
+
+
+/* check filename */
+		if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLPFTxnInit:: CheckFileExist()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLPFTxnInit", "CheckFileExist");
+			if ((signed long)(*DBObjPtr)(csInFileName) == FOUND) {
+				// NO Add Header!!!
+				iRet = INT_FILE_ALREADY_EXIST;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::CheckFileExist() [%s] file DUPLICATED!!!\n", csInFileName));
+			}
+
+/* get file id */
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLTxnSeq::GetNextPfiFileSeq()\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextPfiFileSeq");
+				strcpy(csNewFileId,(*DBObjPtr)());
+				PutField_CString(hContext,"file_id",csNewFileId);
+DEBUGLOG(("Authorize() call DBOLTxnSeq::GetNextPfiFileSeq() file_id = [%s]\n",csNewFileId));
+
+				snprintf(csNewFileName,sizeof(csNewFileName),"PFI%s",csNewFileId);
+				snprintf(csNewFullName,sizeof(csNewFullName),"%s/%s",csInFilePath,csNewFileName);
+				fin = fopen(csNewFullName, "r");
+				if (fin == NULL) {
+					snprintf(csSysCmd, sizeof(csSysCmd), 
+						"pdf_init_convert.sh \"%s\" \"%s\" \"%s\"", csInFilePath,csInFileName,csNewFullName);
+DEBUGLOG(("Authorize() call system command [%s][%d]\n", csSysCmd, strlen(csSysCmd)));
+					system(csSysCmd);
+				}
+				else {
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() file [%s] EXISTS!!!\n", csNewFileName));
+ERRLOG("TxnOmtByUsBSU::Authorize() file [%s] EXISTS!!!\n", csNewFileName);
+
+					fclose(fin);
+					fin = NULL;
+				}
+			}
+
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::AddHeader()\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","AddHeader");
+				if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::AddHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::AddHeader() FAILURE!!!\n");
+				}
+			}
+		}
+
+		if(iRet == PD_OK){
+			//verify record
+			char    cs_input_buf[PD_TMP_MSG_BUF_LEN];
+			char    csTmpBuf[PD_TMP_MSG_BUF_LEN];
+			char    csTmpField[PD_TMP_MSG_BUF_LEN];
+			char    csErrMsg[PD_TMP_BUF_LEN];
+			char    csBaidName[PD_BAID_NAME_LEN+1];
+			char    csCcy[PD_CCY_ID_LEN+1];
+			char    csTxnType[PD_DESC_LEN+1];
+			char    *csField = NULL;
+			int	i = 0;
+			int	iCurrLine = 0;
+			int	iErrCnt = 0;
+			int	iTmpRet = PD_OK;
+			//int	iCheck = PD_FALSE;
+			int	iAmtFound = PD_FALSE;
+			double	dTmp = 0.0;
+			hash_t  *hTxn;
+			hTxn= (hash_t*) malloc (sizeof(hash_t));
+
+			fin = fopen(csNewFullName, "r");
+			fgets(cs_input_buf, sizeof(cs_input_buf), fin);
+DEBUGLOG(("Authorize() header = [%s]\n",cs_input_buf));
+
+			int iFieldSize = (int)sizeof(csDetailTagVerN) / (int)sizeof(*csDetailTagVerN);
+
+			while (iRet == PD_OK && fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+				iCurrLine++;
+				if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+				if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+DEBUGLOG(("Authorize() cs_input_buf = [%s]\n",cs_input_buf));
+ 				if (!strcmp(cs_input_buf,"")) continue;
+
+				csTmpBuf[0]='\0';
+				csTmpField[0]='\0';
+				csErrMsg[0]='\0';
+				csBaidName[0]='\0';
+				csCcy[0]='\0';
+				i = 0;
+				iTmpRet = PD_OK;
+				iAmtFound = PD_FALSE;
+				hash_init(hTxn,0);
+				PutField_CString(hTxn,"file_id",csNewFileId);
+				PutField_CString(hTxn,"line",cs_input_buf);
+				PutField_CString(hTxn,"create_user",csUser);
+
+				strcpy(csTmpBuf, cs_input_buf);
+				csField = mystrtok(csTmpBuf, PD_FILE_DELIMITER);
+				while (csField != NULL && i<iFieldSize) {
+					strcpy(csTmpField, TrimAll((const unsigned char*)csField, strlen(csField)));
+//DEBUGLOG(("[%s] = [%s]\n",csDetailTagVerN[i],csTmpField));
+					if(!strcmp(csDetailTagType[i],PD_STRING_TYPE)){
+						if(strlen(csTmpField)<iDetailMinLength[i] ||
+						   strlen(csTmpField)>iDetailMaxLength[i]){
+							iTmpRet = INT_FORMAT_ERR;
+							sprintf(csErrMsg,"Field Error(%s Invalid[%s])",csDetailField[i],csTmpField);
+						}
+						else{
+							if (strcmp(csTmpField,"")){
+								if(!strcmp(csDetailTagVerN[i],"baid_name")){
+									sprintf(csBaidName,"%s",csTmpField);
+									iTmpRet = Verify_BAIDName(csTmpField);
+								}
+								else if(!strcmp(csDetailTagVerN[i],"ccy")){
+									sprintf(csCcy,"%s",csTmpField);
+									iTmpRet = Verify_Ccy(csTmpField);
+								}
+								else if(!strcmp(csDetailTagVerN[i],"txn_type")){
+									sprintf(csTxnType,"%s",csTmpField);
+									iTmpRet = Verify_TxnType(csTmpField);
+								}
+								else if(!strcmp(csDetailTagVerN[i],"report_date")){
+									iTmpRet = Verify_Date(csTmpField);
+								}
+
+								if(iTmpRet == PD_OK){
+									PutField_CString(hTxn,csDetailTagVerN[i],csTmpField);
+								}
+								else{
+									sprintf(csErrMsg,"Field Error(%s Invalid[%s])",csDetailField[i],csTmpField);
+DEBUGLOG(("Authorize() [%s][%s] Invalid\n",csDetailTagVerN[i],csTmpField));
+								}
+							}
+						}
+					}
+					else if(!strcmp(csDetailTagType[i],PD_DOUBLE_TYPE)){
+						if (strcmp(csTmpField,"")){
+
+							iTmpRet = Verify_Amount(i,csTxnType,csTmpField,&dTmp);
+							if(iTmpRet != PD_OK){
+								sprintf(csErrMsg,"Field Error(%s Invalid[%s])",csDetailField[i],csTmpField);
+							}
+							else{
+								PutField_Double(hTxn,csDetailTagVerN[i],dTmp);
+								iAmtFound = PD_TRUE;
+							}
+						}
+					}
+
+					if(iTmpRet!=PD_OK)
+						break;
+
+					csField = mystrtok(NULL, PD_FILE_DELIMITER);
+					i++;
+				}
+
+				if(!iAmtFound && iTmpRet==PD_OK){
+					iTmpRet = INT_FORMAT_ERR;
+					sprintf(csErrMsg,"[Credit/Debit Amount Not Found]");
+				}
+
+				if(iTmpRet==PD_OK){
+					iTmpRet = Verify_Acct(csBaidName,csCcy);
+					if(iTmpRet!=PD_OK)
+						sprintf(csErrMsg,"Field Error([%s] Not using [%s])",csBaidName,csCcy);
+				}
+
+				if(iTmpRet==PD_OK){
+					//insert record
+					PutField_Int(hTxn,"seq",iCurrLine);
+					
+					DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","AddDetail");
+					if ((unsigned long)(*DBObjPtr)(hTxn) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::AddDetail() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() DBOLPFTxnInit::AddDetail() FAILURE!!!\n"); 
+					}
+				}
+				else{
+					//insert error 
+					iErrCnt ++;
+					PutField_CString(hTxn,"result",csErrMsg);
+					DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","AddError");
+					if ((unsigned long)(*DBObjPtr)(hTxn) != PD_OK) {
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::AddError() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() DBOLPFTxnInit::AddError() FAILURE!!!\n"); 
+					}
+				}
+			
+
+				hash_destroy(hTxn);
+			}//end of reading line
+
+			//update header
+			if (iRet == PD_OK) {
+				if(iCurrLine==0 || iCurrLine==iErrCnt)
+					PutField_Char(hContext,"status",PD_DEPOSIT_FILE_DECLINED);
+				PutField_Int(hContext,"total_count",iCurrLine);
+				PutField_Int(hContext,"accept_count",iCurrLine-iErrCnt);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader()\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","UpdateHeader");
+				if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n");
+				}
+			}
+
+
+		}//end of verify record
+
+		snprintf(csSysCmd, sizeof(csSysCmd), "rm -r \"%s\"",csNewFullName);
+DEBUGLOG(("Authorize() call system command [%s][%d]\n", csSysCmd, strlen(csSysCmd)));
+		system(csSysCmd);
+
+	}//end of action upload
+
+
+///cancel///
+	else if(cAction == PD_ACTION_CANCEL){
+		if(GetField_CString(hRequest,"file_id",&csFileId)){
+			PutField_CString(hContext,"file_id",csFileId);
+DEBUGLOG(("Authorize() file_id = [%s]\n", csFileId));
+		}
+		else {
+			iRet = INT_FILE_ID_NOT_FOUND;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() file_id is missing!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() file_id is missing!!!\n");
+		}
+
+		if(iRet == PD_OK){
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::MatchHeaderStatusForUpdate()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","MatchHeaderStatusForUpdate");
+			if ((unsigned long)(*DBObjPtr)(csFileId,PD_DEPOSIT_FILE_PENDING) != PD_FOUND) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::GetHeaderStatusForUpdate() Invalid Status!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::GetHeaderStatusForUpdate() Invalid Status!!!\n");
+			}
+		}
+
+		if(iRet == PD_OK){
+			PutField_Char(hContext,"status",PD_DEPOSIT_FILE_CANCEL);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","UpdateHeader");
+			if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n");
+			}
+		}
+	}
+
+///approve///
+	else if(cAction == PD_ACTION_APPROVE){
+		if(GetField_CString(hRequest,"file_id",&csFileId)){
+			PutField_CString(hContext,"file_id",csFileId);
+DEBUGLOG(("Authorize() file_id = [%s]\n", csFileId));
+		}
+		else {
+			iRet = INT_FILE_ID_NOT_FOUND;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() file_id is missing!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() file_id is missing!!!\n");
+		}
+
+		if(iRet == PD_OK){
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::MatchHeaderStatusForUpdate()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","MatchHeaderStatusForUpdate");
+			if ((unsigned long)(*DBObjPtr)(csFileId,PD_DEPOSIT_FILE_PENDING) != PD_FOUND) {
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::GetHeaderStatusForUpdate() Invalid Status!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::GetHeaderStatusForUpdate() Invalid Status!!!\n");
+			}
+		}
+
+		if(iRet == PD_OK){
+			hash_t* hRec;
+			recordset_t     *rRecordSet;
+			rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+			recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::GetDetail()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","GetDetail");
+			if ((unsigned long)(*DBObjPtr)(csFileId,rRecordSet) != PD_OK) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::GetDetail() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::GetDetail() FAILURE!!!\n");
+			}
+			else{
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while(hRec && iRet==PD_OK) {
+
+					//call create function
+					iRet = CreatePendingFundTxn(csFileId,hContext,hRec);
+
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+
+			RecordSet_Destroy(rRecordSet);
+			FREE_ME(rRecordSet);
+		}
+
+		if(iRet == PD_OK){
+			PutField_Char(hContext,"status",PD_DEPOSIT_FILE_APPROVED);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","UpdateHeader");
+			if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n");
+			}
+		}
+		
+		if(iRet != PD_OK && iRet != INT_INVALID_TXN){
+			PutField_Char(hContext,"status",PD_DEPOSIT_FILE_PENDING);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader()\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","UpdateHeader");
+			if ((unsigned long)(*DBObjPtr)(hContext) != PD_OK) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() call DBOLPFTxnInit::UpdateHeader() FAILURE!!!\n");
+			}
+			
+		}
+
+	}
+
+	else{
+		iRet = INT_ACTION_NOT_FOUND;
+                PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() action is invalid!!!\n"));
+ERRLOG("TxnOmtByUsPTI::Authorize() action is invalid!!!\n");
+	}
+
+
+//put response
+	if(cAction == PD_ACTION_UPLOAD){
+		PutField_CString(hResponse,"batch_id",csNewFileId);
+		iTotalCount=0;
+		GetField_Int(hContext,"total_count",&iTotalCount);
+		PutField_Int(hResponse,"total",iTotalCount);
+		iAcceptCount=0;
+		GetField_Int(hContext,"accept_count",&iAcceptCount);
+		PutField_Int(hResponse,"accept",iAcceptCount);
+	}
+
+DEBUGLOG(("Authorize() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int	Verify_Acct(const char* csBAIDName, const char* csCcy)
+{
+	int iRet = PD_ERR;
+	char* csTmp=NULL;
+
+	char* csBankCode = NULL;
+	char* csBankAcctNum = NULL;
+	
+	hash_t  *hTxn;
+	hTxn= (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetPFBankAcctByBAIDName");
+	if ((unsigned long)(*DBObjPtr)(csBAIDName,hTxn) == PD_FOUND) {
+
+		GetField_CString(hTxn,"int_bank_code",&csBankCode);
+		GetField_CString(hTxn,"bank_acct_num",&csBankAcctNum);
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","GetBankAccts");
+		if ((unsigned long)(*DBObjPtr)(csBankCode,csBankAcctNum, hTxn) == PD_OK) {
+			if(GetField_CString(hTxn,"acct_ccy",&csTmp)){
+				if(!strcmp(csTmp,csCcy)){
+					iRet = PD_OK;
+				}
+			}
+		}
+	}
+
+	if(iRet!=PD_OK){
+DEBUGLOG(("Verify_Acct [%s] Not using [%s]\n",csBAIDName,csCcy));
+	}
+
+	FREE_ME(hTxn);
+
+	return iRet;
+}
+
+int	Verify_BAIDName(const char* csField)
+{
+	int iRet = PD_ERR;
+	hash_t  *hTxn;
+	hTxn= (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetPFBankAcctByBAIDName");
+	if ((unsigned long)(*DBObjPtr)(csField,hTxn) == PD_FOUND) {
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("Verify_BAIDName [%s] Invalid\n",csField));
+	}
+
+	FREE_ME(hTxn);
+	return iRet;
+}
+
+int	Verify_Ccy(const char* csField)
+{
+	int iRet = PD_ERR;
+
+	DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+	if ((unsigned long)(*DBObjPtr)(csField) == FOUND) {
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("Verify_Ccy [%s] Invalid\n",csField));
+	}
+
+	return iRet;
+}
+
+int	Verify_TxnType(const char* csField)
+{
+	int iRet = PD_ERR;
+	char* csTxnCode = (char*) malloc (PD_TXN_CODE_LEN +1 );
+
+	DBObjPtr = CreateObj(DBPtr,"DBTxnCode","GetInitPFCodeByDesc");
+	if ((unsigned long)(*DBObjPtr)(csField,csTxnCode) == PD_FOUND) {
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("Verify_TxnType [%s] Invalid\n",csField));
+	}
+
+	FREE_ME(csTxnCode);
+	return iRet;
+}
+
+int	Verify_Date(const char* csField)
+{
+	int iRet = PD_ERR;
+
+	if(check_valid_date(csField)==PD_OK){
+		iRet = PD_OK;
+	}
+	else{
+DEBUGLOG(("Verify_Date [%s] Invalid\n",csField));
+	}
+
+	return iRet;
+}
+
+
+int	Verify_Amount(const int iPos, const char* csTxnType,const char* csField, double * dAmt)
+{
+	int iRet = PD_ERR;
+	int iCheck = PD_FALSE;
+	double dTmp = 0.0;
+	char* csCodeAmtType = (char*) malloc (PD_AMT_TYPE_LEN +1);
+
+
+	char *p = (char*)strchr(csField, '.');
+	if (p == NULL){
+		iCheck = is_numeric((char*)csField);
+		if(iCheck==PD_TRUE){
+			if(sscanf(csField,"%lf",&dTmp)){
+			}
+		}
+	}
+	else{
+		if(sscanf(csField,"%lf",&dTmp)){
+			iCheck = PD_TRUE;
+		}
+	}
+	if(dTmp<=0.0){
+		iCheck = PD_FALSE;
+	}
+
+	if(iCheck == PD_TRUE){
+		DBObjPtr = CreateObj(DBPtr,"DBTxnCode","GetAmtTypeByPFInitType");
+		if ((unsigned long)(*DBObjPtr)(csTxnType,csCodeAmtType) == PD_FOUND) {
+			if(!strcmp(csCodeAmtType,csAmtType[iPos])){
+				iRet = PD_OK;
+			}
+			else{
+DEBUGLOG(("Verify_Amount Amount Type for TxnType[%s] should be [%s] \n",csTxnType,csCodeAmtType));
+			}
+		}
+	}
+
+	if(iRet!=PD_OK){
+DEBUGLOG(("Verify_Amount[%s] Invalid\n",csField));
+	}
+	else{
+		*dAmt = dTmp;
+	}
+
+	FREE_ME(csCodeAmtType);
+	return iRet;
+}
+
+
+int CreatePendingFundTxn(const char* csFileId, hash_t* hContext, const hash_t* hDtl)
+{
+	int iRet = PD_OK;
+	int iSeq = 0;
+	double dAmt = 0.0;
+	char* csTmp;
+	char* csPHDATE;
+	char* csTxnCode = (char*) malloc (PD_TXN_CODE_LEN +1 );
+	char  csToTxnSeq[PD_TXN_SEQ_LEN + 1];;
+	
+	hash_t  *hTxn;
+	hTxn= (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+
+	hash_t  *hTmp;
+	hTmp= (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTmp,0);
+
+
+	DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+	strcpy((char*)csToTxnSeq, (*DBObjPtr)());
+	PutField_CString(hTxn, "txn_seq", (const char *)csToTxnSeq);
+DEBUGLOG(("CreatePendingFundTxn:: DBOLTxnSeq: GetNextOmtTxnSeq [%s]\n",csToTxnSeq));
+
+
+	if(GetField_CString(hContext,"PHDATE",&csPHDATE)){
+		PutField_CString(hTxn,"PHDATE",csPHDATE);
+		PutField_CString(hTxn,"txn_date",csPHDATE);
+DEBUGLOG(("CreatePendingFundTxn PHDATE [%s]\n",csPHDATE));
+	}
+	if(GetField_CString(hContext,"local_tm_date",&csTmp)){
+		PutField_CString(hTxn,"local_tm_date",csTmp);
+DEBUGLOG(("CreatePendingFundTxn local_tm_date [%s]\n",csTmp));
+	}
+	if(GetField_CString(hContext,"local_tm_time",&csTmp)){
+		PutField_CString(hTxn,"local_tm_time",csTmp);
+		PutField_CString(hTxn,"tm_time",csTmp);
+		PutField_CString(hTxn,"txn_time",csTmp);
+DEBUGLOG(("CreatePendingFundTxn local_tm_time [%s]\n",csTmp));
+	}
+	if(GetField_CString(hContext,"create_user",&csTmp)){
+		PutField_CString(hTxn,"add_user",csTmp);
+		PutField_CString(hTxn,"update_user",csTmp);
+DEBUGLOG(("CreatePendingFundTxn user [%s]\n",csTmp));
+	}
+	if(GetField_CString(hContext,"ip_addr",&csTmp)){
+		PutField_CString(hTxn,"ip_addr",csTmp);
+DEBUGLOG(("CreatePendingFundTxn ip_addr [%s]\n",csTmp));
+	}
+
+	PutField_CString(hTxn,"channel_code",PD_CHANNEL_OMT);
+	PutField_CString(hTxn,"process_code",PD_PROCESS_CODE_DEF);
+	PutField_CString(hTxn,"process_type",PD_PROCESS_TYPE_DEF);
+	PutField_Int(hTxn, "do_logging", PD_ADD_LOG);
+	PutField_Int(hTxn, "db_commit", PD_FALSE);
+
+	if(GetField_CString(hDtl,"report_date",&csTmp)){
+		PutField_CString(hTxn,"report_date",csTmp);
+DEBUGLOG(("CreatePendingFundTxn report_date [%s]\n",csTmp));
+	}
+	else{
+		PutField_CString(hTxn,"report_date",csPHDATE);
+DEBUGLOG(("CreatePendingFundTxn report_date [%s] (default)\n",csPHDATE));
+	}
+
+	if(GetField_CString(hDtl,"txn_type",&csTmp)){
+		PutField_CString(hTxn, "desc", csTmp);
+
+		DBObjPtr = CreateObj(DBPtr,"DBTxnCode","GetInitPFCodeByDesc");
+		if ((unsigned long)(*DBObjPtr)(csTmp,csTxnCode) == PD_FOUND) {
+			PutField_CString(hTxn,"txn_code",csTxnCode);
+DEBUGLOG(("CreatePendingFundTxn txn_code [%s]\n",csTxnCode));
+		}
+	}
+
+	if(GetField_CString(hDtl,"ccy",&csTmp)){
+		PutField_CString(hTxn,"txn_ccy",csTmp);
+		PutField_CString(hTxn,"net_ccy",csTmp);
+DEBUGLOG(("CreatePendingFundTxn txn_ccy [%s]\n",csTmp));
+	}
+
+	if(GetField_CString(hDtl,"baid_name",&csTmp)){
+		DBObjPtr = CreateObj(DBPtr,"DBOLBankAcctId","GetPFBankAcctByBAIDName");
+		if ((unsigned long)(*DBObjPtr)(csTmp,hTmp) == PD_FOUND) {
+			if(GetField_CString(hTmp,"int_bank_code",&csTmp)){
+				PutField_CString(hTxn,"bank_code",csTmp);
+DEBUGLOG(("CreatePendingFundTxn int_bank_code [%s]\n",csTmp));
+			}
+			if(GetField_CString(hTmp,"bank_acct_num",&csTmp)){
+				PutField_CString(hTxn,"bank_acct_num",csTmp);
+DEBUGLOG(("CreatePendingFundTxn bank_acct_num [%s]\n",csTmp));
+			}
+			if(GetField_CString(hTmp,"psp_id",&csTmp)){
+				PutField_CString(hTxn,"psp_id",csTmp);
+DEBUGLOG(("CreatePendingFundTxn psp_id [%s]\n",csTmp));
+			}
+			if(GetField_CString(hTmp,"baid",&csTmp)){
+				PutField_CString(hTxn,"baid",csTmp);
+DEBUGLOG(("CreatePendingFundTxn baid [%s]\n",csTmp));
+
+				char csTxnCountry[PD_COUNTRY_LEN + 1];
+				DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+				if ((unsigned long)(*DBObjPtr)(csTmp,csTxnCountry) == FOUND) {
+					PutField_CString(hTxn,"txn_country",csTxnCountry);
+DEBUGLOG(("CreatePendingFundTxn txn_country [%s]\n",csTxnCountry));
+				}
+
+			}
+		}
+	}
+
+	if(GetField_CString(hDtl,"remark",&csTmp)){
+		PutField_CString(hTxn,"remark",csTmp);
+DEBUGLOG(("CreatePendingFundTxn remark [%s]\n",csTmp));
+	}
+
+	if(GetField_Double(hDtl,"debit_amt",&dAmt)){
+		PutField_CString(hTxn,"amount_type",PD_DR);
+		PutField_Char(hTxn, "amt_type", PD_IND_DEBIT);
+	}
+	else if(GetField_Double(hDtl,"credit_amt",&dAmt)){
+		PutField_CString(hTxn,"amount_type",PD_CR);
+		PutField_Char(hTxn, "amt_type", PD_IND_CREDIT);
+	}
+	PutField_Double(hTxn,"txn_amount",dAmt);
+	PutField_Double(hTxn,"txn_amt",dAmt);
+	PutField_Double(hTxn,"net_amt",dAmt);
+	PutField_Double(hTxn,"display_amt",dAmt);
+
+DEBUGLOG(("CreatePendingFundTxn: Call OMTChannel: AddTxnLog\n"));
+	ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","AddTxnLog");
+	iRet = (unsigned long)(*ChannelObjPtr)(hTxn,hTxn);
+
+	if(iRet == PD_OK){
+		//Add txn_psp_detail
+DEBUGLOG(("CreatePendingFundTxn:: Call DBOLTxnPspDetail: Add\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+		if ((unsigned long)(*DBObjPtr)(hTxn) != PD_OK) {
+			iRet = INT_ERR;
+		}
+	}
+
+	if(iRet == PD_OK){
+		//Update Balance
+		PutField_CString(hTxn, "pool", PD_ACCT_BAL_POOL);
+DEBUGLOG(("CreatePendingFundTxn::Call BOOLBalance:UpdateAmount\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOOLBalance","UpdateAmount");
+                iRet = (unsigned long)(*BOObjPtr)(hTxn);
+	}
+
+	if(iRet == PD_OK){
+		//Update txn_psp_detail
+DEBUGLOG(("CreatePendingFundTxn:: Call DBOLTxnPspDetail: Update\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Update");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+	}
+
+	if(iRet == PD_OK){
+		//Add Elements
+		PutField_CString(hTxn,"txn_element_type",PD_ELEMENT_TXN_AMT);
+
+DEBUGLOG(("CreatePendingFundTxn:: Call BOOLTxnElements:AddPspTxnElement \n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "AddPspTxnElement");
+		iRet = (unsigned long)(*BOObjPtr)(hTxn);
+	}
+
+	if(iRet == PD_OK){
+		//Update txn_header
+		PutField_Char(hTxn, "status", PD_COMPLETE);
+		PutField_Char(hTxn, "ar_ind", PD_ACCEPT);
+		PutField_CString(hTxn, "sub_status", PD_APPROVED);
+		PutField_Char(hTxn, "recon_status", PD_UNRECONCILED);
+		PutField_Int(hTxn,"internal_code",iRet);
+		PutField_CString(hTxn,"response_code","0");
+
+DEBUGLOG(("CreatePendingFundTxn:: Call DBOLTransaction: Update\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+	}
+	if(iRet == PD_OK){
+		//Update pf_init_txn_detail
+		PutField_CString(hTxn,"file_id",csFileId);
+		if(GetField_Int(hDtl,"seq",&iSeq)){
+			PutField_Int(hTxn,"seq",iSeq);
+		}
+
+DEBUGLOG(("CreatePendingFundTxn:: Call DBOLPFTxnInit: UpdateDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLPFTxnInit","UpdateDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+	}
+
+
+	if(iRet!=PD_OK){
+		TxnAbort();
+		iRet = INT_ERR;
+		PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("CreatePendingFundTxn: Failed!!!!! TxnAbort\n"));
+ERRLOG("TxnOmtByUsPTI::CreatePendingFundTxn: Txn Failed!!!!! TxnAbort\n");
+	}	
+
+	FREE_ME(csTxnCode);
+	FREE_ME(hTxn);
+	FREE_ME(hTmp);
+	return iRet;
+}

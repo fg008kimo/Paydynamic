@@ -1,0 +1,183 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/08              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtOnUsEFX.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtOnUsEFX(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csTxnCcy;
+	char	*csToCcy;
+	char	*csTxnCountry;
+	char	*csServiceCode;
+	char	*csMerchantId;
+	char	*csTmp;
+	double	dAmt;
+	double	dSrcAmt;
+	hash_t	*hRec;
+	char    csTag[PD_TAG_LEN +1];
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+
+	if(GetField_CString(hRequest,"ip_addr",&csTmp)){
+DEBUGLOG(("Authorize::ip_addr= [%s]\n",csTmp));
+	}
+
+	PutField_CString(hContext,"update_user",PD_UPDATE_USER);
+
+	if(GetField_CString(hRequest,"mid",&csMerchantId)){
+DEBUGLOG(("Authorize::mid= [%s]\n",csMerchantId));
+                PutField_CString(hContext,"merchant_id",csMerchantId);
+   		PutField_CString(hRequest,"merchant_id",csMerchantId);
+	}
+        else{
+DEBUGLOG(("Authorize::mid not found!!\n"));
+                iRet=INT_MERCHANT_ID_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+	if(GetField_CString(hRequest,"ccy",&csTxnCcy)){
+DEBUGLOG(("Authorize::ccy= [%s]\n",csTxnCcy));
+		PutField_CString(hRequest,"txn_ccy",csTxnCcy);
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"country",&csTxnCountry)){
+DEBUGLOG(("Authorize::country= [%s]\n",csTxnCountry));
+		PutField_CString(hRequest,"txn_country",csTxnCountry);
+        }
+        else{   
+DEBUGLOG(("Authorize::country not found!!\n"));
+                iRet=INT_TXN_COUNTRY_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        if(GetField_CString(hRequest,"service_code",&csServiceCode)){
+DEBUGLOG(("Authorize::sevice_code= [%s]\n",csServiceCode));
+		PutField_CString(hRequest,"service_code",csServiceCode);
+        }
+
+	if(GetField_Double(hContext,"txn_amt",&dAmt)){
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dAmt));
+        }       
+        else{   
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+                iRet=INT_PAY_AMOUNT_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+	if(iRet==PD_OK){
+                BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("GetMerchantDetail\n"));
+	}
+
+	if(iRet==PD_OK){
+		int iCnt = 1;
+		DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindAllCurrency");
+		if((*DBObjPtr)(rRecordSet) == PD_OK){
+			///use [STR] to find markup fee///
+			PutField_CString(hContext,"txn_code",PD_SETTLEMENT_REQUEST);
+
+			hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+				sprintf(csTag,"to_ccy_%d",iCnt);
+				if (GetField_CString(hRec,"to_ccy",&csToCcy)) {
+                                        PutField_CString(hResponse,csTag,csToCcy);
+DEBUGLOG(("GetAviCurrency::to_ccy = [%s]\n",csToCcy));
+
+					double dSrcMarkup, dExRate, dRate, dExAmt, dOrgDestAmt, dMarkupAmt;
+					BOObjPtr = CreateObj(BOPtr,"BOExchange","GetSettlementExternalExchangeInfo");
+					if ((*BOObjPtr)(hContext,hRequest,csTxnCcy,csToCcy,dAmt) == PD_OK) {
+DEBUGLOG(("GetExternalExchangeRate Success\n"));
+                 	       			if(GetField_Double(hContext,"src_psp_txn_amt",&dSrcAmt)){
+                        	        		dSrcMarkup = dAmt - dSrcAmt;
+DEBUGLOG(("Source markup=[%lf]\n",dSrcMarkup));
+                        			}
+        
+                        			if(GetField_Double(hContext,"ex_rate",&dExRate)){
+DEBUGLOG(("Org Exchange rate=[%lf]\n",dExRate));
+
+							dOrgDestAmt = dAmt * dExRate;
+DEBUGLOG(("Destination Amount without markup=[%lf]\n",dOrgDestAmt));
+                        			}
+                 			       if(GetField_Double(hContext,"psp_txn_amt",&dExAmt)){
+							dMarkupAmt = dOrgDestAmt - dExAmt;
+DEBUGLOG(("Destination Amount with markup=[%lf]\n",dExAmt));
+DEBUGLOG(("Markup Amount=[%s][%lf]\n",csToCcy,dMarkupAmt));
+
+                               				dRate = dExAmt/dAmt;
+DEBUGLOG(("Final Exchange rate=[%lf]\n",dRate));
+							sprintf(csTag,"rate_%d",iCnt);
+                                			PutField_Double(hResponse,csTag,dRate);
+
+							sprintf(csTag,"dest_amt_%d",iCnt);
+                                			PutField_Double(hResponse,csTag,dExAmt);
+
+							sprintf(csTag,"mu_amt_%d",iCnt);
+                                			PutField_Double(hResponse,csTag,dMarkupAmt);
+                        			}
+
+                			}
+					
+                                }
+
+                                PutField_Int(hResponse,"total_cnt",iCnt);
+				iCnt ++;
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+			PutField_CString(hContext,"txn_code",PD_ENQUIRE_FX);
+		}
+	}
+
+/*
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                        iRet = (unsigned long) ((*DBObjPtr)(hReq));
+	}
+*/
+
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+DEBUGLOG(("TxnMgtOnUsEFX Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

@@ -1,0 +1,704 @@
+/*
+PDProTech(c)2017. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version (Clone from OPL)                      2018/11/12              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <string.h>
+#include <ctype.h>
+#include "queue_utility.h"
+#include "OIAChannel.h"
+#include "utilitys.h"
+#include "common.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "mydb.h"
+#include "mq_db.h"
+#include "dbutility.h"
+#include "langconvert.h"
+
+
+static char	cDebug;
+
+
+#define MY_CHAR_LA      0x61
+#define MY_CHAR_LZ      0x7A
+#define MY_CHAR_UA      0x41
+#define MY_CHAR_UZ      0x5A
+#define MY_DIGIT_0      0x30
+#define MY_DIGIT_1      0x31
+#define MY_DIGIT_9      0x39
+
+
+OBJPTR(Channel);
+OBJPTR(DB);
+OBJPTR(Msg);
+OBJPTR(Txn);
+OBJPTR(BO);
+
+
+int     UpdateContext(hash_t* hContext);
+int     doCheck( hash_t *hContext,const hash_t *hRequest, hash_t* hResponse);
+int     iSupported( hash_t *hContext, const hash_t *hRequest, hash_t *hResponse);
+int     doResponse(hash_t *hContext, hash_t *hResponse, hex_t *outMsg);
+int     doChkDuplicate(hash_t *hContext,const hash_t *hRequest, hash_t* hResponse);
+int     process_input_txn(hash_t *hContext, const hash_t *Request, hash_t *Response);
+
+
+void OIAChannel(char	cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int	process_txn(hash_t *hContext,
+		    const hex_t* inMsg,
+		    hex_t *outMsg)
+{
+	int     iRet = INT_NO_ERR;
+        int     iInternalErr = 0;
+
+	char	cTxnTypePtr;
+
+	char*	csBuf;
+	
+	hash_t	*hRequest,*hResponse;
+
+DEBUGLOG(("process_txn\n"));
+
+DEBUGLOG(("msg len = [%d]\n",inMsg->len));
+
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hResponse = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_init(hRequest,0);
+	hash_init(hResponse,0);
+
+	GetField_Char(hContext,"txn_type",&cTxnTypePtr);
+DEBUGLOG(("txn type = [%c]\n",cTxnTypePtr));
+
+	if (cTxnTypePtr ==  MQ_RESP ) {
+DEBUGLOG(("txn_type = [MQ_RESP]\n"));
+		if (iRet != PD_OK) {	
+			return iRet;
+		}
+	} else if (cTxnTypePtr == MQ_BOUNCE_BACK) {
+DEBUGLOG(("txn_type = [MQ_BOUNCE_BACK]\n"));
+	}
+
+        if (iRet == PD_OK) {
+                iRet  = UpdateContext(hContext);
+        }
+
+	if (iRet == PD_OK) {
+		ChannelObjPtr = CreateObj(ChannelPtr,"OflComChannel","deBlock");
+		iRet = (unsigned long) (*ChannelObjPtr)(hContext,hRequest, hResponse,inMsg->msg, inMsg->len);
+DEBUGLOG(("process_txn iRet = [%d] from deBlock \n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+		iRet = doCheck(hContext, hRequest, hResponse);
+	}
+
+	if (iRet == PD_OK) {
+		iRet = iSupported(hContext, hRequest, hResponse);
+	}
+
+	if (iRet == PD_OK) {
+		int	iChkDuplicate = PD_FALSE;
+		int	iCnt = 0;
+		int	iTmpRet = PD_OK;
+
+		GetField_Int(hContext, "chk_ref_duplicate", &iChkDuplicate); 	
+		if (iChkDuplicate) {
+
+			iCnt++;
+			PutField_Int(hContext, "chk_duplicate_cnt", iCnt);
+DEBUGLOG(("process_txn doChkDuplicate[%d]\n", iCnt));
+			iRet = doChkDuplicate(hContext, hRequest, hResponse);
+		}
+
+		if (iRet == PD_OK || iRet == INT_DUP_MERCHANT_REF || iRet == INT_INVALID_MERCHANT_REF) {
+			ChannelObjPtr = CreateObj(ChannelPtr,"OflComChannel","AddTxnReqRef");
+			iTmpRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest);
+DEBUGLOG(("process_txn iRet = [%d] from AddTxnReqRef \n",iTmpRet)); 
+
+			if (iTmpRet != PD_OK) {
+				iRet = iTmpRet;
+			}
+		}
+
+		if (iRet == PD_OK && iChkDuplicate) {
+			// Need do chkduplicate again after add log, prevent too many txn with same ref to receive in same time
+			iCnt++;
+			PutField_Int(hContext, "chk_duplicate_cnt", iCnt);
+DEBUGLOG(("process_txn doChkDuplicate[%d]\n", iCnt));
+			iRet = doChkDuplicate(hContext, hRequest, hResponse);
+		}
+
+		//AddNonTxnMsgLog
+		if (iRet == PD_OK) {
+			ChannelObjPtr = CreateObj(ChannelPtr,"OflComChannel","AddNonTxnMsgLog");
+                        iTmpRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest);
+DEBUGLOG(("process_txn iRet = [%d] from AddNonTxnMsgLog \n",iTmpRet));
+
+                        if (iTmpRet != PD_OK) {
+                                iRet = iTmpRet;
+                        }
+		}
+
+		//process_input_txn	
+		if (iRet == PD_OK) {
+			iRet = process_input_txn(hContext,hRequest,hResponse);
+                }
+	}
+
+	if (iRet == PD_OK || GetField_Int(hContext,"internal_error",&iInternalErr))  {
+
+ 		csBuf = (char*) malloc (128);
+		sprintf(csBuf,"%d",iInternalErr);
+		PutField_CString(hResponse,"response_code",csBuf);
+DEBUGLOG(("Result_Code = [%s], iInternetalErr = [%d]\n",csBuf,iInternalErr));
+		FREE_ME(csBuf);
+		PutField_Int(hContext,"internal_code",iInternalErr);
+		PutField_Char(hContext, "status", PD_COMPLETE);
+
+		//UpdateTxnReqRef
+		ChannelObjPtr = CreateObj(ChannelPtr,"OflComChannel","UpdateTxnReqRef");
+		iRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest);
+DEBUGLOG(("process_txn iRet = [%d] from UpdateTxnReqRef \n",iRet)); 
+
+		//UpdateNonTxnMsgLog
+                ChannelObjPtr = CreateObj(ChannelPtr,"OflComChannel","UpdateNonTxnMsgLog");
+                iRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest,hResponse);
+DEBUGLOG(("process_txn iRet = [%d] from UpdateNonTxnMsgLog \n",iRet));		
+
+		iRet = PD_OK;
+	}
+
+	if (iRet == PD_OK || iRet == PD_SKIP_OK) {
+		doResponse(hContext, hResponse, outMsg);
+	}
+
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+DEBUGLOG(("OIAChannel Normal Exit [%d]\n",iRet));
+	return iRet;
+}
+
+
+int     process_input_txn(hash_t *hContext,
+                          const hash_t *hRequest,
+                          hash_t *hResponse)
+{
+        int     iRet = PD_OK;
+
+        char*   csTxnCode = NULL;
+        char*   csHandler = NULL;
+        char*   csChannelCodePtr = NULL;
+
+DEBUGLOG(("process_input_txn\n"));
+        csHandler = (char*) malloc (PD_HANDLER_LEN +1);
+
+        if (GetField_CString(hContext,"channel_code",&csChannelCodePtr)) {
+DEBUGLOG(("process_input_txn: channel code = [%s]\n",csChannelCodePtr));
+        }
+        else {
+DEBUGLOG(("process_input_txn: unable to get channel code\n"));
+                        iRet = PD_ERR;
+        }
+
+        if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("process_input_txn: txn_code = [%s]\n",csTxnCode));
+        }
+        else {
+                iRet = PD_ERR;
+DEBUGLOG(("process_input_txn: txn_code not found\n"));
+        }
+
+        if (iRet == PD_OK) {
+                sprintf(csHandler,"Txn%c%sOnUsCOM",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]));
+                TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+        }
+
+        if (iRet == PD_OK) {
+                sprintf(csHandler,"Txn%c%sByUs%s",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]),csTxnCode);
+DEBUGLOG(("process_input_txn Create Txn Object [%s]\n",csHandler));
+                TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+DEBUGLOG(("iRet = [%d]\n",iRet));
+        }
+
+        FREE_ME(csTxnCode);
+        FREE_ME(csHandler);
+DEBUGLOG(("process_input() exit iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+
+int     UpdateContext(hash_t* hContext)
+{
+	int	iRet = PD_OK;
+
+	char	*csTxnSeqPtr;
+	char	*csQueueName;
+
+	long    lKey;
+
+	if (GetField_CString(hContext,"reply_queue",&csQueueName)) {
+DEBUGLOG(("UpdateContext:reply queue = [%s]\n",csQueueName));
+		lKey = GetMQKey((unsigned char*)csQueueName);
+        	PutField_Long(hContext,"queue_key",lKey);
+DEBUGLOG(("UpdateContext:reply queue key = [%ld]\n",lKey));
+	}
+
+	ChannelObjPtr = CreateObj(ChannelPtr,"OflComChannel","UpdateContext");
+	iRet = (unsigned long) (*ChannelObjPtr)(hContext);
+	if (iRet == PD_OK) {
+// Need to change call BO, and then DB ??
+		DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextOiaTxnSeq");
+                csTxnSeqPtr = (DBObjPtr)();
+DEBUGLOG(("UpdateContext:: txn_seq = [%s]\n",csTxnSeqPtr));
+                PutField_CString(hContext,"txn_seq",csTxnSeqPtr);
+        }
+
+DEBUGLOG(("UpdateContext::iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int	doCheck( hash_t *hContext,const hash_t *hRequest, hash_t* hResponse)
+{
+	int 	iRet = PD_OK;
+
+	char	*csPtr;
+	char	*csEncTypePtr;
+	char	*csKeyVersionPtr;
+	char	*csMacPtr;
+	char	*csChannelCodePtr;	
+	char	*csHandler;	
+
+/*check API header parameters*/
+
+//msg_type
+	if (GetField_CString(hRequest,"process_type",&csPtr)) {
+DEBUGLOG(("doCheck: msg_type = [%s]\n",csPtr));
+		if (strlen(csPtr) != PD_PROCESS_TYPE_LEN) {
+DEBUGLOG(("doCheck: msg_type is invalid!!!!!\n"));
+			iRet = INT_BREAKDOWN_ERR;
+		}
+	}
+	else {
+DEBUGLOG(("doCheck: msg_type is missing!!!!!\n"));
+		iRet = INT_BREAKDOWN_ERR;
+	}
+
+//msg_code
+	if (GetField_CString(hRequest,"process_code",&csPtr)) {
+DEBUGLOG(("doCheck: msg_code = [%s]\n",csPtr));
+		if (strlen(csPtr) != PD_PROCESS_CODE_LEN) {
+DEBUGLOG(("doCheck: msg_code is invalid!!!!!\n"));
+                        iRet = INT_BREAKDOWN_ERR;
+                }
+	}
+	else {
+DEBUGLOG(("doCheck: msg_code is missing!!!!!\n"));
+		iRet = INT_BREAKDOWN_ERR;
+	}
+
+//version
+	if (GetField_CString(hRequest,"version",&csKeyVersionPtr)) {
+DEBUGLOG(("doCheck: version = [%s]\n",csKeyVersionPtr));
+		if (strlen(csKeyVersionPtr) > PD_OL_KEY_VER_LEN) {
+DEBUGLOG(("doCheck: version is invalid!!!!!\n"));
+                        iRet = INT_BREAKDOWN_ERR;
+                }
+	}
+	else {
+DEBUGLOG(("doCheck: version is missing!!!!!\n"));
+		iRet = INT_BREAKDOWN_ERR;
+	}
+
+//enc type
+	if (GetField_CString(hRequest,"enc_type",&csEncTypePtr)) {
+DEBUGLOG(("doCheck: enc_type = [%s]\n",csEncTypePtr));
+		if (strlen(csEncTypePtr) != PD_OL_ENC_TYPE_LEN) {
+DEBUGLOG(("doCheck: enc_type is invalid!!!!!\n"));
+                        iRet = INT_BREAKDOWN_ERR;
+                }
+	}
+	else {
+DEBUGLOG(("doCheck: enc_type is missing!!!!!\n"));
+		iRet = INT_BREAKDOWN_ERR;
+	}
+
+//sign
+	if (GetField_CString(hRequest,"mac",&csMacPtr)) {
+DEBUGLOG(("doCheck: sign = [%s]\n",csMacPtr));
+/*
+		if (strlen(csEncTypePtr) != 32) {
+DEBUGLOG(("doCheck: sign is invalid!!!!!\n"));
+                        iRet = INT_MAC_ERR;
+                }
+*/
+	}
+	else {
+DEBUGLOG(("doCheck: sign is missing!!!!!\n"));
+		iRet = INT_MAC_NOT_FOUND;
+	}
+
+/*check required parameters*/
+
+//channel code
+	if (GetField_CString(hContext,"channel_code",&csChannelCodePtr)) {
+DEBUGLOG(("doCheck: channel code = [%s]\n",csChannelCodePtr));
+	}
+	else  {
+DEBUGLOG(("doCheck: unable to get channel code\n"));
+		iRet = PD_ERR;
+	}
+
+//Validation Fields??
+//
+// Data Type: 
+// 1. english character: a-z / A-Z
+// 2. digit 0-9
+// 3. english character + digit
+// 4. amount format
+//
+// Length:
+// min, max? include
+//
+// Must exists in def table:
+//
+
+//Get Channel Key 
+	if (iRet == PD_OK) {
+
+		hash_t	*hChannelKey;
+		hChannelKey = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hChannelKey, 0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLChannelKeys","GetChannelKey");
+		iRet = (unsigned long)(*DBObjPtr)(csChannelCodePtr, csEncTypePtr, csKeyVersionPtr, hChannelKey);
+		if(iRet == PD_OK) {
+			if(GetField_CString(hChannelKey, "key_value", &csPtr)) {
+				PutField_CString(hContext, "key", csPtr);
+DEBUGLOG(("doCheck: key =[%s]\n",csPtr));
+			} else {
+				iRet = INT_ERR;
+DEBUGLOG(("doCheck: GetChannelKey key_value not found!!!!!\n"));
+ERRLOG(("OIAChannel::doCheck() GetChannelKey key_value not found\n"));
+			}
+		} else {
+				iRet = INT_ERR;
+DEBUGLOG(("doCheck: GetChannelKey not found!!!!!\n"));
+ERRLOG(("OIAChannel::doCheck() GetChannelKey not found\n"));
+		}
+	
+		hash_destroy(hChannelKey);
+		FREE_ME(hChannelKey);
+	}
+
+//verify mac
+	if(iRet == PD_OK){
+
+		char*   csAuthDataPtr;
+
+		if (GetField_CString(hRequest,"auth_data",&csAuthDataPtr)) {
+DEBUGLOG(("Authorize() mac =[%s]\n",csMacPtr));
+DEBUGLOG(("Authorize() auth_data =[%s]\n",csAuthDataPtr));
+			csHandler = (char*) malloc (PD_HANDLER_LEN +1);
+			sprintf(csHandler,"BO%c%sSecurity",csChannelCodePtr[0],stringLwr(&csChannelCodePtr[1]));
+			BOObjPtr = CreateObj(BOPtr,csHandler,"VerifyMac");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+			if (iRet != PD_OK) {
+DEBUGLOG(("OIAChannel:Authorize() Invalid MAC, message dropped\n"));
+ERRLOG("OIAChannel:Authorize() Invalid MAC, message dropped\n");
+			}
+
+			FREE_ME(csHandler);
+		}
+		else {
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize() auth_data not found\n"));
+ERRLOG(("OiaChannel::Authorize() auth_data not found\n"));
+		}
+	}
+
+	return iRet;
+}
+
+
+int     iSupported( hash_t *hContext, const hash_t *hRequest, hash_t *hResponse)
+{
+	int     iRet = PD_OK;
+
+	int     iDoLogging = PD_FALSE;
+        int     iChkDuplicate = PD_FALSE;
+        int     iNonTxn = PD_TRUE;
+
+	char    *csProcessTypePtr;
+	char    *csProcessCodePtr;
+	char	*csChannelCodePtr;
+
+	char    *csTxnCode;
+	char    *csTxnDesc;
+
+	csTxnCode = (char*) malloc (PD_TXN_CODE_LEN +1 );
+	csTxnDesc = (char*) malloc (PD_DESC_LEN + 1);
+
+	if (GetField_CString(hRequest,"process_type",&csProcessTypePtr)) {
+DEBUGLOG(("iSupported:process_type = [%s]\n",csProcessTypePtr));
+
+//Response Process Type
+
+		char csRespProcessType[PD_PROCESS_TYPE_LEN+1];
+		sprintf(csRespProcessType, csProcessTypePtr);
+
+		csRespProcessType[PD_PROCESS_TYPE_LEN-1] = PD_PROCESS_TYPE_RESP_CODE;
+		PutField_CString(hResponse,"process_type",csRespProcessType);
+DEBUGLOG(("iSupported:response process_type = [%s]\n",csRespProcessType));
+	}
+
+	if (!GetField_CString(hRequest,"process_code",&csProcessCodePtr)) {
+		csProcessCodePtr = strdup("000000");
+	}
+DEBUGLOG(("iSupported:process_code = [%s]\n",csProcessCodePtr));
+
+	DBObjPtr = CreateObj(DBPtr,"DBTxnCode","FindTxnCode");
+	if (!(*DBObjPtr)(csTxnCode,
+			csTxnDesc,
+			csProcessTypePtr,
+			csProcessCodePtr)) {
+
+		iRet = INT_INVALID_TXN;
+
+		PutField_Int(hContext,"internal_error",iRet);
+		PutField_Int(hContext,"not_update_log",PD_TRUE);
+
+DEBUGLOG(("iSupported:process_txn:Can't Find TxnCode [%s][%s]\n", csProcessTypePtr, csProcessCodePtr));
+ERRLOG("OIAChannel:Unsupported transaction [%s][%s]\n",csProcessTypePtr,csProcessCodePtr);
+	}
+	else {
+DEBUGLOG(("iSuuported to process txn\n"))
+		PutField_CString(hContext,"txn_code",csTxnCode);
+		PutField_CString(hContext,"txn_desc",csTxnDesc);
+
+		PutField_CString(hResponse,"txn_code",csTxnCode);
+
+DEBUGLOG(("iSupported: TxnCode = [%s]\n",csTxnCode));
+DEBUGLOG(("iSupported: TxnDesc = [%s]\n",csTxnDesc));
+	}
+	
+	if (iRet == PD_OK) {
+
+		if (GetField_CString(hContext,"channel_code",&csChannelCodePtr)) {
+DEBUGLOG(("iSupported: channel code = [%s]\n",csChannelCodePtr));
+		}
+		else  {
+DEBUGLOG(("iSupported: unable to get channel code\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSupported","FindTxnSupported");
+
+		if ((*DBObjPtr)(csChannelCodePtr,csTxnCode) != PD_OK) {
+			iRet = INT_INVALID_TXN;
+
+			PutField_Int(hContext,"internal_error",iRet);
+			PutField_Int(hContext,"not_update_log",PD_TRUE);
+
+DEBUGLOG(("iSupported: unsupported txn code [%s][%s]\n",csChannelCodePtr,csTxnCode));
+ERRLOG("OIAChannel: unsupported txn code [%s][%s]\n",csChannelCodePtr,csTxnCode);
+		}
+		else{
+			DBObjPtr = CreateObj(DBPtr, "DBTxnSupported", "IsDoLogging");
+			iDoLogging = (unsigned long)(*DBObjPtr)(csChannelCodePtr, csTxnCode);
+
+			PutField_Int(hContext, "do_logging", iDoLogging);
+DEBUGLOG(("iSupported: supported txn code [%s][%s] logging [%d]\n",csChannelCodePtr,csTxnCode, iDoLogging));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		// Network Message 
+		if (!memcmp(csProcessTypePtr,PD_PROCESS_TYPE_NETWORK,3)) {
+			iChkDuplicate = PD_FALSE;
+			iNonTxn = PD_TRUE;
+		} else {
+			iChkDuplicate = PD_TRUE;
+			iNonTxn = PD_FALSE;
+		}
+		PutField_Int(hContext, "chk_ref_duplicate", iChkDuplicate);
+		PutField_Int(hContext, "is_non_txn", iNonTxn);
+DEBUGLOG(("iSupported: supported chk_ref_duplicate [%d]\n", iChkDuplicate)); 
+DEBUGLOG(("iSupported: is Non-Txn [%d]\n", iNonTxn)); 
+	}
+
+DEBUGLOG(("iSupported normal return iRet = [%d]\n",iRet));
+	FREE_ME(csTxnCode);
+	FREE_ME(csTxnDesc);
+
+	return iRet;
+}
+
+
+int doResponse(hash_t *hContext,
+	       hash_t *hResponse,
+	       hex_t *outMsg)
+{
+	int iRet;
+
+DEBUGLOG(("call OflComChannel:enBlock\n"));
+	ChannelObjPtr = CreateObj(ChannelPtr, "OflComChannel", "enBlock");
+	iRet = (unsigned long)(*ChannelObjPtr)(hContext, hResponse, outMsg);
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("try to call OflComChannel:doResponse\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr, "OflComChannel", "doResponse");
+		iRet = (unsigned long)(*ChannelObjPtr)(hContext, outMsg);
+	}
+
+	if (iRet != PD_OK) {
+DEBUGLOG(("doResponse Fatal error!!! [%d]\n", iRet));
+ERRLOG("doResponse Fatal error!!! [%d]\n", iRet);
+	}
+	else{
+DEBUGLOG(("doResponse Normal Exit [%d]\n", iRet));
+	}
+
+	return iRet;
+}
+
+
+int doChkDuplicate(hash_t *hContext,
+		   const hash_t *hRequest,
+		   hash_t* hResponse) 
+{
+	int	iRet = PD_OK;
+
+	int	iMaxLen = 0;
+	int     iTmp = 0;
+
+	char*	csTxnCodePtr = NULL;
+	char*	csChannelCodePtr = NULL;
+	char*	csRequestRefPtr = NULL;
+	char*	csTxnSeq = NULL;
+
+	char    csTag[PD_TAG_LEN + 1];
+
+	hash_t  *hCheck;
+        hCheck = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hCheck, 0);
+
+	hash_t	*hRef;
+	hRef = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRef, 0);
+
+	if (GetField_CString(hContext,"txn_code", &csTxnCodePtr)) {
+DEBUGLOG(("doChkDuplicate: txn code = [%s]\n", csTxnCodePtr));
+                PutField_CString(hRef, "txn_code", csTxnCodePtr);
+        }
+        else  {
+DEBUGLOG(("doChkDuplicate: unable to get txn code\n"));
+                iRet = INT_ERR;
+        }
+
+	if (GetField_CString(hContext,"channel_code", &csChannelCodePtr)) {
+DEBUGLOG(("doChkDuplicate: channel code = [%s]\n", csChannelCodePtr));
+		PutField_CString(hRef, "channel_code", csChannelCodePtr);
+	}
+	else  {
+DEBUGLOG(("doChkDuplicate: unable to get channel code\n"));
+		iRet = INT_ERR;
+	}
+
+	if (GetField_CString(hRequest,"req_ref", &csRequestRefPtr)) {
+DEBUGLOG(("doChkDuplicate: req_ref = [%s]\n", csRequestRefPtr));
+		PutField_CString(hRef, "req_ref", csRequestRefPtr);
+		sprintf(csTag, "req_ref");
+	} else {
+DEBUGLOG(("doChkDuplicate: unable to get req_ref\n"));
+		iRet = INT_TXN_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if (GetField_Int(hContext, "chk_duplicate_cnt", &iTmp)) {
+		if (iTmp > 1) {
+			if (GetField_CString(hContext,"txn_seq", &csTxnSeq)) {
+DEBUGLOG(("doChkDuplicate: txn_seq = [%s]\n", csTxnSeq));
+				PutField_CString(hRef, "txn_seq", csTxnSeq);
+			} else {
+DEBUGLOG(("doChkDuplicate: unable to get txn_seq \n"));
+				iRet = INT_ERR;
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBTxnFieldCheck","FindParamByFieldTag");
+                if ((unsigned long)(DBObjPtr)(csChannelCodePtr,csTxnCodePtr,csTag,hCheck) == PD_OK) {
+			if (GetField_Int(hCheck,"max_len", &iMaxLen)) {
+				if (strlen(csRequestRefPtr) > iMaxLen) {
+					iRet = INT_INVALID_MERCHANT_REF;
+					PutField_Int(hContext,"internal_error",iRet);
+					PutField_Int(hContext,"do_logging",PD_NO_LOG);
+					PutField_Int(hContext,"not_update_log",PD_TRUE);
+	
+ERRLOG("Channel[%s] - req_ref[%s] Invalid Ref (string Len[%d] > Max Len[%d])!\n", csChannelCodePtr, csRequestRefPtr, strlen(csRequestRefPtr), iMaxLen);
+DEBUGLOG(("Channel[%s] - req_ref[%s] Invalid Ref (String Len[%d] > Max Len[%d])!\n", csChannelCodePtr, csRequestRefPtr, strlen(csRequestRefPtr), iMaxLen));
+				} else {
+					int i = 0;
+                                   	for (i = 0; i < strlen(csRequestRefPtr); i++) {
+                                        	if (!ascii_range(&csRequestRefPtr[i], 1, MY_CHAR_UA, MY_CHAR_UZ) &&
+                                                    !ascii_range(&csRequestRefPtr[i], 1, MY_CHAR_LA, MY_CHAR_LZ) &&
+                                                    !ascii_range(&csRequestRefPtr[i], 1, MY_DIGIT_0, MY_DIGIT_9))
+						{
+							iRet = INT_INVALID_MERCHANT_REF;
+                                        		PutField_Int(hContext,"internal_error",iRet);
+
+ERRLOG("Channel[%s] - req_ref[%s] Invalid Ref (included unsupport charater(s))!\n", csChannelCodePtr, csRequestRefPtr);
+DEBUGLOG(("Channel[%s] - req_ref[%s] Invalid Ref (included unsupport charater(s))!\n", csChannelCodePtr, csRequestRefPtr)); 
+							break;
+                                               	}
+                                     	}
+				}
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBOLTxnRequestRef","MatchRequestRef");
+		if ((unsigned long)(DBObjPtr)(hRef) != NOT_FOUND) {
+// Need a new error code?
+			iRet  = INT_DUP_MERCHANT_REF;  
+			PutField_Int(hContext,"internal_error",iRet);
+
+ERRLOG("Channel[%s] - req_ref[%s] Duplicate Ref!\n", csChannelCodePtr, csRequestRefPtr);
+DEBUGLOG(("Channel[%s] - req_ref[%s] Duplicate Ref!\n", csChannelCodePtr, csRequestRefPtr));
+		}
+	}
+
+	hash_destroy(hCheck);
+        FREE_ME(hCheck);
+
+	hash_destroy(hRef);
+	FREE_ME(hRef);
+
+DEBUGLOG(("doChkDuplicate Exit [%d]\n", iRet));
+	return iRet;
+}
+

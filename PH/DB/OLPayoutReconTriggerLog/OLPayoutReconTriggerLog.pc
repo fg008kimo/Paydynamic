@@ -1,0 +1,381 @@
+/*
+PDProTech (c)2021. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2021/02/02              [MIC]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include "OLPayoutReconTriggerLog.h"
+#include "common.h"
+#include "dbutility.h"
+#include "internal.h"
+#include "utilitys.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+static char cDebug;
+
+void OLPayoutReconTriggerLog(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+
+int CheckConflict(const hash_t* hRls)
+{
+	char *csTmp;
+	int iTriggerSeq;
+	int iCnt = 0;
+
+	EXEC SQL WHENEVER SQLERROR GOTO checkconflict_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_provider_id[PD_CLIENT_ID_LEN];
+
+		int	v_trigger_seq;
+		varchar v_create_user[PD_CREATE_USER_LEN + 1];
+		varchar v_create_timestamp[PD_DATETIME_LEN + 1];
+		varchar	v_provider_id[PD_CLIENT_ID_LEN + 1];
+
+		short	ind_trigger_seq = -1;
+		short	ind_create_user = -1;
+		short	ind_create_timestamp = -1;
+		short	ind_provider_id = -1;
+		
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hRls, "provider_id", &csTmp)) {
+		hv_provider_id.len = strlen(csTmp);
+		memcpy(hv_provider_id.arr, csTmp, hv_provider_id.len);
+DEBUGLOG(("CheckConflict: s_provider_id = [%.*s]\n", hv_provider_id.len, hv_provider_id.arr));
+	}
+
+	if (GetField_CString(hRls, "trigger_seq", &csTmp)) {
+		iTriggerSeq = atoi(csTmp);
+DEBUGLOG(("CheckConflict: trigger_seq = [%d]\n", iTriggerSeq));
+	}
+
+	EXEC SQL DECLARE c_cursor_check_conflict CURSOR FOR
+		SELECT	trigger_seq,
+			create_user,
+			to_char(create_timestamp,'yyyymmddhh24miss'),
+			provider_id
+		FROM	table(sp_ol_pr_trigger_chk_conflict(:hv_provider_id))
+		ORDER BY trigger_seq;
+
+	EXEC SQL OPEN c_cursor_check_conflict;
+
+	do {
+		EXEC SQL FETCH c_cursor_check_conflict
+		INTO	:v_trigger_seq:ind_trigger_seq,
+			:v_create_user:ind_create_user,
+			:v_create_timestamp:ind_create_timestamp,
+			:v_provider_id:ind_provider_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_trigger_seq >= 0) {
+			if (v_trigger_seq != iTriggerSeq) {
+DEBUGLOG(("CheckConflict: v_trigger_seq = [%d]\n", v_trigger_seq));
+				iCnt++;
+			}
+		}
+	}  while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_check_conflict;
+
+DEBUGLOG(("iCnt = [%d]\n", iCnt));
+
+	if (iCnt > 0) {
+DEBUGLOG(("CheckConflict() FOUND\n"));
+		return PD_FOUND;
+	} else {
+DEBUGLOG(("CheckConflict() NOT FOUND\n"));
+		return PD_NOT_FOUND;
+	}
+
+checkconflict_error:
+DEBUGLOG(("checkconflict_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_check_conflict;
+DEBUGLOG(("CheckConflict: SP_INTERNAL_ERR\n"));
+ERRLOG("OLSemiAutoReconTriggerLog_CheckConflict: SP_INTERNAL_ERR\n");
+	return PD_INTERNAL_ERR;
+}
+
+
+
+int GetHeaderByFileId(unsigned long lTrigSeq, hash_t *hOut)
+{
+	int iRet = PD_OK;
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_header_by_fileid_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		unsigned long	hv_trigger_seq;
+
+		varchar		v_create_ts_from[PD_DATE_LEN + PD_TIME_LEN + 1];
+		varchar		v_create_ts_to[PD_DATE_LEN + PD_TIME_LEN + 1];
+		varchar		v_provider_id[PD_CLIENT_ID_LEN + 1];
+		char		v_trigger_status;
+		varchar		v_create_user[PD_USER_LEN + 1];
+
+		short		ind_create_ts_from		= -1;
+		short		ind_create_ts_to		= -1;
+		short		ind_provider_id			= -1;
+		short		ind_trigger_status		= -1;
+		short		ind_create_user			= -1;
+		
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("GetHeaderByFileId: Begin\n"));
+
+	/* trigger_seq */
+	hv_trigger_seq = lTrigSeq;
+DEBUGLOG(("- trigger_seq = [%lu]\n", hv_trigger_seq));
+
+	EXEC SQL 
+		SELECT	prl_create_ts_from, 
+			prl_create_ts_to, 
+			prl_provider_id, 
+			prl_trigger_status, 
+			prl_create_user
+		INTO	:v_create_ts_from:ind_create_ts_from, 
+			:v_create_ts_to:ind_create_ts_to, 
+			:v_provider_id:ind_provider_id, 
+			:v_trigger_status:ind_trigger_status,
+			:v_create_user:ind_create_user
+		FROM	ol_payout_recon_trigger_log 
+		WHERE	prl_trigger_seq = :hv_trigger_seq;
+
+	/* create_ts_from */
+	if (ind_create_ts_from >= 0)
+	{
+		v_create_ts_from.arr[v_create_ts_from.len] = '\0';
+DEBUGLOG(("- create_ts_from = [%s]\n", v_create_ts_from.arr));
+		PutField_CString(hOut, "create_ts_from", (const char *)v_create_ts_from.arr);
+	}
+
+	/* create_ts_to */
+	if (ind_create_ts_to >= 0)
+	{
+		v_create_ts_to.arr[v_create_ts_to.len] = '\0';
+DEBUGLOG(("- create_ts_to = [%s]\n", v_create_ts_to.arr));
+		PutField_CString(hOut, "create_ts_to", (const char *)v_create_ts_to.arr);
+	}
+
+	/* provider_id */
+	if (ind_provider_id >= 0)
+	{
+		v_provider_id.arr[v_provider_id.len] = '\0';
+DEBUGLOG(("- provider_id = [%s]\n", v_provider_id.arr));
+		PutField_CString(hOut, "provider_id", (const char *)v_provider_id.arr);
+	}
+
+	/* trigger_status */
+	if (ind_trigger_status >= 0)
+	{
+DEBUGLOG(("- trigger_status = [%c]\n", v_trigger_status));
+		PutField_Char(hOut, "trigger_status", v_trigger_status);
+	}
+
+	/* create_user */
+	if (ind_create_user >= 0)
+	{
+		v_create_user.arr[v_create_user.len] = '\0';
+DEBUGLOG(("- create_user = [%s]\n", v_create_user.arr));
+		PutField_CString(hOut, "create_user", (const char *)v_create_user.arr);
+	}
+	
+DEBUGLOG(("GetHeaderByFileId: Normal Exit\n"));
+	return iRet;
+
+get_header_by_fileid_error:
+DEBUGLOG(("get_header_by_fileid_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+int MatchHeaderStatusForUpdate(unsigned long lTrigSeq, const char cStatus)
+{
+	int iRet = PD_NOT_FOUND;
+
+	EXEC SQL WHENEVER SQLERROR GOTO match_header_status_for_update_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		unsigned long	hv_trigger_seq;
+		char		hv_trigger_status;
+
+		varchar		v_create_user[PD_USER_LEN + 1];
+
+		short		ind_create_user = -1;
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("MatchHeaderStatusForUpdate: Begin\n"));
+
+	/* trigger_seq */
+	hv_trigger_seq = lTrigSeq;
+DEBUGLOG(("- trigger_seq = [%lu]\n", hv_trigger_seq));
+
+	/* trigger_status */
+	hv_trigger_status = cStatus;
+DEBUGLOG(("- trigger_status = [%c]\n", hv_trigger_status));
+
+	EXEC SQL 
+		SELECT	prl_create_user 
+		INTO	:v_create_user:ind_create_user 
+		FROM	ol_payout_recon_trigger_log 
+		WHERE	prl_trigger_seq = :hv_trigger_seq AND 
+			prl_trigger_status = :hv_trigger_status 
+		FOR UPDATE;
+
+	/* create_user */
+	if (ind_create_user >= 0)
+	{
+DEBUGLOG(("MatchHeaderStatusForUpdate: Normal Exit\n"));
+		iRet = PD_FOUND;
+	}
+	else
+	{
+DEBUGLOG(("MatchHeaderStatusForUpdate: Normal Exit, Not Found\n"));
+	}
+
+	return iRet;
+
+match_header_status_for_update_error:
+DEBUGLOG(("match_header_status_for_update_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+int UpdateHeader(const hash_t *hIn)
+{
+	char	cTmp;
+	char	*csBuf;
+	char	*csTrigSeq;
+	char	*csTmp;
+	int	iTmp;
+	int	iRet = PD_OK;
+
+	EXEC SQL WHENEVER SQLERROR GOTO update_header_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_dynstmt[PD_TMP_MSG_BUF_LEN];
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("UpdateHeader: Begin\n"));
+
+	csBuf = (char*)malloc(PD_TMP_BUF_LEN);
+
+	strcpy((char*)hv_dynstmt.arr, "UPDATE ol_payout_recon_trigger_log SET prl_update_timestamp = SYSDATE");
+	hv_dynstmt.len = strlen((const char *)hv_dynstmt.arr);
+
+	/* trigger_seq */
+	if (GetField_CString(hIn, "trigger_seq", &csTrigSeq))
+	{
+DEBUGLOG(("- trigger_seq = [%s]\n", csTrigSeq));
+	}
+	else
+	{
+		FREE_ME(csBuf);
+DEBUGLOG(("UpdateHeader: trigger_seq not found\n"));
+
+		return PD_ERR;
+	}
+
+	/* create_ts_from */
+	if (GetField_CString(hIn, "create_ts_from", &csTmp))
+	{
+		strcat((char*)hv_dynstmt.arr, ", prl_create_ts_from = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- create_ts_from = [%s]\n", csTmp));
+	}
+
+	/* create_ts_to */
+	if (GetField_CString(hIn, "create_ts_to", &csTmp))
+	{
+		strcat((char*)hv_dynstmt.arr, ", prl_create_ts_to = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- create_ts_to = [%s]\n", csTmp));
+	}
+
+	/* provider_id */
+	if (GetField_CString(hIn, "provider_id", &csTmp))
+	{
+		strcat((char*)hv_dynstmt.arr, ", prl_provider_id = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- provider_id = [%s]\n", csTmp));
+	}
+
+	/* trigger_status */
+	if (GetField_Char(hIn, "trigger_status", &cTmp))
+	{
+		sprintf(csBuf, "%c", cTmp);
+		strcat((char*)hv_dynstmt.arr, ", prl_trigger_status = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- trigger_status = [%c]\n", cTmp));
+	}
+
+	/* update_user */
+	if (GetField_CString(hIn, "update_user", &csTmp))
+	{
+		strcat((char*)hv_dynstmt.arr, ", prl_update_user = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- update_user = [%s]\n", csTmp));
+	}
+
+	/* trigger_seq */
+	strcat((char*)hv_dynstmt.arr, " WHERE prl_trigger_seq = ");
+	strcat((char*)hv_dynstmt.arr, csTrigSeq);
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("- SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+	EXEC SQL EXECUTE PS;
+
+	FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateHeader: Normal Exit\n"));
+	return iRet;
+
+update_header_error:
+DEBUGLOG(("update_header_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLPayoutReconTriggerLog_UpdateHeader: SP_INTERNAL_ERR\n");
+DEBUGLOG(("UpdateHeader: SP_INTERNAL_ERR\n"));
+	return PD_ERR;
+}

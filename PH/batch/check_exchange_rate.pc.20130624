@@ -1,0 +1,471 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/06/06              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+char    cDebug;
+
+int check_job_processed();
+int check_num_of_currency(int *iNumOfCurrency);
+int check_num_of_update_ex_rate(int *iNumOfExRate);
+int get_currency_list(recordset_t *rSetA, recordset_t *rSetB);
+int check_ex_rate_value();
+int check_ex_value(char *csFromCcy, char *csToCcy, char *csDate_1, char *csDate_2, double *dValue_1, double *dValue_2);
+int get_ex_value(char *csFromCcyId, char *csToCcyId, char *csDateTime, hash_t *hRec);
+
+int	iTitle = 0;
+
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+
+	iRet = check_job_processed();
+
+	iRet = check_ex_rate_value();
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int check_job_processed()
+{
+	int	iRet = SUCCESS;
+
+	int	iNumOfCurrency = 0;
+	int	iNumOfExRate = 0;
+
+	iRet = check_num_of_currency(&iNumOfCurrency);
+	
+	if (iRet == SUCCESS) {
+		iRet = check_num_of_update_ex_rate(&iNumOfExRate);
+		
+		if (iRet == SUCCESS) {
+DEBUGLOG(("check_exchange_rate:: No. of Ccy Type [%d] , Today Total Created Ex Rate [%d]\n", iNumOfCurrency, iNumOfExRate));
+//printf("No. of CCy Type [%d] , Today Total Created Ex Rate [%d]\n", iNumOfCurrency, iNumOfExRate);
+
+			if ((iNumOfCurrency * iNumOfCurrency) != iNumOfExRate) {
+DEBUGLOG(("check_exchange_rate:: Unmatch expected no. of record!\n"));
+				//printf("UNMATCH expected no. of record!!\n");
+
+				printf("======================================================================\n");
+				printf("[No. of Currency Type		]: %d\n", iNumOfCurrency);
+				printf("[Today Created Ex Rate Record	]: %d\n", iNumOfExRate);
+				printf("[Result				]: Unmatch Expected no. of record\n");
+				printf("======================================================================\n\n");
+			}
+		}
+
+	}
+
+	return iRet;
+
+}
+
+
+
+int check_num_of_currency(int *iNumOfCurrency)
+{
+	int	iRet = FAILURE;
+
+	EXEC SQL WHENEVER SQLERROR GOTO chkcurrency_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int    v_no_of_record;
+		short  ind_no_of_record = -1;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("check_exchange_rate:: check_num_of_record\n"));
+
+        EXEC SQL
+            SELECT COUNT(1) 
+              INTO :v_no_of_record:ind_no_of_record
+              FROM currency
+             WHERE disabled =0;
+
+        if (ind_no_of_record >= 0) {
+
+		iRet = SUCCESS;
+                *iNumOfCurrency = v_no_of_record;
+
+DEBUGLOG(("check_exchange_rate:: check_num_of_record Total_Record [%d]\n", *iNumOfCurrency));
+	}
+
+	return iRet;
+
+chkcurrency_error:
+DEBUGLOG(("check_exchange_rate.check_no_of_currency %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("check_exchange_rate.check_num_of_currency FAIL\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+
+}
+
+int check_num_of_update_ex_rate(int *iNumOfExRate)
+{
+	int	iRet = FAILURE;
+
+	EXEC SQL WHENEVER SQLERROR GOTO chkexrate_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int    v_no_of_record;
+		short  ind_no_of_record = -1;
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("check_exchange_rate:: check_num_of_update_ex_rate\n"));
+
+        EXEC SQL
+		SELECT count(1) 
+		INTO :v_no_of_record:ind_no_of_record
+		FROM exchange_rate
+		WHERE ex_create_date >= trunc(sysdate);
+
+        if (ind_no_of_record >= 0) {
+
+		iRet = SUCCESS;
+                *iNumOfExRate = v_no_of_record;
+
+DEBUGLOG(("check_exchange_rate:: check_num_of_update_ex_rate Total_Record [%d]\n", *iNumOfExRate));
+	}
+
+	return iRet;
+
+chkexrate_error:
+DEBUGLOG(("check_exchange_rate.check_num_of_update_ex_rate %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("check_exchange_rate.check_num_of_update_ex_rate FAIL\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+
+}
+
+int check_ex_rate_value()
+{
+	int	iRet = SUCCESS;
+
+        hash_t  *hRec_From;
+        hash_t  *hRec_To;
+	
+	char	*csTmp_From;
+	char	*csTmp_To;
+
+	char	*csDate_1 = NULL;
+	char	*csDate_2 = NULL;
+
+	double  dValue_1;
+	double  dValue_2;
+
+	int	iTmpRet;
+
+        recordset_t     *rRecordSet_From;
+        rRecordSet_From = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet_From,0);
+
+        recordset_t     *rRecordSet_To;
+        rRecordSet_To = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet_To,0);
+
+	iRet = get_currency_list(rRecordSet_From, rRecordSet_To);
+
+	if (iRet == SUCCESS) {
+		hRec_From = RecordSet_GetFirst(rRecordSet_From);
+		while (hRec_From) {
+			if (GetField_CString(hRec_From, "ccy", &csTmp_From)) {
+
+				hRec_To = RecordSet_GetFirst(rRecordSet_To);
+				while (hRec_To) {
+					if (GetField_CString(hRec_To, "ccy", &csTmp_To)) {
+DEBUGLOG(("==========================================\n"));
+DEBUGLOG(("From [%s] To [%s]\n", csTmp_From, csTmp_To));
+
+						if (strcmp(csTmp_From, csTmp_To)) {
+DEBUGLOG(("Prepare for check_ex_value\n")); 
+							iTmpRet = check_ex_value(csTmp_From, csTmp_To, csDate_1, csDate_2, &dValue_1, &dValue_2);
+						}
+                                                else {
+DEBUGLOG(("Same Ccy, no need to check\n"));
+						}
+					}
+					hRec_To = RecordSet_GetNext(rRecordSet_To);
+				}
+
+			}
+
+			hRec_From = RecordSet_GetNext(rRecordSet_From);
+		}
+	}
+	
+
+	RecordSet_Destroy(rRecordSet_From);
+	FREE_ME(rRecordSet_From);
+
+	RecordSet_Destroy(rRecordSet_To);
+	FREE_ME(rRecordSet_To);
+
+	return iRet;
+	
+
+}
+
+int get_currency_list(recordset_t *rSetFrom, recordset_t *rSetTo)
+{
+	int	iRet = FAILURE;
+
+        hash_t *myHash;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getcurrencylist_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar	v_ccy[PD_CCY_ID_LEN + 1];
+		short	ind_ccy = -1;
+	EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_getcurrencylist CURSOR FOR
+		select currency_id
+                from   currency
+                where  disabled = 0;
+
+	EXEC SQL OPEN c_cursor_getcurrencylist;
+	do {
+		EXEC SQL FETCH c_cursor_getcurrencylist
+		INTO 
+			:v_ccy:ind_ccy;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iRet = SUCCESS;
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+		//ccy 
+		if (ind_ccy >= 0) {
+
+				v_ccy.arr[v_ccy.len] = '\0';
+				PutField_CString(myHash, "ccy", (const char *)v_ccy.arr);
+DEBUGLOG(("check_exchange_rate:: get_currency_list ccy [%s]\n", v_ccy.arr));
+		}
+
+		RecordSet_Add(rSetFrom, myHash);
+		RecordSet_Add(rSetTo, myHash);
+
+	}
+	while (PD_TRUE);
+	EXEC SQL CLOSE c_cursor_getcurrencylist;
+
+	return iRet;
+
+
+getcurrencylist_error:
+DEBUGLOG(("check_exchange_rate.get_currency_list %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("check_exchange_rate.get_currency_list FAIL\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getcurrencylist;
+        return FAILURE;
+
+}
+
+int check_ex_value(char *csFromCcy, char *csToCcy, char *csDate_1, char *csDate_2, double *dValue_1, double *dValue_2)
+{
+	int	iRet = SUCCESS;
+
+	hash_t	*hRec;
+	char	csDateTime[PD_DATE_LEN + PD_TIME_LEN + 5 + 1]; // where 5 is the format string
+	
+	double	dRate1 = 0.0;
+	double	dRate2 = 0.0;
+	char	*csDate1 = NULL;
+	char	*csDate2 = NULL;
+
+	
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+
+	memset(csDateTime, 0, sizeof(csDateTime));
+
+	// Get Lastest Rate
+	hash_init(hRec,0);
+	iRet = get_ex_value(csFromCcy, csToCcy, csDateTime, hRec);
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hRec, "rate", &dRate1)) {
+DEBUGLOG(("check_ex_value::1: rate [%lf]\n", dRate1));
+		}
+		
+		if (GetField_CString(hRec, "rec_date", &csDate1)) {
+DEBUGLOG(("check_ex_value::1: rec_date [%s]\n", csDate1));
+			strcpy(csDateTime, csDate1);
+		}
+	}
+	hash_destroy(hRec);
+
+	// Get Previous Record which before Lastest
+	hash_init(hRec,0);
+
+	iRet = get_ex_value(csFromCcy, csToCcy, csDateTime, hRec);
+	if (iRet == SUCCESS) {
+		if (GetField_Double(hRec, "rate", &dRate2)) {
+DEBUGLOG(("check_ex_value::2: rate [%lf]\n", dRate2));
+		}
+		
+		if (GetField_CString(hRec, "rec_date", &csDate2)) {
+DEBUGLOG(("check_ex_value::2: rec_date [%s]\n", csDate2));
+		}
+	}
+
+DEBUGLOG(("check_ex_value:: final: fr_ccy [%s] to_ccy [%s] rate1 [%lf] rate2 [%lf] date1 [%s] date2 [%s]\n", csFromCcy, csToCcy, dRate1, dRate2, csDate1, csDate2));
+
+	if (dRate1 == dRate2) {
+		if (iTitle == 0) {
+			printf("======================================================================\n");
+			printf("Please attention that The following Ex Rate are the same!\n");
+			printf("----------------------------------------------------------------------\n");
+			iTitle = 1;
+		}
+DEBUGLOG(("FR CCY [%s] TO CCY [%s] RATE1[%lf] RATE2[%lf] DATE1[%s] DATE2[%s]\n", csFromCcy, csToCcy, dRate1, dRate2, csDate1, csDate2));
+//printf("FR CCY [%s] TO CCY [%s] RATE1[%lf] RATE2[%lf] DATE1[%s] DATE2[%s]\n", csFromCcy, csToCcy, dRate1, dRate2, csDate1, csDate2);
+			printf("[Fr Currency	]: [%s]\n", csFromCcy);
+			printf("[To Currency	]: [%s]\n", csToCcy);
+                        printf("[Effect Date	]: [%s] [%s]\n", csDate2, csDate1);
+                        printf("[Ex Rate	]: [%lf]  [%lf]\n", dRate2, dRate1);
+			printf("----------------------------------------------------------------------\n");
+
+	}
+
+
+	FREE_ME(hRec);
+
+	return iRet;
+}
+
+int get_ex_value(char *csFromCcyId, char *csToCcyId, char *csDateTime, hash_t *hRec)
+{
+	int	iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getexvalue_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_from_ccy_id[PD_CCY_ID_LEN];
+                varchar         hv_to_ccy_id[PD_CCY_ID_LEN];
+		varchar		hv_date_time[PD_DATE_LEN + PD_TIME_LEN + 5];
+
+		short		ind_from_ccy_id = -1;
+		short		ind_to_ccy_id = -1;
+		short		ind_date_time = -1;
+
+                double          v_rate;
+		varchar		v_rec_date[PD_DATE_LEN + PD_TIME_LEN + 5 + 1];
+
+		short		ind_rate = -1;
+		short		ind_rec_date = -1;
+		
+        EXEC SQL END DECLARE SECTION;
+
+        hv_from_ccy_id.len = strlen(csFromCcyId);
+        memcpy(hv_from_ccy_id.arr, csFromCcyId, hv_from_ccy_id.len);
+	ind_from_ccy_id = 0;
+DEBUGLOG(("get_ex_value: from_ccy_id = [%.*s]\n",hv_from_ccy_id.len,hv_from_ccy_id.arr));
+
+        hv_to_ccy_id.len = strlen(csToCcyId);
+        memcpy(hv_to_ccy_id.arr, csToCcyId, hv_to_ccy_id.len);
+	ind_to_ccy_id = 0;
+DEBUGLOG(("get_ex_value: to_ccy_id = [%.*s]\n",hv_to_ccy_id.len,hv_to_ccy_id.arr));
+
+	if (strlen(csDateTime) > 0) {
+        	hv_date_time.len = strlen(csDateTime);
+	        memcpy(hv_date_time.arr, csDateTime, hv_date_time.len);
+DEBUGLOG(("get_ex_value: date_time = [%.*s]\n",hv_date_time.len,hv_date_time.arr));
+		ind_date_time = 0;
+	}
+
+        EXEC SQL DECLARE c_cursor_getexvalue CURSOR FOR
+                SELECT  ex_rate, to_char(ex_effect_date, 'YYYY-MM-DD HH24:MI:SS') as ex_effect_date
+                FROM    exchange_rate
+                WHERE   ex_from_ccy_id = :hv_from_ccy_id:ind_from_ccy_id
+                AND     ex_to_ccy_id = :hv_to_ccy_id:ind_to_ccy_id
+                AND     ex_effect_date  = (SELECT max(ex_effect_date)
+                                             FROM exchange_rate
+                                            WHERE ex_from_ccy_id = :hv_from_ccy_id:ind_from_ccy_id
+                                              AND ex_to_ccy_id = :hv_to_ccy_id:ind_to_ccy_id
+                                              AND ex_effect_date < NVL(to_date(:hv_date_time:ind_date_time, 'YYYY-MM-DD HH24:MI:SS'), sysdate)
+					);
+
+        EXEC SQL OPEN c_cursor_getexvalue;
+        do {
+                EXEC SQL FETCH c_cursor_getexvalue
+                INTO
+                        :v_rate:ind_rate,
+                        :v_rec_date:ind_rec_date;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }	
+
+		// rate	
+		if (ind_rate >= 0) {
+			PutField_Double(hRec, "rate", v_rate);
+DEBUGLOG(("get_ex_value:result:: rate [%f]\n", v_rate));
+		}
+
+		// rec_date
+		if (ind_rec_date >= 0) {
+			v_rec_date.arr[v_rec_date.len] = '\0';
+			PutField_CString(hRec, "rec_date", (const char *)v_rec_date.arr);
+DEBUGLOG(("get_ex_value:result:: rec_date [%s]\n", v_rec_date.arr));
+		}
+	} while (PD_TRUE);
+	
+	EXEC SQL CLOSE c_cursor_getexvalue;
+	return iRet;
+
+getexvalue_error:
+DEBUGLOG(("check_exchange_rate.get_ex_value %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("check_exchange_rate.get_ex_value FAIL\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getexvalue;
+
+        return FAILURE;
+}

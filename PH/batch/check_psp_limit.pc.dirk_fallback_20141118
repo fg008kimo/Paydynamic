@@ -1,0 +1,1330 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/06/06              Stan Poon
+Add Customer Segment Alert			   2013/10/29		   LokMan Chow
+Add Alert Remain Amt				   2014/07/08		   Stan Poon
+Support email alert template			   2014/07/14		   Dirk Wong
+*** Updated in check_psp_limit.pc.20140915				   Stan Poon
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sqlca.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#include "tpllib.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_PARTY_ID_LEN 15
+#define PD_PSP_TYPE_LEN 10
+
+char	c_type;
+int	iTplType = 0;
+char	cDebug='Y';
+char    csTag[PD_TAG_LEN+1];
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int find_checking_parameters(char cPartyType, char* csPartyId, char cBusinessType, double *ptAlertLevel, double *ptAlertRemainAmt);
+int find_checking_segment_parameters(char* csGroup, double *ptAlertLevel, double *ptAlertRemainAmt);
+int process_txn_merchant_level(int iTplType);
+int process_txn_psp_level(int iTplType);
+int process_txn_service_level(int iTplType);
+int process_txn_segment_level(int iTplType);
+int process_pid_group_level(tpl_t *tpl);
+int update_last_checking_timestamp(char cPartyType);
+int update_last_checking_segment_timestamp();
+int find_service_desc(char* csServiceCode, char *ptServiceDesc);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+printf("usage: -m / -p / -s / -c   for merchant/psp/service/segment level; -t for tpl class number (0 as default)\n");
+	}
+
+	if (iRet == SUCCESS) {
+		switch (c_type) {
+			case 'm':
+				iRet = process_txn_merchant_level(iTplType);
+				break;
+			case 'p':
+				iRet = process_txn_psp_level(iTplType);
+				break;
+			case 's':
+				iRet = process_txn_service_level(iTplType);
+				break;
+			case 'c':
+				iRet = process_txn_segment_level(iTplType);
+				break;
+			default:
+				iRet = PD_ERR;
+		}
+	}
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char	c;
+
+	if (argc < 3) {
+		return PD_ERR;
+	}
+	while ((c = getopt(argc,argv,"m:p:s:c:t:")) != EOF) {
+		switch (c) {
+			case 'm':
+				c_type = c;
+				break;
+			case 'p':
+				c_type = c;
+				break;
+			case 's':
+				c_type = c;
+				break;
+			case 'c':
+				c_type = c;
+				break;
+			case 't':
+				iTplType = atoi(optarg);
+				break;
+			default:
+				return PD_ERR;
+		}
+	}
+
+	return SUCCESS;
+}
+
+int find_checking_parameters(char cPartyType, char* csPartyId, char cBusinessType, double *ptAlertLevel, double *ptAlertRemainAmt)
+{
+	int	iRet = PD_FOUND;
+
+	EXEC SQL WHENEVER SQLERROR GOTO find_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		short	hv_return_value;
+		char	hv_party_type;
+		varchar hv_party_id[PD_PARTY_ID_LEN];
+		char	hv_business_type;
+
+		double	v_alert_level;
+		double	v_alert_remain_amt;
+		varchar	v_last_check_time[PD_DATETIME_LEN+1];
+
+		short	ind_alert_level = -1;
+		short	ind_alert_remain_amt = -1;
+		short	ind_last_check_time = -1;
+
+		SQL_CURSOR	c_cursor_psp_check;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_party_type = cPartyType;
+
+	hv_party_id.len = strlen((char*)csPartyId);
+	memcpy(hv_party_id.arr,csPartyId,hv_party_id.len);
+
+	hv_business_type = cBusinessType;
+
+	EXEC SQL ALLOCATE	:c_cursor_psp_check;
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := PSP_LIMIT_CHECK_PKG.F_CHECK_FIND(:hv_party_type,
+								:hv_party_id,
+								:hv_business_type,
+								:c_cursor_psp_check);
+		END;
+	END-EXEC;
+
+	if (hv_return_value > 0) {
+		ind_alert_level = -1;
+		ind_last_check_time = -1;
+		ind_alert_remain_amt = -1;
+
+		EXEC SQL FETCH :c_cursor_psp_check
+		INTO
+		:v_alert_level:ind_alert_level,
+		:v_alert_remain_amt:ind_alert_remain_amt,
+		:v_last_check_time:ind_last_check_time;
+
+		if (ind_alert_level >= 0) {
+			*ptAlertLevel = v_alert_level;
+		}
+
+		if (ind_alert_remain_amt >= 0) {
+			*ptAlertRemainAmt = v_alert_remain_amt;
+//printf("%.2lf\n",v_alert_remain_amt);
+		}
+	} else {
+		iRet = PD_NOT_FOUND;
+	}
+
+	EXEC SQL CLOSE :c_cursor_psp_check;
+	EXEC SQL FREE :c_cursor_psp_check;
+
+	return iRet;
+
+find_error:
+DEBUGLOG(("find_checking_parameters error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+int find_checking_segment_parameters(char* csGroup, double *ptAlertLevel, double *ptAlertRemainAmt)
+{
+	int	iRet = PD_FOUND;
+
+	EXEC SQL WHENEVER SQLERROR GOTO finds_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		short	hv_return_value;
+		varchar hv_customer_group[PD_CUSTOMER_GROUP_CODE_LEN];
+
+		double	v_alert_level;
+		double	v_alert_remain_amt;
+		varchar	v_last_check_time[PD_DATETIME_LEN+1];
+
+		short	ind_alert_level = -1;
+		short	ind_alert_remain_amt = -1;
+		short	ind_last_check_time = -1;
+
+		SQL_CURSOR	c_cursor_seg_check;
+
+	EXEC SQL END DECLARE SECTION;
+
+
+	hv_customer_group.len = strlen((char*)csGroup);
+	memcpy(hv_customer_group.arr,csGroup,hv_customer_group.len);
+
+
+	EXEC SQL ALLOCATE	:c_cursor_seg_check;
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := SEGMENT_LIMIT_CHECK_PKG.F_CHECK_FIND(
+								:hv_customer_group,
+								:c_cursor_seg_check);
+		END;
+	END-EXEC;
+
+	if (hv_return_value > 0) {
+		ind_alert_level = -1;
+		ind_last_check_time = -1;
+
+		EXEC SQL FETCH :c_cursor_seg_check
+		INTO
+		:v_alert_level:ind_alert_level,
+		:v_alert_remain_amt:ind_alert_remain_amt,
+		:v_last_check_time:ind_last_check_time;
+
+		if (ind_alert_level >= 0) {
+			*ptAlertLevel = v_alert_level;
+		}
+
+		if (ind_alert_remain_amt >= 0) {
+			*ptAlertRemainAmt = v_alert_remain_amt;
+//printf("%.2lf\n",v_alert_remain_amt);
+		}
+	} else {
+		iRet = PD_NOT_FOUND;
+	}
+
+	EXEC SQL CLOSE :c_cursor_seg_check;
+	EXEC SQL FREE :c_cursor_seg_check;
+
+	return iRet;
+
+finds_error:
+DEBUGLOG(("finds_checking_parameters error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+
+int process_txn_merchant_level(int iTplType)
+{
+	double	dAlertLevel = 0.0;
+	double	dAlertRemainAmt = 0.0;
+	int	iRet, iFailure = 0;
+	char	csMerchantId[PD_MERCHANT_ID_LEN + 1];
+	char	cPartyType = 'M';
+	char	cBusinessType = '\0';
+
+	update_last_checking_timestamp(cPartyType);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	v_client_id[PD_CLIENT_ID_LEN + 1];
+		varchar	v_client_name[PD_CLIENT_NAME_LEN + 1];
+		varchar	v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar	v_merch_short_name[PD_MERCH_SHORT_NAME_LEN + 1];
+		char	v_business_type;
+		varchar	v_currency_id[PD_CURRENCY_ID_LEN + 1];
+		double	v_limit;
+		double	v_remaining_limit;
+
+		short	ind_client_id = -1;
+		short	ind_client_name = -1;
+		short	ind_merchant_id = -1;
+		short	ind_merch_short_name = -1;
+		short	ind_business_type = -1;
+		short	ind_currency_id = -1;
+		short	ind_limit = -1;
+		short	ind_remaining_limit = -1;
+
+		SQL_CURSOR	c_cursor_txn_merchant;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE	:c_cursor_txn_merchant;
+	EXEC SQL EXECUTE
+		BEGIN
+			PSP_LIMIT_CHECK_PKG.P_MERCHANT_PSP_LIMIT(NULL, :c_cursor_txn_merchant);
+		END;
+	END-EXEC;
+
+/*
+	tpl_t *tpl = tpl_alloc();
+	char *content;
+
+	if (tpl_load(tpl, "/home/php3dev/src/batch/check_psp_limit.tpl") != TPL_OK)
+	{
+		(void)puts("Error loading template file!");
+		return FAILURE;
+	}
+*/
+
+//	tpl_select_section(tpl, "TITLE");
+//	tpl_set_field_fmt(tpl, "tpl_title", "%s", "Merchant Level PSP Limite Alert");
+//	tpl_append_section(tpl);
+//	tpl_deselect_section(tpl);
+	iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"stitle-0","SEC","stitle-0",0);
+	iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"ftitle-0","STR","stitle-0","Merchant Level PSP Limit Alert");
+
+	// table_start
+//	tpl_select_section(tpl, "TABLE_START");
+//	sprintf(csTag,"tpl%d",iTplType);
+//	tpl_set_field_fmt(tpl, "TPL_NUM", "%s", csTag);
+//	tpl_append_section(tpl);
+//	tpl_deselect_section(tpl);
+	iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"stbl_start-0","SEC","stbl_start-0",0);
+	sprintf(csTmp,"tpl%d",iTplType);
+	iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"ftpl_num-0","STR","stbl_start-0",csTmp);
+
+	//Print timestamp row
+//	tpl_select_section(tpl, "TIMESTAMP");
+//        tpl_set_field_int(tpl, "NUM_COLUMNS", 5);
+//	tpl_set_field_fmt(tpl, "tpl_Timestamp", write_tpl_timestamp());
+//        tpl_append_section(tpl);
+//        tpl_deselect_section(tpl);
+	iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"stimestamp-0","SEC","stimestamp-0",0);
+	iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"fnum_cols-0","INT","stimestamp-0",5);
+	iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"ftimestamp-0","STR","stimestamp-0",write_tpl_timestamp());
+
+
+	//Print table header
+//	tpl_select_section(tpl, "MERCHANT_HEAD");
+//	tpl_append_section(tpl);
+//	tpl_deselect_section(tpl);
+	iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"smerch_head-0","SEC","smerch_head-0",0);
+
+	//Loop print table rows
+//	tpl_select_section(tpl, "MERCHANT_ROW");
+
+	for (;;) {
+		EXEC SQL WHENEVER NOTFOUND DO break;
+
+		ind_client_id = -1;
+		ind_client_name = -1;
+		ind_merchant_id = -1;
+		ind_merch_short_name = -1;
+		ind_business_type = -1;
+		ind_currency_id = -1;
+		ind_limit = -1;
+		ind_remaining_limit = -1;
+
+		EXEC SQL FETCH :c_cursor_txn_merchant
+		INTO
+		:v_client_id:ind_client_id,
+		:v_client_name:ind_client_name,
+		:v_merchant_id:ind_merchant_id,
+		:v_merch_short_name:ind_merch_short_name,
+		:v_business_type:ind_business_type,
+		:v_currency_id:ind_currency_id,
+		:v_limit:ind_limit,
+		:v_remaining_limit:ind_remaining_limit;
+
+		if (ind_merchant_id >=0) {
+			sprintf(csMerchantId,"%.*s",v_merchant_id.len,v_merchant_id.arr);
+		} else {
+			strcpy(csMerchantId,"");
+		}
+
+		if (ind_business_type >= 0) {
+			cBusinessType = v_business_type;
+		} else {
+			cBusinessType = '\0';
+		}
+
+		iRet = find_checking_parameters(cPartyType, csMerchantId, cBusinessType, &dAlertLevel, &dAlertRemainAmt);
+
+		if (iRet == PD_FOUND && (1.0-v_remaining_limit/v_limit >= dAlertLevel/100.0 || (dAlertRemainAmt > v_remaining_limit&& dAlertRemainAmt>0.0))) {
+			iFailure++;
+
+			if (ind_merch_short_name >= 0)
+			{
+				//printf("<tr><td><b>%.*s</b>",v_merch_short_name.len,v_merch_short_name.arr);
+				tpl_set_field_fmt(tpl, "tpl_Merch_Short_Name", "%.*s",v_merch_short_name.len,v_merch_short_name.arr);
+			}
+			if (ind_merchant_id >= 0)
+			{
+				//printf("  [%.*s]</td>",v_merchant_id.len,v_merchant_id.arr);
+				tpl_set_field_fmt(tpl, "tpl_Merch_Id", "%.*s",v_merchant_id.len,v_merchant_id.arr);
+			}
+			if (ind_currency_id >= 0)
+			{
+				//printf("<td>%.*s</td>",v_currency_id.len,v_currency_id.arr);
+				tpl_set_field_fmt(tpl, "tpl_Currency", "%.*s",v_currency_id.len,v_currency_id.arr);
+			}
+			if (ind_remaining_limit >= 0)
+			{
+				//printf("<td>%.0f</td>",v_remaining_limit);
+				tpl_set_field_fmt(tpl, "tpl_Remaining_Limit", "%.0f",v_remaining_limit);
+			}
+			if (ind_limit >= 0)
+			{
+				//printf("<td>%.0f</td>",v_limit);
+				tpl_set_field_fmt(tpl, "tpl_Total_Limit", "%.0f",v_limit);
+			}
+
+			//printf("<td>%.2f%c / %.2f</td></tr>\n",dAlertLevel,'%',dAlertRemainAmt);
+			tpl_set_field_fmt(tpl, "tpl_Alert_Level", "%.2f%c / %.2f",dAlertLevel,'%',dAlertRemainAmt);
+
+			tpl_append_section(tpl);
+		}
+
+	}
+
+	EXEC SQL CLOSE :c_cursor_txn_merchant;
+	EXEC SQL FREE :c_cursor_txn_merchant;
+
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_END");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	content = malloc(tpl_length(tpl) + 1);
+	tpl_get_content(tpl, content);
+	(void)puts(content);
+	tpl_free(tpl);
+
+	if (iFailure > 0) iRet = FAILURE;
+	else iRet = SUCCESS;
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_txn_merchant;
+	EXEC SQL FREE :c_cursor_txn_merchant;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+int process_txn_psp_level(int iTplType)
+{
+	double	dAlertLevel = 0.0;
+	double	dAlertRemainAmt = 0.0;
+	int	iRet, iFailure = 0;
+	char	csPspId[PD_PSP_ID_LEN];
+	char	cPartyType = 'P';
+	char	cBusinessType = '\0';
+
+	iRet = update_last_checking_timestamp(cPartyType);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	v_client_id[PD_CLIENT_ID_LEN + 1];
+		varchar	v_client_name[PD_CLIENT_NAME_LEN + 1];
+		varchar	v_psp_id[PD_PSP_ID_LEN + 1];
+		varchar	v_psp_name[PD_PSP_NAME_LEN + 1];
+		char	v_business_type;
+		varchar	v_currency_id[PD_CURRENCY_ID_LEN + 1];
+		double	v_limit;
+		double	v_remaining_limit;
+
+		short	ind_client_id = -1;
+		short	ind_client_name = -1;
+		short	ind_psp_id = -1;
+		short	ind_psp_name = -1;
+		short	ind_business_type = -1;
+		short	ind_currency_id = -1;
+		short	ind_limit = -1;
+		short	ind_remaining_limit = -1;
+
+		SQL_CURSOR	c_cursor_txn_psp;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE	:c_cursor_txn_psp;
+	EXEC SQL EXECUTE
+		BEGIN
+			PSP_LIMIT_CHECK_PKG.P_PSP_PSP_LIMIT(NULL, :c_cursor_txn_psp);
+		END;
+	END-EXEC;
+
+	tpl_t *tpl = tpl_alloc();
+	char *content;
+
+	if (tpl_load(tpl, "/home/php3dev/src/batch/check_psp_limit.tpl") != TPL_OK)
+	{
+		(void)puts("Error loading template file!");
+		return FAILURE;
+	}
+
+	tpl_select_section(tpl, "TITLE");
+	tpl_set_field_fmt(tpl, "tpl_title", "%s", "PSP Level PSP Limite Alert");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_START");
+	sprintf(csTag,"tpl%d",iTplType);
+	tpl_set_field_fmt(tpl, "TPL_NUM", "%s", csTag);
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	//Print timestamp row
+	tpl_select_section(tpl, "TIMESTAMP");
+        tpl_set_field_int(tpl, "NUM_COLUMNS", 5);
+        tpl_set_field_fmt(tpl, "tpl_Timestamp", write_tpl_timestamp());
+        tpl_append_section(tpl);
+        tpl_deselect_section(tpl);
+
+	//Print table header
+	tpl_select_section(tpl, "PSP_HEAD");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	//Loop print table rows
+	tpl_select_section(tpl, "PSP_ROW");
+
+	for (;;) {
+		EXEC SQL WHENEVER NOTFOUND DO break;
+
+		ind_client_id = -1;
+		ind_client_name = -1;
+		ind_psp_id = -1;
+		ind_psp_name = -1;
+		ind_business_type = -1;
+		ind_currency_id = -1;
+		ind_limit = -1;
+		ind_remaining_limit = -1;
+
+		EXEC SQL FETCH :c_cursor_txn_psp
+		INTO
+		:v_client_id:ind_client_id,
+		:v_client_name:ind_client_name,
+		:v_psp_id:ind_psp_id,
+		:v_psp_name:ind_psp_name,
+		:v_business_type:ind_business_type,
+		:v_currency_id:ind_currency_id,
+		:v_limit:ind_limit,
+		:v_remaining_limit:ind_remaining_limit;
+
+		if (ind_psp_id >=0) {
+			sprintf(csPspId,"%.*s",v_psp_id.len,v_psp_id.arr);
+		} else {
+			strcpy(csPspId,"");
+		}
+
+		if (ind_business_type >= 0) {
+			cBusinessType = v_business_type;
+		} else {
+			cBusinessType = '\0';
+		}
+
+		iRet = find_checking_parameters(cPartyType, csPspId, cBusinessType, &dAlertLevel, &dAlertRemainAmt);
+
+		if (iRet == PD_FOUND && (1.0-v_remaining_limit/v_limit >= dAlertLevel/100.0 || (dAlertRemainAmt > v_remaining_limit&& dAlertRemainAmt>0.0))) {
+			iFailure++;
+
+			if (ind_psp_name >= 0)
+			{
+				//printf("<tr><td><b>%.*s</b>",v_psp_name.len,v_psp_name.arr);
+				tpl_set_field_fmt(tpl, "tpl_PSP_Name", "%.*s",v_psp_name.len,v_psp_name.arr);
+			}
+			if (ind_psp_id >= 0)
+			{
+				//printf("  [%.*s]</td>",v_psp_id.len,v_psp_id.arr);
+				tpl_set_field_fmt(tpl, "tpl_PSP_Id", "%.*s",v_psp_id.len,v_psp_id.arr);
+			}
+			if (ind_currency_id >= 0)
+			{
+				//printf("<td>%.*s</td>",v_currency_id.len,v_currency_id.arr);
+				tpl_set_field_fmt(tpl, "tpl_Currency", "%.*s",v_currency_id.len,v_currency_id.arr);
+			}
+			if (ind_remaining_limit >= 0)
+			{
+				//printf("<td>%.0f</td>",v_remaining_limit);
+				tpl_set_field_fmt(tpl, "tpl_Remaining_Limit", "%.0f",v_remaining_limit);
+			}
+			if (ind_limit >= 0)
+			{
+				//printf("<td>%.0f</td>",v_limit);
+				tpl_set_field_fmt(tpl, "tpl_Total_Limit", "%.0f",v_limit);
+			}
+			//printf("<td>%.2f%c / %.2f</td></tr>\n",dAlertLevel,'%',dAlertRemainAmt);
+			tpl_set_field_fmt(tpl, "tpl_Alert_Level", "%.2f%c / %.2f",dAlertLevel,'%',dAlertRemainAmt);
+
+			tpl_append_section(tpl);
+		}
+
+	}
+
+	EXEC SQL CLOSE :c_cursor_txn_psp;
+	EXEC SQL FREE :c_cursor_txn_psp;
+
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_END");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	content = malloc(tpl_length(tpl) + 1);
+	tpl_get_content(tpl, content);
+	(void)puts(content);
+	tpl_free(tpl);
+
+	if (iFailure > 0) iRet = FAILURE;
+	else iRet = SUCCESS;
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_txn_psp;
+	EXEC SQL FREE :c_cursor_txn_psp;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+int process_txn_service_level(int iTplType)
+{
+	double	dAlertLevel = 0.0;
+	double	dAlertRemainAmt = 0.0;
+	int	iRet, iFailure = 0;
+	char	csServiceCode[PD_SERVICE_CODE_LEN+1];
+	char	csServiceDesc[PD_DESC_LEN+1];
+	char	cPartyType = 'G';
+	char	cBusinessType = '\0';
+
+	iRet = update_last_checking_timestamp(cPartyType);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	v_service_code[PD_SERVICE_CODE_LEN + 1];
+		varchar	v_psp_type[PD_PSP_TYPE_LEN + 1];
+		double	v_limit;
+		double	v_remaining_limit;
+		varchar	v_currency_id[PD_CURRENCY_ID_LEN + 1];
+
+		short	ind_service_code = -1;
+		short	ind_psp_type = -1;
+		short	ind_currency_id = -1;
+		short	ind_limit = -1;
+		short	ind_remaining_limit = -1;
+
+		SQL_CURSOR	c_cursor_txn_service;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE	:c_cursor_txn_service;
+	EXEC SQL EXECUTE
+		BEGIN
+			PSP_LIMIT_CHECK_PKG.P_SERVICE_PSP_LIMIT(:c_cursor_txn_service);
+		END;
+	END-EXEC;
+
+	
+	tpl_t *tpl = tpl_alloc();
+	char *content;
+
+	if (tpl_load(tpl, "/home/php3dev/src/batch/check_psp_limit.tpl") != TPL_OK)
+	{
+		(void)puts("Error loading template file!");
+		return FAILURE;
+	}
+
+	tpl_select_section(tpl, "TITLE");
+	tpl_set_field_fmt(tpl, "tpl_title", "%s", "Service Level PSP Limite Alert");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_START");
+	sprintf(csTag,"tpl%d",iTplType);
+	tpl_set_field_fmt(tpl, "TPL_NUM", "%s", csTag);
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	//Print timestamp row
+	tpl_select_section(tpl, "TIMESTAMP");
+        tpl_set_field_int(tpl, "NUM_COLUMNS", 5);
+        tpl_set_field_fmt(tpl, "tpl_Timestamp", write_tpl_timestamp());
+        tpl_append_section(tpl);
+        tpl_deselect_section(tpl);
+
+	//Print table header
+	tpl_select_section(tpl, "SERVICE_HEAD");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	//Loop print table rows
+	tpl_select_section(tpl, "SERVICE_ROW");
+
+	for (;;) {
+		EXEC SQL WHENEVER NOTFOUND DO break;
+
+		ind_service_code = -1;
+		ind_psp_type = -1;
+		ind_currency_id = -1;
+		ind_limit = -1;
+		ind_remaining_limit = -1;
+
+		EXEC SQL FETCH :c_cursor_txn_service
+		INTO
+		:v_service_code:ind_service_code,
+		:v_psp_type:ind_psp_type,
+		:v_currency_id:ind_currency_id,
+		:v_limit:ind_limit,
+		:v_remaining_limit:ind_remaining_limit;
+
+		if (ind_service_code >= 0) {
+			sprintf(csServiceCode,"%.*s",v_service_code.len,v_service_code.arr);
+		} else {
+			strcpy(csServiceCode,"");
+		}
+
+		if (ind_psp_type >=0 ) {
+			cBusinessType = v_psp_type.arr[0];
+		} else {
+			cBusinessType = '\0';
+		}
+
+		iRet = find_checking_parameters(cPartyType, csServiceCode, cBusinessType, &dAlertLevel, &dAlertRemainAmt);
+
+		if (iRet == PD_FOUND && (1.0-v_remaining_limit/v_limit >= dAlertLevel/100.0 || (dAlertRemainAmt > v_remaining_limit&& dAlertRemainAmt>0.0))) {
+			iFailure++;
+
+			if (ind_service_code >= 0) {
+				//sprintf(csServiceCode,"%.*s",v_service_code.len,v_service_code.arr);
+				find_service_desc(csServiceCode,csServiceDesc);
+				//printf("<tr><td><b>%s</b>  [%s]</td>",csServiceDesc,csServiceCode);
+				tpl_set_field_fmt(tpl, "tpl_Service_Desc", "%s", csServiceDesc);
+				tpl_set_field_fmt(tpl, "tpl_Service_Code", "%s", csServiceCode);
+			}
+			if (ind_psp_type >= 0)
+			{
+				//printf("<td>%.*s</td>",v_psp_type.len,v_psp_type.arr);
+				tpl_set_field_fmt(tpl, "tpl_Service_Type", "%.*s", v_psp_type.len,v_psp_type.arr);
+			}
+			if (ind_currency_id >= 0)
+			{
+				//printf("<td>%.*s</td>",v_currency_id.len,v_currency_id.arr);
+				tpl_set_field_fmt(tpl, "tpl_Currency", "%.*s", v_currency_id.len,v_currency_id.arr);
+			}
+			if (ind_remaining_limit >= 0)
+			{
+				//printf("<td>%.0f</td>",v_remaining_limit);
+				tpl_set_field_fmt(tpl, "tpl_Remaining_Limit", "%.0f",v_remaining_limit);
+			}
+			if (ind_limit >= 0)
+			{
+				//printf("<td>%.0f</td>",v_limit);
+				tpl_set_field_fmt(tpl, "tpl_Total_Limit", "%.0f",v_limit);
+			}
+			//printf("<td>%.2f%c / %.2f</td></tr>\n",dAlertLevel,'%',dAlertRemainAmt);
+			tpl_set_field_fmt(tpl, "tpl_Alert_Level", "%.2f%c / %.2f",dAlertLevel,'%',dAlertRemainAmt);
+
+			tpl_append_section(tpl);
+		}
+
+	}
+
+	EXEC SQL CLOSE :c_cursor_txn_service;
+	EXEC SQL FREE :c_cursor_txn_service;
+
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_END");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	content = malloc(tpl_length(tpl) + 1);
+	tpl_get_content(tpl, content);
+	(void)puts(content);
+	tpl_free(tpl);
+
+	if (iFailure > 0) iRet = FAILURE;
+	else iRet = SUCCESS;
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_txn_service;
+	EXEC SQL FREE :c_cursor_txn_service;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+int process_txn_segment_level(int iTplType)
+{
+	double	dAlertLevel = 0.0;
+	double	dAlertRemainAmt = 0.0;
+	int	iRet, iFailure = 0;
+	int	iPIDGroupFail = 0;
+	char	csCustomerGroup[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+
+	update_last_checking_segment_timestamp();
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	v_client_id[PD_CLIENT_ID_LEN + 1];
+		varchar	v_client_name[PD_CLIENT_NAME_LEN + 1];
+		varchar	v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar	v_merch_short_name[PD_MERCH_SHORT_NAME_LEN + 1];
+		char	v_business_type;
+		varchar	v_currency_id[PD_CURRENCY_ID_LEN + 1];
+		varchar	v_customer_group[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+		double	v_min_amt;
+		double	v_max_amt;
+		double	v_limit;
+		double	v_remaining_limit;
+		int	v_restricted_ip;
+		varchar	v_pid_group[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+
+		short	ind_client_id = -1;
+		short	ind_client_name = -1;
+		short	ind_merchant_id = -1;
+		short	ind_merch_short_name = -1;
+		short	ind_business_type = -1;
+		short	ind_currency_id = -1;
+		short	ind_customer_group = -1;
+		short	ind_min_amt = -1;
+		short	ind_max_amt = -1;
+		short	ind_limit = -1;
+		short	ind_remaining_limit = -1;
+		short	ind_restricted_ip = -1;
+		short	ind_pid_group = -1;
+
+		SQL_CURSOR	c_cursor_txn_segment;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE	:c_cursor_txn_segment;
+	EXEC SQL EXECUTE
+		BEGIN
+			SEGMENT_LIMIT_CHECK_PKG.P_SEGMENT_PSP_LIMIT(NULL, :c_cursor_txn_segment);
+		END;
+	END-EXEC;
+
+	tpl_t *tpl = tpl_alloc();
+	char *content;
+
+	if (tpl_load(tpl, "/home/php3dev/src/batch/check_psp_limit.tpl") != TPL_OK)
+	{
+		(void)puts("Error loading template file!");
+		return FAILURE;
+	}
+
+	tpl_select_section(tpl, "TITLE");
+	tpl_set_field_fmt(tpl, "tpl_title", "%s", "Segment Level PSP Limite Alert");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_START");
+	sprintf(csTag,"tpl%d",iTplType);
+	tpl_set_field_fmt(tpl, "TPL_NUM", "%s", csTag);
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	//Print timestamp row
+	tpl_select_section(tpl, "TIMESTAMP");
+        tpl_set_field_int(tpl, "NUM_COLUMNS", 5);
+        tpl_set_field_fmt(tpl, "tpl_Timestamp", write_tpl_timestamp());
+        tpl_append_section(tpl);
+        tpl_deselect_section(tpl);
+
+	//Print table header
+	tpl_select_section(tpl, "SEGMENT_HEAD");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	//Loop print table rows
+	tpl_select_section(tpl, "SEGMENT_ROW");
+
+	for (;;) {
+		EXEC SQL WHENEVER NOTFOUND DO break;
+
+		ind_client_id = -1;
+		ind_client_name = -1;
+		ind_merchant_id = -1;
+		ind_merch_short_name = -1;
+		ind_business_type = -1;
+		ind_currency_id = -1;
+		ind_customer_group = -1;
+		ind_min_amt = -1;
+		ind_max_amt = -1;
+		ind_limit = -1;
+		ind_remaining_limit = -1;
+		ind_restricted_ip = -1;
+		ind_pid_group = -1;
+
+		EXEC SQL FETCH :c_cursor_txn_segment
+		INTO
+		:v_client_id:ind_client_id,
+		:v_client_name:ind_client_name,
+		:v_merchant_id:ind_merchant_id,
+		:v_merch_short_name:ind_merch_short_name,
+		:v_business_type:ind_business_type,
+		:v_currency_id:ind_currency_id,
+		:v_customer_group:ind_customer_group,
+		:v_min_amt:ind_min_amt,
+		:v_max_amt:ind_max_amt,
+		:v_restricted_ip:ind_restricted_ip,
+		:v_pid_group:ind_pid_group,
+		:v_limit:ind_limit,
+		:v_remaining_limit:ind_remaining_limit;
+
+		if (ind_customer_group >=0 || v_customer_group.len > 0) {
+			sprintf(csCustomerGroup,"%.*s",v_customer_group.len,v_customer_group.arr);
+
+			iRet = find_checking_segment_parameters(csCustomerGroup, &dAlertLevel, &dAlertRemainAmt);
+
+			if (iRet == PD_FOUND && (1.0-v_remaining_limit/v_limit >= dAlertLevel/100.0 || (dAlertRemainAmt > v_remaining_limit && dAlertRemainAmt > 0.0))) {
+				iFailure++;
+
+				if (ind_merch_short_name >= 0)
+				{
+					//printf("<tr><td><b>%.*s</b>",v_merch_short_name.len,v_merch_short_name.arr);
+					tpl_set_field_fmt(tpl, "tpl_Merchant_Name", "%.*s",v_merch_short_name.len,v_merch_short_name.arr);
+				}
+				if (ind_merchant_id >= 0)
+				{
+					//printf("  [%.*s]</td>",v_merchant_id.len,v_merchant_id.arr);
+					tpl_set_field_fmt(tpl, "tpl_Merchant_Id", "%.*s",v_merchant_id.len,v_merchant_id.arr);
+				}
+				if (ind_customer_group>= 0)
+				{
+					//printf("<td>Segment %c</td>",v_customer_group.arr[v_customer_group.len-1]);
+					tpl_set_field_fmt(tpl, "tpl_Segment_Scheme", "Segment %c",v_customer_group.arr[v_customer_group.len-1]);
+				}
+				if (ind_currency_id >= 0)
+				{
+					//printf("<td>%.*s</td>",v_currency_id.len,v_currency_id.arr);
+					tpl_set_field_fmt(tpl, "tpl_Currency", "%.*s",v_currency_id.len,v_currency_id.arr);
+				}
+				if (ind_remaining_limit >= 0)
+				{
+					//printf("<td>%.0f</td>",v_remaining_limit);
+					tpl_set_field_fmt(tpl, "tpl_Remaining_Limit", "%.0f",v_remaining_limit);
+				}
+				if (ind_limit >= 0)
+				{
+					//printf("<td>%.0f</td>",v_limit);
+					tpl_set_field_fmt(tpl, "tpl_Total_Limit", "%.0f",v_limit);
+				}
+
+				//printf("<td>%.2f%c / %.2f</td></tr>\n",dAlertLevel,'%',dAlertRemainAmt);
+				tpl_set_field_fmt(tpl, "tpl_Alert_Level", "%.2f%c / %.2f",dAlertLevel,'%',dAlertRemainAmt);
+
+				tpl_append_section(tpl);
+			}
+		}
+	}
+
+	EXEC SQL CLOSE :c_cursor_txn_segment;
+	EXEC SQL FREE :c_cursor_txn_segment;
+
+
+//	iPIDGroupFail = process_pid_group_level();
+	iPIDGroupFail = process_pid_group_level(tpl);
+	iFailure = iFailure+iPIDGroupFail;
+
+	if (iFailure > 0) iRet = FAILURE;
+	else iRet = SUCCESS;
+
+	tpl_deselect_section(tpl);
+
+	tpl_select_section(tpl, "TABLE_END");
+	tpl_append_section(tpl);
+	tpl_deselect_section(tpl);
+
+	content = malloc(tpl_length(tpl) + 1);
+	tpl_get_content(tpl, content);
+	(void)puts(content);
+
+printf(">>>>>>>>>>\n");
+printf(content);
+printf("<<<<<<<<<<\n");
+
+	tpl_free(tpl);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_txn_segment;
+	EXEC SQL FREE :c_cursor_txn_segment;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+
+
+//int process_pid_group_level()
+int process_pid_group_level(tpl_t *tpl)
+{
+	double	dAlertLevel = 0.0;
+	double	dAlertRemainAmt = 0.0;
+	int	iRet, iFailure = 0;
+	char	csCustomerGroup[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+	char	csGroup[PD_TMP_BUF_LEN+ 1];
+
+	update_last_checking_segment_timestamp();
+
+	EXEC SQL WHENEVER SQLERROR GOTO sqlp_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+	
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	v_client_id[PD_CLIENT_ID_LEN + 1];
+		varchar	v_client_name[PD_CLIENT_NAME_LEN + 1];
+		varchar	v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar	v_merch_short_name[PD_MERCH_SHORT_NAME_LEN + 1];
+		char	v_business_type;
+		varchar	v_currency_id[PD_CURRENCY_ID_LEN + 1];
+		varchar v_customer_group[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+		varchar v_pid_group[PD_CUSTOMER_GROUP_CODE_LEN + 1];
+		double	v_min_amt;
+		double	v_max_amt;
+		double	v_limit;
+		double	v_remaining_limit;
+		int	v_restricted_ip;
+
+		short	ind_client_id = -1;
+		short	ind_client_name = -1;
+		short	ind_merchant_id = -1;
+		short	ind_merch_short_name = -1;
+		short	ind_business_type = -1;
+		short	ind_currency_id = -1;
+		short	ind_customer_group = -1;
+		short	ind_min_amt = -1;
+		short	ind_max_amt = -1;
+		short	ind_limit = -1;
+		short	ind_remaining_limit = -1;
+		short	ind_restricted_ip = -1;
+		short	ind_pid_group = -1;
+
+		SQL_CURSOR	c_cursor_pid_group;
+
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL ALLOCATE	:c_cursor_pid_group;
+	EXEC SQL EXECUTE
+		BEGIN
+			SEGMENT_LIMIT_CHECK_PKG.P_SEGMENT_PSP_LIMIT(NULL, :c_cursor_pid_group);
+		END;
+	END-EXEC;
+
+	for (;;) {
+		EXEC SQL WHENEVER NOTFOUND DO break;
+
+		ind_client_id = -1;
+		ind_client_name = -1;
+		ind_merchant_id = -1;
+		ind_merch_short_name = -1;
+		ind_business_type = -1;
+		ind_currency_id = -1;
+		ind_customer_group = -1;
+		ind_min_amt = -1;
+		ind_max_amt = -1;
+		ind_limit = -1;
+		ind_remaining_limit = -1;
+		ind_restricted_ip = -1;
+		ind_pid_group = -1;
+
+		EXEC SQL FETCH :c_cursor_pid_group
+		INTO
+		:v_client_id:ind_client_id,
+		:v_client_name:ind_client_name,
+		:v_merchant_id:ind_merchant_id,
+		:v_merch_short_name:ind_merch_short_name,
+		:v_business_type:ind_business_type,
+		:v_currency_id:ind_currency_id,
+		:v_customer_group:ind_customer_group,
+		:v_min_amt:ind_min_amt,
+		:v_max_amt:ind_max_amt,
+		:v_restricted_ip:ind_restricted_ip,
+		:v_pid_group:ind_pid_group,
+		:v_limit:ind_limit,
+		:v_remaining_limit:ind_remaining_limit;
+
+		if ((ind_customer_group < 0 || v_customer_group.len == 0) && ind_pid_group >=0) {
+			v_pid_group.arr[v_pid_group.len]= '\0';
+			sprintf(csCustomerGroup,"%s",v_pid_group.arr);
+			sprintf(csGroup,"Scheme %c",v_pid_group.arr[v_pid_group.len-1]);
+
+			if(ind_max_amt>=0){
+				if(v_max_amt>0 && v_max_amt<=100){
+					sprintf(csGroup,"%s","Scheme SARIP (Small Amount)");
+				}
+			}
+
+			if(ind_restricted_ip>=0){
+				if(v_restricted_ip==PD_TRUE){
+					sprintf(csGroup,"%s","Scheme SARIP (Restricted IP)");
+				}
+			}
+
+
+			iRet = find_checking_segment_parameters(csCustomerGroup, &dAlertLevel, &dAlertRemainAmt);
+
+			if (iRet == PD_FOUND && (1.0-v_remaining_limit/v_limit >= dAlertLevel/100.0 || (dAlertRemainAmt > v_remaining_limit&& dAlertRemainAmt>0.0))) {
+				iFailure++;
+
+				if (ind_merch_short_name >= 0)
+				{
+					//printf("<tr><td><b>%.*s</b>",v_merch_short_name.len,v_merch_short_name.arr);
+					tpl_set_field_fmt(tpl, "tpl_Merchant_Name", "%.*s",v_merch_short_name.len,v_merch_short_name.arr);
+				}
+				if (ind_merchant_id >= 0)
+				{
+					//printf("  [%.*s]</td>",v_merchant_id.len,v_merchant_id.arr);
+					tpl_set_field_fmt(tpl, "tpl_Merchant_Id", "%.*s",v_merchant_id.len,v_merchant_id.arr);
+				}
+
+				//printf("<td>%s</td>",csGroup);
+				tpl_set_field_fmt(tpl, "tpl_Segment_Scheme", "%s", csGroup);
+
+				if (ind_currency_id >= 0)
+				{
+					//printf("<td>%.*s</td>",v_currency_id.len,v_currency_id.arr);
+					tpl_set_field_fmt(tpl, "tpl_Currency", "%.*s",v_currency_id.len,v_currency_id.arr);
+				}
+				if (ind_remaining_limit >= 0)
+				{
+					//printf("<td>%.0f</td>",v_remaining_limit);
+					tpl_set_field_fmt(tpl, "tpl_Remaining_Limit", "%.0f",v_remaining_limit);
+				}
+				if (ind_limit >= 0)
+				{
+					//printf("<td>%.0f</td>",v_limit);
+					tpl_set_field_fmt(tpl, "tpl_Total_Limit", "%.0f",v_limit);
+				}
+
+				//printf("<td>%.2f%c / %.2f</td></tr>\n",dAlertLevel,'%',dAlertRemainAmt);
+				tpl_set_field_fmt(tpl, "tpl_Alert_Level", "%.2f%c / %.2f",dAlertLevel,'%',dAlertRemainAmt);
+
+				tpl_append_section(tpl);
+			}
+		}
+	}
+
+	EXEC SQL CLOSE :c_cursor_pid_group;
+	EXEC SQL FREE :c_cursor_pid_group;
+
+
+	iRet = iFailure;
+
+	return iRet;
+
+sqlp_error:
+DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE :c_cursor_pid_group;
+	EXEC SQL FREE :c_cursor_pid_group;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+
+int update_last_checking_timestamp(char cPartyType)
+{
+	int	iRet = SUCCESS;
+	char*	csBuf;
+
+	EXEC SQL WHENEVER SQLERROR GOTO update_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char hv_party_type;
+
+		varchar	hv_dynstmt[1024];
+
+	EXEC SQL END DECLARE SECTION;
+
+	csBuf = (char*) malloc (128);
+
+	hv_party_type = cPartyType;
+
+	strcpy((char*)hv_dynstmt.arr,"UPDATE PSP_LIMIT_CHECK SET");
+	strcat((char*)hv_dynstmt.arr, " PC_LAST_CHECKING_TIME = sysdate, PC_UPDATE_TIMESTAMP = sysdate");
+
+	strcat((char*)hv_dynstmt.arr, " WHERE (PC_PARTY_TYPE = '");
+	sprintf(csBuf, "%c", cPartyType);
+	strcat((char*)hv_dynstmt.arr, csBuf);
+	strcat((char*)hv_dynstmt.arr, "'");
+	strcat((char*)hv_dynstmt.arr, " OR PC_PARTY_TYPE = 'G')");
+	strcat((char*)hv_dynstmt.arr, " AND PC_DISABLED = 0");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+//printf("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr);
+	
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+	EXEC SQL EXECUTE PS;
+
+	EXEC SQL COMMIT;
+
+	FREE_ME(csBuf);
+
+	return iRet;
+
+update_error:
+DEBUGLOG(("update_last_checking_timestamp error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+int update_last_checking_segment_timestamp()
+{
+	int	iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO update_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_dynstmt[1024];
+
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy((char*)hv_dynstmt.arr,"UPDATE CUSTOMER_GROUP_LIMIT_CHECK SET");
+	strcat((char*)hv_dynstmt.arr, " CLC_LAST_CHECKING_TIME = sysdate, CLC_UPDATE_TIMESTAMP = sysdate");
+	strcat((char*)hv_dynstmt.arr, " WHERE CLC_DISABLED = 0");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+//printf("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr);
+	
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+	EXEC SQL EXECUTE PS;
+
+	EXEC SQL COMMIT;
+
+	return iRet;
+
+update_error:
+DEBUGLOG(("update_last_checking_segment_timestamp error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL ROLLBACK RELEASE;
+	return PD_ERR;
+}
+
+
+int find_service_desc(char* csServiceCode, char *ptServiceDesc)
+{
+	int	iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO service_find_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_service_code[PD_SERVICE_CODE_LEN];
+
+		varchar	v_service_desc[PD_DESC_LEN+1];
+		short	ind_service_desc = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_service_code.len = strlen((char*)csServiceCode);
+	memcpy(hv_service_code.arr,csServiceCode,hv_service_code.len);
+	
+	EXEC SQL SELECT	SC_DESC INTO :v_service_desc:ind_service_desc
+		FROM	DEF_SERVICE_CODE
+		WHERE	SC_CODE = :hv_service_code;
+
+	if (ind_service_desc >= 0) {
+		v_service_desc.arr[v_service_desc.len] = '\0';
+		strncpy(ptServiceDesc,(const char*)v_service_desc.arr,v_service_desc.len + 1);
+//printf("ptServiceDesc = [%s]\n",ptServiceDesc);
+	} else {
+		iRet = SUCCESS;
+		strcpy(ptServiceDesc,"\0");
+	}
+
+	return iRet;
+
+service_find_error:
+DEBUGLOG(("find_service_desc error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+

@@ -1,0 +1,123 @@
+CREATE OR REPLACE FUNCTION sp_ol_bank_acct_insert (
+   in_int_bank_code           	ol_bank_accts.ob_int_bank_code%TYPE,
+   in_bank_acct_num           	ol_bank_accts.ob_bank_acct_num%TYPE,
+   in_bank_acct_name          	ol_bank_accts.ob_bank_acct_name%TYPE,
+   in_bank_acct_short_name    	ol_bank_accts.ob_bank_acct_short_name%TYPE,
+   in_acct_ccy                	ol_bank_accts.ob_acct_ccy%TYPE,
+   in_shared_acct             	ol_bank_accts.ob_shared_acct%TYPE,
+   in_received_datetime       	VARCHAR2, --ol_bank_accts.ob_received_datetime%type,
+   in_received_by             	ol_bank_accts.ob_received_by%TYPE,
+   in_support_sms_stmt        	ol_bank_accts.ob_support_sms_stmt%TYPE,
+   in_registered_mobile       	ol_bank_accts.ob_registered_mobile%TYPE,
+   in_status_type             	ol_bank_accts.ob_status_type%TYPE,
+   in_provider_id             	ol_bank_accts.ob_init_provider_id%TYPE,
+   in_owner_id                	ol_bank_accts.ob_owner_id%TYPE,
+   in_owner_name              	ol_bank_accts.ob_owner_name%TYPE,
+   in_branch_code             	ol_bank_accts.ob_branch_code%TYPE,
+   in_branch_name             	ol_bank_accts.ob_branch_name%TYPE,
+   in_swift_code              	ol_bank_accts.ob_swift_code%TYPE,
+   in_province                	ol_bank_accts.ob_province%TYPE,
+   in_city                    	ol_bank_accts.ob_city%TYPE,
+   in_remark                  	ol_bank_accts.ob_remark%TYPE,
+   in_acct_type               	ol_bank_accts.ob_acct_type%TYPE,
+   in_is_virtual	      	ol_bank_accts.ob_is_virtual%TYPE,
+   in_bank_acct_source	      	ol_bank_accts.ob_bank_acct_source%TYPE,
+   in_sub_provider	      	ol_bank_accts.ob_sub_provider%TYPE,
+   in_bank_acct_short_name_seq	ol_bank_accts.ob_bank_acct_short_name_seq%TYPE,
+   in_key_expired_datetime      VARCHAR2, --ol_bank_accts.ob_key_expired_datetime%type,
+   in_create_user             	ol_bank_accts.ob_create_user%TYPE)
+   RETURN NUMBER
+IS
+BEGIN
+   INSERT INTO ol_bank_accts (ob_int_bank_code,
+                              ob_bank_acct_num,
+                              ob_bank_acct_name,
+                              ob_bank_acct_short_name,
+                              ob_acct_ccy,
+                              ob_shared_acct,
+                              ob_received_datetime,
+                              ob_received_by,
+                              ob_support_sms_stmt,
+                              ob_registered_mobile,
+                              ob_status_type,
+                              ob_init_provider_id,
+                              ob_owner_id,
+                              ob_owner_name,
+                              ob_branch_code,
+                              ob_branch_name,
+                              ob_swift_code,
+                              ob_province,
+                              ob_city,
+                              ob_remark,
+			      ob_acct_type,
+                              ob_is_virtual,
+			      ob_bank_acct_source,
+			      ob_sub_provider,
+			      ob_bank_acct_short_name_seq,
+                              ob_key_expired_datetime,
+                              ob_create_timestamp,
+                              ob_create_user,
+                              ob_update_timestamp,
+                              ob_update_user)
+        VALUES (in_int_bank_code,
+                in_bank_acct_num,
+                in_bank_acct_name,
+                in_bank_acct_short_name,
+                in_acct_ccy,
+                in_shared_acct,
+                TO_DATE (in_received_datetime, 'YYYYMMDDHH24MISS'),
+                in_received_by,
+                in_support_sms_stmt,
+                in_registered_mobile,
+                in_status_type,
+                in_provider_id,
+                in_owner_id,
+                in_owner_name,
+                in_branch_code,
+                in_branch_name,
+                in_swift_code,
+                in_province,
+                in_city,
+                in_remark,
+		in_acct_type,
+		in_is_virtual,
+		in_bank_acct_source,
+		in_sub_provider,
+		in_bank_acct_short_name_seq,
+                TO_DATE (in_key_expired_datetime, 'YYYYMMDDHH24MISS'),
+                SYSDATE,
+                in_create_user,
+                SYSDATE,
+                in_create_user);
+
+   IF SQL%ROWCOUNT = 0
+   THEN
+      RETURN 1;
+   ELSE
+      INSERT INTO ol_resource_lock (orl_int_bank_code,
+                                    orl_bank_acct_num,
+                                    orl_create_timestamp,
+                                    orl_update_timestamp,
+                                    orl_create_user,
+                                    orl_update_user)
+           VALUES (in_int_bank_code,
+                   in_bank_acct_num,
+                   SYSDATE,
+                   SYSDATE,
+                   in_create_user,
+                   in_create_user);
+
+      IF SQL%ROWCOUNT = 0
+      THEN
+         RETURN 1;
+      ELSE
+         RETURN 0;
+      END IF;
+   END IF;
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+END sp_ol_bank_acct_insert;
+/
+

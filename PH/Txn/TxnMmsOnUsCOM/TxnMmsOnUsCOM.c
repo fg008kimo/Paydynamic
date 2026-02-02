@@ -1,0 +1,164 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/06/12              Cody Chan
+Add Txn Element for Txn Amt			   2015/06/16	           Cody Chan
+Handling dTxnAmt from string2double to myctod      2015/07/30              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmsOnUsCOM.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMmsOnUsCOM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	*csTxnCcy;
+	char    *csTxnCountry;
+	char	*csTmp;
+	double	dTxnAmt;
+	long	lTmp;
+
+DEBUGLOG(("Authorize()\n"));
+
+	if (GetField_CString(hRequest,"txn_country",&csTxnCountry)) {
+DEBUGLOG(("Authorize:: txn_country = [%s]\n",csTxnCountry));
+        }
+        else {
+		iRet = INT_TXN_COUNTRY_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: txn_country is missing\n"));
+ERRLOG("TxnMmsOnUsCOM::Authorize:: txn_country is missing\n");
+	}
+
+	if(iRet == PD_OK){
+		if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+                	DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+                       	if ((unsigned long)(DBObjPtr)(csTxnCcy) == FOUND) {
+DEBUGLOG(("Authorize() DBCurrency->FindCurrency [%s]success\n",csTxnCcy));
+/* net ccy */
+                      		PutField_CString(hContext,"net_ccy",csTxnCcy);
+                                PutField_CString(hContext,"org_txn_ccy",csTxnCcy);
+                        }
+                        else{
+                       		iRet = INT_INVALID_CURRENCY_CODE;
+                                PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() Currency code invalid [%s]\n",csTxnCcy));
+ERRLOG("TxnMmsOnUsCOM:Authorize() Currency code invalid\n");
+                        }
+            	}
+               	else{
+               		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+                      	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() Currency code not found\n"));
+ERRLOG(("TxnMmsOnUsCOM:Authorize() Currency code not found\n"));
+		}
+	}
+
+	if (iRet == PD_OK ) {
+        	if(GetField_CString(hRequest,"txn_amt",&csTmp))
+           	{
+               		int iCheck = PD_FALSE;
+DEBUGLOG(("Authorize()txn_amt from request[%s]\n",csTmp));
+                        iCheck = is_numeric(csTmp);
+                        if(iCheck==PD_FALSE){
+                        	iRet =  INT_INVALID_PAY_AMOUNT;
+                      		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize()txn_amt Invalid[%s]\n",csTmp));
+ERRLOG("TxnMmsOnUsCOM::Authorize() txn_amt Invalid\n");
+			}
+                   	else {
+                       		if(strlen(csTmp)>(PD_DIGIT_LEN+PD_DECIMAL_LEN)){
+                               		iRet =  INT_INVALID_PAY_AMOUNT;
+                                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize()txn_amt length too long[%s]\n",csTmp));
+ERRLOG("TxnMmsOnUsCOM::Authorize() txn_amt length too long\n");
+               			}
+                            	else{
+                               		//dTxnAmt = string2double((const unsigned char*)csTmp);
+                               	        dTxnAmt = myctod((const unsigned char *)csTmp,strlen(csTmp) - PD_DECIMAL_LEN,PD_DECIMAL_LEN);
+                                        PutField_Double(hContext,"txn_amt",dTxnAmt);
+                                        PutField_Double(hContext,"org_txn_amt",dTxnAmt);
+DEBUGLOG(("Authorize() txn_amt = [%f]\n",dTxnAmt));
+                             	}
+                      	}
+/* if TWD */
+                       	if (iRet==PD_OK) {
+DEBUGLOG(("TxnMmsOnUsCOM::Authorize() check is support decimal\n"));
+                       		DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+                                if ((unsigned long)((DBObjPtr)(csTxnCcy))!=PD_TRUE){
+DEBUGLOG(("TxnMmsOnUsCOM::Authorize() [%s] doesn't support decimal\n",csTxnCcy));
+                               		lTmp = (long) dTxnAmt;
+                                       	if (dTxnAmt > lTmp) {
+                                       		iRet = INT_UNSUPPORTED_PAY_AMOUNT;
+                                               	PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnMmsOnUsCOM::Authorize() unsupported transaction amount [%f]\n",dTxnAmt);
+                                    	}
+                          	}
+                 	}
+/* if TW */
+			if(iRet==PD_OK){
+                        	if(!strcmp(csTxnCountry,PD_TAIWAN)){
+DEBUGLOG(("TxnMmsOnUsCOM::Authorize() [%s] doesn't support decimal\n",csTxnCountry));
+                           		lTmp = (long) dTxnAmt;
+                                       	if (dTxnAmt > lTmp) {
+                                       		iRet = INT_UNSUPPORTED_PAY_AMOUNT;
+                                                PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnMmsOnUsCOM::Authorize() unsupported transaction amount [%f]\n",dTxnAmt);
+                               		}
+                              	}
+                 	}
+
+		}
+                else {
+                	iRet = INT_PAY_AMOUNT_NOT_FOUND;
+                     	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() txn_amt not found\n"));
+ERRLOG(("TxnMmsOnUsCOM:Authorize() txn_amt not found\n"));
+       		}
+	}
+
+
+/*  check if entity id has already created */
+	if  (iRet == PD_OK ) {
+        	BOObjPtr = CreateObj(BOPtr,"BOMMSEntity","GetPspEntityId");
+		iRet = (unsigned long)((BOObjPtr)(hContext,hRequest));
+DEBUGLOG(("TxnMmsOnUsCOM: iRet = [%d] return from BOMMSEntity:GetPspEntityId\n",iRet));
+	}
+
+/*  check if entity id balance account */
+	if  (iRet == PD_OK ) {
+        	BOObjPtr = CreateObj(BOPtr,"BOMMSEntityBalAcct","CheckEntityBalAcct");
+		iRet = (unsigned long)((BOObjPtr)(hContext,hRequest));
+DEBUGLOG(("TxnMmsOnUsCOM: iRet = [%d] return from BOMMSEntityBalAcct:CheckEntityBalAcct\n",iRet));
+	}
+
+
+DEBUGLOG(("TxnMmsOnUsCOM Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

@@ -1,0 +1,2035 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                            Change Date     Change By
+------------------------------------------    ------------    --------------
+Init Version                                  2019/11/20      [MIC]
+Add checking record in PregenDailyReport      2020/03/18      [MIC]
+PRD290 Add "Consumer Paid Amount" and	      2020/11/24      [ANC]
+"Consumer Paid Currency" field 
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_REC_ENABLED     	0
+#define PD_FILE_PREFIX	   	"client_txn_hist"
+#define PD_UNUSED			"0"
+
+OBJPTR(DB);
+
+char csDate[PD_DATE_LEN + 1];
+char csInMerchantId[PD_MERCHANT_ID_LEN+1];
+char csInCcyId[PD_COUNTRY_CODE_LEN+1];
+char csInCountryCode[PD_CCY_ID_LEN+1];
+char csInServiceCode[PD_SERVICE_CODE_LEN+1];
+char csInClientId[PD_CLIENT_ID_LEN+1];
+
+char csTmpYYYY[PD_YYYY_LEN+1];
+char csTmpYYYYMM[PD_YYYYMM_LEN+1];
+
+static char cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+
+
+int process_data(const char* csTxnDate);
+
+
+int process_single_acct(const char* csTxnDate,
+						const char* csClientId);
+
+int process_clttxnhist(const char* csClientId,
+                     const char* csReportDate,
+                     FILE *fp);
+
+
+					
+int process_depositSumm(const char* csClientId,
+					const char* csReportDate,
+					FILE *fp);
+					 
+					 
+int mkFullPathDir(const char* csYearMthDy);
+
+char* getYYYY(const char* csTxnDate);
+
+char* getYYYYMM(const char* csTxnDate);
+
+int chkSpInClientID(const char* csClientId);
+
+void format_commas(double dInNum, char* csOutNum);
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 3) {
+		printf("usage: -d Date\n");
+
+		return FAILURE;
+	}
+	
+	else if (argc > 3 && argc < 5) {
+		printf("usage: -d Date"
+			" -c Client_ID\n");
+
+		return FAILURE;
+	}
+	else
+  		return SUCCESS;
+
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet;
+
+	iRet = parse_arg(argc,argv);
+         
+	if (iRet != SUCCESS) {
+		if (argc < 3)
+			printf("usage: -d Date\n");
+		else if (argc > 3 && argc < 5) {
+			printf("usage: -d Date"
+			       " -c Client_ID\n");
+		}
+		return (iRet);
+	}
+
+	if (argc == 3){		
+		iRet = process_data(csDate);
+	}
+	else{
+		iRet = process_single_acct(csDate,csInClientId);
+	}
+
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+int process_data(const char* csTxnDate)
+{               
+	int     iRet = SUCCESS;
+	char    csUploadFilename[PD_UPLOAD_FILENAME_LEN+1];
+	char    csUploadFullFile[PD_PATH_LEN+1];
+	char    csTmpCmd[PD_TMP_BUF_LEN+1];
+	char    csYear[PD_YYYY_LEN+1];
+	char    csYearMth[PD_YYYYMM_LEN+1];
+	char	*csClientId;
+	
+	FILE    *fp;
+	hash_t* hClientTxnHist;
+	hClientTxnHist = (hash_t*) malloc (sizeof(hash_t));
+
+
+/* Extract report data */
+		hash_init(hClientTxnHist,0);
+		PutField_CString(hClientTxnHist,"report_code",PD_CLIENT_TXN_HIST_REPORT_CODE);
+
+
+		PutField_CString(hClientTxnHist,"code", PD_CTH_PREGEN_RPT_PARAM_CD);
+		
+		DBObjPtr = CreateObj(DBPtr,"DBPregenRptParam","GetVal");
+		if ((*DBObjPtr)(hClientTxnHist) == PD_OK){
+DEBUGLOG(("process_data:DBPregenRptParam GetVal Found\n"));
+/* ClientId */
+			if (GetField_CString(hClientTxnHist, "val", &csClientId)) {
+DEBUGLOG(("process_data:ClientId = [%s]\n",csClientId));
+			}
+			else{
+DEBUGLOG(("ClientId not found!!\n"));
+ERRLOG("extract_client_txn_hist_daily_rpt:: process_data:: ClientId not found!!\n");
+				return FAILURE;
+			}
+		}
+		else{
+DEBUGLOG(("process_data:DBPregenRptParam GetVal Not Found\n"));
+ERRLOG("extract_client_txn_hist_daily_rpt:: process_data:: call PregenRptParam::Get Error!!\n");
+			return FAILURE;
+		}
+
+	
+
+
+/* Table Field  disabled*/
+		PutField_Int(hClientTxnHist,"disabled",PD_REC_ENABLED);
+
+/* Addition field Report Data */
+		if (strlen(csTxnDate) > 0)
+		{
+			PutField_CString(hClientTxnHist,"report_date",csTxnDate);
+		}
+
+		
+/* Only Generate report one time*/
+/* Do not generate report again if generated report record exist in table */
+		DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","ChkCthExist");
+		if ((*DBObjPtr)(hClientTxnHist) != PD_OK)
+		{
+DEBUGLOG(("process_data:ClientId[%s] TxnDate[%s] Report has generated already\n", csClientId, csTxnDate));
+			return FAILURE;		
+		}
+
+
+		/* Skip the record if ClientID contains space */ 
+		if (chkSpInClientID(csClientId) == PD_ERR){
+DEBUGLOG(("process_data:unable to get ClientID contain space [%s]\n",csClientId));
+			return FAILURE;
+		}
+
+		sprintf(csUploadFilename, 
+				"%s_%s_%s.zip",
+				PD_FILE_PREFIX,
+				csClientId,
+				csTxnDate);
+		
+
+		
+		
+
+/* Addition field Filename */
+		PutField_CString(hClientTxnHist,"filename",csUploadFilename);
+DEBUGLOG(("process_data:filename[%s]\n",csUploadFilename));
+
+/* Addition field Update_user */
+		PutField_CString(hClientTxnHist,"user",PD_UPDATE_USER);
+
+/* Extract year and year month */
+		strcpy(csYear, getYYYY(csTxnDate));
+
+		strcpy(csYearMth, getYYYYMM(csTxnDate));
+
+
+/* Check and make current balance report folder */
+		if (mkFullPathDir(csTxnDate) != PD_OK)
+		{
+DEBUGLOG(("process_data:unable to create path [%s %s %s]\n",csYear, csYearMth, csTxnDate));
+			return FAILURE;
+		}
+
+		sprintf(csUploadFullFile,"%s/%s/%s/%s/%s/%s_%s_%s.xls",  
+				getenv("PREGEN_RPT_HOME"), PD_FILE_PREFIX, csYear, csYearMth, csTxnDate, PD_FILE_PREFIX, csClientId,
+				csTxnDate);
+		        
+		fp = fopen(csUploadFullFile,"w");
+		if (fp == NULL) {
+DEBUGLOG(("process_data:unable to open [%s]\n",csUploadFullFile));
+			return FAILURE;
+		}
+/* create xml header */
+		fprintf(fp,"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+		fprintf(fp,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+		fprintf(fp,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\txmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+		fprintf(fp,"\t xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+		fprintf(fp,"\t xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\t xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+		fprintf(fp,"<Styles>\n");
+		fprintf(fp,"\t<Style ss:ID=\"shd\">\n");
+		fprintf(fp,"\t\t<ss:Font ss:Bold=\"1\"/>\n");
+		fprintf(fp,"\t\t<Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"\t<Style ss:ID=\"sdt\">\n");
+		fprintf(fp,"\t\t<NumberFormat ss:Format=\"yyyy-mm-dd hh:mm:ss\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"</Styles>\n");
+		fprintf(fp,"<Worksheet ss:Name=\"Client Transaction History\">\n");
+		fprintf(fp,"<Table>\n");
+
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction ID</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Country</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Service</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Short Name</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Reference</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Holdback Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Holdback Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Status</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Callback Status</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Create Timestamp</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Approval Timestamp</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Remark</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Request Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Request Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Bank Name</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">EC Channel</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Payable Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Payable Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Unique Amount Markup</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Fee</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Fee Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Net Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Net Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Payable Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Payable Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Received Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Received Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Total Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Total Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Net Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Net Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Wire Net Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Wire Net Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Beneficiary Bank Name</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Beneficiary Bank Account Number</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+
+
+
+/* process Client Txn History data */
+		if(iRet==PD_OK){
+			if (process_clttxnhist(csClientId,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_clttxnhist failed!!!!!!\n"));
+			}
+		}
+		
+/* create deposit summary header */
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Deposit Summary</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Service</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Status</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Count </Data></Cell>\n");
+		
+		fprintf(fp,"</Row>\n");
+		
+
+/* process deposit summary data */
+		if(iRet==PD_OK){
+			if (process_depositSumm(csClientId,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_depositSumm failed!!!!!!\n"));
+			}
+		}
+		
+		if(iRet==PD_OK){
+/* Addition field Status */
+			PutField_Char(hClientTxnHist,"status",PD_PREGEN_RPT_COMPLETED); 
+		}
+		else{
+/* Addition field Status */
+			PutField_Char(hClientTxnHist,"status",PD_PREGEN_RPT_FAILURE);
+		}
+		
+		
+		
+		
+
+/* create xml footer */
+		fprintf(fp, "</Table>\n");
+		fprintf(fp, "</Worksheet>\n");
+		fprintf(fp, "</Workbook>\n");
+
+		fclose(fp);
+
+/* zip the report */
+
+		sprintf(csTmpCmd, 
+				"zip_pregenrpt.sh %s %s %s %s %s %s %s 1>/dev/null",
+				csTxnDate,
+				csClientId,
+				PD_UNUSED,
+				PD_UNUSED,
+				PD_UNUSED,
+				getenv("PREGEN_RPT_HOME"),
+				PD_FILE_PREFIX);
+		
+		if (system(csTmpCmd) == PD_ERR)
+		{
+DEBUGLOG(("extract_client_txn_hist_daily_rpt::zip: fail %s\n", csTmpCmd));
+		}
+		else
+		{
+DEBUGLOG(("extract_client_txn_hist_daily_rpt::zip: success %s\n", csTmpCmd));
+		}
+
+
+/* ChkExist Insert/update pregen_daily_report */
+		DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","ChkCthExist");
+		if ((*DBObjPtr)(hClientTxnHist) != PD_OK) 
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","UpdateStatus");
+			if ((*DBObjPtr)(hClientTxnHist) != PD_OK) 
+				iRet = PD_ERR;
+		}
+		else
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","Add");
+			if ((*DBObjPtr)(hClientTxnHist) != PD_OK) 
+				iRet = PD_ERR;
+		}
+
+		if (iRet == PD_OK)
+		{
+DEBUGLOG(("extract_client_txn_hist_daily_rpt::commit: ClientId[%s] TxnDate[%s]\n", csClientId,csTxnDate));
+			TxnCommit();
+		}
+
+
+
+		hash_destroy(hClientTxnHist);
+		
+	if (hClientTxnHist)
+	{
+		FREE_ME(hClientTxnHist);
+	}
+
+	return iRet;
+}
+
+
+int process_depositSumm(const char* csClientId,
+                     const char* csReportDate,
+                     FILE *fp)
+{
+	int   	iRet = SUCCESS;
+
+	char csTmp[PD_TMP_BUF_LEN+1];
+	char	csServiceDesc[PD_SERVICE_DESC_LEN+1];
+	char	csStatus[PD_STATUS_DESC_LEN+1];      
+	char	csTxnCurrency[PD_CCY_ID_LEN];
+	double	dTxnAmount;
+	double	dPaidAmount;
+	char	csPaidCurrency[PD_CCY_ID_LEN];
+	double	dTxnCnt;
+
+	EXEC SQL WHENEVER SQLERROR GOTO depositSumm_sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+	
+		varchar hv_client_id[PD_CLIENT_ID_LEN];
+		varchar	hv_report_date[PD_DATE_LEN];
+  
+		varchar	v_service_desc[PD_SERVICE_DESC_LEN+1];
+		varchar	v_status[PD_STATUS_DESC_LEN+1];
+		varchar	v_txn_currency[PD_CCY_ID_LEN];
+		varchar	v_paid_currency[PD_CCY_ID_LEN];
+		double	v_txn_amount;
+		double	v_paid_amount;
+		double	v_txn_cnt;	
+
+		short ind_service_desc = -1;
+		short ind_status       = -1;  
+		short ind_txn_currency = -1;  
+		short ind_txn_amount   = -1;  
+		short ind_paid_amount  = -1;
+		short ind_paid_currency= -1;
+		short ind_txn_cnt      = -1;
+
+		
+		
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("process_depositSumm:Begin\n"));
+
+
+
+	if(strlen(csClientId) > 0)
+	{
+		hv_client_id.len = strlen(csClientId);
+		strncpy((char *)hv_client_id.arr, csClientId, hv_client_id.len);
+DEBUGLOG(("process_depositSumm:client_id = [%.*s]\n",hv_client_id.len,hv_client_id.arr));
+	} else {
+DEBUGLOG(("process_depositSumm:client_id is missing\n"));
+ERRLOG("extract_client_txn_hist_daily_rpt::process_depositSumm: client_id is missing\n");
+		return PD_ERR;
+	}
+
+
+
+	if(strlen(csReportDate) > 0)
+	{
+		hv_report_date.len = strlen(csReportDate);
+		strncpy((char *)hv_report_date.arr, csReportDate, hv_report_date.len);
+DEBUGLOG(("process_depositSumm:report_date = [%.*s]\n",hv_report_date.len,hv_report_date.arr));
+	} else {
+DEBUGLOG(("process_depositSumm:report_date is missing\n"));
+ERRLOG("extract_client_txn_hist_daily_rpt::process_depositSumm: report_date is missing\n");
+		return PD_ERR;
+	}
+
+	
+	EXEC SQL DECLARE c_cursor_getdepositSumm CURSOR FOR
+
+		SELECT  SC_DESC AS SC_DESC,
+			STATUS AS STATUS,
+			TRANSACTION_CCY AS TRANSACTION_CCY,
+			SUM(TRANSACTION_AMOUNT) AS COUNT_AMT,
+			CONSUMER_PAID_CCY AS CONSUMER_PAID_CCY,
+			SUM(CONSUMER_PAID_AMT) AS COUNT_PAID_AMT,
+			count(TXN_ID) AS COUNT_TXN
+		FROM (  select STATUS,
+				TRANSACTION_CCY,
+				TRANSACTION_AMOUNT,
+				CONSUMER_PAID_CCY,
+				CONSUMER_PAID_AMT,
+				TXN_ID,
+				ACK_STATUS,
+				SERVICE_CODE,
+				TXN_COUNTRY,
+				CONSUMER_DEPOSIT_BANK,
+				TP_PSP_ID
+				from merch_rpt_all
+				where client_id = :hv_client_id
+				and create_timestamp >= to_date(:hv_report_date, 'yyyymmdd')
+				and create_timestamp < to_date(:hv_report_date, 'yyyymmdd')+1
+			) TXN_DETAIL
+		LEFT JOIN   DEF_SUB_STATUS ACK_STATUS
+		ON            ACK_STATUS = ACK_STATUS.DS_SUB_STATUS
+		LEFT JOIN    DEF_SERVICE_CODE
+		ON            SC_CODE = SERVICE_CODE
+		LEFT JOIN    COUNTRY
+		ON            COUNTRY_CODE = TXN_COUNTRY
+		LEFT JOIN  (
+					SELECT
+						BANK_NAME ,
+						MBM_FE_DESC ,
+						PSP_ID ,
+						EC_CHANNEL ,
+						MOB_BANK_MAP_VIEW.GRP AS GRP
+					FROM
+						BANK_DESC ,
+						MOB_BANK_MAP
+						LEFT JOIN
+						MOB_BANK_MAP_VIEW
+						on MBM_BANK_CODE = MOB_BANK_MAP_VIEW.BANK_CODE
+						AND MBM_GROUP = MOB_BANK_MAP_VIEW.GRP
+						WHERE
+						INTERNAL_BANK_CODE = MBM_BANK_CODE
+						AND  FE_DESC IS NOT NULL
+						AND  EC_CHANNEL IS NOT NULL
+					) bb
+		ON            bb.BANK_NAME = CONSUMER_DEPOSIT_BANK
+					AND TP_PSP_ID = PSP_ID 
+		WHERE 1=1 AND STATUS='Approved' AND bb.GRP IN (SELECT DISTINCT GRP FROM MOB_BANK_MAP_VIEW)  GROUP BY SC_DESC , bb.MBM_FE_DESC , STATUS , TRANSACTION_CCY , CONSUMER_PAID_CCY , SC_CODE  ORDER BY SC_DESC , bb.MBM_FE_DESC , STATUS , TRANSACTION_CCY , CONSUMER_PAID_CCY , SC_CODE;
+
+	EXEC SQL OPEN c_cursor_getdepositSumm;
+		
+
+	do {
+		EXEC SQL FETCH c_cursor_getdepositSumm
+		INTO
+			:v_service_desc:ind_service_desc,
+			:v_status:ind_status,
+			:v_txn_currency:ind_txn_currency,
+			:v_txn_amount:ind_txn_amount,
+			:v_paid_currency:ind_paid_currency,
+			:v_paid_amount:ind_paid_amount,
+			:v_txn_cnt:ind_txn_cnt
+		;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		
+		fprintf(fp,"<Row>\n");
+
+/* v_service_desc	*/
+		if(ind_service_desc >= 0)
+		{
+			v_service_desc.arr[v_service_desc.len] = '\0';
+			strcpy(csServiceDesc,(const char*)v_service_desc.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csServiceDesc);
+/*DEBUGLOG(("process_client_txn_hist v_service_desc = [%s]\n", v_service_desc.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/* v_status	*/
+		if(ind_status >= 0)
+		{
+			v_status.arr[v_status.len] = '\0';
+			strcpy(csStatus,(const char*)v_status.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csStatus);
+/*DEBUGLOG(("process_client_txn_hist v_status = [%s]\n", v_status.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/* v_txn_currency	*/
+		if(ind_txn_currency >= 0)
+		{
+			v_txn_currency.arr[v_txn_currency.len] = '\0';
+			strcpy(csTxnCurrency,(const char*)v_txn_currency.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnCurrency);
+/*DEBUGLOG(("process_client_txn_hist v_txn_currency = [%s]\n", v_txn_currency.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/*	v_txn_amount	*/
+		if (ind_txn_amount >= 0)
+		{
+			dTxnAmount = v_txn_amount;
+			format_commas(dTxnAmount, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dTxnAmount);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_client_txn_hist v_txn_amount = [%f]\n",v_txn_amount));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+/* 	v_paid_currency	*/
+		if(ind_paid_currency >= 0)
+		{
+			v_paid_currency.arr[v_paid_currency.len] = '\0';
+			strcpy(csPaidCurrency,(const char*)v_paid_currency.arr);
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csPaidCurrency);
+/*DEBUGLOG(("process_client_txn_hist v_paid_currency = [%s]\n", v_paid_currency.arr));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/*	v_paid_amount	*/
+		if (ind_paid_amount >= 0)
+		{
+			dPaidAmount = v_paid_amount;
+			format_commas(dPaidAmount, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dPaidAmount);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_client_txn_hist v_paid_amount = [%f]\n",v_paid_amount));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");	
+/*	v_txn_cnt	*/
+		if (ind_txn_cnt >= 0)
+		{
+			dTxnCnt = v_txn_cnt;
+			format_commas(dTxnCnt, csTmp);
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dTxnCnt);*/
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);
+/*DEBUGLOG(("process_client_txn_hist v_txn_cnt = [%f]\n",v_txn_cnt));*/
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+
+
+		fprintf(fp,"</Row>\n");
+		
+
+	
+	
+	} while (PD_TRUE);
+
+	
+	EXEC SQL CLOSE c_cursor_getdepositSumm;
+	
+
+	return iRet;
+
+depositSumm_sql_error:
+DEBUGLOG(("extract_client_txn_hist_daily_rpt:process_depositSumm code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getdepositSumm;
+	EXEC SQL ROLLBACK RELEASE;
+
+	return PD_ERR;
+}
+
+
+
+int process_clttxnhist(const char* csClientId,
+                     const char* csReportDate,
+                     FILE *fp)
+{
+	int   	iRet = SUCCESS;
+	
+	char	csTxnId[PD_TXN_SEQ_LEN+1];	
+	char	csCountryName[PD_COUNTRY_NAME_LEN+1];	
+	char	csServiceDesc[PD_SERVICE_DESC_LEN+1];	
+	char	csMerShortName[PD_MERCH_SHORT_NAME_LEN+1];	
+	char	csTxnDesc[PD_TXN_DESC_LEN+1];	
+	char	csMerchantRef[PD_MERCHANT_REF_LEN+1];	
+	char	csHoldbackCcy[PD_CCY_ID_LEN+1];	
+	double	dHoldbackAmt;
+	char	csStatus[PD_STATUS_DESC_LEN+1];	
+	char	csAckStatus[PD_ACK_STATUS_NAME_LEN+1];	
+	char	csCreateTimestamp[PD_TIMESTAMP_LEN+1];	
+	char	csApprovalTimestamp[PD_TIMESTAMP_LEN+1];	
+	char	csRemark[PD_REMARK_LEN+1];	
+	double	dMerRequestAmt;
+	char	csMerRequestCcy[PD_CCY_ID_LEN+1];	
+	char	csBankName[PD_BANK_NAME_LEN+1];	
+	char	csEcChannel[PD_EC_CHANNEL_LEN+1];	
+	double	dConsumerPayableAmt;
+	char	csConsumerPayableCcy[PD_CCY_ID_LEN+1];	
+	double	dUniqueAmountMarkup;
+	double	dConsumerPaidAmt;
+	char	csConsumerPaidCcy[PD_CCY_ID_LEN+1];	
+	double	dMerReceivedAmt;
+	char	csMerReceivedCcy[PD_CCY_ID_LEN+1];	
+	double	dTransactionFee;
+	char	csTransactionFeeCcy[PD_CCY_ID_LEN+1];	
+	double	dMerReceivedNetAmt;
+	char	csMerReceivedNetCcy[PD_CCY_ID_LEN+1];	
+	double	dMerPayableAmt;
+	char	csMerPayableCcy[PD_CCY_ID_LEN+1];	
+	double	dConsumerReceivedAmt;
+	char	csConsumerReceivedCcy[PD_CCY_ID_LEN+1];	
+	double	dMerPaidAmt;
+	char	csMerPaidCcy[PD_CCY_ID_LEN+1];	
+	double	dMerPaidTotalAmt;
+	char	csMerPaidTotalCcy[PD_CCY_ID_LEN+1];	
+	double	dMerReceivableAmt;
+	char	csMerReceivableCcy[PD_CCY_ID_LEN+1];	
+	double	dMerReceivableNetAmt;
+	char	csMerReceivableNetCcy[PD_CCY_ID_LEN+1];	
+	double	dFinalMerReceivedNetAmt;
+	char	csFinalMerReceivedNetAmtCcy[PD_CCY_ID_LEN+1];	
+	char	csBeneficiaryBankName[PD_BENEFICIARY_BANK_NAME_LEN+1];	
+	char	csBeneficiaryBankAcNum[PD_BENEFICIARY_BANK_AC_NUM_LEN+1];  
+
+
+
+	char csTmp[PD_TMP_BUF_LEN+1];
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO clttxnhist_sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_client_id[PD_CLIENT_ID_LEN];
+		varchar	hv_report_date[PD_DATE_LEN];
+    
+
+		varchar	v_txn_id[PD_TXN_SEQ_LEN+1];
+		varchar	v_country_name[PD_COUNTRY_NAME_LEN+1];
+		varchar	v_service_desc[PD_SERVICE_DESC_LEN+1];
+		varchar	v_mer_short_name[PD_MERCH_SHORT_NAME_LEN+1];
+		varchar	v_txn_desc[PD_TXN_DESC_LEN+1];
+		varchar	v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		varchar	v_holdback_ccy[PD_CCY_ID_LEN+1];
+		double	v_holdback_amt;
+		varchar	v_status[PD_STATUS_DESC_LEN+1];
+		varchar	v_ack_status[PD_ACK_STATUS_NAME_LEN+1];
+		varchar	v_create_timestamp[PD_TIMESTAMP_LEN+1];
+		varchar	v_approval_timestamp[PD_TIMESTAMP_LEN+1];
+		varchar	v_remark[PD_REMARK_LEN+1];
+		double	v_mer_request_amt;
+		varchar	v_mer_request_ccy[PD_CCY_ID_LEN+1];
+		varchar	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar	v_ec_channel[PD_EC_CHANNEL_LEN+1];
+		double	v_consumer_payable_amt;
+		varchar	v_consumer_payable_ccy[PD_CCY_ID_LEN+1];
+		double	v_unique_amount_markup;
+		double	v_consumer_paid_amt;
+		varchar	v_consumer_paid_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_received_amt;
+		varchar	v_mer_received_ccy[PD_CCY_ID_LEN+1];
+		double	v_transaction_fee;
+		varchar	v_transaction_fee_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_received_net_amt;
+		varchar	v_mer_received_net_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_payable_amt;
+		varchar	v_mer_payable_ccy[PD_CCY_ID_LEN+1];
+		double	v_consumer_received_amt;
+		varchar	v_consumer_received_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_paid_amt;
+		varchar	v_mer_paid_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_paid_total_amt;
+		varchar	v_mer_paid_total_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_receivable_amt;
+		varchar	v_mer_receivable_ccy[PD_CCY_ID_LEN+1];
+		double	v_mer_receivable_net_amt;
+		varchar	v_mer_receivable_net_ccy[PD_CCY_ID_LEN+1];
+		double	v_final_mer_received_net_amt;
+		varchar	v_final_mer_received_net_amt_ccy[PD_CCY_ID_LEN+1];
+		varchar	v_beneficiary_bank_name[PD_BENEFICIARY_BANK_NAME_LEN+1];
+		varchar	v_beneficiary_bank_ac_num[PD_BENEFICIARY_BANK_AC_NUM_LEN+1];
+
+		short ind_txn_id = -1;
+		short ind_country_name = -1;
+		short ind_service_desc = -1;
+		short ind_mer_short_name = -1;  
+		short ind_txn_desc = -1;
+		short ind_merchant_ref = -1;
+		short ind_holdback_ccy = -1;
+		short ind_holdback_amt = -1;
+		short ind_status = -1;
+		short ind_ack_status = -1;
+		short ind_create_timestamp = -1;
+		short ind_approval_timestamp = -1;
+		short ind_remark = -1;
+		short ind_mer_request_amt = -1;
+		short ind_mer_request_ccy = -1;
+		short ind_bank_name = -1;
+		short ind_ec_channel = -1;
+		short ind_consumer_payable_amt = -1;
+		short ind_consumer_payable_ccy = -1;
+		short ind_unique_amount_markup = -1;
+		short ind_consumer_paid_amt = -1;
+		short ind_consumer_paid_ccy = -1;
+		short ind_mer_received_amt = -1;
+		short ind_mer_received_ccy = -1;
+		short ind_transaction_fee = -1;
+		short ind_transaction_fee_ccy = -1;
+		short ind_mer_received_net_amt = -1;
+		short ind_mer_received_net_ccy = -1;
+		short ind_mer_payable_amt = -1;
+		short ind_mer_payable_ccy = -1;
+		short ind_consumer_received_amt = -1;
+		short ind_consumer_received_ccy = -1;
+		short ind_mer_paid_amt = -1;
+		short ind_mer_paid_ccy = -1;
+		short ind_mer_paid_total_amt = -1;
+		short ind_mer_paid_total_ccy = -1;
+		short ind_mer_receivable_amt = -1;
+		short ind_mer_receivable_ccy = -1;
+		short ind_mer_receivable_net_amt = -1;
+		short ind_mer_receivable_net_ccy = -1;
+		short ind_final_mer_received_net_amt = -1;
+		short ind_final_mer_received_net_amt_ccy = -1;
+		short ind_beneficiary_bank_name = -1;
+		short ind_beneficiary_bank_ac_num = -1;
+		
+
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("process_clttxnhist:Begin\n"));
+
+
+
+	if(strlen(csClientId) > 0)
+	{
+		hv_client_id.len = strlen(csClientId);
+		strncpy((char *)hv_client_id.arr, csClientId, hv_client_id.len);
+DEBUGLOG(("process_clttxnhist:client_id = [%.*s]\n",hv_client_id.len,hv_client_id.arr));
+	} else {
+DEBUGLOG(("process_clttxnhist:client_id is missing\n"));
+ERRLOG("extract_client_txn_hist_daily_rpt::process_clttxnhist: client_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csReportDate) > 0)
+	{
+		hv_report_date.len = strlen(csReportDate);
+		strncpy((char *)hv_report_date.arr, csReportDate, hv_report_date.len);
+DEBUGLOG(("process_clttxnhist:report_date = [%.*s]\n",hv_report_date.len,hv_report_date.arr));
+	} else {
+DEBUGLOG(("process_clttxnhist:report_date is missing\n"));
+ERRLOG("extract_client_txn_hist_daily_rpt::process_clttxnhist: report_date is missing\n");
+		return PD_ERR;
+	}
+		
+/* TXN */
+	EXEC SQL DECLARE c_cursor_getclttxnhist CURSOR FOR
+
+			  SELECT TXN_ID
+					 AS TXN_ID,
+				 COUNTRY.COUNTRY_NAME
+					 AS COUNTRY_NAME,
+				 SC_DESC
+					 AS SERVICE_DESC,
+				 MERCHANT_SHORT_NAME
+					 AS SHORT_NAME,
+				 TRANSACTION_TYPE
+					 AS TXN_DESC,
+				 DECODE (SC_CODE, 'VHS', 'N/A', MER_REFERENCE)
+					 AS MERCHANT_REF,
+				 HOLDBACK_CCY
+					 AS HOLDBACK_CCY,
+				 HOLDBACK_AMT
+					 AS HOLDBACK_AMT,
+				 STATUS
+					 AS STATUS,
+				 ACK_STATUS.DS_NAME
+					 AS ACK_STATUS,
+				 TO_CHAR(TXN_DETAIL.CREATE_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')
+					 AS CREATE_TIMESTAMP,
+				 TO_CHAR(TXN_DETAIL.APPROVAL_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')
+					 AS APPROVAL_TIMESTAMP,
+				 REMARK
+					 AS REMARK,
+				 MER_REQUEST_AMT
+					 AS MER_REQUEST_AMT,
+				 MER_REQUEST_CCY
+					 AS MER_REQUEST_CCY,
+				 CONSUMER_DEPOSIT_BANK
+					 AS BANK_NAME,
+				 EC_CHANNEL
+					 AS EC_CHANNEL,
+				 CONSUMER_PAYABLE_AMT
+					 AS CONSUMER_PAYABLE_AMT,
+				 CONSUMER_PAYABLE_CCY
+					 AS CONSUMER_PAYABLE_CCY,
+				 UNIQUE_AMOUNT_MARKUP
+					 AS UNIQUE_AMOUNT_MARKUP,
+				 CONSUMER_PAID_AMT
+					 AS CONSUMER_PAID_AMT,
+				 CONSUMER_PAID_CCY
+					 AS CONSUMER_PAID_CCY,
+				 MER_RECEIVED_AMT
+					 AS MER_RECEIVED_AMT,
+				 MER_RECEIVED_CCY
+					 AS MER_RECEIVED_CCY,
+				 TRANSACTION_FEE
+					 AS TRANSACTION_FEE,
+				 TRANSACTION_FEE_CCY
+					 AS TRANSACTION_FEE_CCY,
+				 MER_RECEIVED_NET_AMT
+					 AS MER_RECEIVED_NET_AMT,
+				 MER_RECEIVED_NET_AMT_CCY
+					 AS MER_RECEIVED_NET_CCY,
+				 MER_PAYABLE_AMOUNT
+					 AS MER_PAYABLE_AMT,
+				 MER_PAYABLE_CCY
+					 AS MER_PAYABLE_CCY,
+				 CONSUMER_RECEIVED_AMT
+					 AS CONSUMER_RECEIVED_AMT,
+				 CONSUMER_RECEIVED_CCY
+					 AS CONSUMER_RECEIVED_CCY,
+				 MER_PAID_AMOUNT
+					 AS MER_PAID_AMT,
+				 MER_PAID_CCY
+					 AS MER_PAID_CCY,
+				 MER_PAID_TOTAL_AMT
+					 AS MER_PAID_TOTAL_AMT,
+				 MER_PAID_TOTAL_AMT_CCY
+					 AS MER_PAID_TOTAL_CCY,
+				 MER_RECEIVABLE_AMT
+					 AS MER_RECEIVABLE_AMT,
+				 MER_RECEIVABLE_CCY
+					 AS MER_RECEIVABLE_CCY,
+				 MER_RECEIVABLE_NET_AMT
+					 AS MER_RECEIVABLE_NET_AMT,
+				 MER_RECEIVABLE_NET_AMT_CCY
+					 AS MER_RECEIVABLE_NET_CCY,
+				 FINAL_MER_RECEIVED_NET_AMT
+					 AS FINAL_MER_RECEIVED_NET_AMT,
+				 FINAL_MER_RECEIVED_NET_AMT_CCY
+					 AS FINAL_MER_RECEIVED_NET_AMT_CCY,
+				 BENEFICIARY_BANK_NAME
+					 AS BENEFICIARY_BANK_NAME,
+				 CASE
+					 WHEN TXN_CODE = 'STR' THEN BENEFICIARY_BANK_AC_NUM
+					 ELSE PAYOUT_ACCT_NUM
+				 END
+					 AS BENEFICIARY_BANK_AC_NUM
+			FROM (	select CREATE_TIMESTAMP, 
+					APPROVAL_TIMESTAMP,
+					ACK_STATUS,
+					SERVICE_CODE,
+					TXN_COUNTRY,
+					CONSUMER_DEPOSIT_BANK,
+					TP_PSP_ID,
+					TXN_ID,
+					MERCHANT_SHORT_NAME,
+					TRANSACTION_TYPE,
+					MER_REFERENCE,
+					HOLDBACK_CCY,
+					HOLDBACK_AMT,
+					STATUS,
+					REMARK,
+					MER_REQUEST_AMT,
+					MER_REQUEST_CCY,
+					CONSUMER_PAYABLE_AMT,
+					CONSUMER_PAYABLE_CCY,
+					UNIQUE_AMOUNT_MARKUP,
+					CONSUMER_PAID_AMT,
+					CONSUMER_PAID_CCY,
+					MER_RECEIVED_AMT,
+					MER_RECEIVED_CCY,
+					TRANSACTION_FEE,
+					TRANSACTION_FEE_CCY,
+					MER_RECEIVED_NET_AMT,
+					MER_RECEIVED_NET_AMT_CCY,
+					MER_PAYABLE_AMOUNT,
+					MER_PAYABLE_CCY,
+					CONSUMER_RECEIVED_AMT,
+					CONSUMER_RECEIVED_CCY,
+					MER_PAID_AMOUNT,
+					MER_PAID_CCY,
+					MER_PAID_TOTAL_AMT,
+					MER_PAID_TOTAL_AMT_CCY,
+					MER_RECEIVABLE_AMT,
+					MER_RECEIVABLE_CCY,
+					MER_RECEIVABLE_NET_AMT,
+					MER_RECEIVABLE_NET_AMT_CCY,
+					FINAL_MER_RECEIVED_NET_AMT,
+					FINAL_MER_RECEIVED_NET_AMT_CCY,
+					BENEFICIARY_BANK_NAME,
+					TXN_CODE,
+					PAYOUT_ACCT_NUM,
+					BENEFICIARY_BANK_AC_NUM
+					from merch_rpt_all
+					where client_id = :hv_client_id
+					and CREATE_TIMESTAMP >= to_date(:hv_report_date, 'yyyymmdd')
+					and CREATE_TIMESTAMP < to_date(:hv_report_date, 'yyyymmdd')+1
+				) TXN_DETAIL
+				 LEFT JOIN DEF_SUB_STATUS ACK_STATUS
+					 ON ACK_STATUS = ACK_STATUS.DS_SUB_STATUS
+				 LEFT JOIN DEF_SERVICE_CODE ON SC_CODE = SERVICE_CODE
+				 LEFT JOIN COUNTRY ON COUNTRY_CODE = TXN_COUNTRY
+				 LEFT JOIN
+				 (SELECT BANK_NAME,
+						 MBM_FE_DESC,
+						 PSP_ID,
+						 EC_CHANNEL
+					FROM BANK_DESC,
+						 MOB_BANK_MAP
+						 LEFT JOIN MOB_BANK_MAP_VIEW
+							 ON     MBM_BANK_CODE = MOB_BANK_MAP_VIEW.BANK_CODE
+								AND MBM_GROUP = MOB_BANK_MAP_VIEW.GRP
+				   WHERE     INTERNAL_BANK_CODE = MBM_BANK_CODE
+						 AND FE_DESC IS NOT NULL
+						 AND EC_CHANNEL IS NOT NULL
+						 AND GRP = 'SEG_ECT') bb
+					 ON bb.BANK_NAME = CONSUMER_DEPOSIT_BANK AND TP_PSP_ID = PSP_ID
+				 LEFT JOIN
+				 (SELECT DTR_ENQUIRY_STATUS, DTR_TXN_ID
+					FROM (SELECT DTR_ENQUIRY_STATUS,
+								 DTR_TXN_ID,
+								 ROW_NUMBER ()
+								 OVER (PARTITION BY DTR_TXN_ID
+									   ORDER BY DTR_CREATE_TIMESTAMP DESC)
+									 AS ROWNO
+							FROM DEPOSIT_TRACE
+						   WHERE DTR_ENQUIRY_STATUS IS NOT NULL)
+				   WHERE ROWNO = 1) ADT
+					 ON ADT.DTR_TXN_ID = TXN_ID
+				 LEFT JOIN DEF_ENQUIRY_STATUS
+					 ON DEF_ENQUIRY_STATUS.DE_CODE = ADT.DTR_ENQUIRY_STATUS
+				 LEFT JOIN
+				 (SELECT DTR_TXN_ID, MERCHANT_CREATE_USER, MERCHANT_CREATE_TIMESTAMP
+					FROM (SELECT DTR_TXN_ID,
+								 DTR_CREATE_USER
+									 AS MERCHANT_CREATE_USER,
+								 DTR_CREATE_TIMESTAMP
+									 AS MERCHANT_CREATE_TIMESTAMP,
+								 ROW_NUMBER ()
+								 OVER (PARTITION BY DTR_TXN_ID
+									   ORDER BY DTR_CREATE_TIMESTAMP DESC)
+									 AS ROWNO
+							FROM DEPOSIT_TRACE
+						   WHERE DTR_PARTY_TYPE = 'M')
+				   WHERE ROWNO = 1) MDT
+					 ON MDT.DTR_TXN_ID = TXN_ID
+				 LEFT JOIN
+				 (SELECT DTR_TXN_ID, ADMIN_CREATE_USER, ADMIN_CREATE_TIMESTAMP
+					FROM (SELECT DTR_TXN_ID,
+								 CASE
+									 WHEN DTR_UPDATE_USER IS NOT NULL
+									 THEN
+										 'System Administrator'
+									 ELSE
+										 ''
+								 END
+									 ADMIN_CREATE_USER,
+								 DTR_CREATE_TIMESTAMP
+									 AS ADMIN_CREATE_TIMESTAMP,
+								 ROW_NUMBER ()
+								 OVER (PARTITION BY DTR_TXN_ID
+									   ORDER BY DTR_CREATE_TIMESTAMP DESC)
+									 AS ROWNO
+							FROM DEPOSIT_TRACE
+						   WHERE DTR_PARTY_TYPE = 'A')
+				   WHERE ROWNO = 1) ADT2
+					 ON ADT2.DTR_TXN_ID = TXN_ID
+		   WHERE 1 = 1
+		ORDER BY CREATE_TIMESTAMP DESC, TXN_ID DESC;
+		
+	EXEC SQL OPEN c_cursor_getclttxnhist;
+	
+	do {
+
+		EXEC SQL FETCH c_cursor_getclttxnhist
+		INTO
+			:v_txn_id:ind_txn_id,       					
+			:v_country_name:ind_country_name,                  
+			:v_service_desc:ind_service_desc,                  
+			:v_mer_short_name:ind_mer_short_name,                    
+			:v_txn_desc:ind_txn_desc,                      
+			:v_merchant_ref:ind_merchant_ref,                  
+			:v_holdback_ccy:ind_holdback_ccy,                  
+			:v_holdback_amt:ind_holdback_amt,                   
+			:v_status:ind_status,                        
+			:v_ack_status:ind_ack_status,                    
+			:v_create_timestamp:ind_create_timestamp,              
+			:v_approval_timestamp:ind_approval_timestamp,                   
+			:v_remark:ind_remark,                        
+			:v_mer_request_amt:ind_mer_request_amt,                
+			:v_mer_request_ccy:ind_mer_request_ccy,               
+			:v_bank_name:ind_bank_name,                     
+			:v_ec_channel:ind_ec_channel,                    
+			:v_consumer_payable_amt:ind_consumer_payable_amt,           
+			:v_consumer_payable_ccy:ind_consumer_payable_ccy,          
+			:v_unique_amount_markup:ind_unique_amount_markup,           
+			:v_consumer_paid_amt:ind_consumer_paid_amt,              
+			:v_consumer_paid_ccy:ind_consumer_paid_ccy,             
+			:v_mer_received_amt:ind_mer_received_amt,               
+			:v_mer_received_ccy:ind_mer_received_ccy,              
+			:v_transaction_fee:ind_transaction_fee,                
+			:v_transaction_fee_ccy:ind_transaction_fee_ccy,           
+			:v_mer_received_net_amt:ind_mer_received_net_amt,           
+			:v_mer_received_net_ccy:ind_mer_received_net_ccy,          
+			:v_mer_payable_amt:ind_mer_payable_amt,                
+			:v_mer_payable_ccy:ind_mer_payable_ccy,               
+			:v_consumer_received_amt:ind_consumer_received_amt,          
+			:v_consumer_received_ccy:ind_consumer_received_ccy,         
+			:v_mer_paid_amt:ind_mer_paid_amt,                   
+			:v_mer_paid_ccy:ind_mer_paid_ccy,                  
+			:v_mer_paid_total_amt:ind_mer_paid_total_amt,             
+			:v_mer_paid_total_ccy:ind_mer_paid_total_ccy,            
+			:v_mer_receivable_amt:ind_mer_receivable_amt,             
+			:v_mer_receivable_ccy:ind_mer_receivable_ccy,            
+			:v_mer_receivable_net_amt:ind_mer_receivable_net_amt,         
+			:v_mer_receivable_net_ccy:ind_mer_receivable_net_ccy,        
+			:v_final_mer_received_net_amt:ind_final_mer_received_net_amt,     
+			:v_final_mer_received_net_amt_ccy:ind_final_mer_received_net_amt_ccy,
+			:v_beneficiary_bank_name:ind_beneficiary_bank_name,         
+			:v_beneficiary_bank_ac_num:ind_beneficiary_bank_ac_num
+		;
+	
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+		
+		fprintf(fp,"<Row>\n");
+
+/* v_txn_id	*/
+		if(ind_txn_id >= 0)
+		{
+			v_txn_id.arr[v_txn_id.len] = '\0';	
+			strcpy(csTxnId,(const char*)v_txn_id.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnId);	
+/*DEBUGLOG(("process_client_txn_hist v_txn_id = [%s]\n", v_txn_id.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_country_name	*/	
+		if(ind_country_name >= 0)	
+		{	
+			v_country_name.arr[v_country_name.len] = '\0';	
+			strcpy(csCountryName,(const char*)v_country_name.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csCountryName);	
+/*DEBUGLOG(("process_client_txn_hist v_country_name = [%s]\n", v_country_name.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_service_desc	*/	
+		if(ind_service_desc >= 0)	
+		{	
+			v_service_desc.arr[v_service_desc.len] = '\0';	
+			strcpy(csServiceDesc,(const char*)v_service_desc.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csServiceDesc);	
+/*DEBUGLOG(("process_client_txn_hist v_service_desc = [%s]\n", v_service_desc.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_mer_short_name	*/	
+		if(ind_mer_short_name >= 0)	
+		{	
+			v_mer_short_name.arr[v_mer_short_name.len] = '\0';	
+			strcpy(csMerShortName,(const char*)v_mer_short_name.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerShortName);	
+/*DEBUGLOG(("process_client_txn_hist v_mer_short_name = [%s]\n", v_mer_short_name.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_txn_desc	*/	
+		if(ind_txn_desc >= 0)	
+		{	
+			v_txn_desc.arr[v_txn_desc.len] = '\0';	
+			strcpy(csTxnDesc,(const char*)v_txn_desc.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnDesc);	
+/*DEBUGLOG(("process_client_txn_hist v_txn_desc = [%s]\n", v_txn_desc.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_merchant_ref	*/	
+		if(ind_merchant_ref >= 0)	
+		{	
+			v_merchant_ref.arr[v_merchant_ref.len] = '\0';	
+			strcpy(csMerchantRef,(const char*)v_merchant_ref.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerchantRef);	
+/*DEBUGLOG(("process_client_txn_hist v_merchant_ref = [%s]\n", v_merchant_ref.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_holdback_ccy	*/	
+		if(ind_holdback_ccy >= 0)	
+		{	
+			v_holdback_ccy.arr[v_holdback_ccy.len] = '\0';	
+			strcpy(csHoldbackCcy,(const char*)v_holdback_ccy.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csHoldbackCcy);	
+/*DEBUGLOG(("process_client_txn_hist v_holdback_ccy = [%s]\n", v_holdback_ccy.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/*	v_holdback_amt	*/	
+		if (ind_holdback_amt >= 0)	
+		{	
+			dHoldbackAmt = v_holdback_amt;	
+			format_commas(dHoldbackAmt, csTmp);	
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dHoldbackAmt);*/	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);	
+/*DEBUGLOG(("process_client_txn_hist v_holdback_amt = [%f]\n",v_holdback_amt));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");	
+/* v_status	*/	
+		if(ind_status >= 0)	
+		{	
+			v_status.arr[v_status.len] = '\0';	
+			strcpy(csStatus,(const char*)v_status.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csStatus);	
+/*DEBUGLOG(("process_client_txn_hist v_status = [%s]\n", v_status.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_ack_status	*/	
+		if(ind_ack_status >= 0)	
+		{	
+			v_ack_status.arr[v_ack_status.len] = '\0';	
+			strcpy(csAckStatus,(const char*)v_ack_status.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csAckStatus);	
+/*DEBUGLOG(("process_client_txn_hist v_ack_status = [%s]\n", v_ack_status.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/* v_create_timestamp	*/	
+		if(ind_create_timestamp >= 0)	
+		{	
+			v_create_timestamp.arr[v_create_timestamp.len] = '\0';	
+			strcpy(csCreateTimestamp,(const char*)v_create_timestamp.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csCreateTimestamp);	
+/*DEBUGLOG(("process_client_txn_hist v_create_timestamp = [%s]\n", v_create_timestamp.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");	
+/* v_approval_timestamp	*/	
+		if(ind_approval_timestamp >= 0)	
+		{	
+			v_approval_timestamp.arr[v_approval_timestamp.len] = '\0';	
+			strcpy(csApprovalTimestamp,(const char*)v_approval_timestamp.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csApprovalTimestamp);	
+/*DEBUGLOG(("process_client_txn_hist v_approval_timestamp = [%s]\n", v_approval_timestamp.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/* v_remark	*/	
+		if(ind_remark >= 0)	
+		{	
+			v_remark.arr[v_remark.len] = '\0';	
+			strcpy(csRemark,(const char*)v_remark.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csRemark);	
+/*DEBUGLOG(("process_client_txn_hist v_remark = [%s]\n", v_remark.arr));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/*	v_mer_request_amt	*/	
+		if (ind_mer_request_amt >= 0)	
+		{	
+			dMerRequestAmt = v_mer_request_amt;	
+			format_commas(dMerRequestAmt, csTmp);	
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerRequestAmt);*/	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);	
+/*DEBUGLOG(("process_client_txn_hist v_mer_request_amt = [%f]\n",v_mer_request_amt));*/	
+		}	
+		else	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");				
+/* v_mer_request_ccy	*/	
+		if(ind_mer_request_ccy >= 0)	
+		{	
+			v_mer_request_ccy.arr[v_mer_request_ccy.len] = '\0';	
+			strcpy(csMerRequestCcy,(const char*)v_mer_request_ccy.arr);	
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerRequestCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_request_ccy = [%s]\n", v_mer_request_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/* v_bank_name	*/		
+		if(ind_bank_name >= 0)		
+		{		
+			v_bank_name.arr[v_bank_name.len] = '\0';		
+			strcpy(csBankName,(const char*)v_bank_name.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csBankName);		
+/*DEBUGLOG(("process_client_txn_hist v_bank_name = [%s]\n", v_bank_name.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/* v_ec_channel	*/		
+		if(ind_ec_channel >= 0)		
+		{		
+			v_ec_channel.arr[v_ec_channel.len] = '\0';		
+			strcpy(csEcChannel,(const char*)v_ec_channel.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csEcChannel);		
+/*DEBUGLOG(("process_client_txn_hist v_ec_channel = [%s]\n", v_ec_channel.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+/*	v_consumer_payable_amt	*/		
+	if (ind_consumer_payable_amt >= 0)		
+	{		
+		dConsumerPayableAmt = v_consumer_payable_amt;		
+		format_commas(dConsumerPayableAmt, csTmp);		
+		/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dConsumerPayableAmt);*/		
+		fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_consumer_payable_amt = [%f]\n",v_consumer_payable_amt));*/		
+	}		
+	else		
+		fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_consumer_payable_ccy	*/		
+		if(ind_consumer_payable_ccy >= 0)		
+		{		
+			v_consumer_payable_ccy.arr[v_consumer_payable_ccy.len] = '\0';		
+			strcpy(csConsumerPayableCcy,(const char*)v_consumer_payable_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csConsumerPayableCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_consumer_payable_ccy = [%s]\n", v_consumer_payable_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");			
+/*	v_unique_amount_markup	*/		
+		if (ind_unique_amount_markup >= 0)		
+		{		
+			dUniqueAmountMarkup = v_unique_amount_markup;		
+			format_commas(dUniqueAmountMarkup, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dUniqueAmountMarkup);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_unique_amount_markup = [%f]\n",v_unique_amount_markup));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/*	v_consumer_paid_amt	*/		
+		if (ind_consumer_paid_amt >= 0)		
+		{		
+			dConsumerPaidAmt = v_consumer_paid_amt;		
+			format_commas(dConsumerPaidAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dConsumerPaidAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_consumer_paid_amt = [%f]\n",v_consumer_paid_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_consumer_paid_ccy	*/		
+		if(ind_consumer_paid_ccy >= 0)		
+		{		
+			v_consumer_paid_ccy.arr[v_consumer_paid_ccy.len] = '\0';		
+			strcpy(csConsumerPaidCcy,(const char*)v_consumer_paid_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csConsumerPaidCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_consumer_paid_ccy = [%s]\n", v_consumer_paid_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_received_amt	*/		
+		if (ind_mer_received_amt >= 0)		
+		{		
+			dMerReceivedAmt = v_mer_received_amt;		
+			format_commas(dMerReceivedAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerReceivedAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_received_amt = [%f]\n",v_mer_received_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_received_ccy	*/		
+		if(ind_mer_received_ccy >= 0)		
+		{		
+			v_mer_received_ccy.arr[v_mer_received_ccy.len] = '\0';		
+			strcpy(csMerReceivedCcy,(const char*)v_mer_received_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerReceivedCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_received_ccy = [%s]\n", v_mer_received_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_transaction_fee	*/		
+		if (ind_transaction_fee >= 0)		
+		{		
+			dTransactionFee = v_transaction_fee;		
+			format_commas(dTransactionFee, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dTransactionFee);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_transaction_fee = [%f]\n",v_transaction_fee));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_transaction_fee_ccy	*/		
+		if(ind_transaction_fee_ccy >= 0)		
+		{		
+			v_transaction_fee_ccy.arr[v_transaction_fee_ccy.len] = '\0';		
+			strcpy(csTransactionFeeCcy,(const char*)v_transaction_fee_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTransactionFeeCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_transaction_fee_ccy = [%s]\n", v_transaction_fee_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_received_net_amt	*/		
+		if (ind_mer_received_net_amt >= 0)		
+		{		
+			dMerReceivedNetAmt = v_mer_received_net_amt;		
+			format_commas(dMerReceivedNetAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerReceivedNetAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_received_net_amt = [%f]\n",v_mer_received_net_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_received_net_ccy	*/		
+		if(ind_mer_received_net_ccy >= 0)		
+		{		
+			v_mer_received_net_ccy.arr[v_mer_received_net_ccy.len] = '\0';		
+			strcpy(csMerReceivedNetCcy,(const char*)v_mer_received_net_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerReceivedNetCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_received_net_ccy = [%s]\n", v_mer_received_net_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_payable_amt	*/		
+		if (ind_mer_payable_amt >= 0)		
+		{		
+			dMerPayableAmt = v_mer_payable_amt;		
+			format_commas(dMerPayableAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerPayableAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_payable_amt = [%f]\n",v_mer_payable_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_payable_ccy	*/		
+		if(ind_mer_payable_ccy >= 0)		
+		{		
+			v_mer_payable_ccy.arr[v_mer_payable_ccy.len] = '\0';		
+			strcpy(csMerPayableCcy,(const char*)v_mer_payable_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerPayableCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_payable_ccy = [%s]\n", v_mer_payable_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_consumer_received_amt	*/		
+		if (ind_consumer_received_amt >= 0)		
+		{		
+			dConsumerReceivedAmt = v_consumer_received_amt;		
+			format_commas(dConsumerReceivedAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dConsumerReceivedAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_consumer_received_amt = [%f]\n",v_consumer_received_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_consumer_received_ccy	*/		
+		if(ind_consumer_received_ccy >= 0)		
+		{		
+			v_consumer_received_ccy.arr[v_consumer_received_ccy.len] = '\0';		
+			strcpy(csConsumerReceivedCcy,(const char*)v_consumer_received_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csConsumerReceivedCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_consumer_received_ccy = [%s]\n", v_consumer_received_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_paid_amt	*/		
+		if (ind_mer_paid_amt >= 0)		
+		{		
+			dMerPaidAmt = v_mer_paid_amt;		
+			format_commas(dMerPaidAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerPaidAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_paid_amt = [%f]\n",v_mer_paid_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_paid_ccy	*/		
+		if(ind_mer_paid_ccy >= 0)		
+		{		
+			v_mer_paid_ccy.arr[v_mer_paid_ccy.len] = '\0';		
+			strcpy(csMerPaidCcy,(const char*)v_mer_paid_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerPaidCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_paid_ccy = [%s]\n", v_mer_paid_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_paid_total_amt	*/		
+		if (ind_mer_paid_total_amt >= 0)		
+		{		
+			dMerPaidTotalAmt = v_mer_paid_total_amt;		
+			format_commas(dMerPaidTotalAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerPaidTotalAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_paid_total_amt = [%f]\n",v_mer_paid_total_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_paid_total_ccy	*/		
+		if(ind_mer_paid_total_ccy >= 0)		
+		{		
+			v_mer_paid_total_ccy.arr[v_mer_paid_total_ccy.len] = '\0';		
+			strcpy(csMerPaidTotalCcy,(const char*)v_mer_paid_total_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerPaidTotalCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_paid_total_ccy = [%s]\n", v_mer_paid_total_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_receivable_amt	*/		
+		if (ind_mer_receivable_amt >= 0)		
+		{		
+			dMerReceivableAmt = v_mer_receivable_amt;		
+			format_commas(dMerReceivableAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerReceivableAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_receivable_amt = [%f]\n",v_mer_receivable_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_receivable_ccy	*/		
+		if(ind_mer_receivable_ccy >= 0)		
+		{		
+			v_mer_receivable_ccy.arr[v_mer_receivable_ccy.len] = '\0';		
+			strcpy(csMerReceivableCcy,(const char*)v_mer_receivable_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerReceivableCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_receivable_ccy = [%s]\n", v_mer_receivable_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_mer_receivable_net_amt	*/		
+		if (ind_mer_receivable_net_amt >= 0)		
+		{		
+			dMerReceivableNetAmt = v_mer_receivable_net_amt;		
+			format_commas(dMerReceivableNetAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dMerReceivableNetAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_receivable_net_amt = [%f]\n",v_mer_receivable_net_amt));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");		
+/* v_mer_receivable_net_ccy	*/		
+		if(ind_mer_receivable_net_ccy >= 0)		
+		{		
+			v_mer_receivable_net_ccy.arr[v_mer_receivable_net_ccy.len] = '\0';		
+			strcpy(csMerReceivableNetCcy,(const char*)v_mer_receivable_net_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerReceivableNetCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_mer_receivable_net_ccy = [%s]\n", v_mer_receivable_net_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/*	v_final_mer_received_net_amt	*/		
+		if (ind_final_mer_received_net_amt >= 0)		
+		{		
+			dFinalMerReceivedNetAmt = v_final_mer_received_net_amt;		
+			format_commas(dFinalMerReceivedNetAmt, csTmp);		
+			/*fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dFinalMerReceivedNetAmt);*/		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%s</Data></Cell>\n",csTmp);		
+/*DEBUGLOG(("process_client_txn_hist v_final_mer_received_net_amt = [%f]\n",v_final_mer_received_net_amt));*/		
+		}
+		else
+			fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+/* v_final_mer_received_net_amt_ccy	*/		
+		if(ind_final_mer_received_net_amt_ccy >= 0)		
+		{		
+			v_final_mer_received_net_amt_ccy.arr[v_final_mer_received_net_amt_ccy.len] = '\0';		
+			strcpy(csFinalMerReceivedNetAmtCcy,(const char*)v_final_mer_received_net_amt_ccy.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csFinalMerReceivedNetAmtCcy);		
+/*DEBUGLOG(("process_client_txn_hist v_final_mer_received_net_amt_ccy = [%s]\n", v_final_mer_received_net_amt_ccy.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/* v_beneficiary_bank_name	*/		
+		if(ind_beneficiary_bank_name >= 0)		
+		{		
+			v_beneficiary_bank_name.arr[v_beneficiary_bank_name.len] = '\0';		
+			strcpy(csBeneficiaryBankName,(const char*)v_beneficiary_bank_name.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csBeneficiaryBankName);		
+/*DEBUGLOG(("process_client_txn_hist v_beneficiary_bank_name = [%s]\n", v_beneficiary_bank_name.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+/* v_beneficiary_bank_ac_num	*/		
+		if(ind_beneficiary_bank_ac_num >= 0)		
+		{		
+			v_beneficiary_bank_ac_num.arr[v_beneficiary_bank_ac_num.len] = '\0';		
+			strcpy(csBeneficiaryBankAcNum,(const char*)v_beneficiary_bank_ac_num.arr);		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csBeneficiaryBankAcNum);		
+/*DEBUGLOG(("process_client_txn_hist v_beneficiary_bank_ac_num = [%s]\n", v_beneficiary_bank_ac_num.arr));*/		
+		}		
+		else		
+			fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");		
+			
+
+		fprintf(fp,"</Row>\n");
+
+	} while (PD_TRUE);
+	
+	EXEC SQL CLOSE c_cursor_getclttxnhist;
+		
+	return iRet;
+
+clttxnhist_sql_error:
+DEBUGLOG(("extract_client_txn_hist_daily_rpt:process_clttxnhist code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getclttxnhist;
+	EXEC SQL ROLLBACK RELEASE;
+
+	return PD_ERR;
+}
+
+int process_single_acct(const char* csTxnDate,
+						const char* csClientId)
+{
+
+	int     iRet = SUCCESS;
+	char    csUploadFilename[PD_UPLOAD_FILENAME_LEN+1];
+	char    csUploadFullFile[PD_PATH_LEN+1];
+	char    csTmpCmd[PD_TMP_BUF_LEN+1];
+	char    csYear[PD_YYYY_LEN+1];
+	char    csYearMth[PD_YYYYMM_LEN+1];
+	FILE    *fp;
+	hash_t* hClientTxnHist;
+	hClientTxnHist = (hash_t*) malloc (sizeof(hash_t));
+
+
+/* Extract report data */
+		hash_init(hClientTxnHist,0);
+		PutField_CString(hClientTxnHist,"report_code",PD_CLIENT_TXN_HIST_REPORT_CODE);
+
+/* Table Field  disabled*/
+		PutField_Int(hClientTxnHist,"disabled",PD_REC_ENABLED);
+
+/* Addition field Report Data */
+		if (strlen(csTxnDate) > 0)
+		{
+			PutField_CString(hClientTxnHist,"report_date",csTxnDate);
+		}
+
+/* Only Generate report one time*/
+/* Do not generate report again if generated report record exist in table */
+		DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","ChkCthExist");
+		if ((*DBObjPtr)(hClientTxnHist) != PD_OK)
+		{
+DEBUGLOG(("process_single_acct:ClientId[%s] TxnDate[%s] Report has generated already\n", csClientId, csTxnDate));
+			return FAILURE;		
+		}
+
+
+		/* Skip the record if ClientID contains space */ 
+		if (chkSpInClientID(csClientId) == PD_ERR){
+DEBUGLOG(("process_single_acct:unable to get ClientID contain space [%s]\n",csClientId));
+			return FAILURE;
+		}
+
+		sprintf(csUploadFilename, 
+				"%s_%s_%s.zip",
+				PD_FILE_PREFIX,
+				csClientId,
+				csTxnDate);
+		
+
+		
+		
+
+/* Addition field Filename */
+		PutField_CString(hClientTxnHist,"filename",csUploadFilename);
+DEBUGLOG(("process_single_acct:filename[%s]\n",csUploadFilename));
+
+/* Addition field Update_user */
+		PutField_CString(hClientTxnHist,"user",PD_UPDATE_USER);
+
+/* Extract year and year month */
+		strcpy(csYear, getYYYY(csTxnDate));
+
+		strcpy(csYearMth, getYYYYMM(csTxnDate));
+
+
+/* Check and make current balance report folder */
+		if (mkFullPathDir(csTxnDate) != PD_OK)
+		{
+DEBUGLOG(("process_single_acct:unable to create path [%s %s %s]\n",csYear, csYearMth, csTxnDate));
+			return FAILURE;
+		}
+
+		sprintf(csUploadFullFile,"%s/%s/%s/%s/%s/%s_%s_%s.xls",  
+				getenv("PREGEN_RPT_HOME"), PD_FILE_PREFIX, csYear, csYearMth, csTxnDate, PD_FILE_PREFIX, csClientId,
+				csTxnDate);
+		
+		
+		        
+		fp = fopen(csUploadFullFile,"w");
+		if (fp == NULL) {
+DEBUGLOG(("process_single_acct:unable to open [%s]\n",csUploadFullFile));
+			return FAILURE;
+		}
+/* create xml header */
+		fprintf(fp,"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+		fprintf(fp,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+		fprintf(fp,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\txmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+		fprintf(fp,"\t xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+		fprintf(fp,"\t xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\t xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+		fprintf(fp,"<Styles>\n");
+		fprintf(fp,"\t<Style ss:ID=\"shd\">\n");
+		fprintf(fp,"\t\t<ss:Font ss:Bold=\"1\"/>\n");
+		fprintf(fp,"\t\t<Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"\t<Style ss:ID=\"sdt\">\n");
+		fprintf(fp,"\t\t<NumberFormat ss:Format=\"yyyy-mm-dd hh:mm:ss\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"</Styles>\n");
+		fprintf(fp,"<Worksheet ss:Name=\"Client Transaction History\">\n");
+		fprintf(fp,"<Table>\n");
+
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction ID</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Country</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Service</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Short Name</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Reference</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Holdback Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Holdback Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Status</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Callback Status</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Create Timestamp</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Approval Timestamp</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Remark</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Request Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Request Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Bank Name</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">EC Channel</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Payable Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Payable Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Unique Amount Markup</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Fee</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Fee Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Net Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Received Net Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Payable Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Payable Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Received Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Received Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Total Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Paid Total Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Net Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Receivable Net Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Wire Net Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Wire Net Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Beneficiary Bank Name</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Beneficiary Bank Account Number</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+
+
+
+/* process Client Txn History data */
+		if(iRet==PD_OK){
+			if (process_clttxnhist(csClientId,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_clttxnhist failed!!!!!!\n"));
+			}
+		}
+		
+/* create deposit summary header */
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"</Row>\n");
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Deposit Summary</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Service</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Status</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Amount Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Consumer Paid Amount</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Count </Data></Cell>\n");
+		
+		fprintf(fp,"</Row>\n");
+		
+
+/* process deposit summary data */
+		if(iRet==PD_OK){
+			if (process_depositSumm(csClientId,
+						csTxnDate,
+						fp
+				) == PD_OK){
+			}
+			else{
+				iRet=PD_ERR;
+DEBUGLOG(("process_depositSumm failed!!!!!!\n"));
+			}
+		}
+		
+		if(iRet==PD_OK){
+/* Addition field Status */
+			PutField_Char(hClientTxnHist,"status",PD_PREGEN_RPT_COMPLETED); 
+		}
+		else{
+/* Addition field Status */
+			PutField_Char(hClientTxnHist,"status",PD_PREGEN_RPT_FAILURE);
+		}
+		
+		
+		
+		
+
+/* create xml footer */
+		fprintf(fp, "</Table>\n");
+		fprintf(fp, "</Worksheet>\n");
+		fprintf(fp, "</Workbook>\n");
+
+		fclose(fp);
+
+/* zip the report */
+
+		sprintf(csTmpCmd, 
+				"zip_pregenrpt.sh %s %s %s %s %s %s %s 1>/dev/null",
+				csTxnDate,
+				csClientId,
+				PD_UNUSED,
+				PD_UNUSED,
+				PD_UNUSED,
+				getenv("PREGEN_RPT_HOME"),
+				PD_FILE_PREFIX);
+		
+		if (system(csTmpCmd) == PD_ERR)
+		{
+DEBUGLOG(("extract_client_txn_hist_daily_rpt::zip: fail %s\n", csTmpCmd));
+		}
+		else
+		{
+DEBUGLOG(("extract_client_txn_hist_daily_rpt::zip: success %s\n", csTmpCmd));
+		}
+
+
+/* ChkExist Insert/update pregen_daily_report */
+		DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","ChkCthExist");
+		if ((*DBObjPtr)(hClientTxnHist) != PD_OK) 
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","UpdateStatus");
+			if ((*DBObjPtr)(hClientTxnHist) != PD_OK) 
+				iRet = PD_ERR;
+		}
+		else
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBPregenDailyReport","Add");
+			if ((*DBObjPtr)(hClientTxnHist) != PD_OK) 
+				iRet = PD_ERR;
+		}
+
+		if (iRet == PD_OK)
+		{
+DEBUGLOG(("extract_client_txn_hist_daily_rpt::commit: ClientId[%s] TxnDate[%s]\n", csClientId,csTxnDate));
+			TxnCommit();
+		}
+
+
+
+		hash_destroy(hClientTxnHist);
+		
+	if (hClientTxnHist)
+	{
+		FREE_ME(hClientTxnHist);
+	}
+
+	return iRet;
+}
+
+
+int mkFullPathDir(const char * csYearMthDy) 
+{
+	int  iRet = SUCCESS;
+	char csTmpCmd[PD_TMP_BUF_LEN+1];
+
+	
+	sprintf(csTmpCmd, 
+			"mkdir_pregenrpt_tree.sh %s %s %s 1> /dev/null",		
+			csYearMthDy, getenv("PREGEN_RPT_HOME"),PD_FILE_PREFIX);
+	
+	if (system(csTmpCmd) == PD_ERR)
+	{
+		iRet = PD_ERR;
+	}
+
+	return iRet;
+}
+
+char* getYYYY(const char* csTxnDate)
+{
+
+	strncpy(csTmpYYYY, csTxnDate, PD_YYYY_LEN);
+	csTmpYYYY[PD_YYYY_LEN] = '\0';
+
+	return csTmpYYYY;
+}
+
+char* getYYYYMM(const char* csTxnDate)
+{
+
+	strncpy(csTmpYYYYMM, csTxnDate, PD_YYYYMM_LEN);
+	csTmpYYYYMM[PD_YYYYMM_LEN] = '\0';
+
+	return csTmpYYYYMM;
+}
+
+
+
+int chkSpInClientID(const char* csClientId)
+{
+	int iCnt;
+
+	for (iCnt = 0;iCnt < strlen(csClientId);iCnt++)
+		if (csClientId[iCnt] == 32)
+			return PD_ERR;
+
+	return SUCCESS;
+}
+
+
+void format_commas(double dInNum, char* csOutNum)
+{
+	char csTmpNum[PD_TMP_BUF_LEN+1];
+	int  iCnt;
+	int  iCnt2;
+
+	sprintf(csTmpNum, "%.2f", dInNum);
+
+	if (strlen(csTmpNum) <= 6)
+	{
+		strcpy (csOutNum, csTmpNum);
+
+		return;
+	}
+	
+	/* Reverse order */
+	iCnt2 = 0;
+	for (iCnt = strlen(csTmpNum) - 1; iCnt >= 0; iCnt--)
+	{
+		csOutNum[iCnt2] = csTmpNum[iCnt];
+		iCnt2++;
+	}
+	csOutNum[iCnt2] = '\0';
+
+	csTmpNum[0] = csOutNum[0];
+	csTmpNum[1] = csOutNum[1];
+	csTmpNum[2] = csOutNum[2];
+	iCnt2=3;
+	for (iCnt = 3; iCnt < strlen(csOutNum); iCnt++)
+	{
+		csTmpNum[iCnt2] = csOutNum[iCnt];
+		iCnt2++;
+		if (((iCnt+1) % 3 == 0) && (iCnt+1 < strlen(csOutNum)))
+		{
+			csTmpNum[iCnt2] = ',';
+			iCnt2++;
+		}
+	}
+	csTmpNum[iCnt2] = '\0';
+
+	/* Reverse order */
+	iCnt2 = 0;
+	for (iCnt = strlen(csTmpNum) - 1; iCnt >= 0; iCnt--)
+	{
+		csOutNum[iCnt2] = csTmpNum[iCnt];
+		iCnt2++;
+	}
+	csOutNum[iCnt2] = '\0';
+	
+	return;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char c;
+	strcpy(csDate,"");
+	strcpy(csInClientId,"");
+	
+	
+	while ((c = getopt(argc,argv,"d:c:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(csDate, optarg);
+				break;
+			case 'c':
+				strcpy(csInClientId, optarg);
+				break;
+		}
+	}
+
+	
+
+
+	if (!strcmp(csDate,""))
+		return FAILURE;
+
+
+	if (argc > 3) {
+DEBUGLOG(("parse_arg: csDate csInClientId[%s %s]\n",csDate, csInClientId));	
+		if (!strcmp(csInClientId,""))
+			return FAILURE;
+	}
+
+
+	return SUCCESS;
+}
+

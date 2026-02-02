@@ -1,0 +1,2139 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/04              Stan Poon
+Add error table                                    2013/09/17              Stan Poon
+Cater sms / bank stmt matching                     2013/10/16              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "OLStatement.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+char	cDebug;
+
+void OLStatement(char	cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int GetLastBalance(const hash_t *hRls, double* dBalance)
+{
+	int iRet = FOUND;
+	char *csTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getlastbalance_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar	hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		varchar	hv_input_channel[PD_INPUT_CHANNEL_LEN];
+		double	v_balance;
+
+		short	ind_int_bank_code = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_input_channel = -1;
+		short	ind_balance = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hRls,"int_bank_code",&csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+DEBUGLOG(("GetLastBalance int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+
+	if (GetField_CString(hRls,"bank_acct_num",&csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("GetLastBalance bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+	if (GetField_CString(hRls,"input_channel",&csTmp)) {
+		hv_input_channel.len = strlen(csTmp);
+		strncpy((char*)hv_input_channel.arr, csTmp, hv_input_channel.len);
+		ind_input_channel = 0;
+DEBUGLOG(("GetLastBalance input_channel = [%.*s]\n", hv_input_channel.len, hv_input_channel.arr));
+	}
+
+	EXEC SQL	SELECT	OLSD_BALANCE
+			INTO	:v_balance:ind_balance
+			FROM	(SELECT	OLSD_BALANCE
+				FROM	OL_STATEMENT_DETAIL
+				WHERE	OLSD_INT_BANK_CODE = :hv_int_bank_code:ind_int_bank_code
+				AND	OLSD_BANK_ACCT_NUM = :hv_bank_acct_num:ind_bank_acct_num
+				/*AND	OLSD_input_channel = :hv_input_channel:ind_input_channel*/
+				AND	OLSD_STATEMENT_REF IS NOT NULL
+				ORDER BY OLSD_STATEMENT_TIMESTAMP DESC, OLSD_STATEMENT_REF DESC)
+			WHERE	rownum = 1;
+
+	if (ind_balance>=0) {
+		*dBalance = v_balance;
+DEBUGLOG(("GetLastBalance balance = [%.2f]\n",v_balance));
+		iRet = FOUND;
+	} else {
+		iRet = NOT_FOUND;
+	}
+
+DEBUGLOG(("GetLastBalance Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+
+getlastbalance_error:
+DEBUGLOG(("getlastbalance_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int GetExistingPastRecords(const hash_t* hRls, recordset_t* myRec, int* iRec)
+{
+	int	iRet;
+	int	iCnt=0;
+	char	*csTmp;
+	char	*csTag = (char*) malloc (64);
+
+	hash_t *myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getpastrecord_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar	hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		varchar	hv_input_channel[PD_INPUT_CHANNEL_LEN];
+		varchar	hv_start_date[PD_DATE_LEN];
+		varchar	hv_start_time[PD_TIME_LEN];
+		varchar	hv_end_date[PD_DATE_LEN];
+		varchar	hv_end_time[PD_TIME_LEN];
+		varchar	v_stmt_date[PD_DATE_LEN + 1];
+		varchar	v_stmt_time[PD_TIME_LEN + 1];
+		varchar	v_txn_ccy[PD_CCY_ID_LEN + 1];
+		varchar	v_amt_type[PD_AMT_TYPE_LEN + 1];
+		double	v_txn_amount;
+		double	v_balance;
+
+		short	ind_int_bank_code = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_input_channel = -1;
+		short	ind_start_date = -1;
+		short	ind_start_time = -1;
+		short	ind_end_date = -1;
+		short	ind_end_time = -1;
+		short	ind_stmt_date = -1;
+		short	ind_stmt_time = -1;
+		short	ind_txn_ccy = -1;
+		short	ind_amt_type = -1;
+		short	ind_txn_amount = -1;
+		short	ind_balance = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (GetField_CString(hRls,"int_bank_code",&csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+DEBUGLOG(("GetExistingPastRecord int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+
+	if (GetField_CString(hRls,"bank_acct_num",&csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("GetExistingPastRecord bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+	if (GetField_CString(hRls,"input_channel",&csTmp)) {
+		hv_input_channel.len = strlen(csTmp);
+		strncpy((char*)hv_input_channel.arr, csTmp, hv_input_channel.len);
+		ind_input_channel = 0;
+DEBUGLOG(("GetExistingPastRecord input_channel = [%.*s]\n", hv_input_channel.len, hv_input_channel.arr));
+	}
+
+	if (GetField_CString(hRls,"start_date",&csTmp)) {
+		hv_start_date.len = strlen(csTmp);
+		strncpy((char*)hv_start_date.arr, csTmp, hv_start_date.len);
+		ind_start_date = 0;
+DEBUGLOG(("GetExistingPastRecord fr_date = [%.*s]\n", hv_start_date.len, hv_start_date.arr));
+	}
+
+	if (GetField_CString(hRls,"start_time",&csTmp)) {
+		hv_start_time.len = strlen(csTmp);
+		strncpy((char*)hv_start_time.arr, csTmp, hv_start_time.len);
+		ind_start_time = 0;
+DEBUGLOG(("GetExistingPastRecord fr_time = [%.*s]\n", hv_start_time.len, hv_start_time.arr));
+	}
+
+	if (GetField_CString(hRls,"end_date",&csTmp)) {
+		hv_end_date.len = strlen(csTmp);
+		strncpy((char*)hv_end_date.arr, csTmp, hv_end_date.len);
+		ind_end_date = 0;
+DEBUGLOG(("GetExistingPastRecord to_date = [%.*s]\n", hv_end_date.len, hv_end_date.arr));
+	}
+
+	if (GetField_CString(hRls,"end_time",&csTmp)) {
+		hv_end_time.len = strlen(csTmp);
+		strncpy((char*)hv_end_time.arr, csTmp, hv_end_time.len);
+		ind_end_time = 0;
+DEBUGLOG(("GetExistingPastRecord to_time = [%.*s]\n", hv_end_time.len, hv_end_time.arr));
+	}
+
+	EXEC SQL DECLARE getpastrecordcursor CURSOR FOR
+		SELECT	OLSD_TXN_CCY,
+			OLSD_AMT_TYPE,
+			OLSD_TXN_AMOUNT,
+			OLSD_BALANCE,
+			OLSD_STATEMENT_DATE,
+			OLSD_STATEMENT_TIME
+		FROM	OL_STATEMENT_DETAIL
+		WHERE	OLSD_INT_BANK_CODE = :hv_int_bank_code:ind_int_bank_code
+		AND	OLSD_BANK_ACCT_NUM = :hv_bank_acct_num:ind_bank_acct_num
+		/*AND	OLSD_INPUT_CHANNEL = :hv_input_channel:ind_input_channel*/
+		AND	OLSD_STATEMENT_TIMESTAMP >= to_date(:hv_start_date:ind_start_date||:hv_start_time:ind_start_time,'YYYYMMDDHH24MISS')
+		AND	OLSD_STATEMENT_TIMESTAMP <= to_date(:hv_end_date:ind_end_date||:hv_end_time:ind_end_time,'YYYYMMDDHH24MISS')
+		AND	OLSD_STATEMENT_REF IS NOT NULL
+		ORDER BY OLSD_STATEMENT_REF ASC;
+
+	EXEC SQL OPEN getpastrecordcursor;
+	for (;;) {
+		EXEC SQL FETCH getpastrecordcursor
+		INTO	:v_txn_ccy:ind_txn_ccy,
+			:v_amt_type:ind_amt_type,
+			:v_txn_amount:ind_txn_amount,
+			:v_balance:ind_balance,
+			:v_stmt_date:ind_stmt_date,
+			:v_stmt_time:ind_stmt_time;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash, 0);
+
+		iCnt++;
+
+/* statement_date */
+		if (ind_stmt_date >= 0) {
+			v_stmt_date.arr[v_stmt_date.len] = '\0';
+			PutField_CString(myHash, "statement_date", (const char*)v_stmt_date.arr);
+//DEBUGLOG(("GetExistingPastRecord statement_date = [%s]\n", (const char*)v_stmt_date.arr));
+		}
+
+/* statement_time */
+		if (ind_stmt_time >= 0) {
+			v_stmt_time.arr[v_stmt_time.len] = '\0';
+			PutField_CString(myHash, "statement_time", (const char*)v_stmt_time.arr);
+//DEBUGLOG(("GetExistingPastRecord statement_time = [%s]\n", (const char*)v_stmt_time.arr));
+		}
+
+/* txn_ccy */
+		if (ind_txn_ccy >= 0) {
+			v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+			PutField_CString(myHash, "txn_ccy", (const char*)v_txn_ccy.arr);
+//DEBUGLOG(("GetExistingPastRecord txn_ccy = [%s]\n", (const char*)v_txn_ccy.arr));
+		}
+
+/* amt_type */
+		if (ind_amt_type >= 0) {
+			v_amt_type.arr[v_amt_type.len] = '\0';
+			PutField_CString(myHash, "amt_type", (const char*)v_amt_type.arr);
+//DEBUGLOG(("GetExistingPastRecord amt_type = [%s]\n", (const char*)v_amt_type.arr));
+		}
+
+/* txn_amount */
+		if (ind_txn_amount >= 0) {
+			sprintf(csTag,"%.2lf",v_txn_amount);
+			PutField_CString(myHash, "txn_amount", csTag);
+//DEBUGLOG(("GetExistingPastRecord txn_amount = [%lf]\n", v_txn_amount));
+		}
+
+/* balance */
+		if (ind_balance >= 0) {
+			sprintf(csTag,"%.2lf",v_balance);
+			PutField_CString(myHash, "balance", csTag);
+//DEBUGLOG(("GetExistingPastRecord balance = [%lf]\n", v_balance));
+		}
+
+		RecordSet_Add(myRec, myHash);
+	}
+	EXEC SQL CLOSE getpastrecordcursor;
+
+
+	if (iCnt > 0) {
+		*iRec = iCnt;
+DEBUGLOG(("GetExistingPastRecord [%d] records FOUND\n",iCnt));
+		iRet = FOUND;
+	} else {
+DEBUGLOG(("GetExistingPastRecord NOT FOUND\n"));
+		iRet = NOT_FOUND;
+	}
+
+DEBUGLOG(("GetExistingPastRecord Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+getpastrecord_error:
+DEBUGLOG(("getpastrecord_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStmtFormat getpastrecord_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL CLOSE getpastrecordcursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+
+}
+
+
+int CheckFileExist(const char* csFilename)
+{
+        int iRet = PD_OK;
+
+	EXEC SQL WHENEVER SQLERROR GOTO checkheader_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_filename[PD_UPLOAD_FILENAME_LEN];
+		int	v_cnt;
+
+		short	ind_filename = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+	hv_filename.len = strlen(csFilename);
+	strncpy((char*)hv_filename.arr,csFilename,hv_filename.len);
+	ind_filename = 0;
+DEBUGLOG(("CheckFileExist filename = [%s]\n",csFilename));
+
+	EXEC SQL	SELECT	COUNT(*)
+			INTO	:v_cnt
+			FROM	OL_STATEMENT_HEADER
+			WHERE	OLSH_FILENAME = :hv_filename:ind_filename;
+
+	if (v_cnt>0) {
+		iRet = FOUND;
+DEBUGLOG(("CheckFileExist filename [%s] FOUND (next:[%d])\n",csFilename,v_cnt));
+	} else {
+		iRet = NOT_FOUND;
+DEBUGLOG(("CheckFileExist filename [%s] NOT FOUND\n",csFilename));
+	}
+
+DEBUGLOG(("CheckFileExist Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+checkheader_error:
+DEBUGLOG(("checkheader_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+}
+
+
+int GetNextStatementSeq(const char* csFilename,
+			const char* csBankAcctNum,
+			int* iStatementSeq)
+{
+	int iRet = PD_OK;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getnextseq_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_filename[PD_UPLOAD_FILENAME_LEN + 1];
+		varchar	hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN + 1];
+		int	v_statement_seq;
+
+		short	ind_filename = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_statement_seq = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_filename.len = strlen(csFilename);
+	strncpy((char*)hv_filename.arr,csFilename,hv_filename.len);
+	ind_filename = 0;
+DEBUGLOG(("GetStatementSeq filename = [%.*s]\n",hv_filename.len,hv_filename.arr));
+
+	hv_bank_acct_num.len = strlen(csBankAcctNum);
+	strncpy((char*)hv_bank_acct_num.arr,csBankAcctNum,hv_bank_acct_num.len);
+	ind_bank_acct_num = 0;
+DEBUGLOG(("GetStatementSeq bank_acct_num = [%.*s]\n",hv_bank_acct_num.len,hv_bank_acct_num.arr));
+
+	EXEC SQL	SELECT	NVL(MAX(OLSD_STATEMENT_SEQ),0)+1
+			INTO	v_statement_seq:ind_statement_seq
+			FROM	OL_STATEMENT_DETAIL
+			WHERE	OLSD_FILENAME = :hv_filename:ind_filename;
+
+	if (ind_statement_seq>=0) {
+		*iStatementSeq= v_statement_seq;
+DEBUGLOG(("GetStatementSeq statement_seq = [%d]\n",*iStatementSeq));
+	}
+
+DEBUGLOG(("GetStatementSeq Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+
+getnextseq_error:
+DEBUGLOG(("getnextseq_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int AddHeader(const hash_t *hRls)
+{
+	char	*csTmp;
+	int	iTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO addheader_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_filename[PD_UPLOAD_FILENAME_LEN];
+		varchar		hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar		hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		int		hv_sms_count;
+		int		hv_skip_count;
+		int		hv_hold_count;
+		int		hv_accept_count;
+		int		hv_total_count;
+		varchar		hv_create_user[PD_USER_LEN];
+
+		short		ind_filename = -1;
+		short		ind_int_bank_code = -1;
+		short		ind_bank_acct_num = -1;
+		short		ind_sms_count = -1;
+		short		ind_skip_count = -1;
+		short		ind_hold_count = -1;
+		short		ind_accept_count = -1;
+		short		ind_total_count = -1;
+		short		ind_create_user = -1;
+
+		short		hv_return_value;
+
+	EXEC SQL END DECLARE SECTION;
+
+	if(GetField_CString(hRls,"filename",&csTmp)) {
+		hv_filename.len = strlen(csTmp);
+		strncpy((char*)hv_filename.arr, csTmp, hv_filename.len);
+		ind_filename = 0;
+DEBUGLOG(("AddHeader:filename = [%.*s]\n",hv_filename.len, hv_filename.arr));
+	} else {
+DEBUGLOG(("AddHeader:filename NOT FOUND!!!\n"));
+	}
+
+	if(GetField_CString(hRls,"int_bank_code",&csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+DEBUGLOG(("AddHeader:int_bank_code = [%.*s]\n",hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+
+	if(GetField_CString(hRls,"bank_acct_num",&csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("AddHeader:bank_acct_num = [%.*s]\n",hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+	hv_sms_count = 0;
+	if(GetField_Int(hRls, "sms_count", &iTmp)) {
+		hv_sms_count = iTmp;
+DEBUGLOG(("AddHeader:sms_count = [%d]\n",hv_sms_count));
+	}
+	ind_sms_count = 0;
+
+	hv_skip_count = 0;
+	if(GetField_Int(hRls, "skip_count", &iTmp)) {
+		hv_skip_count = iTmp;
+DEBUGLOG(("AddHeader:skip_count = [%d]\n",hv_skip_count));
+	}
+	ind_skip_count = 0;
+
+	hv_hold_count = 0;
+	if(GetField_Int(hRls, "hold_count", &iTmp)) {
+		hv_hold_count = iTmp;
+DEBUGLOG(("AddHeader:hold_count = [%d]\n",hv_hold_count));
+	}
+	ind_hold_count = 0;
+
+	hv_accept_count = 0;
+	if(GetField_Int(hRls, "accept_count", &iTmp)) {
+		hv_accept_count = iTmp;
+DEBUGLOG(("AddHeader:accept_count = [%d]\n",hv_accept_count));
+	}
+	ind_accept_count = 0;
+
+	hv_total_count = 0;
+	if(GetField_Int(hRls, "total_count", &iTmp)) {
+		hv_total_count = iTmp;
+DEBUGLOG(("AddHeader:total_count = [%d]\n",hv_total_count));
+	}
+	ind_total_count = 0;
+
+	if(GetField_CString(hRls,"create_user",&csTmp))
+	{
+		hv_create_user.len = strlen(csTmp);
+		strncpy((char*)hv_create_user.arr, csTmp, hv_create_user.len);
+		ind_create_user = 0;
+DEBUGLOG(("AddHeader:create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+	} else {
+DEBUGLOG(("AddHeader:create_user NOT FOUND!!!\n"));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_statement_header_insert(
+						:hv_filename:ind_filename,
+						:hv_int_bank_code:ind_int_bank_code,
+						:hv_bank_acct_num:ind_bank_acct_num,
+						:hv_sms_count:ind_sms_count,
+						:hv_skip_count:ind_skip_count,
+						:hv_hold_count:ind_hold_count,
+						:hv_accept_count:ind_accept_count,
+						:hv_total_count:ind_total_count,
+						:hv_create_user:ind_create_user);
+		END;
+	END-EXEC;
+
+DEBUGLOG(("AddHeader:Ret = [%d]\n",hv_return_value));
+	if (hv_return_value == SP_OK)
+	{
+DEBUGLOG(("AddHeader:Normal Exit\n"));
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_AddHeader: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("AddHeader: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_AddHeader: SP_ERR TxnAbort\n");
+DEBUGLOG(("AddHeader: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+addheader_error:
+DEBUGLOG(("addheader_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStatement_AddHeader: SP_INTERNAL_ERR TxnAbort\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int UpdateHeader(const hash_t *hRls)
+{
+	int	iTmp;
+	char	*csTmp;
+
+        EXEC SQL WHENEVER SQLERROR GOTO update_header_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_filename[PD_UPLOAD_FILENAME_LEN];
+		int		hv_sms_count;
+		int		hv_skip_count;
+		int		hv_hold_count;
+		int		hv_accept_count;
+		int		hv_total_count;
+		varchar		hv_update_user[PD_USER_LEN];
+
+		short		ind_filename = -1;
+		short		ind_sms_count = -1;
+		short		ind_skip_count = -1;
+		short		ind_hold_count = -1;
+		short		ind_accept_count = -1;
+		short		ind_total_count = -1;
+		short		ind_update_user = -1;
+
+		short		hv_return_value;
+
+        EXEC SQL END DECLARE SECTION;
+
+	if(GetField_CString(hRls,"filename",&csTmp)) {
+		hv_filename.len = strlen(csTmp);
+		strncpy((char*)hv_filename.arr, csTmp, hv_filename.len);
+		ind_filename = 0;
+DEBUGLOG(("UpdateHeader:filename = [%.*s]\n",hv_filename.len, hv_filename.arr));
+	} else {
+DEBUGLOG(("UpdateHeader:filename NOT FOUND!!!\n"));
+	}
+
+	if(GetField_Int(hRls, "sms_count", &iTmp)) {
+		hv_sms_count = iTmp;
+		ind_sms_count = 0;
+DEBUGLOG(("UpdateHeader:sms_count = [%d]\n",hv_sms_count));
+	}
+
+	if(GetField_Int(hRls, "skip_count", &iTmp)) {
+		hv_skip_count = iTmp;
+		ind_skip_count = 0;
+DEBUGLOG(("UpdateHeader:skip_count = [%d]\n",hv_skip_count));
+	}
+
+	if(GetField_Int(hRls, "hold_count", &iTmp)) {
+		hv_hold_count = iTmp;
+		ind_hold_count = 0;
+DEBUGLOG(("UpdateHeader:hold_count = [%d]\n",hv_hold_count));
+	}
+
+	if(GetField_Int(hRls, "accept_count", &iTmp)) {
+		hv_accept_count = iTmp;
+		ind_accept_count = 0;
+DEBUGLOG(("UpdateHeader:accept_count = [%d]\n",hv_accept_count));
+	}
+
+	if(GetField_Int(hRls, "total_count", &iTmp)) {
+		hv_total_count = iTmp;
+		ind_total_count = 0;
+DEBUGLOG(("UpdateHeader:total_count = [%d]\n",hv_total_count));
+	}
+
+	if(GetField_CString(hRls,"update_user",&csTmp))
+	{
+		hv_update_user.len = strlen(csTmp);
+		strncpy((char*)hv_update_user.arr, csTmp, hv_update_user.len);
+		ind_update_user = 0;
+DEBUGLOG(("UpdateHeader:update_user = [%.*s]\n",hv_update_user.len,hv_update_user.arr));
+	} else {
+DEBUGLOG(("UpdateHeader:update_user NOT FOUND!!!\n"));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_statement_header_update(
+						:hv_filename:ind_filename,
+						:hv_sms_count:ind_sms_count,
+						:hv_skip_count:ind_skip_count,
+						:hv_hold_count:ind_hold_count,
+						:hv_accept_count:ind_accept_count,
+						:hv_total_count:ind_total_count,
+						:hv_update_user:ind_update_user);
+		END;
+	END-EXEC;
+
+DEBUGLOG(("UpdateHeader:Ret = [%d]\n",hv_return_value));
+	if (hv_return_value == SP_OK)
+	{
+DEBUGLOG(("UpdateHeader:Normal Exit\n"));
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_UpdateHeader: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("UpdateHeader: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_UpdateHeader: SP_ERR TxnAbort\n");
+DEBUGLOG(("UpdateHeader: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+update_header_error:
+DEBUGLOG(("update_Header_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_UpdateHeader: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("UpdateHeader: SP_INTERNAL_ERR TxnAbort\n"));
+        TxnAbort();
+        return PD_INTERNAL_ERR;
+}
+
+
+#define	PD_OUT_OF_DATE	7
+#define	PD_OUT_OF_TIME	8
+
+void removeChar(char *str, char garbage) {
+
+	char *src, *dst;
+	for (src = dst = str; *src != '\0'; src++) {
+		*dst = *src;
+		if (*dst != garbage) dst++;
+	}
+	*dst = '\0';
+}
+
+int CheckDetail(const char* csCcy, hash_t *hRls, int iDetailField, char* cs_err_msg_buf)
+{
+	int	iRet = PD_OK;
+	int	iTmp, iLine;
+	char	*csTmp;
+
+	char	cs_tmp_buf1[PD_TMP_BUF_LEN];
+	char	cs_tmp_buf2[PD_TMP_BUF_LEN];
+	char	csDate[PD_DATE_LEN + 1];
+	char	csTime[PD_TIME_LEN + 1];
+	time_t	tNow;
+        struct	tm tStruct;
+
+	strcpy(cs_tmp_buf2,"");
+	if (!GetField_Int(hRls,"line",&iLine)){
+DEBUGLOG(("CheckDetail: line NOT FOUND!!!\n"));
+	}
+
+	EXEC SQL WHENEVER SQLERROR GOTO checkdetail_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_statement_date[PD_FORMAT_TEMPLATE_LEN];
+		varchar		hv_statement_date_t[PD_FORMAT_TEMPLATE_LEN];
+		varchar		hv_statement_time[PD_FORMAT_TEMPLATE_LEN];
+		varchar		hv_statement_time_t[PD_FORMAT_TEMPLATE_LEN];
+		int		hv_start_year;
+		varchar		v_stmt_date[PD_DATE_LEN + 1];
+		varchar		v_stmt_time[PD_TIME_LEN + 1];
+
+		short		ind_statement_date = -1;
+		short		ind_statement_date_t = -1;
+		short		ind_statement_time = -1;
+		short		ind_statement_time_t = -1;
+		short		ind_start_year = -1;
+		short		ind_stmt_time = -1;
+		short		ind_stmt_date = -1;
+
+		short		hv_return_value;
+
+	EXEC SQL END DECLARE SECTION;
+
+/* statement_date */
+	if(GetField_CString(hRls,"statement_date",&csTmp)) {
+		hv_statement_date.len = strlen(csTmp);
+		strncpy((char*)hv_statement_date.arr, csTmp, hv_statement_date.len);
+		ind_statement_date = 0;
+
+		if(GetField_CString(hRls,"statement_date_t",&csTmp)) {
+			hv_statement_date_t.len = strlen(csTmp);
+			strncpy((char*)hv_statement_date_t.arr, csTmp, hv_statement_date_t.len);
+			ind_statement_date_t = 0;
+		}
+	} else {
+		snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Date Not Found)");
+		strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+		iRet = PD_ERR;
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: statement_date NOT FOUND!!!\n"));
+	}
+
+/* statement_time */
+	if(GetField_CString(hRls,"statement_time",&csTmp)) {
+		hv_statement_time.len = strlen(csTmp);
+		strncpy((char*)hv_statement_time.arr, csTmp, hv_statement_time.len);
+		ind_statement_time = 0;
+
+		if(GetField_CString(hRls,"statement_time_t",&csTmp)) {
+			hv_statement_time_t.len = strlen(csTmp);
+			strncpy((char*)hv_statement_time_t.arr, csTmp, hv_statement_time_t.len);
+			ind_statement_time_t = 0;
+		}
+	}
+
+/* start_year */
+	hv_start_year = 0;
+	if(GetField_Int(hRls, "start_year", &iTmp)) {
+		hv_start_year = iTmp;
+	}
+	ind_start_year = 0;
+
+/* txn_ccy */
+	if(GetField_CString(hRls,"txn_ccy",&csTmp)) {
+		if (strcmp(csCcy,csTmp)) {
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Currency[%s])",csTmp);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: txn_ccy WRONG [%s]\n",csTmp));
+		}
+	} else {
+		PutField_CString(hRls,"txn_ccy",csCcy);
+	}
+
+/* balance */
+	if (GetField_CString(hRls,"balance",&csTmp)) {
+		removeChar(csTmp,',');
+		sprintf(cs_tmp_buf1,"%.2lf",atof(csTmp));
+		PutField_CString(hRls,"balance",cs_tmp_buf1);
+		if (atof(csTmp) <= 1E-9) {
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: balance WRONG [%s]\n",csTmp));
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Balance[%s])",csTmp);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+		}
+	} else {
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Balance Not Found)");
+		strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: balance NOT FOUND!!!\n"));
+	}
+
+/* txn_amount */
+	if (GetField_CString(hRls,"cr_txn_amount",&csTmp)) {
+		//removeChar(csTmp,'"');
+		removeChar(csTmp,',');
+		if (atof(csTmp) > 1E-9) {
+			PutField_CString(hRls,"amt_type",PD_CR);
+			PutField_CString(hRls,"txn_amount",csTmp);
+		}
+	}
+	if (GetField_CString(hRls,"dr_txn_amount",&csTmp)) {
+		//removeChar(csTmp,'"');
+		removeChar(csTmp,',');
+		if (atof(csTmp) > 1E-9) {
+			PutField_CString(hRls,"amt_type",PD_DR);
+			PutField_CString(hRls,"txn_amount",csTmp);
+		}
+	}
+
+	if (GetField_CString(hRls,"txn_amount",&csTmp)) {
+		//removeChar(csTmp,'"');
+		removeChar(csTmp,',');
+		if (atof(csTmp) <= 1E-9) {
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Txn Amount[%s])",csTmp);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: txn_amount WRONG [%s]\n",csTmp));
+		}
+		sprintf(cs_tmp_buf1,"%.2lf",atof(csTmp));
+		PutField_CString(hRls,"txn_amount",cs_tmp_buf1);
+/* amt_type */
+		if (GetField_CString(hRls,"amt_type",&csTmp)) {
+			if (strcmp(PD_CR,csTmp) && strcmp(PD_DR,csTmp)) {
+				iRet = PD_ERR;
+				snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Amount Type[%s])",csTmp);
+				strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: amt_type WRONG [%s]\n",csTmp));
+			}
+		} else {
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Amount Type Not Found)");
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: amt_type NOT FOUND!!!\n"));
+		}
+	} else {
+		iRet = PD_ERR;
+		if (GetField_CString(hRls,"cr_txn_amount",&csTmp)) {
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Txn Amount[%s])",csTmp);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+		} else if (GetField_CString(hRls,"dr_txn_amount",&csTmp)) {
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Txn Amount[%s])",csTmp);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+		} else {
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Txn Amount Not Found)");
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+		}
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: txn_amount NOT FOUND!!!\n"));
+	}
+
+	if (iRet == PD_OK) {
+		EXEC SQL EXECUTE
+			BEGIN
+				:hv_return_value := sp_ol_statement_datetime_check(
+							:hv_statement_date:ind_statement_date,
+							:hv_statement_date_t:ind_statement_date_t,
+							:hv_statement_time:ind_statement_time,
+							:hv_statement_time_t:ind_statement_time_t,
+							:hv_start_year:ind_start_year,
+							:v_stmt_date:ind_stmt_date,
+							:v_stmt_time:ind_stmt_time);
+			END;
+		END-EXEC;
+
+		if (hv_return_value == SP_OK)
+		{
+			v_stmt_date.arr[v_stmt_date.len] = '\0';
+			v_stmt_time.arr[v_stmt_time.len] = '\0';
+			PutField_CString(hRls, "statement_date", (const char*)v_stmt_date.arr);
+			if (GetField_CString(hRls,"statement_time",&csTmp)) {
+				PutField_CString(hRls, "statement_time", (const char*)v_stmt_time.arr);
+			} else {
+			        tNow = time(0);
+			        tStruct = *localtime(&tNow);
+			        strftime(csDate, sizeof(csDate), "%Y%m%d", &tStruct);
+			        strftime(csTime, sizeof(csTime), "%H%M%S", &tStruct);
+//DEBUGLOG(("CheckDetail: csDate=[%s] csTime=[%s]\n",csDate,csTime));
+				PutField_Int(hRls,"new_stmt_time",1);
+				if (strcmp(csDate,(const char*)v_stmt_date.arr) > 0) {
+					PutField_CString(hRls,"statement_time","235959");
+				} else if (!strcmp(csDate,(const char*)v_stmt_date.arr)) {
+					PutField_CString(hRls,"statement_time",csTime);
+				} else {
+					iRet = PD_ERR;
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: statement_date [%.*s] > [%s]\n",v_stmt_date.len,v_stmt_date.arr,csDate));
+				}
+			}
+		}
+
+		if (hv_return_value == PD_OUT_OF_DATE) {
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: Date Format Invalid\n"));
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Date[%.*s])",hv_statement_date.len,hv_statement_date.arr);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+			iRet = PD_ERR;
+		}
+
+		if (hv_return_value == PD_OUT_OF_TIME) {
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: Time Format Invalid\n"));
+			snprintf(cs_tmp_buf1,sizeof(cs_tmp_buf1),"(Time[%.*s])",hv_statement_time.len,hv_statement_time.arr);
+			strncat(cs_tmp_buf2,cs_tmp_buf1,sizeof(cs_tmp_buf2)-strlen(cs_tmp_buf2)-1);
+			iRet = PD_ERR;
+		}
+
+		if (hv_return_value == SP_ERR) {
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: SP_ERR TxnAbort\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet != PD_OK) {
+		sprintf(cs_err_msg_buf,"%s",cs_tmp_buf2);
+if (iDetailField == 1) DEBUGLOG(("CheckDetail: iLine = [%d], iRet = [%d]\n",iLine,iRet));
+	}
+	return iRet;
+
+checkdetail_error:
+DEBUGLOG(("checkdetail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStatement_CheckDetail: SP_INTERNAL_ERR TxnAbort\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int AddDetail(const hash_t *hRls)
+{
+	int	iTmp;
+	char	cTmp;
+	char	*csTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO addetail_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_filename[PD_UPLOAD_FILENAME_LEN];
+		varchar		hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar		hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		int		hv_statement_seq;
+		varchar		hv_txn_id[PD_TXN_SEQ_LEN];
+		varchar		hv_sms_txn_id[PD_TXN_SEQ_LEN];
+		varchar		hv_input_channel[PD_INPUT_CHANNEL_LEN];
+		char		hv_status;
+		varchar		hv_type[PD_TXN_CODE_LEN];
+		char		hv_process_group;
+		varchar		hv_statement_date[PD_FORMAT_TEMPLATE_LEN];
+		varchar		hv_statement_time[PD_FORMAT_TEMPLATE_LEN];
+		varchar		hv_tfr_bank_name[PD_TFR_BANK_NAME_LEN];
+		varchar		hv_tfr_bank_acct_num[PD_TFR_BANK_ACCT_NUM_LEN];
+		varchar		hv_tfr_type[PD_TFR_TYPE_LEN];
+		varchar		hv_tfr_channel[PD_TFR_CHANNEL_LEN];
+		varchar		hv_tfr_text[PD_TFR_TEXT_LEN];
+		varchar		hv_tfr_customer_text[PD_TFR_TEXT_LEN];
+		varchar		hv_sender_name[PD_SENDER_NAME_LEN];
+		varchar		hv_txn_ref_num[PD_TXN_REF_NUM_LEN];
+		double		hv_balance;
+		varchar		hv_amt_type[PD_AMT_TYPE_LEN];
+		double		hv_txn_amount;
+		varchar		hv_txn_ccy[PD_CCY_ID_LEN];
+		varchar		hv_create_user[PD_USER_LEN];
+
+		short		ind_filename = -1;
+		short		ind_int_bank_code = -1;
+		short		ind_bank_acct_num = -1;
+		short		ind_statement_seq = -1;
+		short		ind_txn_id = -1;
+		short		ind_sms_txn_id = -1;
+		short		ind_input_channel = -1;
+		short		ind_status = -1;
+		short		ind_type = -1;
+		short		ind_process_group = -1;
+		short		ind_statement_date = -1;
+		short		ind_statement_time = -1;
+		short		ind_tfr_bank_name = -1;
+		short		ind_tfr_bank_acct_num = -1;
+		short		ind_tfr_type = -1;
+		short		ind_tfr_channel = -1;
+		short		ind_tfr_text = -1;
+		short		ind_tfr_customer_text = -1;
+		short		ind_sender_name = -1;
+		short		ind_txn_ref_num = -1;
+		short		ind_balance = -1;
+		short		ind_amt_type = -1;
+		short		ind_txn_amount = -1;
+		short		ind_txn_ccy = -1;
+		short		ind_create_user = -1;
+
+		short		hv_return_value;
+
+	EXEC SQL END DECLARE SECTION;
+
+	if(GetField_CString(hRls,"filename",&csTmp)) {
+		hv_filename.len = strlen(csTmp);
+		strncpy((char*)hv_filename.arr, csTmp, hv_filename.len);
+		ind_filename = 0;
+//DEBUGLOG(("AddDetail: filename = [%.*s]\n",hv_filename.len, hv_filename.arr));
+	}
+
+	if(GetField_CString(hRls,"int_bank_code",&csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+//DEBUGLOG(("AddDetail: int_bank_code = [%.*s]\n",hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+
+	if(GetField_CString(hRls,"bank_acct_num",&csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+//DEBUGLOG(("AddDetail: bank_acct_num = [%.*s]\n",hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+	if(GetField_Int(hRls, "statement_seq", &iTmp)) {
+		hv_statement_seq = iTmp;
+		ind_statement_seq = 0;
+//DEBUGLOG(("AddDetail: statement_seq = [%d]\n",hv_statement_seq));
+	}
+
+	if(GetField_CString(hRls,"txn_id",&csTmp)) {
+		hv_txn_id.len = strlen(csTmp);
+		strncpy((char*)hv_txn_id.arr, csTmp, hv_txn_id.len);
+		ind_txn_id = 0;
+//DEBUGLOG(("AddDetail: txn_id = [%.*s]\n",hv_txn_id.len, hv_txn_id.arr));
+	}
+
+	if(GetField_CString(hRls,"sms_txn_id",&csTmp)) {
+		hv_sms_txn_id.len = strlen(csTmp);
+		strncpy((char*)hv_sms_txn_id.arr, csTmp, hv_sms_txn_id.len);
+		ind_sms_txn_id = 0;
+//DEBUGLOG(("AddDetail: sms_txn_id = [%.*s]\n",hv_sms_txn_id.len, hv_sms_txn_id.arr));
+	}
+
+	if(GetField_CString(hRls,"input_channel",&csTmp)) {
+		hv_input_channel.len = strlen(csTmp);
+		strncpy((char*)hv_input_channel.arr, csTmp, hv_input_channel.len);
+		ind_input_channel = 0;
+//DEBUGLOG(("AddDetail: input_channel = [%.*s]\n",hv_input_channel.len, hv_input_channel.arr));
+	}
+
+	if (GetField_Char(hRls,"status",&cTmp)) {
+		hv_status = cTmp;
+		ind_status = 0;
+//DEBUGLOG(("AddDetail: status = [%c]\n",hv_status));
+	}
+
+	if(GetField_CString(hRls,"type",&csTmp)) {
+		hv_type.len = strlen(csTmp);
+		strncpy((char*)hv_type.arr, csTmp, hv_type.len);
+		ind_type = 0;
+//DEBUGLOG(("AddDetail: type = [%.*s]\n",hv_type.len, hv_type.arr));
+	}
+
+	if (GetField_Char(hRls,"process_group",&cTmp)) {
+		hv_process_group = cTmp;
+		ind_process_group = 0;
+//DEBUGLOG(("AddDetail: process_group = [%c]\n",hv_process_group));
+	}
+
+	if(GetField_CString(hRls,"statement_date",&csTmp)) {
+		hv_statement_date.len = strlen(csTmp);
+		strncpy((char*)hv_statement_date.arr, csTmp, hv_statement_date.len);
+		ind_statement_date = 0;
+//DEBUGLOG(("AddDetail: statement_date = [%.*s]\n",hv_statement_date.len, hv_statement_date.arr));
+	}
+
+	if(GetField_CString(hRls,"statement_time",&csTmp)) {
+		hv_statement_time.len = strlen(csTmp);
+		strncpy((char*)hv_statement_time.arr, csTmp, hv_statement_time.len);
+		ind_statement_time = 0;
+//DEBUGLOG(("AddDetail: statement_time = [%.*s]\n",hv_statement_time.len, hv_statement_time.arr));
+	}
+
+	if(GetField_CString(hRls,"tfr_bank_name",&csTmp)) {
+		hv_tfr_bank_name.len = strlen(csTmp);
+		strncpy((char*)hv_tfr_bank_name.arr, csTmp, hv_tfr_bank_name.len);
+		ind_tfr_bank_name = 0;
+//DEBUGLOG(("AddDetail: tfr_bank_name = [%.*s]\n",hv_tfr_bank_name.len, hv_tfr_bank_name.arr));
+	}
+
+	if(GetField_CString(hRls,"tfr_bank_acct_num",&csTmp)) {
+		hv_tfr_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_tfr_bank_acct_num.arr, csTmp, hv_tfr_bank_acct_num.len);
+		ind_tfr_bank_acct_num = 0;
+//DEBUGLOG(("AddDetail: tfr_bank_acct_num = [%.*s]\n",hv_tfr_bank_acct_num.len, hv_tfr_bank_acct_num.arr));
+	}
+
+	if(GetField_CString(hRls,"tfr_type",&csTmp)) {
+		hv_tfr_type.len = strlen(csTmp);
+		strncpy((char*)hv_tfr_type.arr, csTmp, hv_tfr_type.len);
+		ind_tfr_type = 0;
+//DEBUGLOG(("AddDetail: tfr_type = [%.*s]\n",hv_tfr_type.len, hv_tfr_type.arr));
+	}
+
+	if(GetField_CString(hRls,"tfr_channel",&csTmp)) {
+		hv_tfr_channel.len = strlen(csTmp);
+		strncpy((char*)hv_tfr_channel.arr, csTmp, hv_tfr_channel.len);
+		ind_tfr_channel = 0;
+//DEBUGLOG(("AddDetail: tfr_channel = [%.*s]\n",hv_tfr_channel.len, hv_tfr_channel.arr));
+	}
+
+	if(GetField_CString(hRls,"tfr_text",&csTmp)) {
+		hv_tfr_text.len = strlen(csTmp);
+		strncpy((char*)hv_tfr_text.arr, csTmp, hv_tfr_text.len);
+		ind_tfr_text = 0;
+//DEBUGLOG(("AddDetail: tfr_text = [%.*s]\n",hv_tfr_text.len, hv_tfr_text.arr));
+	}
+
+	if(GetField_CString(hRls,"tfr_customer_text",&csTmp)) {
+		hv_tfr_customer_text.len = strlen(csTmp);
+		strncpy((char*)hv_tfr_customer_text.arr, csTmp, hv_tfr_customer_text.len);
+		ind_tfr_customer_text = 0;
+//DEBUGLOG(("AddDetail: tfr_customer_text = [%.*s]\n",hv_tfr_customer_text.len, hv_tfr_customer_text.arr));
+	}
+
+	if(GetField_CString(hRls,"sender_name",&csTmp)) {
+		hv_sender_name.len = strlen(csTmp);
+		strncpy((char*)hv_sender_name.arr, csTmp, hv_sender_name.len);
+		ind_sender_name = 0;
+//DEBUGLOG(("AddDetail: sender_name = [%.*s]\n",hv_sender_name.len, hv_sender_name.arr));
+	}
+
+	if(GetField_CString(hRls,"txn_ref_num",&csTmp)) {
+		hv_txn_ref_num.len = strlen(csTmp);
+		strncpy((char*)hv_txn_ref_num.arr, csTmp, hv_txn_ref_num.len);
+		ind_txn_ref_num = 0;
+//DEBUGLOG(("AddDetail: txn_ref_num = [%.*s]\n",hv_txn_ref_num.len, hv_txn_ref_num.arr));
+	}
+
+	if (GetField_CString(hRls,"balance",&csTmp)) {
+		hv_balance = atof(csTmp);
+		ind_balance = 0;
+//DEBUGLOG(("AddDetail: balance = [%.2f]\n",hv_balance));
+	}
+
+	if (GetField_CString(hRls,"amt_type",&csTmp)) {
+		hv_amt_type.len = strlen(csTmp);
+		strncpy((char*)hv_amt_type.arr, csTmp, hv_amt_type.len);
+		ind_amt_type = 0;
+//DEBUGLOG(("AddDetail: amt_type = [%.*s]\n",hv_amt_type.len,hv_amt_type.arr));
+	}
+
+	if (GetField_CString(hRls,"txn_amount",&csTmp)) {
+		hv_txn_amount = atof(csTmp);
+		ind_txn_amount = 0;
+//DEBUGLOG(("AddDetail: txn_amount = [%.2f]\n",hv_txn_amount));
+	}
+
+	if(GetField_CString(hRls,"txn_ccy",&csTmp)) {
+		hv_txn_ccy.len = strlen(csTmp);
+		strncpy((char*)hv_txn_ccy.arr, csTmp, hv_txn_ccy.len);
+		ind_txn_ccy = 0;
+//DEBUGLOG(("AddDetail: txn_ccy = [%.*s]\n",hv_txn_ccy.len, hv_txn_ccy.arr));
+	}
+
+	if(GetField_CString(hRls,"create_user",&csTmp)) {
+		hv_create_user.len = strlen(csTmp);
+		strncpy((char*)hv_create_user.arr, csTmp, hv_create_user.len);
+		ind_create_user = 0;
+//DEBUGLOG(("AddDetail: create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_statement_detail_insert(
+						:hv_filename:ind_filename,
+						:hv_int_bank_code:ind_int_bank_code,
+						:hv_bank_acct_num:ind_bank_acct_num,
+						:hv_statement_seq:ind_statement_seq,
+						:hv_txn_id:ind_txn_id,
+						:hv_sms_txn_id:ind_sms_txn_id,
+						:hv_input_channel:ind_input_channel,
+						:hv_status:ind_status,
+						:hv_type:ind_type,
+						:hv_process_group:ind_process_group,
+						:hv_statement_date:ind_statement_date,
+						:hv_statement_time:ind_statement_time,
+						:hv_tfr_bank_name:ind_tfr_bank_name,
+						:hv_tfr_bank_acct_num:ind_tfr_bank_acct_num,
+						:hv_tfr_type:ind_tfr_type,
+						:hv_tfr_channel:ind_tfr_channel,
+						:hv_tfr_text:ind_tfr_text,
+						:hv_tfr_customer_text:ind_tfr_customer_text,
+						:hv_sender_name:ind_sender_name,
+						:hv_txn_ref_num:ind_txn_ref_num,
+						:hv_balance:ind_balance,
+						:hv_amt_type:ind_amt_type,
+						:hv_txn_amount:ind_txn_amount,
+						:hv_txn_ccy:ind_txn_ccy,
+						:hv_create_user:ind_create_user);
+		END;
+	END-EXEC;
+
+	if (hv_return_value == SP_OK)
+	{
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_AddDetail: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("AddDetail: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_AddDetail: SP_ERR TxnAbort\n");
+DEBUGLOG(("AddDetail: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+addetail_error:
+DEBUGLOG(("addetail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStatement_AddDetail: SP_INTERNAL_ERR TxnAbort\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int FindStatementRefHold(hash_t *hRls)
+{
+	char	*csTmp;
+	int	iTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO findrefhold_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_filename[PD_UPLOAD_FILENAME_LEN];
+		varchar	hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar	hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		int	hv_statement_seq;
+		varchar v_statement_ref[PD_STMT_REF_LEN + 1];
+
+		short	ind_filename = -1;
+		short	ind_int_bank_code = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_statement_seq = -1;
+		short	ind_statement_ref = -1;
+
+		short hv_return_value;
+	EXEC SQL END DECLARE SECTION;
+
+/* filename */
+	if (GetField_CString(hRls, "filename", &csTmp)) {
+		hv_filename.len = strlen(csTmp);
+		strncpy((char*)hv_filename.arr, csTmp, hv_filename.len);
+		ind_filename = 0;
+DEBUGLOG(("FindStatementRefHold: filename = [%.*s]\n", hv_filename.len, hv_filename.arr));
+	}
+
+/* statement_seq */
+	if (GetField_Int(hRls,"statement_seq",&iTmp)) {
+		hv_statement_seq = iTmp;
+		ind_statement_seq = 0;
+DEBUGLOG(("FindStatementRefHold: statement_seq = [%d]\n",hv_statement_seq));
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hRls, "int_bank_code", &csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+DEBUGLOG(("FindStatementRefHold: int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hRls, "bank_acct_num", &csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("FindStatementRefHold: bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_statement_find_ref_hold(
+						:hv_filename:ind_filename,
+						:hv_statement_seq:ind_statement_seq,
+						:hv_int_bank_code:ind_int_bank_code,
+						:hv_bank_acct_num:ind_bank_acct_num,
+						:v_statement_ref:ind_statement_ref);
+		END;
+	END-EXEC;
+
+DEBUGLOG(("FindStatementRefHold return = [%d]\n",hv_return_value));
+
+	if (hv_return_value == SP_OK) {
+		if (ind_statement_ref >= 0) {
+			v_statement_ref.arr[v_statement_ref.len] = '\0';
+			PutField_CString(hRls,"statement_ref",(char*)v_statement_ref.arr);
+DEBUGLOG(("FindStatementRefHold: statement_ref = [%s]\n", (char*)v_statement_ref.arr));
+		}
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_FindStatementRefHold: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("FindStatementRefHold: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_FindStatementRefHold: SP_ERR TxnAbort\n");
+DEBUGLOG(("FindStatementRefHold: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+findrefhold_error:
+DEBUGLOG(("findrefhold_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_FindStatementRefHold: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("FindStatementRefHold: SP_INTERNAL_ERR TxnAbort\n"));
+	TxnAbort();
+	return PD_INTERNAL_ERR;
+}
+
+
+int UpdateStatusWithLog(const hash_t *hRls)
+{
+	char	*csTmp;
+	char	cTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatestatuswithlog_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_statement_ref[PD_STMT_REF_LEN];
+		char	hv_status;
+		varchar	hv_type[PD_TXN_CODE_LEN];
+		varchar	hv_upload_filename[PD_UPLOAD_FILENAME_LEN];
+		varchar	hv_remark[PD_REMARK_LEN];
+		varchar	hv_update_user[PD_USER_LEN];
+
+		short	ind_statement_ref = -1;
+		short	ind_status = -1;
+		short	ind_type = -1;
+		short	ind_upload_filename = -1;
+		short	ind_remark = -1;
+		short	ind_update_user = -1;
+
+		short hv_return_value;
+	EXEC SQL END DECLARE SECTION;
+
+/* statement_ref */
+	if (GetField_CString(hRls, "statement_ref", &csTmp)) {
+		hv_statement_ref.len = strlen(csTmp);
+		strncpy((char*)hv_statement_ref.arr, csTmp, hv_statement_ref.len);
+		ind_statement_ref = 0;
+DEBUGLOG(("UpdateStatusWithLog: statement_ref = [%.*s]\n", hv_statement_ref.len, hv_statement_ref.arr));
+	}
+
+/* status */
+	if (GetField_Char(hRls,"status",&cTmp)) {
+		hv_status = cTmp;
+		ind_status = 0;
+DEBUGLOG(("UpdateStatusWithLog: status = [%c]\n", hv_status));
+	}
+
+/* type */
+	if (GetField_CString(hRls, "type", &csTmp)) {
+		hv_type.len = strlen(csTmp);
+		strncpy((char*)hv_type.arr, csTmp, hv_type.len);
+		ind_type = 0;
+DEBUGLOG(("UpdateStatusWithLog: type = [%.*s]\n", hv_type.len, hv_type.arr));
+	}
+
+/* upload_filename */
+	if (GetField_CString(hRls, "upload_filename", &csTmp)) {
+		hv_upload_filename.len = strlen(csTmp);
+		strncpy((char*)hv_upload_filename.arr, csTmp, hv_upload_filename.len);
+		ind_upload_filename = 0;
+DEBUGLOG(("UpdateStatusWithLog: upload_filename = [%.*s]\n", hv_upload_filename.len, hv_upload_filename.arr));
+	}
+
+/* remark */
+	if (GetField_CString(hRls, "remark", &csTmp)) {
+		hv_remark.len = strlen(csTmp);
+		strncpy((char*)hv_remark.arr, csTmp, hv_remark.len);
+		ind_remark = 0;
+DEBUGLOG(("UpdateStatusWithLog: remark = [%.*s]\n", hv_remark.len, hv_remark.arr));
+	}
+
+/* update_user */
+	if (GetField_CString(hRls, "update_user", &csTmp)) {
+		hv_update_user.len = strlen(csTmp);
+		strncpy((char*)hv_update_user.arr, csTmp, hv_update_user.len);
+		ind_update_user = 0;
+DEBUGLOG(("UpdateStatusWithLog: update_user = [%.*s]\n", hv_update_user.len, hv_update_user.arr));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_statement_status_update(
+						:hv_statement_ref:ind_statement_ref,
+						:hv_status:ind_status,
+						:hv_type:ind_type,
+						:hv_upload_filename:ind_upload_filename,
+						:hv_remark:ind_remark,
+						:hv_update_user:ind_update_user);
+		END;
+	END-EXEC;
+
+	if (hv_return_value == SP_OK) {
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_UpdateStatusWithLog: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("UpdateStatusWithLog: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_UpdateStatusWithLog: SP_ERR TxnAbort\n");
+DEBUGLOG(("UpdateStatusWithLog: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+updatestatuswithlog_error:
+DEBUGLOG(("updatestatuswithlog_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_UpdateStatusWithLog: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("UpdateStatusWithLog: SP_INTERNAL_ERR TxnAbort\n"));
+	TxnAbort();
+	return PD_INTERNAL_ERR;
+}
+
+
+int UpdateDepositMatch(const hash_t *hRls)
+{
+	char *csTmp;
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatedepositmatch_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_dynstmt[1024];
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy((char*)hv_dynstmt.arr, "update ol_statement_detail set olsd_update_timestamp = sysdate");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+/* update_user */
+	if (GetField_CString(hRls, "create_user", &csTmp)) {
+DEBUGLOG(("UpdateDepositMatch: update_user = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_update_user = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* txn_id */
+	if (GetField_CString(hRls, "txn_id", &csTmp)) {
+DEBUGLOG(("UpdateDepositMatch: txn_id = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_txn_id = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* status */
+	if (GetField_CString(hRls, "status", &csTmp)) {
+DEBUGLOG(("UpdateDepositMatch: status = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_status = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+	if (GetField_CString(hRls, "statement_ref", &csTmp)) {
+		strcat((char*)hv_dynstmt.arr, " where olsd_statement_ref = '");
+	} else if (GetField_CString(hRls, "sms_txn_id", &csTmp)) {
+		strcat((char*)hv_dynstmt.arr, " where olsd_sms_txn_id = '");
+	}
+	strcat((char*)hv_dynstmt.arr, csTmp);
+	strcat((char*)hv_dynstmt.arr, "'");
+
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+	EXEC SQL EXECUTE PS;
+
+DEBUGLOG(("UpdateDepositMatch Normal Exit\n"));
+
+	return PD_OK;
+
+updatedepositmatch_error:
+DEBUGLOG(("updatedepositmatch_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_UpdateDepositMach: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("UpdateDepositMatch: SP_INTERNAL_ERR TxnAbort\n"));
+	TxnAbort();
+	return PD_INTERNAL_ERR;
+}
+
+
+int UpdateSmsDetail(const hash_t *hRls)
+{
+	int iTmp;
+	char cTmp;
+	char *csTmp;
+	char *csIntBankCode, *csBankAcctNum, *csStatementDate, *csTxnAmount;
+
+	char* csBuf;
+	csBuf = (char*) malloc (128);
+
+	EXEC SQL WHENEVER SQLERROR GOTO updatesmsdetail_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_dynstmt[1024];
+	EXEC SQL END DECLARE SECTION;
+
+	strcpy((char*)hv_dynstmt.arr, "update ol_statement_detail set olsd_update_timestamp = sysdate");
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+	if (!GetField_CString(hRls, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("UpdateSmsDetail: int_bank_code NOT FOUND!!!\n"));
+	}
+
+	if (!GetField_CString(hRls, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("UpdateSmsDetail: bank_acct_num NOT FOUND!!!\n"));
+	}
+
+	if (!GetField_CString(hRls, "statement_date", &csStatementDate)) {
+DEBUGLOG(("UpdateSmsDetail: statement_date NOT FOUND!!!\n"));
+	}
+
+	if (!GetField_CString(hRls, "txn_amount", &csTxnAmount)) {
+DEBUGLOG(("UpdateSmsDetail: txn_amount NOT FOUND!!!\n"));
+	}
+
+/* update_user */
+	if (GetField_CString(hRls, "create_user", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: update_user = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_update_user = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* filename */
+	if (GetField_CString(hRls, "filename", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: filename = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_filename = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* statement_seq */
+	if (GetField_Int(hRls, "statement_seq", &iTmp)) {
+DEBUGLOG(("UpdateSmsDetail: statement_seq = [%d]\n", iTmp));
+		sprintf(csBuf, "%d", iTmp);
+		strcat((char*)hv_dynstmt.arr, ", olsd_statement_seq = ");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* statement_ref */
+	if (GetField_CString(hRls, "statement_ref", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: statement_ref = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_statement_ref = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* process_group */
+	if (GetField_Char(hRls, "process_group", &cTmp)) {
+DEBUGLOG(("UpdateSmsDetail: process_group = [%c]\n", cTmp));
+		sprintf(csBuf, "%c", cTmp);
+		strcat((char*)hv_dynstmt.arr, ", olsd_process_group = '");
+		strcat((char*)hv_dynstmt.arr, csBuf);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* statement_time */
+	if (GetField_CString(hRls, "statement_time", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: statement_time = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_statement_time = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		strcat((char*)hv_dynstmt.arr, ", olsd_statement_timestamp = to_date(olsd_statement_date||'");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "','YYYYMMDDHH24MISS')");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* tfr_bank_name */
+	if (GetField_CString(hRls, "tfr_bank_name", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: tfr_bank_name = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_tfr_bank_name = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* tfr_bank_acct_num */
+	if (GetField_CString(hRls, "tfr_bank_acct_num", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: tfr_bank_acct_num = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_tfr_bank_acct_num = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* tfr_type */
+	if (GetField_CString(hRls, "tfr_type", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: tfr_type = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_tfr_type = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* tfr_channel */
+	if (GetField_CString(hRls, "tfr_channel", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: tfr_channel = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_tfr_channel = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* tfr_text */
+	if (GetField_CString(hRls, "tfr_text", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: tfr_text = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_tfr_text = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* tfr_customer_text */
+	if (GetField_CString(hRls, "tfr_customer_text", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: tfr_customer_text = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_tfr_customer_text = '");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		strcat((char*)hv_dynstmt.arr, "'");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* balance */
+	if (GetField_CString(hRls, "balance", &csTmp)) {
+DEBUGLOG(("UpdateSmsDetail: balance = [%s]\n", csTmp));
+		strcat((char*)hv_dynstmt.arr, ", olsd_balance = ");
+		strcat((char*)hv_dynstmt.arr, csTmp);
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+	}
+
+/* statement_ref */
+	strcat((char*)hv_dynstmt.arr, ", olsd_statement_ref = to_char(OMT_TXN_SEQ.NEXTVAL, 'FM0999999999999999')");
+
+	strcat((char*)hv_dynstmt.arr, " where olsd_sms_txn_id = (select min(olsd_sms_txn_id) from ol_statement_detail");
+
+	strcat((char*)hv_dynstmt.arr, " where olsd_int_bank_code = '");
+	strcat((char*)hv_dynstmt.arr, csIntBankCode);
+	strcat((char*)hv_dynstmt.arr, "'");
+
+	strcat((char*)hv_dynstmt.arr, " and olsd_bank_acct_num = '");
+	strcat((char*)hv_dynstmt.arr, csBankAcctNum);
+	strcat((char*)hv_dynstmt.arr, "'");
+
+	strcat((char*)hv_dynstmt.arr, " and olsd_statement_date = '");
+	strcat((char*)hv_dynstmt.arr, csStatementDate);
+	strcat((char*)hv_dynstmt.arr, "'");
+
+	/* to be modified: may not match */
+	strcat((char*)hv_dynstmt.arr, " and olsd_txn_amount = '");
+	strcat((char*)hv_dynstmt.arr, csTxnAmount);
+	strcat((char*)hv_dynstmt.arr, "'");
+
+	strcat((char*)hv_dynstmt.arr, " and olsd_input_channel = 'SMS_STMT'");
+	strcat((char*)hv_dynstmt.arr, " and olsd_statement_ref is null");
+
+	strcat((char*)hv_dynstmt.arr, ")");
+
+	hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n", hv_dynstmt.len, hv_dynstmt.arr));
+
+	EXEC SQL PREPARE PS FROM :hv_dynstmt;
+	EXEC SQL EXECUTE PS;
+
+	FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateSmsDetail Normal Exit\n"));
+	return PD_OK;
+
+updatesmsdetail_error:
+DEBUGLOG(("updatesmsdetail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_UpdateSmsDetail: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("UpdateSmsDetail: SP_INTERNAL_ERR TxnAbort\n"));
+	TxnAbort();
+	return PD_INTERNAL_ERR;
+}
+
+
+int MatchStmt(hash_t *hRls)
+{
+	int iRet = PD_NOT_FOUND;
+
+	char *csTmp;
+	int iSearchChannel = 0; // 0 - whatever, 1 - bank_stmt, 2 - sms
+
+	EXEC SQL WHENEVER SQLERROR GOTO matchstmt_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		double hv_txn_amount;
+		varchar hv_txn_date[10];
+		varchar hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		varchar hv_int_bank_code[PD_BANK_CODE_LEN];
+		int v_cnt;
+
+		short ind_txn_amount = -1;
+		short ind_txn_date = -1;
+		short ind_bank_acct_num = -1;
+		short ind_int_bank_code = -1;
+	EXEC SQL END DECLARE SECTION;
+
+// for aux stmt : start
+/* txn_amount */
+	if (GetField_CString(hRls, "txn_amount", &csTmp)) {
+		hv_txn_amount = atof(csTmp);
+		ind_txn_amount = 0;
+DEBUGLOG(("MatchStmt:: txn_amount = [%.2f]\n", hv_txn_amount));
+	}
+
+/* txn_date */
+	if (GetField_CString(hRls, "txn_date", &csTmp)) {
+		hv_txn_date.len = strlen(csTmp);
+		strncpy((char*)hv_txn_date.arr, csTmp, hv_txn_date.len);
+		ind_txn_date = 0;
+DEBUGLOG(("MatchStmt:: txn_date = [%.*s]\n", hv_txn_date.len, hv_txn_date.arr));
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hRls, "bank_acct_num", &csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("MatchStmt:: bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+/* int_bank_code */
+	if (GetField_CString(hRls, "int_bank_code", &csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+DEBUGLOG(("MatchStmt:: int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+// for aux stmt : end
+
+
+
+// for bank stmt : start
+/* statement_date */
+	if (GetField_CString(hRls, "statement_date", &csTmp)) {
+		hv_txn_date.len = strlen(csTmp);
+		strncpy((char*)hv_txn_date.arr, csTmp, hv_txn_date.len);
+		ind_txn_date = 0;
+DEBUGLOG(("MatchStmt:: txn_date = [%.*s]\n", hv_txn_date.len, hv_txn_date.arr));
+
+		iSearchChannel = 2;
+	}
+
+/* other same as aux */
+// for bank stmt : end
+
+
+
+// for sms : start
+/* req_bank_amount */
+	if (GetField_CString(hRls, "req_bank_amount", &csTmp)) {
+		hv_txn_amount = atof(csTmp);
+		ind_txn_amount = 0;
+DEBUGLOG(("MatchStmt:: txn_amount = [%.2f]\n", hv_txn_amount));
+	}
+
+/* req_bank_date */
+	if (GetField_CString(hRls, "req_bank_date", &csTmp)) {
+		hv_txn_date.len = strlen(csTmp);
+		strncpy((char*)hv_txn_date.arr, csTmp, hv_txn_date.len);
+		ind_txn_date = 0;
+DEBUGLOG(("MatchStmt:: txn_date = [%.*s]\n", hv_txn_date.len, hv_txn_date.arr));
+	}
+
+/* req_bank_acc */
+	if (GetField_CString(hRls, "req_bank_acc", &csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("MatchStmt:: bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+/* other same as aux */
+// for sms : end
+
+	if (iSearchChannel == 2) {
+		EXEC SQL SELECT count(*)
+				INTO :v_cnt
+				FROM ol_statement_detail
+				WHERE olsd_txn_amount = :hv_txn_amount:ind_txn_amount
+				AND olsd_statement_date = replace(:hv_txn_date:ind_txn_date, '-', '')
+				AND olsd_int_bank_code = :hv_int_bank_code:ind_int_bank_code
+				AND ((olsd_bank_acct_num = :hv_bank_acct_num:ind_bank_acct_num) or
+					(olsd_bank_acct_num like '%' || substr(:hv_bank_acct_num:ind_bank_acct_num, -4, 4)))
+				AND olsd_input_channel = 'SMS_STMT'
+				AND olsd_statement_ref is null;
+	} else {
+		EXEC SQL SELECT count(*)
+				INTO :v_cnt
+				FROM ol_statement_detail
+				WHERE olsd_txn_amount = :hv_txn_amount:ind_txn_amount
+				AND olsd_statement_date = replace(:hv_txn_date:ind_txn_date, '-', '')
+				AND olsd_int_bank_code = :hv_int_bank_code:ind_int_bank_code
+				AND ((olsd_bank_acct_num = :hv_bank_acct_num:ind_bank_acct_num) or
+					(olsd_bank_acct_num like '%' || substr(:hv_bank_acct_num:ind_bank_acct_num, -4, 4)));
+	}
+
+	if (v_cnt > 0) {
+		iRet = PD_FOUND;
+	}
+
+	return iRet;
+
+matchstmt_error:
+DEBUGLOG(("matchstmt_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStatement:: MatchStmt: SP_INTERNAL_ERR TxnAbort\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int AuxUpdateStmt(const hash_t *hRls) {
+	int iRet = PD_OK;
+
+	return iRet;
+}
+
+
+int AddSmsDetail(const hash_t *hTxn, const hash_t *hText)
+{
+	char *csTmp, *csTmp2;
+
+	EXEC SQL WHENEVER SQLERROR GOTO addsmsdetail_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_int_bank_code[PD_BANK_CODE_LEN];
+		varchar	hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN];
+		varchar	hv_sms_txn_id[PD_TXN_SEQ_LEN];
+		varchar	hv_input_channel[PD_INPUT_CHANNEL_LEN];
+		char	hv_status;
+		varchar	hv_statement_date[PD_FORMAT_TEMPLATE_LEN];
+		varchar	hv_statement_time[PD_FORMAT_TEMPLATE_LEN];
+		double	hv_balance;
+		varchar	hv_amt_type[PD_AMT_TYPE_LEN];
+		double	hv_txn_amount;
+		varchar	hv_create_user[PD_USER_LEN];
+
+		short	ind_int_bank_code = -1;
+		short	ind_bank_acct_num = -1;
+		short	ind_sms_txn_id = -1;
+		short	ind_input_channel = -1;
+		short	ind_status = -1;
+		short	ind_statement_date = -1;
+		short	ind_statement_time = -1;
+		short	ind_balance = -1;
+		short	ind_amt_type = -1;
+		short	ind_txn_amount = -1;
+		short	ind_create_user = -1;
+
+		short hv_return_value;
+	EXEC SQL END DECLARE SECTION;
+
+/* int_bank_code */
+	if (GetField_CString(hText, "int_bank_code", &csTmp)) {
+		hv_int_bank_code.len = strlen(csTmp);
+		strncpy((char*)hv_int_bank_code.arr, csTmp, hv_int_bank_code.len);
+		ind_int_bank_code = 0;
+DEBUGLOG(("AddSmsDetail: int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+	}
+
+/* bank_acct_num */
+	if (GetField_CString(hText, "req_bank_acc", &csTmp)) {
+		hv_bank_acct_num.len = strlen(csTmp);
+		strncpy((char*)hv_bank_acct_num.arr, csTmp, hv_bank_acct_num.len);
+		ind_bank_acct_num = 0;
+DEBUGLOG(("AddSmsDetail: bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+	}
+
+/* sms_txn_id */
+	if (GetField_CString(hTxn, "txn_id", &csTmp)) {
+		hv_sms_txn_id.len = strlen(csTmp);
+		strncpy((char*)hv_sms_txn_id.arr, csTmp, hv_sms_txn_id.len);
+		ind_sms_txn_id = 0;
+DEBUGLOG(("AddSmsDetail: sms_txn_id = [%.*s]\n", hv_sms_txn_id.len, hv_sms_txn_id.arr));
+	}
+
+/* input_channel */
+	strcpy(csTmp, "SMS_STMT");
+	hv_input_channel.len = strlen(csTmp);
+	strncpy((char*)hv_input_channel.arr, csTmp, hv_input_channel.len);
+	ind_input_channel = 0;
+DEBUGLOG(("AddSmsDetail: input_channel = [%.*s]\n", hv_input_channel.len, hv_input_channel.arr));
+
+/* status */
+	hv_status = 'U';
+	ind_status = 0;
+DEBUGLOG(("AddSmsDetail: status = [%c]\n", hv_status));
+
+/* statement_date */
+	if (GetField_CString(hText, "req_bank_date", &csTmp)) {
+		hv_statement_date.len = strlen(csTmp);
+		strncpy((char*)hv_statement_date.arr, csTmp, hv_statement_date.len);
+		ind_statement_date = 0;
+DEBUGLOG(("AddSmsDetail: statement_date = [%.*s]\n", hv_statement_date.len, hv_statement_date.arr));
+	}
+
+/* statement_time */
+	if (GetField_CString(hText, "req_bank_hour", &csTmp)) {
+		if (GetField_CString(hText, "req_bank_minute", &csTmp2)) {
+			sprintf(csTmp, "%s%s00", csTmp, csTmp2);
+			hv_statement_time.len = strlen(csTmp);
+			strncpy((char*)hv_statement_time.arr, csTmp, hv_statement_time.len);
+			ind_statement_time = 0;
+DEBUGLOG(("AddSmsDetail: statement_time = [%.*s]\n", hv_statement_time.len, hv_statement_time.arr));
+		}
+	}
+
+/* balance */
+	hv_balance = 0.00;
+	ind_balance = 0;
+DEBUGLOG(("AddSmsDetail: balance = [%.2f]\n", hv_balance));
+
+/* amt_type */
+	strcpy(csTmp, "CR");
+	hv_amt_type.len = strlen(csTmp);
+	strncpy((char*)hv_amt_type.arr, csTmp, hv_amt_type.len);
+	ind_amt_type = 0;
+DEBUGLOG(("AddSmsDetail: amt_type = [%.*s]\n", hv_amt_type.len, hv_amt_type.arr));
+
+/* txn_amount */
+	if (GetField_CString(hText, "req_bank_amount", &csTmp)) {
+		hv_txn_amount = atof(csTmp);
+		ind_txn_amount = 0;
+DEBUGLOG(("AddSmsDetail: txn_amount = [%.2f]\n", hv_txn_amount));
+	}
+
+/* create_user */
+	if (GetField_CString(hTxn, "create_user", &csTmp)) {
+		hv_create_user.len = strlen(csTmp);
+		strncpy((char*)hv_create_user.arr, csTmp, hv_create_user.len);
+		ind_create_user = 0;
+DEBUGLOG(("AddSmsDetail: create_user = [%.*s]\n", hv_create_user.len, hv_create_user.arr));
+	}
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_ol_statement_sms_insert(
+						:hv_int_bank_code:ind_int_bank_code,
+						:hv_bank_acct_num:ind_bank_acct_num,
+						:hv_sms_txn_id:ind_sms_txn_id,
+						:hv_input_channel:ind_input_channel,
+						:hv_status:ind_status,
+						:hv_statement_date:ind_statement_date,
+						:hv_statement_time:ind_statement_time,
+						:hv_balance:ind_balance,
+						:hv_amt_type:ind_amt_type,
+						:hv_txn_amount:ind_txn_amount,
+						:hv_create_user:ind_create_user);
+		END;
+	END-EXEC;
+
+	if (hv_return_value == SP_OK) {
+		return PD_OK;
+	}
+
+	if (hv_return_value == SP_OTHER_ERR) {
+ERRLOG("OLStatement_AddSmsDetail: SP_OTHER_ERR TxnAbort\n");
+DEBUGLOG(("AddSmsDetail: SP_OTHER_ERR TxnAbort\n"));
+		return PD_OTHER_ERR;
+	}
+
+	if (hv_return_value == SP_ERR) {
+ERRLOG("OLStatement_AddSmsDetail: SP_ERR TxnAbort\n");
+DEBUGLOG(("AddSmsDetail: SP_ERR TxnAbort\n"));
+		return PD_ERR;
+	}
+
+addsmsdetail_error:
+DEBUGLOG(("addsmsdetail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("OLStatement_AddSmsDetail: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("AddSmsDetail: SP_INTERNAL_ERR TxnAbort\n"));
+	TxnAbort();
+	return PD_INTERNAL_ERR;
+}
+
+int GetUnallocatedRecords(const char* csIntBankCode, const char* csBankAcctNum, recordset_t* myRec)
+{
+	int iRet = PD_OK;
+	int iCnt = 0;
+
+	hash_t *myHash;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getunallocatedrecords_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_int_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar hv_bank_acct_num[PD_BANK_ACCT_NUM_LEN + 1];
+		varchar v_stmt_ref[PD_STMT_REF_LEN + 1];
+		varchar v_stmt_date[PD_DATE_LEN + 1];
+		varchar v_stmt_timestamp[PD_DATETIME_LEN + 1];
+		varchar v_amt_type[PD_AMT_TYPE_LEN + 1];
+		varchar v_txn_amount[20 + 1];
+		varchar v_txn_ccy[PD_CCY_ID_LEN + 1];
+
+		short ind_int_bank_code = -1;
+		short ind_bank_acct_num = -1;
+		short ind_stmt_ref = -1;
+		short ind_stmt_date = -1;
+		short ind_stmt_timestamp = -1;
+		short ind_amt_type = -1;
+		short ind_txn_amount = -1;
+		short ind_txn_ccy = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_int_bank_code.len = strlen(csIntBankCode);
+	memcpy(hv_int_bank_code.arr, csIntBankCode, hv_int_bank_code.len);
+	ind_int_bank_code = 0;
+DEBUGLOG(("GetUnallocatedRecords int_bank_code = [%.*s]\n", hv_int_bank_code.len, hv_int_bank_code.arr));
+
+	hv_bank_acct_num.len = strlen(csBankAcctNum);
+	memcpy(hv_bank_acct_num.arr, csBankAcctNum, hv_bank_acct_num.len);
+	ind_bank_acct_num = 0;
+DEBUGLOG(("GetUnallocatedRecords bank_acct_num = [%.*s]\n", hv_bank_acct_num.len, hv_bank_acct_num.arr));
+
+	EXEC SQL DECLARE c_cursor CURSOR FOR
+		SELECT	olsd_statement_ref,
+			olsd_statement_date,
+			to_char(olsd_statement_timestamp, 'yyyymmddhh24miss'),
+			olsd_amt_type,
+			to_char(olsd_txn_amount),
+			olsd_txn_ccy
+		FROM	ol_statement_detail
+		WHERE	olsd_int_bank_code = :hv_int_bank_code:ind_int_bank_code
+		AND	olsd_bank_acct_num = :hv_bank_acct_num:ind_bank_acct_num
+		AND	olsd_process_group = 'S'
+		AND	olsd_status = 'U'
+		ORDER BY olsd_statement_ref;
+
+	EXEC SQL OPEN c_cursor;
+	for (;;) {
+		EXEC SQL FETCH c_cursor
+		INTO	:v_stmt_ref:ind_stmt_ref,
+			:v_stmt_date:ind_stmt_date,
+			:v_stmt_timestamp:ind_stmt_timestamp,
+			:v_amt_type:ind_amt_type,
+			:v_txn_amount:ind_txn_amount,
+			:v_txn_ccy:ind_txn_ccy;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(myHash, 0);
+
+		iCnt++;
+
+		PutField_CString(myHash, "int_bank_code", csIntBankCode);
+		PutField_CString(myHash, "bank_acct_num", csBankAcctNum);
+
+/* statement_ref */
+		if (ind_stmt_ref >= 0) {
+			v_stmt_ref.arr[v_stmt_ref.len] = '\0';
+			PutField_CString(myHash, "statement_ref", (const char*)v_stmt_ref.arr);
+DEBUGLOG(("GetUnallocatedRecords statement_ref = [%s]\n", (const char*)v_stmt_ref.arr));
+		}
+
+/* statement_date */
+		if (ind_stmt_date >= 0) {
+			v_stmt_date.arr[v_stmt_date.len] = '\0';
+			PutField_CString(myHash, "statement_date", (const char*)v_stmt_date.arr);
+DEBUGLOG(("GetUnallocatedRecords statement_date = [%s]\n", (const char*)v_stmt_date.arr));
+		}
+
+/* statement_timestamp */
+		if (ind_stmt_timestamp >= 0) {
+			v_stmt_timestamp.arr[v_stmt_timestamp.len] = '\0';
+			PutField_CString(myHash, "statement_timestamp", (const char*)v_stmt_timestamp.arr);
+DEBUGLOG(("GetUnallocatedRecords statement_timestamp = [%s]\n", (const char*)v_stmt_timestamp.arr));
+		}
+
+/* amt_type */
+		if (ind_amt_type >= 0) {
+			v_amt_type.arr[v_amt_type.len] = '\0';
+			PutField_CString(myHash, "amt_type", (const char*)v_amt_type.arr);
+DEBUGLOG(("GetUnallocatedRecords amt_type = [%s]\n", (const char*)v_amt_type.arr));
+		}
+
+/* txn_amount */
+		if (ind_txn_amount >= 0) {
+			v_txn_amount.arr[v_txn_amount.len] = '\0';
+			PutField_CString(myHash, "txn_amount", (const char*)v_txn_amount.arr);
+DEBUGLOG(("GetUnallocatedRecords txn_amount = [%s]\n", (const char*)v_txn_amount.arr));
+		}
+
+/* txn_ccy */
+		if (ind_txn_ccy >= 0) {
+			v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+			PutField_CString(myHash, "txn_ccy", (const char*)v_txn_ccy.arr);
+DEBUGLOG(("GetUnallocatedRecords txn_ccy = [%s]\n", (const char*)v_txn_ccy.arr));
+		}
+
+		RecordSet_Add(myRec, myHash);
+	}
+
+	EXEC SQL CLOSE c_cursor;
+
+DEBUGLOG(("GetUnallocatedRecords Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+getunallocatedrecords_error:
+DEBUGLOG(("getunallocatedrecords_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLStatement getunallocatedrecords_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL CLOSE c_cursor;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}

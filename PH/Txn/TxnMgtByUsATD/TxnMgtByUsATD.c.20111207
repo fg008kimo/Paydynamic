@@ -1,0 +1,313 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/12/06              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsATD.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsATD(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int	VerifyProcess(const hash_t* hRec);
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;	
+	char	*csUser = NULL;
+
+	char	csCurrentCode[PD_ADJ_TYPE_CODE_LEN + 1];
+
+	char	csTmpRtnTxnCode[PD_TXN_CODE_LEN + 1];
+	char	csRtnTxnCode[PD_TXN_CODE_LEN + 1];
+
+	char	csTagAction[PD_TAG_LEN + 1];
+
+	int	iTmp = 0; 
+
+	char	cPartyType;
+	char	cDCInd;
+	char	cAction;
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	memset(csCurrentCode, 0, sizeof(csCurrentCode));
+
+DEBUGLOG(("TxnMgtByUsATD::Authorize\n"));
+
+/* party_type */
+	if(GetField_CString(hRequest,"party_type",&csTmp)){
+		cPartyType = csTmp[0];
+DEBUGLOG(("Authorize::party_type = [%c]\n",cPartyType));
+
+		PutField_Char(hTxn, "party_type", cPartyType);
+	}
+	else {
+DEBUGLOG(("Authorize::party_type not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::party_type not found!!\n");
+		iRet=INT_ERR;
+	}
+
+/* dc_ind */
+	if(GetField_CString(hRequest,"dc_ind",&csTmp)){
+		cDCInd = csTmp[0];
+DEBUGLOG(("Authorize::dc_ind = [%c]\n",cDCInd));
+		PutField_Char(hTxn, "dc_ind", cDCInd);
+	}
+	else {
+DEBUGLOG(("Authorize::dc_ind not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::dc_ind not found!!\n");
+		iRet=INT_ERR;
+	}
+
+/* desc */
+	if (GetField_CString(hRequest, "desc", &csTmp)) {
+DEBUGLOG(("Authorize::desc = [%s]\n",csTmp));
+		PutField_CString(hTxn, "desc", csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::desc not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::desc not found!!\n");
+		iRet=INT_ERR;
+	}
+
+
+/* add_user */
+        if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csUser));
+                PutField_CString(hTxn,"create_user",csUser);
+                PutField_CString(hTxn,"update_user",csUser);
+        }
+
+
+/* action - A or U or D */
+	if(GetField_CString(hRequest,"action",&csTmp)){
+		cAction = csTmp[0];
+DEBUGLOG(("Authorize::action = [%c]\n",cAction));
+		PutField_Char(hTxn, "action", cAction);
+	}
+	else {
+DEBUGLOG(("Authorize::action not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::action not found!!\n");
+		iRet=INT_ERR;
+	}
+
+
+/* code */
+	if (cAction == PD_ADJ_TYPE_ACTION_ADD) {
+DEBUGLOG(("Authorize::Call AdjustmentType: GetMaxCode\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBAdjustmentType","GetMaxCode");
+		if((unsigned long)((*DBObjPtr)(cPartyType, &csCurrentCode)) ==PD_OK) {
+DEBUGLOG(("Authorize::CurrentCode Get [%s]\n", csCurrentCode));
+
+			if (strlen(csCurrentCode) == 0) {
+				strcpy(csCurrentCode, PD_ADJ_TYPE_DEF_CODE);
+			} else {
+				iTmp = atoi(csCurrentCode);
+				iTmp++;
+
+				sprintf(csCurrentCode, "%0*d", PD_ADJ_TYPE_CODE_LEN, iTmp);
+			}
+DEBUGLOG(("Authorize::CurrentCode Assigned [%s]\n", csCurrentCode));
+			PutField_CString(hTxn, "code", csCurrentCode);
+			
+		}
+		else {
+DEBUGLOG(("Authorize::GetMaxCode not found\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::GetMaxCode not found!!\n");
+			iRet=INT_ERR;
+		}
+	} else {
+
+		if(GetField_CString(hRequest,"code",&csTmp)){
+DEBUGLOG(("Authorize::code = [%s]\n",csTmp));
+			PutField_CString(hTxn, "code", csTmp);
+			strcpy(csCurrentCode, csTmp);
+		}
+		else {
+DEBUGLOG(("Authorize::code not found!!\n"));
+ERRLOG("TxnMgtByUsATD::Authorize::code not found!!\n");
+		iRet=INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		memset(csTmpRtnTxnCode, 0, sizeof(csTmpRtnTxnCode)); 
+		memset(csRtnTxnCode, 0, sizeof(csRtnTxnCode)); 
+
+		sprintf(csTmpRtnTxnCode, "%c%s", cPartyType, csCurrentCode);
+		U2L(csTmpRtnTxnCode, strlen(csTmpRtnTxnCode), csRtnTxnCode);
+DEBUGLOG(("Authorize::Full Txn code = [%s]\n",csRtnTxnCode));
+
+		PutField_CString(hTxn, "full_code", csRtnTxnCode);
+	}
+
+
+/* Validate to process while update or delete */
+
+	if (cAction == PD_ADJ_TYPE_ACTION_UPDATE || cAction == PD_ADJ_TYPE_ACTION_DELETE) {
+		iRet = VerifyProcess(hTxn);
+	}
+
+/* call Add or Update or Delete*/
+	if (iRet == PD_OK) {
+		memset(csTagAction, 0, sizeof(csTagAction));
+		switch (cAction) {
+			case PD_ADJ_TYPE_ACTION_ADD:
+				sprintf(csTagAction, "%s", "Add");
+				break;
+			case PD_ADJ_TYPE_ACTION_UPDATE:
+				sprintf(csTagAction, "%s", "Update");
+				break;
+			case PD_ADJ_TYPE_ACTION_DELETE:
+				sprintf(csTagAction, "%s", "Delete");
+				break;
+			default:
+				iRet = INT_ERR;
+				break;
+		}
+
+DEBUGLOG(("Authorize::TagAction = [%s]\n", csTagAction));
+                DBObjPtr = CreateObj(DBPtr,"DBAdjustmentType", csTagAction);
+                if((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK) {
+DEBUGLOG(("Authorize:: FAIL to [%s]\n", csTagAction));
+			iRet = INT_ERR;
+                } else {
+DEBUGLOG(("Authorize:: SUCC to [%s]\n", csTagAction));
+		}
+	}
+	
+
+/* reply code */
+	if (iRet == PD_OK) {
+/*
+		memset(csTmpRtnTxnCode, 0, sizeof(csTmpRtnTxnCode)); 
+		memset(csRtnTxnCode, 0, sizeof(csRtnTxnCode)); 
+
+		sprintf(csTmpRtnTxnCode, "%c%s", cPartyType, csCurrentCode);
+		U2L(csTmpRtnTxnCode, strlen(csTmpRtnTxnCode), csRtnTxnCode);
+*/
+
+DEBUGLOG(("Authorize::Rtn Txn code = [%s] [%s]\n",csRtnTxnCode, csCurrentCode));
+		/*PutField_CString(hResponse, "rtn_code", csRtnTxnCode);*/
+		PutField_CString(hResponse, "rtn_code", csCurrentCode);
+	}
+
+
+
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+DEBUGLOG(("TxnMgtByUsATD Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int	VerifyProcess(const hash_t* hInRec)
+{
+	int 	iRet = PD_OK;
+
+	char	cAction;
+	char	cPartyType;	
+	char	*csCode = NULL;
+	char	*csFullCode = NULL;
+
+	char	cNewDCInd;
+	char	cCurrentDCInd;
+
+	hash_t 		*hRec;
+	recordset_t 	*rRecordSet;
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));	
+	
+	recordset_init(rRecordSet, 0);
+	
+	if (!(GetField_Char(hInRec, "action", &cAction) && 
+		GetField_Char(hInRec, "party_type", &cPartyType) &&
+		GetField_CString(hInRec, "code", &csCode) &&
+		GetField_CString(hInRec, "full_code", &csFullCode) &&
+		GetField_Char(hInRec, "dc_ind", &cNewDCInd))) {
+
+DEBUGLOG(("VerifyProcess:: Not Complete Information cAction [%c] cPartyType [%c] csCode [%s] csFullCode [%s] cNewDCInd [%c]\n", cAction, cPartyType, csCode, csFullCode, cNewDCInd));
+		iRet = PD_ERR;
+
+	}
+	else {
+DEBUGLOG(("VerifyProcess:: cAction [%c] cPartyType [%c] csCode [%s] csFullCode [%s] cNewDCInd [%c]\n",cAction, cPartyType, csCode, csFullCode, cNewDCInd));
+	}
+
+
+	/* if record exists and action is delete, not allow */
+	/* if record exists and action is update, only allow update desc */
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("VerifyProcess::Call Transaction: ChkTxnCodeExist\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","ChkTxnCodeExist");
+		if((unsigned long)((*DBObjPtr)(csFullCode)) == PD_FOUND) {
+DEBUGLOG(("VerifyProcess::Call Transaction: ChkTxnCodeExist: FOUND\n"));
+	
+			if (cAction == PD_ADJ_TYPE_ACTION_DELETE) {	
+DEBUGLOG(("VerifyProcess::Not Allow Delete\n"));
+				iRet = PD_ERR;
+			}
+			else if (cAction == PD_ADJ_TYPE_ACTION_UPDATE) {
+
+				DBObjPtr = CreateObj(DBPtr,"DBAdjustmentType","GetAdjustmentTypeRec");
+				if ((*DBObjPtr)(cPartyType, csCode, rRecordSet) == PD_OK) {
+
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while (hRec) {
+						if (GetField_Char(hRec,"dc_ind",&cCurrentDCInd)) {
+DEBUGLOG(("VerifyProcess::GetAdjustmentTypeRec::dc_ind = [%c]\n",cCurrentDCInd));
+						}
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+
+					if (cNewDCInd != cCurrentDCInd) {
+						iRet = PD_ERR;
+					} 
+				} else {
+					iRet = PD_ERR;
+				}
+			}
+		}
+		else {		
+DEBUGLOG(("VerifyProcess::Call Transaction: ChkTxnCodeExist: NOT FOUND\n"));
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	return iRet;
+}

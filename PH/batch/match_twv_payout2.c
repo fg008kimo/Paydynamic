@@ -1,0 +1,238 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/10/21              Cody Chan
+*/
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "batchcommon.h"
+#include "internal.h"
+#include "match_twv_payout2.h"
+
+
+/*******************************************
+        usage: -h host file -p psp host
+******************************************/
+
+#define  MAX_FIELD_LEN		20 
+#define  MAX_FIELD_NO          	6
+
+char    cs_ph_file[PD_MAX_FILE_LEN + 1];
+char    cs_psp_file[PD_MAX_FILE_LEN + 1];
+
+char   	csPhList[MAX_FIELD_NO][MAX_FIELD_LEN+1];
+char    csPspList[MAX_FIELD_NO][MAX_FIELD_LEN+1];
+
+static int parse_arg(int argc,char **argv);
+void extract(char* log, char data[][MAX_FIELD_LEN+1]);
+void output(char csPhList[][MAX_FIELD_LEN + 1], char csPspList[][MAX_FIELD_LEN + 1],char* remark);
+void match(char* cs_ph_buf, char* cs_psp_buf);
+
+int main(int argc, char* argv[])
+{
+	FILE	*fp_ph,*fp_psp;
+	int     i_read_next = PD_TRUE;
+	char    cs_h_key[256], cs_p_key[256];
+	char    cs_ph_buf[PD_MAX_BUFFER + 1];
+        char    cs_psp_buf[PD_MAX_BUFFER + 1];
+        int 	i_ret;
+	int	iRet;
+	
+	iRet = parse_arg(argc,argv);
+        if (iRet != SUCCESS) {
+                printf("usage: -h host file -p psp file\n");
+                return (iRet);
+        }
+	fp_ph = fopen(cs_ph_file, "r");
+    	if (fp_ph == NULL){
+		printf("unable to open lms file %s\n",cs_ph_file);
+		return FAILURE;
+    	}
+
+    	fp_psp = fopen(cs_psp_file, "r");
+    	if (fp_psp == NULL){
+		printf("unable to open cul file %s\n",cs_psp_file);
+		return FAILURE;
+    	}
+
+	while (fgets(cs_psp_buf, PD_MAX_BUF, fp_psp) != NULL) {
+		if (cs_psp_buf[strlen(cs_psp_buf) - 1] == 0x0A)
+                	cs_psp_buf[strlen(cs_psp_buf) - 1] = '\0';
+        	if (i_read_next == PD_FALSE || fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) != NULL) {
+			if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+                		cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+			
+                	while (PD_TRUE) {
+                     		extract(cs_ph_buf,csPhList); 
+                        	extract(cs_psp_buf, csPspList);
+
+				memcpy(cs_h_key, csPhList[IDX_TID],TID_LEN);
+				memcpy(cs_p_key, csPspList[IDX_TID],TID_LEN);
+				//memcpy(&cs_h_key[PD_TXN_SEQ_LEN], csPhList[IDX_TXN_DATE],TXN_DATE_LEN);
+				//memcpy(&cs_p_key[PD_TXN_SEQ_LEN], csPspList[IDX_TXN_DATE],TXN_DATE_LEN);
+				
+				i_ret = memcmp(cs_h_key, cs_p_key, TID_LEN);
+                       		if (i_ret == 0) {
+          				match(cs_ph_buf, cs_psp_buf); 
+                      			i_read_next = PD_TRUE;
+                                	break;
+               			}
+                        	else if (i_ret < 0) {
+                       			extract(cs_ph_buf,csPhList); 
+              				output(csPhList,NULL,(char*)"No Psp Tx"); 
+                    			if (fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) == NULL) {
+						if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+                					cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+                              			extract(cs_psp_buf, csPspList);
+                           			output(NULL, csPspList,(char*)"No Ph Tx");
+					
+                                        	break;
+                                	}
+					if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A)
+                                		cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+                                	i_read_next = PD_TRUE;
+                   		}
+                        	else if (i_ret > 0) {
+                   			extract(cs_psp_buf, csPspList);
+                    			output(NULL,csPspList,(char*)"No Ph Tx"); 
+                                	i_read_next = PD_FALSE;
+                                	break;
+                      		}
+			}
+    		}
+		else if(i_read_next == PD_TRUE && fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) == NULL){
+                        extract(cs_psp_buf, csPspList); 
+                        output(NULL,csPspList,(char*)"No Ph Tx");
+                        i_read_next = PD_TRUE;
+                }
+	}
+
+	while(fgets(cs_ph_buf, PD_MAX_BUF, fp_ph) != NULL){
+                if (cs_ph_buf[strlen(cs_ph_buf) - 1] == 0x0A) 
+                        cs_ph_buf[strlen(cs_ph_buf) - 1] = '\0';
+                                
+                extract(cs_ph_buf,csPhList);
+                output(csPhList,NULL,(char*)"No Psp Tx");
+                                
+        }
+
+    	fclose(fp_psp);
+    	fclose(fp_ph);
+	return SUCCESS;
+}
+
+
+
+static int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_ph_file,"");
+        strcpy(cs_psp_file,"");
+
+        //while ((c = getopt(argc,argv,"h:p:")) != EOF && c != 0xff) {
+        while ((c = getopt(argc,argv,"h:p:")) != EOF) {
+                switch (c) {
+                        case 'h':
+                                strcpy(cs_ph_file, optarg);
+                                break;
+                        case 'p':
+                                strcpy(cs_psp_file, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_ph_file,"") || !strcmp(cs_psp_file,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+void extract(char* log, char data[][MAX_FIELD_LEN+1])
+{       
+        char    *p; 
+	char*	csTmp;
+        int 	i = 0;
+
+	csTmp = (char*) malloc (strlen(log) + 1);
+	strcpy(csTmp,log);
+	for (i = 0; i < MAX_FIELD_NO; i++) {
+                if (i == 0)
+                        p = mystrtok(csTmp, (char*)PD_MATCH_TOKEN);
+                else
+                        p = mystrtok(NULL, (char*)PD_MATCH_TOKEN);
+                strcpy(data[i], p);
+        }
+	free(csTmp);
+}     
+
+void output(char csPhList[][MAX_FIELD_LEN + 1], char csPspList[][MAX_FIELD_LEN + 1],char* remark)
+{
+	int	i;
+
+	if (csPspList == NULL ) {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+			if (i == 0 ) 
+				printf("%s",csPhList[i]);
+			else
+				printf("%c%s",PD_RPT_DELIMITOR,csPhList[i]);
+		}
+		printf("%c%s\n",PD_RPT_DELIMITOR,remark);
+	}
+	else if (csPhList == NULL ) {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+			if (i == 0 ) 
+				printf("%s",csPspList[i]);
+			else
+				printf("%c%s",PD_RPT_DELIMITOR,csPspList[i]);
+		}
+		printf("%c%s\n",PD_RPT_DELIMITOR,remark);
+	}
+	else {
+		for (i = 0 ; i < MAX_FIELD_NO; i++) {
+                        if (i == 0 ) {
+				if (strcmp(csPspList[i],csPhList[i]))
+                                	printf("*%s",csPhList[i]);
+				else
+                                	printf("%s",csPhList[i]);
+	
+			}
+                        else {
+				if (strcmp(csPspList[i],csPhList[i])) {
+                                		printf("%c*%s",PD_RPT_DELIMITOR,csPhList[i]);
+				}
+				else {
+                               			printf("%c%s",PD_RPT_DELIMITOR,csPhList[i]);
+				}
+			}
+                }
+                printf("%c%s\n",PD_RPT_DELIMITOR,remark);
+	}
+}
+void match(char* cs_ph_buf, char* cs_psp_buf)
+{
+        int i, i_match = PD_TRUE;
+
+        extract(cs_ph_buf, csPhList);
+        extract(cs_psp_buf, csPspList);
+
+        for (i = 0; i < MAX_FIELD_NO; i++) {
+        	if (strcmp(csPhList[i], csPspList[i]) != 0) {
+			i_match = PD_FALSE;
+		}
+        }
+        if (i_match == PD_FALSE) {
+                output(csPhList, csPspList, (char*)"Tx Mismatched");
+        }
+}

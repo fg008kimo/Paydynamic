@@ -1,0 +1,350 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/02/08              [WWK] 
+Update						   2018/07/04		   [WMC]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "dbutility.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_PROCESS_ALL_BANK	"ALL"
+
+char cs_server_id[PD_TMP_BUF_LEN+1];
+char cs_nature[PD_TMP_BUF_LEN+1];
+
+char csTmp[PD_TMP_BUF_LEN+1];
+char csKey[PD_TMP_BUF_LEN+1];
+char csBank[PD_TMP_BUF_LEN+1];
+char* csBankList;
+int iProcessCnt=0;
+
+static char    cDebug='Y';
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int GetNextJobSeq();
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = SUCCESS;
+	int	iTmpRet = PD_FOUND;
+
+	int 	iSeq = 0;
+	int	iCnt = 0;
+
+	hash_t 	*hProcessBank;
+	hProcessBank = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hProcessBank,0);
+
+	hash_t  *hProvider;
+	recordset_t *rProvider;
+        rProvider = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rProvider, 0);
+
+DEBUGLOG(("Start!!\n"));
+
+	iRet = parse_arg(argc,argv);
+
+	if (iRet != SUCCESS) {
+DEBUGLOG(("Failure!!\n"));
+                return FAILURE;
+        }
+
+DEBUGLOG(("Server Id[%s]\n",cs_server_id));
+DEBUGLOG(("Nature[%s]\n",cs_nature));
+
+	// Get Job Seq
+	if (iRet == SUCCESS) {
+//DEBUGLOG(("Call DBOLAutoUploadJobStatus: GetNextJobSeq\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLAutoUploadJobStatus","GetNextJobSeq");
+		if ((unsigned long) (*DBObjPtr)(&iSeq) != PD_OK){  
+DEBUGLOG(("Call DBOLAutoUploadJobStatus: GetNextJobSeq Failure!!\n"));
+ERRLOG("check_auto_upload_error: Call DBOLAutoUploadJobStatus: GetNextJobSeqFailed!!\n");
+			return FAILURE;
+		} else {	
+DEBUGLOG(("Job Seq[%d]\n",iSeq));
+
+/*
+			// Insert Job Tmp Status
+DEBUGLOG(("Call DBOLAutoUploadJobTmp: Add\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobTmp", "Add");
+        	        if ((unsigned long)(*DBObjPtr)(iSeq) != PD_OK) {
+DEBUGLOG(("Call DBOLAutoUploadJobTmp: Add Failed!!\n"));
+ERRLOG("check_auto_upload_error: Call DBOLAutoUploadJobTmp: Add Failed!!\n");
+        	        	return FAILURE;
+			}
+*/
+		}
+	}
+
+	// Get Provider Job
+	if (iRet == SUCCESS) {
+//DEBUGLOG(("Call DBOLAutoUploadStmtSetting: GetProviderJob\n"));
+
+              	DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting", "GetProviderJob");
+            	iTmpRet = (unsigned long)(*DBObjPtr)(cs_server_id, cs_nature, rProvider);
+		if (iTmpRet == PD_FOUND) {
+
+			hProvider = RecordSet_GetFirst(rProvider);
+               	 	while ((iRet == SUCCESS) && (hProvider)) {
+	
+				int iExecuteJob = PD_FALSE;		
+				int iExcludeMode = 0;
+
+				char cStatus;	
+		
+				char *csNaturePath = NULL;		
+				char *csProviderPath = NULL;
+				char *csProcessBank = NULL;
+
+				char *csCmd = (char*) malloc (PD_MAX_FILE_LEN+1);
+
+				hash_t  *hJobStatus;
+        			hJobStatus = (hash_t*) malloc (sizeof(hash_t));
+        			hash_init(hJobStatus,0);
+			
+/* nature_path */
+                                if (GetField_CString(hProvider,"nature_path",&csNaturePath)) {
+DEBUGLOG(("[%d]Nature Path[%s]\n",iCnt,csNaturePath));
+                                        PutField_CString(hJobStatus,"nature_path",csNaturePath);
+                                } else {
+DEBUGLOG(("[%d]Nature Path not found!!\n",iCnt));
+                                        iRet = FAILURE;
+                                }
+	
+/* provider_path */
+				if (GetField_CString(hProvider,"provider_path",&csProviderPath)) {
+DEBUGLOG(("[%d]Provider Path Name[%s]\n",iCnt,csProviderPath));  
+					PutField_CString(hJobStatus,"provider_path",csProviderPath);
+				} else {
+DEBUGLOG(("[%d]Provider Path Name not found!!\n",iCnt));
+					iRet = FAILURE;
+				}
+
+/* process_bank */
+                                if (GetField_CString(hProvider,"process_bank",&csProcessBank)) {
+DEBUGLOG(("[%d]Process Bank[%s]\n",iCnt,csProcessBank));
+                                } else {
+DEBUGLOG(("[%d]Process Bank not found!!\n",iCnt));
+					iRet = FAILURE;
+                                }
+	
+				// Call Auto Upload Stmt Process
+				if (iRet == SUCCESS) {
+
+					// key
+					sprintf(csKey,"%s_%s",csNaturePath,csProviderPath);
+DEBUGLOG(("[%d]Key[%s]\n",iCnt,csKey));	
+				
+					// bank
+					sprintf(csBank,"%s", csProcessBank);
+//DEBUGLOG(("[%d]Bank[%s]\n",iCnt,csBank));	
+
+                			// Process ALL Bank Checking
+			        	if (strcmp(csBank,PD_PROCESS_ALL_BANK) == 0) {
+                                
+						if (GetField_CString(hProcessBank,csKey,&csBankList)) {
+DEBUGLOG(("[%d]Bank List[%s]\n",iCnt,csBankList));
+                                        
+							iExcludeMode = 1;
+                                        		PutField_Int(hJobStatus,"exclude_mode",iExcludeMode);
+							PutField_CString(hJobStatus,"process_bank",csBankList);
+                                        		sprintf(csCmd, "auto_upload_stmt_process.sh %d %s %s %s %d >/dev/null 2>&1 &",iSeq,csNaturePath,csProviderPath,csBankList,iExcludeMode);
+                                		} else {
+
+							iExcludeMode = 0;
+                                        		PutField_Int(hJobStatus,"exclude_mode",iExcludeMode);
+                                        		PutField_CString(hJobStatus,"process_bank",csBank);
+                                        		sprintf(csCmd, "auto_upload_stmt_process.sh %d %s %s %s %d >/dev/null 2>&1 &",iSeq,csNaturePath,csProviderPath,csBank,iExcludeMode);
+                                		}
+					} 
+					// Process Bank Checking
+					else {
+
+						if (GetField_CString(hProcessBank,csKey,&csBankList)) {
+DEBUGLOG(("[%d]Bank List[%s]\n",iCnt,csBankList));
+
+                                        	        sprintf(csTmp,"%s_%s",csBankList,csBank);
+                                        	        PutField_CString(hProcessBank,csKey,csTmp);
+                                        	} else {
+DEBUGLOG(("[%d]No Bank List, Insert [%s] into New Bank List [%s]\n", iCnt, csBank, csKey));
+
+                                                	PutField_CString(hProcessBank,csKey,csBank);
+                                        	}
+
+                                        	iExcludeMode = 0;
+                                        	PutField_Int(hJobStatus,"exclude_mode",iExcludeMode);
+                                        	PutField_CString(hJobStatus,"process_bank",csBank);
+                                        	sprintf(csCmd, "auto_upload_stmt_process.sh %d %s %s %s %d >/dev/null 2>&1 &",iSeq,csNaturePath,csProviderPath,csBank,iExcludeMode);
+					}	
+			
+					// Get Auto Upload Job Status
+					DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobStatus", "GetStatus");
+                                	if ((unsigned long)(*DBObjPtr)(hJobStatus) == PD_FOUND) {
+//DEBUGLOG(("[%d]Call DBOLAutoUploadJobStatus:: GetStatus Found!!\n", iCnt));
+
+/* status */
+                                	        if (GetField_Char(hJobStatus,"status",&cStatus)) {
+DEBUGLOG(("[%d]Call DBOLAutoUploadJobStatus:: GetStatus, status = [%c]\n", iCnt, cStatus));
+
+							// Check Auto Upload Job Status NOT equal to [P]
+							if (cStatus != PD_AUTO_UPL_JOB_STATUS_PENDING) {
+                                	        	      	iExecuteJob = PD_TRUE;
+                                	      		} else {
+                                	        	     	iExecuteJob = PD_FALSE;
+                                	       		}
+                                	       	}
+                               		} else {
+//DEBUGLOG(("[%d]Call DBOLAutoUploadJobStatus:: GetStatus Not Found!!\n", iCnt));
+
+                                	      	iExecuteJob = PD_TRUE;
+                              		}
+
+					PutField_Int(hJobStatus,"job_seq",iSeq);
+                        		PutField_Char(hJobStatus,"status",PD_AUTO_UPL_JOB_STATUS_INITIAL);
+                        		PutField_CString(hJobStatus,"create_user",PD_UPDATE_USER);
+                        		PutField_CString(hJobStatus,"update_user",PD_UPDATE_USER);
+
+					// Execute Auto Upload Job
+                        		if (iExecuteJob) {
+
+						// Add Auto Upload Job Status to [I]
+                                		DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobStatus", "Add");
+                                		if ((unsigned long)(*DBObjPtr)(hJobStatus) == PD_OK) {
+DEBUGLOG(("[%d]Call DBOLAutoUploadJobStatus:: Add, status = [%c]\n", iCnt, PD_AUTO_UPL_JOB_STATUS_INITIAL));
+							TxnCommit();
+DEBUGLOG(("[%d]Call DBOLAutoUploadJobStatus:: TxnCommit()\n", iCnt));
+                                		} else {
+DEBUGLOG(("[%d]Call DBOLAutoUploadJobStatus:: Add Failure!!\n", iCnt));
+ERRLOG("check_auto_upload_error: Call DBOLAutoUploadJobStatus: Add Failed!!\n");
+							iRet = FAILURE;
+						}
+
+						// System Call (Cmd)
+						if (iRet == SUCCESS) {			
+                                                	system(csCmd);
+DEBUGLOG(("[%d]Call SystemCmd(%s);\n",iCnt,csCmd));
+						}
+
+                        	        	iProcessCnt++;
+                        		} else {
+DEBUGLOG(("[%d]Skip!!\n",iCnt));
+                        		}
+				}
+
+				iCnt++;
+
+                        	FREE_ME(csCmd);
+			
+				hash_destroy(hJobStatus);
+        			FREE_ME(hJobStatus);
+
+				hProvider = RecordSet_GetNext(rProvider);
+			}	
+		} else {
+DEBUGLOG(("[%s] Provider Job Not Found!!\n", cs_nature));
+		}
+
+	} 
+
+	// Check Process Count
+/*
+	if (iRet == SUCCESS) {	
+
+		// If No Process, Delete Job Tmp	
+		if (iProcessCnt == 0) {
+
+			// Lock Job Tmp Status
+DEBUGLOG(("Call DBOLAutoUploadJobTmp: LockJobTmpStatus\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobTmp", "LockJobTmpStatus");
+                	if ((unsigned long)(*DBObjPtr)(iSeq) == PD_OK) {
+
+          			// Delete Job Tmp Status
+DEBUGLOG(("Call DBOLAutoUploadJobTmp: Delete\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobTmp", "Delete");
+                		if ((unsigned long)(*DBObjPtr)(iSeq) != PD_OK) {
+DEBUGLOG(("Call DBOLAutoUploadJobTmp:: Delete Failure!!\n"));
+ERRLOG("check_auto_upload_error: Call DBOLAutoUploadJobTmp: Delete Failed!!\n");
+                		        iRet = FAILURE;
+                		}
+			} else {
+DEBUGLOG(("Call DBOLAutoUploadJobTmp: LockJobTmpStatus: Email alert sent already, quit program!!\n"));
+			}
+		}
+       	}
+*/
+
+	hash_destroy(hProcessBank);
+	FREE_ME(hProcessBank);
+
+	RecordSet_Destroy(rProvider);
+        FREE_ME(rProvider);
+
+DEBUGLOG(("Normal Exit!!\n"));
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_server_id,"");
+	strcpy(cs_nature,"");
+
+	if (argc < 4) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"s:n:")) != EOF) {
+		switch (c) {
+			case 's':
+				strcpy(cs_server_id,optarg);
+				break;
+			case 'n':
+                                strcpy(cs_nature,optarg);
+                                break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if ((!strcmp(cs_server_id,"")) || (!strcmp(cs_nature,"")))
+		return FAILURE;
+
+
+        return SUCCESS;
+}

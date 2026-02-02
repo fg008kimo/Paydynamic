@@ -1,0 +1,932 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       	2011/06/23              Cody Chan
+Updated the Jnl Seq									2011/06/28              Samson Fung
+Add Entry Type										2012/05/15				Samson Fung
+Increase MAX_ARRAY to 300							2012/05/15				Samson Fung
+Add Change Log										2012/05/16				Samson Fung
+Change to use GetExternalExchangeRateByDate			2012/05/17				Samson Fung
+Approve the journal if appropriate					2012/06/11				Samson Fung
+Add Txn count to journal detail						2012/08/06				Samson Fung
+Change to use GetNextMgtTxnSeq						2012/08/28				Samson Fung
+Change to use BOCrrJnl Approve						2012/08/30				Samson Fung
+
+Amend PostOffSysTxn					2013/12/06		Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOCrrPost.h"
+
+#define	MAX_CNT	12
+#define	MAX_ARRAY 300
+char    cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+int doPost(recordset_t* rCcy,hash_t* hRec, const hash_t* hRule,hash_t* hJnl) ;
+int doPostHD(recordset_t* rCcy,hash_t* hReq,hash_t* hRule,hash_t* hJnl);
+int doPostDetail(recordset_t* rCcy,hash_t* hReq);
+int AddCrrExtJnlLog(hash_t* hRule,hash_t *hJnl);
+
+void BOCrrPost(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int  PostPHTxn(recordset_t* myRec)
+{
+	hash_t	*hRec, *hReq;
+	int	iRet = PD_OK;
+	double	dAmt;
+	char	*csPtr;
+	char	cPtr;
+
+	hash_t	*hJnl;
+	hJnl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnl,0);
+
+	char    *ARProduct[MAX_ARRAY];
+        char    *ARCountry[MAX_ARRAY];
+        int     iProduct = 0,iP=0;
+        int     iCountry = 0,iC=0;
+
+
+	char*	strs[MAX_CNT];
+
+	strs[0]  = strdup(PD_TYPE_PSP_FEE);
+	strs[1]  = strdup(PD_TYPE_TXN_AMT);
+	strs[2]  = strdup(PD_TYPE_NET_AMT);
+	strs[3]  = strdup(PD_TYPE_RES_AMT);
+	strs[4]  = strdup(PD_TYPE_M_MARKUP);
+	strs[5]  = strdup(PD_TYPE_C_MARKUP);
+	strs[6]  = strdup(PD_TYPE_M_FEE);
+	strs[7]  = strdup(PD_TYPE_C_FEE);
+	strs[8]  = strdup(PD_TYPE_M_XU);
+	strs[9]  = strdup(PD_TYPE_C_XU);
+	strs[10]  = strdup(PD_TYPE_PSP_AMT);
+	strs[11]  = strdup(PD_TYPE_DELI_AMT);
+	
+	int i = 0;
+
+	recordset_t  *rCcy,*rRec;
+        rCcy = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rCcy,0);
+DEBUGLOG(("BOCrrPosting:PostPHTxn()\n"));
+
+	DBObjPtr = CreateObj(DBPtr,"DBCrrBaseCurrency","GetAllCcy");
+	iRet = (unsigned long)((*DBObjPtr)(rCcy));
+
+
+/* Get All Product */
+        rRec = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRec,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBDefProduct","GetAllProduct");
+        if ((unsigned long)((*DBObjPtr)(rRec)) == PD_OK) {
+                hRec = RecordSet_GetFirst(rRec);
+                while (hRec) {
+                        if (GetField_CString(hRec,"product",&csPtr)) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() product = [%s]\n",csPtr));
+                                ARProduct[iProduct] = (char*) malloc (PD_PRODUCT_CODE_LEN +1);
+                                strcpy(ARProduct[iProduct],csPtr);
+                                iProduct++;
+                        }
+                        
+                        hRec = RecordSet_GetNext(rRec);
+                }
+        }
+        RecordSet_Destroy(rRec);
+        
+/* Get All Country */
+        rRec = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRec,0);
+        DBObjPtr = CreateObj(DBPtr,"DBCountry","GetAllCountry");
+        if ((unsigned long)((*DBObjPtr)(rRec)) == PD_OK) {
+                hRec = RecordSet_GetFirst(rRec);
+                while (hRec) {
+                        if (GetField_CString(hRec,"country_code",&csPtr)) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() country_code = [%s]\n",csPtr));
+                                ARCountry[iCountry] = (char*) malloc (PD_COUNTRY_CODE_LEN +1);
+                                strcpy(ARCountry[iCountry],csPtr);
+                                iCountry++;
+                        }
+                        
+                        hRec = RecordSet_GetNext(rRec);
+                }
+        }
+        RecordSet_Destroy(rRec);
+
+
+	for (i = 0; i < MAX_CNT; i++) {
+		int j=0;
+		hRec = RecordSet_GetFirst(myRec);
+		while (hRec && iRet == PD_OK) {
+			hReq = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hReq,0);
+/* txn_type */
+			if (GetField_CString(hRec,"txn_type",&csPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_type = [%s]\n",csPtr));
+				PutField_CString(hReq,"txn_type",csPtr);
+			}
+			else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_type is missing!!!\n"));
+				iRet = PD_ERR;
+			}
+			if (!strcmp(csPtr,strs[i])) {
+DEBUGLOG(("<<<%d>>>BOCrrPosting:PostPHTxn() [%s][%s]\n",i,csPtr,strs[i]));
+/* txn code */
+				if (GetField_CString(hRec,"txn_code",&csPtr)) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_code = [%s]\n",csPtr));
+					PutField_CString(hReq,"txn_code",csPtr);
+				}
+				else {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_code is missing!!!\n"));
+					iRet = PD_ERR;
+				}
+				
+				for (iC = 0; iC < iCountry;iC++) {
+/* txn country */
+					if (GetField_CString(hRec,"txn_country",&csPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_country = [%s]\n",csPtr));
+						PutField_CString(hReq,"txn_country",csPtr);
+					}
+					else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_country is missing!!!\n"));
+						iRet = PD_ERR;
+					}
+
+					if (!strcmp(csPtr,ARCountry[iC])) {
+						for (iP = 0; iP < iProduct;iP++) {
+							if (iP == 0)
+								j=0;
+/* product */
+							if (GetField_CString(hRec,"product",&csPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() product = [%s]\n",csPtr));
+								PutField_CString(hReq,"product",csPtr);
+							}
+							else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() product is missing!!!\n"));
+								iRet = PD_ERR;
+							}
+
+/* ccy */
+							if (!strcmp(csPtr,ARProduct[iP])) {
+								if (GetField_CString(hRec,"ccy",&csPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() ccy = [%s]\n",csPtr));
+									PutField_CString(hReq,"ccy",csPtr);
+								}
+								else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() ccy is missing!!!\n"));
+									iRet = PD_ERR;
+								}
+
+
+/* party_id */
+								if (GetField_CString(hRec,"id",&csPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() party_id = [%s]\n",csPtr));
+									PutField_CString(hReq,"id",csPtr);
+								}
+								else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() party_id is missing!!!\n"));
+									iRet = PD_ERR;
+								}
+
+/* type */
+								if (GetField_Char(hRec,"type",&cPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() type = [%c]\n",cPtr));
+									PutField_Char(hReq,"type",cPtr);
+								}
+								else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() type is missing!!!\n"));
+									iRet = PD_ERR;
+								}
+
+/* amount */
+								if (GetField_Double(hRec,"amount",&dAmt)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() amount = [%lf]\n",dAmt));
+									PutField_Double(hReq,"amount",dAmt);
+								}
+								else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() type is missing!!!\n"));
+									iRet = PD_ERR;
+								}
+
+/* host_posting_date */
+								if (GetField_CString(hRec,"host_posting_date",&csPtr)) {
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() host_posting_date = [%s]\n",csPtr));
+									PutField_CString(hReq,"host_posting_date",csPtr);
+								}
+								else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() host_posting_date  is missing!!!\n"));
+								}
+
+
+								if (iRet == PD_OK) {
+	
+									hash_t	*hRule;
+									hRule = (hash_t*) malloc (sizeof(hash_t));
+									hash_init(hRule,0);
+									DBObjPtr = CreateObj(DBPtr,"DBCrrRulePosting","GetRule");
+									iRet = (unsigned long)((*DBObjPtr)(hReq,hRule));
+									if (iRet == PD_NOT_FOUND) {	
+										iRet = PD_OK;
+//DEBUGLOG(("BOCrrPosting:PostPHTxn() Rule Not found SKIP!!!!!!!!!!!!!!!!!!!\n"));
+									}
+									else {	
+										iRet = PD_OK;
+										j++;
+										if (j == 1) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() Rule  do post HEAD*************************\n"));
+											iRet = doPostHD(rCcy,hReq,hRule,hJnl);
+										}
+										if (iRet == PD_OK) 
+											iRet = (doPost(rCcy,hReq,hRule,hJnl));
+									}
+
+									hash_destroy(hRule);
+       									FREE_ME(hRule);
+								}
+							} /* same product */
+						} /* for product */
+					} /* if same country */
+				} /* for country */
+			} /* if same type */
+			hash_destroy(hReq);
+			FREE_ME(hReq);
+
+			hRec = RecordSet_GetNext(myRec);
+		}
+	} /* for type */
+
+	
+	RecordSet_Destroy(rCcy);
+
+	hash_destroy(hJnl);
+       	FREE_ME(hJnl);
+DEBUGLOG(("BOCrrPosting:PostPHTxn() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int  PostOffSysTxn(recordset_t* myRec)
+{
+	hash_t	*hRec, *hReq;
+	int	iRet = PD_OK;
+	double	dAmt;
+	char	*csPtr;
+	char	*csCountry;
+	char	*csProduct;
+	char	cPtr;
+	int	iCnt;
+
+	hash_t	*hJnl;
+	hJnl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hJnl,0);
+
+	char    *ARProduct[MAX_ARRAY];
+	char    *ARCountry[MAX_ARRAY];
+	int     iProduct = 0,iP=0;
+	int     iCountry = 0,iC=0;
+
+	char*	strs[MAX_CNT];
+	/*
+	strs[0]  = strdup(PD_TYPE_PSP_FEE);
+	strs[1]  = strdup(PD_TYPE_TXN_AMT);
+	strs[2]  = strdup(PD_TYPE_NET_AMT);
+	strs[3]  = strdup(PD_TYPE_RES_AMT);
+	strs[4]  = strdup(PD_TYPE_M_MARKUP);
+	strs[5]  = strdup(PD_TYPE_C_MARKUP);
+	strs[6]  = strdup(PD_TYPE_M_FEE);
+	strs[7]  = strdup(PD_TYPE_C_FEE);
+	strs[8]  = strdup(PD_TYPE_M_XU);
+	strs[9]  = strdup(PD_TYPE_C_XU);
+	*/
+
+DEBUGLOG(("BOCrrPosting:START ()\n"));
+
+	strs[0] = "NET_AMT";
+	strs[1] = "M_FEE";
+	strs[2] = "TXN_AMT";
+	strs[3] = "PSP_TEMP";
+	strs[4] = "D_TXN_AMT";
+
+	
+	//int i = 0;
+
+
+	recordset_t  *rCcy,*rRec;
+	rCcy = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rCcy,0);
+DEBUGLOG(("BOCrrPosting:PostPHTxn()\n"));
+
+	DBObjPtr = CreateObj(DBPtr,"DBCrrBaseCurrency","GetAllCcy");
+	iRet = (unsigned long)((*DBObjPtr)(rCcy));
+
+	/* Get All Product */
+	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRec,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBDefProduct","GetAllProduct");
+	if ((unsigned long)((*DBObjPtr)(rRec)) == PD_OK) {
+		hRec = RecordSet_GetFirst(rRec);
+		while (hRec) {
+			if (GetField_CString(hRec,"product",&csPtr)) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() product = [%s]\n",csPtr));
+				ARProduct[iProduct] = (char*) malloc (PD_PRODUCT_CODE_LEN +1);
+				strcpy(ARProduct[iProduct],csPtr);
+				iProduct++;
+			}
+			hRec = RecordSet_GetNext(rRec);
+		}
+	}
+	RecordSet_Destroy(rRec);
+        
+	/* Get All Country */
+	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRec,0);
+	DBObjPtr = CreateObj(DBPtr,"DBCountry","GetAllCountry");
+
+	if ((unsigned long)((*DBObjPtr)(rRec)) == PD_OK) {
+		hRec = RecordSet_GetFirst(rRec);
+		while (hRec) {
+			if (GetField_CString(hRec,"country_code",&csPtr)) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() country_code = [%s]\n",csPtr));
+				ARCountry[iCountry] = (char*) malloc (PD_COUNTRY_CODE_LEN +1);
+				strcpy(ARCountry[iCountry],csPtr);
+				iCountry++;
+			}   
+			hRec = RecordSet_GetNext(rRec);
+		}
+	}
+	RecordSet_Destroy(rRec);
+
+	for (iC = 0; iC < iCountry;iC++) {
+		for (iP = 0; iP < iProduct;iP++) {
+			//if (iP == 0)
+			// Loop the txn record for same country, product
+			// create a journal for group country/product (for summary)
+			// create a journal for group country/product/txn_id (for detail)
+			int j=0;
+			hRec = RecordSet_GetFirst(myRec);
+			while (hRec && iRet == PD_OK) {
+				hReq = (hash_t*) malloc (sizeof(hash_t));
+				hash_init(hReq,0);
+
+				/* txn country */
+				if (GetField_CString(hRec,"txn_country",&csCountry)) {
+					//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_country = [%s]\n",csPtr));
+					PutField_CString(hReq,"txn_country",csCountry);
+				}
+				else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_country is missing!!!\n"));
+					iRet = PD_ERR;
+				}
+
+				/* product */
+				if (GetField_CString(hRec,"product",&csProduct)) {
+					//DEBUGLOG(("BOCrrPosting:PostPHTxn() product = [%s]\n",csPtr));
+					PutField_CString(hReq,"product",csProduct);
+				}
+				else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() product is missing!!!\n"));
+					iRet = PD_ERR;
+				}
+
+				if (iRet == PD_OK) {
+					// Skip record if country/product missing
+
+					if ((!strcmp(csCountry,ARCountry[iC])) && (!strcmp(csProduct,ARProduct[iP]))) {
+			
+						/* ccy */
+						if (GetField_CString(hRec,"ccy",&csPtr)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() ccy = [%s]\n",csPtr));
+							PutField_CString(hReq,"ccy",csPtr);
+						} else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() ccy is missing!!!\n"));
+							iRet = PD_ERR;
+						}
+
+						/* amt_type */
+						if (GetField_CString(hRec,"txn_type",&csPtr)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_type = [%s]\n",csPtr));
+							PutField_CString(hReq,"txn_type",csPtr);
+						}	else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_type is missing!!!\n"));
+							iRet = PD_ERR;
+						}
+					
+						/* txn code */
+						if (GetField_CString(hRec,"txn_code",&csPtr)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_code = [%s]\n",csPtr));
+							PutField_CString(hReq,"txn_code",csPtr);
+						}	else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_code is missing!!!\n"));
+							iRet = PD_ERR;
+						}
+
+						/* party_id */
+						if (GetField_CString(hRec,"id",&csPtr)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() party_id = [%s]\n",csPtr));
+							PutField_CString(hReq,"id",csPtr);
+						} else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() party_id is missing!!!\n"));
+							iRet = PD_ERR;
+						}
+
+						/* type */
+						if (GetField_Char(hRec,"type",&cPtr)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() type = [%c]\n",cPtr));
+							PutField_Char(hReq,"type",cPtr);
+						} else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() type is missing!!!\n"));
+							iRet = PD_ERR;
+						}
+
+						/* amount */
+						if (GetField_Double(hRec,"amount",&dAmt)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() amount = [%lf]\n",dAmt));
+							PutField_Double(hReq,"amount",dAmt);
+						}	else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() amount is missing!!!\n"));
+							iRet = PD_ERR;
+						}
+
+						/* txn_cnt (optional) */
+						if (GetField_Int(hRec,"txn_cnt",&iCnt)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_cnt = [%lf]\n",iCnt));
+							PutField_Int(hReq,"txn_cnt",iCnt);
+						}	else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() txn_cnt is missing!!!\n"));
+							//iRet = PD_ERR;
+						}
+
+						/* host_posting_date */
+						if (GetField_CString(hRec,"host_posting_date",&csPtr)) {
+							//DEBUGLOG(("BOCrrPosting:PostPHTxn() host_posting_date = [%s]\n",csPtr));
+							PutField_CString(hReq,"host_posting_date",csPtr);
+						}	else {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() host_posting_date  is missing!!!\n"));
+						}
+
+						if (iRet == PD_OK) {
+
+							hash_t	*hRule;
+							hRule = (hash_t*) malloc (sizeof(hash_t));
+							hash_init(hRule,0);
+							DBObjPtr = CreateObj(DBPtr,"DBCrrRulePosting","GetRule");
+							iRet = (unsigned long)((*DBObjPtr)(hReq,hRule));
+							if (iRet == PD_NOT_FOUND) {	
+								iRet = PD_OK;
+								//DEBUGLOG(("BOCrrPosting:PostPHTxn() Rule Not found SKIP!!!!!!!!!!!!!!!!!!!\n"));
+							}	else {	
+								iRet = PD_OK;
+								j++;
+								if (j == 1) {
+DEBUGLOG(("BOCrrPosting:PostPHTxn() Rule  do post HEAD*************************\n"));
+
+									PutField_CString(hReq, "txn_code_ext_offline", PD_BATCH_JL_POST_TXN_CODE);
+									iRet = doPostHD(rCcy,hReq,hRule,hJnl);
+
+									if (iRet == PD_OK) {
+										iRet = AddCrrExtJnlLog(hRule,hJnl);
+									}
+
+								}
+								if (iRet == PD_OK) {
+									iRet = (doPost(rCcy,hReq,hRule,hJnl));
+								}
+							}
+							hash_destroy(hRule);
+   									FREE_ME(hRule);
+						}							
+					} /* if same product & same country */
+				} // if found country & product
+			
+				hash_destroy(hReq);
+				FREE_ME(hReq);					
+				hRec = RecordSet_GetNext(myRec);						
+			} // whlie recordset	
+		} /* for product */
+	} /* for country */
+		
+	// Clean up
+	RecordSet_Destroy(rCcy);
+	hash_destroy(hJnl);
+	FREE_ME(hJnl);
+	FREE_ME(csPtr);
+	FREE_ME(csCountry);
+	FREE_ME(csProduct);
+
+
+DEBUGLOG(("BOCrrPosting:PostPHTxn() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int doPost(recordset_t* rCcy,hash_t* hRec, const hash_t* hRule,hash_t* hJnl)
+{
+	int	iRet = PD_OK;
+//	int	iJnlTypeId;
+	int	iCrGlId;
+	int	iDrGlId;
+	int	iLineNo;
+	char	*csTxnSeq;
+	char	*csCcy;
+	double	dAmt;
+	int		iCnt;
+	
+	hash_t	*hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	char	*csDesc;
+	
+	GetField_CString(hJnl,"jnl_id",&csTxnSeq);
+
+	if (!GetField_Int(hRule,"credit_gl_id",&iCrGlId)) {
+		iCrGlId = 0;
+	}
+DEBUGLOG(("BOCrrPost::doPost credit_gl_id = [%d]\n",iCrGlId));
+
+	if (!GetField_Int(hRule,"debit_gl_id",&iDrGlId)) {
+		iDrGlId = 0;
+	}
+DEBUGLOG(("BOCrrPost::doPost debit_gl_id = [%d]\n",iDrGlId));
+
+
+
+
+/* ccy */
+	if (!GetField_CString(hRec,"ccy",&csCcy)) {
+		csCcy = NULL  ;
+	}
+DEBUGLOG(("BOCrrPost::doPost ccy = [%s]\n",csCcy));
+
+
+
+/* txn amt */
+	if (!GetField_Double(hRec,"amount",&dAmt)) {
+		dAmt = 0.0;
+	}
+DEBUGLOG(("BOCrrPost::doPost amount = [%lf]\n",dAmt));
+	PutField_Double(hJnl,"txn_amt",dAmt);
+
+
+/* txn count */
+	if (GetField_Int(hRec,"txn_cnt",&iCnt)) {
+		PutField_Int(hJnl,"txn_count",iCnt);
+	}
+
+/* currency id */
+	PutField_CString(hJnl,"currency_id",csCcy);
+
+/* remarks */
+	if (!GetField_CString(hRule,"desc",&csDesc)) {
+		csDesc =  NULL;
+	}
+	PutField_CString(hJnl,"jd_remarks",csDesc);
+
+	if (iRet == PD_OK && iCrGlId != 0 ) {
+/*cr ind */
+		PutField_Char(hJnl,"cr_ind",PD_IND_CREDIT);
+/* gl id */
+		PutField_Int(hJnl,"gl_id",iCrGlId);
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","GetNextLineNo");
+        	iLineNo = (unsigned long)(*DBObjPtr)(csTxnSeq);
+
+		PutField_Int(hJnl,"line_no",iLineNo);
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","Add");
+        	iRet = (unsigned long)(*DBObjPtr)(hJnl);
+		if (iRet == PD_OK) {
+			iRet = doPostDetail(rCcy,hJnl);
+		}
+	}
+
+	if (iRet == PD_OK && iDrGlId != 0 ) {
+/*cr ind */
+		PutField_Char(hJnl,"cr_ind",PD_IND_DEBIT);
+/* gl id */
+		PutField_Int(hJnl,"gl_id",iDrGlId);
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","GetNextLineNo");
+        	iLineNo = (unsigned long)(*DBObjPtr)(csTxnSeq);
+		PutField_Int(hJnl,"line_no",iLineNo);
+
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetail","Add");
+        	iRet = (unsigned long)(*DBObjPtr)(hJnl);
+		if (iRet == PD_OK) {
+			iRet = doPostDetail(rCcy,hJnl);
+		}
+	}
+	
+	hash_destroy(hTxn);
+       	FREE_ME(hTxn);
+
+DEBUGLOG(("BOCrrPost::doPost iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int doPostDetail(recordset_t* rCcy,hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	*csTxnCcy;
+	char	*csTxnSeq;
+	char	*csTxnDate;
+	double	dAmt;
+	int		iCnt;
+	double	dExRate;
+	double	dExAmt;
+	int	iLineNo;
+	hash_t	*hRec;
+
+	if (GetField_CString(hReq,"currency_id",&csTxnCcy)) {
+DEBUGLOG(("doPostDetail:currency_id = [%s]\n",csTxnCcy));
+	}
+	if (GetField_Double(hReq,"txn_amt",&dAmt)) {
+DEBUGLOG(("doPostDetail:amount = [%lf]\n",dAmt));
+	}
+	if (GetField_Int(hReq,"txn_cnt",&iCnt)) {
+DEBUGLOG(("doPostDetail:txn_cnt = [%d]\n",iCnt));
+	}	
+	if (GetField_CString(hReq,"jnl_id",&csTxnSeq)) {
+DEBUGLOG(("doPostDetail:txn_seq = [%s]\n",csTxnSeq));
+	}	
+	if (GetField_Int(hReq,"line_no",&iLineNo)) {
+DEBUGLOG(("doPostDetail:line_no = [%d]\n",iLineNo));
+	}	
+	if (GetField_CString(hReq,"txn_date",&csTxnDate)) {
+DEBUGLOG(("doPostDetail:txn_date = [%s]\n",csTxnDate));
+	}	
+	
+	
+	hRec = RecordSet_GetFirst(rCcy);
+
+	while (hRec) {
+		if (GetField_CString(hRec,"ccy",&csPtr)) {
+			if (strcmp(csPtr,csTxnCcy)) {
+				BOObjPtr = CreateObj(DBPtr,"BOExchange","GetExternalExchangeRateByDate");
+				dExRate = 0.0;
+				dExAmt = 0.0;
+                        	if ((*BOObjPtr)(csTxnDate,csTxnCcy,csPtr,dAmt,&dExRate,&dExAmt) == PD_OK) {
+DEBUGLOG(("doPostDetail: ex rate = [%lf] ex amt = [%lf]\n",dExRate,dExAmt));
+					DBObjPtr = CreateObj(DBPtr,"DBCrrJnlDetailAmt","Add");
+        				iRet = (unsigned long)(*DBObjPtr)(csTxnSeq,
+									iLineNo,
+									csPtr,
+									dExRate,
+									dExAmt,
+									PD_FALSE,
+									PD_UPDATE_USER);
+				}
+			}
+		}
+		hRec = RecordSet_GetNext(rCcy);
+	}
+
+	return iRet;
+}
+int doPostHD(recordset_t* rCcy,hash_t* hReq,hash_t* hRule,hash_t* hJnl)
+{
+	int	iRet = PD_OK;
+	char	*csTxnSeq;
+	char	*csPtr;
+	char	*csCcy;
+	char	csDateTime[PD_DATETIME_LEN +1];
+	char	csDate[PD_DATE_LEN +1];
+	char	csTime[PD_TIME_LEN +1];
+	char	csYear[PD_YYYY_LEN +1];
+	char	csMonth[PD_MM_LEN +1];
+	int	iJnlTypeId;
+	int	iManualApproval;
+	//char	*csDesc;
+	// Added by Simon Fung on 2011/06/28
+	//char *csJnlNo;
+	//double	dAmt;
+
+	hash_t	*hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	
+	if (!GetField_Int(hRule,"jnl_type_id",&iJnlTypeId)) {
+		iJnlTypeId = 0;
+	}
+
+	/*
+	if (!GetField_CString(hRule,"desc",&csDesc)) {
+		csDesc =  NULL;
+	}
+	PutField_CString(hJnl,"description",csDesc);
+	*/
+
+	if (!GetField_Int(hRule,"manual_approval",&iManualApproval)) {
+		iManualApproval = 0;
+	}
+
+	//if (!iManualApproval)
+	//	PutField_Char(hJnl,"status",PD_JNL_APPROVED);
+	//else 
+		PutField_Char(hJnl,"status",PD_JNL_PENDING);
+
+/* jnl type id */
+	PutField_Int(hJnl,"jnl_type_id",iJnlTypeId);
+
+/* Txn Header */
+	/*db_commit */
+        PutField_Int(hTxn,"db_commit",PD_FALSE);
+
+/* ar_id */
+        PutField_Char(hTxn,"ar_ind",PD_ACCEPT);
+/* status */
+        PutField_Char(hTxn,"status",PD_COMPLETE);
+
+/* txn code */
+/* if no txn seq */
+	if (GetField_CString(hReq,"txn_code",&csPtr)) {
+        	PutField_CString(hTxn,"txn_code",csPtr);
+	}
+	else {
+        	PutField_CString(hTxn,"txn_code",PD_BATCH_JL_POST_TXN_CODE);
+	}
+
+	if (GetField_CString(hReq, "txn_code_ext_offline", &csPtr)) {
+        	PutField_CString(hTxn,"txn_code",csPtr);
+	}
+
+
+
+/* channel code*/
+        PutField_CString(hTxn,"channel_code",PD_CHANNEL_BATCH);
+
+/* service code */
+        PutField_CString(hTxn,"service_code",PD_DEFAULT_SERVICE);
+
+
+/* approval date */
+/* host posting date */
+	if (GetField_CString(hReq,"host_posting_date",&csPtr)) {
+		PutField_CString(hTxn,"host_posting_date",csPtr);
+		//PutField_CString(hTxn,"approval_date",csPtr);
+		
+		// Added by Simon Fung on 2012/05/16
+		// Use the supplied hosting date as journal date and accounting year/month
+		/* txn date */
+		PutField_CString(hJnl,"txn_date",csPtr);
+		
+		memcpy(csYear,csPtr,PD_YYYY_LEN);
+		csYear[PD_YYYY_LEN] = '\0';
+
+		memcpy(csMonth,&csPtr[PD_YYYY_LEN],PD_MM_LEN);
+		csMonth[PD_MM_LEN] = '\0';			
+	}
+/* internal code */
+       	PutField_Int(hTxn,"internal_code",PD_OK);
+
+/* local tm date */
+	strcpy(csDateTime,getdatetime());
+        memcpy(csDate,csDateTime,PD_DATE_LEN);
+        csDate[PD_DATE_LEN] = '\0';
+       	PutField_CString(hTxn,"local_tm_date",csDate);
+
+/* local tm time */
+	memcpy(csTime,&csDateTime[PD_DATE_LEN],PD_TIME_LEN);
+        csTime[PD_TIME_LEN] = '\0';
+       	PutField_CString(hTxn,"local_tm_time",csTime);
+
+/* process code */
+       	PutField_CString(hTxn,"process_code",PD_PROCESS_CODE_DEF);
+/* process type */
+       	PutField_CString(hTxn,"process_type",PD_PROCESS_TYPE_DEF);
+
+/* if no txn seq */
+	if (!GetField_CString(hReq,"txn_seq",&csTxnSeq)) {
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+		csTxnSeq  = strdup((*DBObjPtr)());
+	}
+/* txn seq */
+	PutField_CString(hTxn,"txn_seq",csTxnSeq);
+	PutField_CString(hJnl,"jnl_id",csTxnSeq);
+		
+	// Added by Simon Fung on 2011/06/28
+	/* Generate Journal No. if not supplied
+	DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeaderSeq","GetNextCrrJnlHeaderSeq");
+	csJnlNo  = strdup((*DBObjPtr)());
+	PutField_CString(hJnl,"jnl_id",csJnlNo);
+	*/
+	
+/* country */
+	if (GetField_CString(hReq,"txn_country",&csPtr)) {
+		PutField_CString(hJnl,"country_code",csPtr);
+	}
+
+/* product */
+	if (GetField_CString(hReq,"product",&csPtr)) {
+DEBUGLOG(("doPost: product code = [%s]\n",csPtr));
+		PutField_CString(hJnl,"product_code",csPtr);
+	}
+/* ccy */
+	if (!GetField_CString(hReq,"ccy",&csCcy)) {
+		csCcy = NULL  ;
+	}
+DEBUGLOG(("BOCrrPost::doPost ccy = [%s]\n",csCcy));
+
+/* acc year */
+	PutField_CString(hJnl,"acc_year",csYear);
+/* acc month */
+	PutField_CString(hJnl,"acc_month",csMonth);
+
+/* create_user */
+	PutField_CString(hJnl,"create_user",PD_UPDATE_USER);
+/* disabled */
+	PutField_Int(hJnl,"didabled",PD_FALSE);
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Add");
+        iRet = (unsigned long)(*DBObjPtr)(hJnl);
+
+		// Add Change Log
+		if (iRet == PD_OK) {
+			// Approve the journal if appropriate
+			if (!iManualApproval) {
+				/* approve_user */
+				PutField_CString(hJnl,"approve_user",PD_UPDATE_USER);			
+				
+				//DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","Approve");
+				//iRet = (unsigned long)(*DBObjPtr)(hJnl);
+				
+				BOObjPtr = CreateObj(DBPtr,"BOCrrJnl","Approve");
+				iRet = (unsigned long) ((*BOObjPtr)(hJnl));	
+				
+			}
+			
+			// Add Change Log
+			if (iRet == PD_OK) {		
+				BOObjPtr = CreateObj(BOPtr,"BOCrrJnl","AddChangeLog");
+				iRet = (unsigned long)(*BOObjPtr)(csTxnSeq,"Add",PD_UPDATE_USER);	
+			}
+		}
+	}
+
+/* currency id */
+	PutField_CString(hJnl,"currency_id",csCcy);
+
+	hash_destroy(hTxn);
+       	FREE_ME(hTxn);
+
+	return iRet;
+}
+
+int	AddCrrExtJnlLog(hash_t* hRule, hash_t *hJnl)
+{
+	
+	int	iRet = PD_OK;
+
+	int     iJnlTypeId;
+	char	*csJnlID = NULL;
+	char	*csTxnDate = NULL;
+
+	hash_t	*hTxn;
+	hTxn = (hash_t *)malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+        if (GetField_Int(hRule,"jnl_type_id",&iJnlTypeId)) {
+DEBUGLOG(("AddCrrExtJnlLog: jnl_type_id [%d]\n", iJnlTypeId));
+		PutField_Int(hTxn, "jnl_type_id", iJnlTypeId);
+        }
+
+        if (GetField_CString(hJnl,"jnl_id",&csJnlID)) {
+DEBUGLOG(("AddCrrExtJnlLog: jnl_id [%s]\n", csJnlID));
+		PutField_CString(hTxn, "jnl_id", csJnlID);
+	}
+
+        if (GetField_CString(hJnl,"txn_date",&csTxnDate)) {
+DEBUGLOG(("AddCrrExtJnlLog: txn_date [%s]\n", csTxnDate));
+		PutField_CString(hTxn, "txn_date", csTxnDate);
+	}
+
+	PutField_Int(hTxn,"disabled",PD_FALSE);
+	PutField_CString(hTxn,"create_user", PD_UPDATE_USER);
+
+	DBObjPtr = CreateObj(DBPtr,"DBCrrExtJnlLog","Add");
+	iRet = (unsigned long)(*DBObjPtr)(hTxn);
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn); 
+
+	return iRet;
+}

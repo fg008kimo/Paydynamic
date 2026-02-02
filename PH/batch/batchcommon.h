@@ -1,0 +1,110 @@
+#ifndef	_BATCH_COMMON_H_
+#define	_BATCH_COMMON_H_
+#include "myhash.h"
+
+#define	PD_MAX_FILE_LEN		1024
+#define	PD_PERIOD_LEN		6
+
+#define	PD_CORP_NAME_LEN 	90
+
+#define	PD_DELIMITOR		'|'
+#define	PD_RPT_DELIMITOR	','
+#define PD_HEADER_RECORD_TYPE	'0'
+#define	PD_DETAIL_RECORD_TYPE	'1'
+#define	PD_TAILER_RECORD_TYPE	'9'
+
+#define	PD_RPT_DOUBLE_LEN	14
+#define	PD_RPT_LONG_LEN		12
+
+
+#define	PD_RPT_REPLACE_CARD_TYPE	'R'
+#define	PD_RPT_NEW_CARD_TYPE		'N'
+
+#define	PD_CARD_FIELD_DELIMITOR	','
+#define	PD_PRINT_NAME_ON_CARD	'Y'
+#define	PD_PRINT_PHOTO		'Y'
+#define PD_USE_NEW_CARD_NO	'Y'
+#define	PD_PHOTO_EXT		".bmp"
+
+#define	PD_EOD_ID_LEN			10
+#define	PD_EOD_JOB_SCRIPT_NAME_LEN	200
+#define PD_EOD_JOB_DESC_LEN		500
+
+#define	PD_HOLDJOB_CODE		"HOLDJOB"
+#define	PD_EOD_HOLD		'Y'
+
+#define	PD_EOD_JOB_ID_NOT_FOUND		200
+#define	PD_EOD_JOB_RUNNING		201
+#define	PD_EOD_ALREADY_RUN		202
+#define	PD_EOD_DEPENDING_JOB_NOT_RUN	203
+#define	PD_EOD_JOB_HOLDED		204
+#define	PD_EOD_JOB_RUN_FALIED		205
+#define	PD_EOD_DEPENDING_RUNNING	206
+#define	PD_EOD_DEPENDING_FAILED		207
+
+#define PD_EOD_NEW_CYCLE		'N'
+#define	PD_EOD_COMPLETED		'C'
+#define	PD_EOD_PROCESSING		'P'
+#define PD_EOD_FAILURE			'F'
+
+#define	PD_YEAR_LEN			4
+#define	PD_MONTH_LEN			2
+#define	PD_DAY_LEN			2
+
+#define	PD_MONTH_OS			PD_YEAR_LEN
+#define	PD_DATE_OS			PD_MONTH_OS + PD_MONTH_LEN
+
+#define	PD_RPT_ID_LEN			10
+#define	PD_RPT_NAME_LEN			200
+#define	PD_RPT_DESC_LEN			500
+
+#define	XLS_HD				"<html><body><table>\n"
+#define	XLS_TR				"</table></body></html>\n"
+#define	XLS_SY				"<style type=\"text/css\"> .format{ mso-number-format:'\\@';} </style>\n"
+#define	XLS_NC				"<tr>"
+#define	XLS_EC				"</tr>\n"
+#define	XLS_FL				"<td>%s</td>"
+#define	XLS_FL_DOUBLE			"<td>%f</td>"
+#define	XLS_FL_DOUBLE2			"<td>%.2f</td>"
+#define	XLS_FL_LONG			"<td>%ld</td>"
+#define	XLS_FL_INT			"<td>%d</td>"
+#define	XLS_FL_TEXT			"<td class=\"format\">%s</td>"
+#define	XLS_FL_DATE			"<td>%.*s/%.*s/%.*s</td>"
+#define	XLS_FL_DATETIME			"<td>%.*s/%.*s/%.*s %.*s:%.*s:%.*s</td>"
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+int GetLastHostPostingDate(unsigned char* csLastPostingDate);
+int GetCurrHostPostingDate(unsigned char* csCurrLmsPostingDate);
+int GetLastEODDate(unsigned char* csLastEODDate);
+int GetCurrEODDate(unsigned char* csCurrEODDate);
+//int BatchOnelineWithdraw(const hash_t* hReq);
+
+int CreateReportPathD(unsigned char* csCurrentPath);
+int CreateReportPath(unsigned char* csPspId,unsigned char* csCurrentPath);
+int CreateReportPathCustomized(unsigned char* csCurrentPath,const char* csHostDate);
+
+
+int is_weekend(const char* csDate);
+int is_holidays(const char* csCountry, const char* csServiceCode, const char* csDate);
+int is_non_holidays(const char* csCountry, const char* csDate);
+int FindServiceReleasePeriod(const char* csServiceCode,
+                                const char* csReleaseType,
+				int	*iReleasePeriod);
+char* FindPostingDate(const char* csCountry,
+			const char* csServiceCode,
+                        const char* csCurrentPostingDate,
+                                int iReleasePeriod);
+
+char* FindVNCPostingDate(const char* csCountry,
+                        const char* csCurrentPostingDate,
+                                int iReleasePeriod);
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

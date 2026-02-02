@@ -1,0 +1,180 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/06/13              LokMan Chow
+remove party_type, add business_type		   2012/12/11		   LokMan Chow
+Add company name, company address		   2014/09/30		   Dirk Wong
+Add R01, R02 (merchant login policy)		   2016/08/25		   Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsCRC.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#include "sha1.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsCRC(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	char	*csTmp;
+	char	cTmp;
+	int	iRuleCnt=0;
+	int	i=0;
+	int	iR01, iR02;
+	
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+DEBUGLOG(("TxnMgtByUsCRC::Authorize\n"));
+
+	if (GetField_CString(hRequest, "client_id", &csTmp)){
+		PutField_CString(hTxn, "client_id", csTmp);
+DEBUGLOG(("Authorize::client_id = [%s]\n",csTmp));
+	}
+	else {
+DEBUGLOG(("Authorize::client_id not found!!\n"));
+ERRLOG("TxnMgtByUsCRC::Authorize::client_id not found!!\n");
+		iRet=INT_CLIENT_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if (GetField_CString(hRequest, "client_name", &csTmp)){
+		PutField_CString(hTxn, "client_name", csTmp);
+DEBUGLOG(("Authorize::client_name = [%s]\n",csTmp));
+	}
+	
+	if (GetField_CString(hRequest, "business_type", &csTmp)){
+		cTmp = csTmp[0];
+		PutField_Char(hTxn, "type", cTmp);
+DEBUGLOG(("Authorize::party_type = [%c]\n",cTmp));
+	}
+
+	if (GetField_CString(hRequest, "company_name", &csTmp)){
+		PutField_CString(hTxn, "company_name", csTmp);
+DEBUGLOG(("Authorize::company_name = [%s]\n",csTmp));
+	}
+
+	if (GetField_CString(hRequest, "company_addr", &csTmp)){
+		PutField_CString(hTxn, "company_addr", csTmp);
+DEBUGLOG(("Authorize::company_addr = [%s]\n",csTmp));
+	}
+
+	if (GetField_CString(hRequest, "status", &csTmp)){
+		PutField_CString(hTxn, "status", csTmp);
+DEBUGLOG(("Authorize::status = [%s]\n",csTmp));
+	}
+	else{
+		PutField_CString(hTxn, "status",PD_ACC_OPEN);
+DEBUGLOG(("Authorize::status = [%s]\n",PD_ACC_OPEN));
+	}
+
+	//R01: PW expiry rule 
+	if (GetField_CString(hRequest, "r01", &csTmp)) {
+		iR01 = atoi(csTmp);
+		iRuleCnt++;
+DEBUGLOG(("Authorize::R01 = [%d]\n",iR01));
+	} else {
+		iRet = INT_CLIENT_R01_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::R01 not found!!\n"));
+ERRLOG("TxnMgtByUsCRC::Authorize::R01 not found!!\n");
+	}
+
+	//R02: PW repeat rule 
+	if (GetField_CString(hRequest, "r02", &csTmp)) {
+		iR02 = atoi(csTmp);
+		iRuleCnt++;
+DEBUGLOG(("Authorize::R02 = [%d]\n",iR02));
+	} else {
+		iRet = INT_CLIENT_R02_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::R02 not found!!\n"));
+ERRLOG("TxnMgtByUsCRC::Authorize::R02 not found!!\n");
+	}
+
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hTxn,"create_user",csTmp);
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBClients:Add\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBClients","Add");
+                if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBClients:Add Failed\n"));
+ERRLOG("TxnMgtByUsCRC::Authorize::DBClients:Add Failed\n");
+                        iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+                }
+		else {
+DEBUGLOG(("Authorize::DBClients:Add Succ\n"));
+		}
+        }
+
+//Call DBMerchantLoginPolicy:Add :: Loop for both R01,R02
+	if(iRet==PD_OK){
+		for (i=1;i<=iRuleCnt;i++) {
+			switch (i) {
+				case 1: 
+					PutField_CString(hTxn,"login_policy_type",PD_MERCH_LOGIN_POLICY_R01);
+					PutField_Int(hTxn,"value",iR01);
+DEBUGLOG(("login_policy_type = [%s]\n",PD_MERCH_LOGIN_POLICY_R01));
+DEBUGLOG(("value = [%d]\n",iR01));
+					break;
+				case 2: 
+					PutField_CString(hTxn,"login_policy_type",PD_MERCH_LOGIN_POLICY_R02);
+					PutField_Int(hTxn,"value",iR02);
+DEBUGLOG(("login_policy_type = [%s]\n",PD_MERCH_LOGIN_POLICY_R02));
+DEBUGLOG(("value = [%d]\n",iR02));
+					break;
+				default:
+					break;
+			}
+DEBUGLOG(("Authorize::Call DBMerchantLoginPolicy:Add\n"));
+
+	                DBObjPtr = CreateObj(DBPtr,"DBMerchantLoginPolicy","Add");
+	                if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchantLoginPolicy:Add Failed\n"));
+ERRLOG("TxnMgtByUsCRC::Authorize::DBMerchantLoginPolicy:Add Failed\n");
+	                        iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+	                }
+			else {
+DEBUGLOG(("Authorize::DBMerchantLoginPolicy:Add Succ\n"));
+			}
+		}
+        }
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+DEBUGLOG(("TxnMgtByUsCRC Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

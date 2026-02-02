@@ -1,0 +1,262 @@
+/*
+PDProTech (c)2018. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/02/27              David Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(Txn);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+char cDebug;
+
+int iStartTimeInterval = 0;
+int iEndTimeInterval = 0;
+
+recordset_t *rRecordSet;
+
+int parse_arg(int argc, char **argv);
+int process_gettxn(hash_t *hContext, hash_t *hRequest);
+int process_inqtxn(hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 5) {
+		printf("usage: -s start_time_internal (in mins) -e end_time_internal (in mins)\n");
+		return FAILURE;
+	}
+	else
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet;
+	int	iTotalCnt = 0;
+	hash_t	*hContext, *hRequest, *hResponse;
+
+	hContext = (hash_t *) malloc (sizeof(hash_t));
+	hRequest = (hash_t *) malloc (sizeof(hash_t));
+	hResponse = (hash_t *) malloc (sizeof(hash_t));
+
+	hash_init(hContext, 0);
+	hash_init(hRequest, 0);
+	hash_init(hResponse, 0);
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage: -s start_time_internal (in mins) -e end_time_internal (in mins)\n");
+		return iRet;
+	}
+
+	iRet = process_gettxn(hContext, hRequest);
+
+	if (iRet == SUCCESS) {
+		iRet = process_inqtxn(hContext, hRequest, hResponse);
+	}
+
+	if (iRet != SUCCESS) {
+		iRet = 1; // to indicate unexpected error
+	}
+
+	if (iRet == SUCCESS) {	
+		if (GetField_Int(hRequest, "total_cnt", &iTotalCnt)) {
+			iRet = 2;
+		}
+	}
+
+//DEBUGLOG(("iRet [%d]\n", iRet));
+
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{               
+	char c;
+	char csTmp[PD_TMP_BUF_LEN + 1];
+
+	while ((c = getopt(argc, argv, "s:e:")) != EOF) {
+		switch (c) {
+			case 's':
+				memset(csTmp, 0, sizeof(csTmp));
+				strcpy(csTmp, optarg);
+				iStartTimeInterval = atoi(csTmp);
+				break;
+			case 'e':
+				memset(csTmp, 0, sizeof(csTmp));
+				strcpy(csTmp, optarg);
+				iEndTimeInterval = atoi(csTmp);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+//DEBUGLOG(("TimeInteval start[%d] end[%d]\n", iStartTimeInterval, iEndTimeInterval));
+
+	return SUCCESS;
+}
+
+
+int process_gettxn(hash_t *hContext, hash_t *hRequest)
+{
+	int iRet = SUCCESS;
+
+	char csTag[PD_TAG_LEN + 1];
+	int iCnt = 0;
+
+//DEBUGLOG(("process_gettxn start\n"));
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int	hv_start_time_interval;
+		int	hv_end_time_interval;
+		varchar	v_txn_id[PD_TXN_SEQ_LEN + 1];
+		short	ind_txn_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_start_time_interval = iStartTimeInterval;
+	hv_end_time_interval = iEndTimeInterval;
+
+	EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select	th_txn_id
+		from	psp_detail,
+			txn_psp_detail,
+			txn_header
+		where	th_create_timestamp >= sysdate - (:hv_start_time_interval/1440)
+		and	th_create_timestamp < sysdate - (:hv_end_time_interval/1440)
+		and	th_txn_code = 'DSI'
+		and	th_status = 'W'
+		and	th_txn_id = tp_txn_id
+		and	tp_psp_id = psp_id
+		and	psp_channel_code = 'SME'
+		and	online_mode = 'Y'
+		and	disabled = 0
+		and	status = 'O'
+		order by th_create_timestamp;
+
+	EXEC SQL OPEN c_cursor_gettxn;
+	do {
+		EXEC SQL FETCH c_cursor_gettxn
+		INTO :v_txn_id:ind_txn_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_txn_id >= 0) {
+			iCnt++;
+
+			v_txn_id.arr[v_txn_id.len] = '\0';
+
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "txn_id_%d", iCnt);
+			PutField_CString(hRequest, csTag, (const char*)v_txn_id.arr);
+
+DEBUGLOG(("pending %s = [%s]\n", csTag, v_txn_id.arr));
+
+			PutField_Int(hRequest, "total_cnt", iCnt);
+		}
+	} while (PD_TRUE && iRet == SUCCESS);
+
+	EXEC SQL CLOSE c_cursor_gettxn;
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("process_gettxn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_gettxn;
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;
+}
+
+
+int process_inqtxn(hash_t *hContext, hash_t *hRequest, hash_t *hResponse)
+{
+	int iRet = SUCCESS;
+
+	int	iTotalCnt = 0;
+	char	csTag[PD_TAG_LEN + 1];
+	char	*csPtr;
+	int	i;
+
+	char	csHomePath[PD_MAX_FILE_LEN + 1];
+	char	csTmpBuff[PD_TMP_BUF_LEN + 1];
+
+	memset(csHomePath, 0, sizeof(csHomePath));
+	sprintf((char*)csHomePath, "%s", getenv("HOME"));
+
+	if (GetField_Int(hRequest, "total_cnt", &iTotalCnt)) {
+		for (i = 1; i < iTotalCnt + 1; i++) {
+			memset(csTag, 0, sizeof(csTag));
+			sprintf(csTag, "txn_id_%d", i);
+
+			if (GetField_CString(hRequest, csTag, &csPtr)) {
+DEBUGLOG(("Record [%5d] txn_id = [%s]\n", i, csPtr));
+
+				memset(csTmpBuff, 0, sizeof(csTmpBuff));
+				sprintf(csTmpBuff, "echo \"<tr><td>[%s]</td><td>\"", csPtr);
+				system(csTmpBuff);
+
+				char *csCmd = (char*) malloc (PD_MAX_FILE_LEN + 1);
+				sprintf(csCmd, "pol_sme.sh %s 2>&1", csPtr);
+				system(csCmd);
+				FREE_ME(csCmd);
+
+				memset(csTmpBuff, 0, sizeof(csTmpBuff));
+				sprintf(csTmpBuff, "echo \"</td></tr>\"");
+				system(csTmpBuff);
+			}
+		} // end for loop
+	}
+
+	return iRet;
+}
+

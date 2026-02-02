@@ -1,0 +1,32 @@
+#ifndef _OLSTATEMENT_TMP_H_
+#define _OLSTATEMENT_TMP_H_
+
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int CheckTmpRecord(const hash_t* hRls);
+int AddDetail(const hash_t *hRls);
+int UpdateDetail(const hash_t *hRls);
+int UpdateSystemDetail(const hash_t *hRls);
+int DisableAllDetail(const hash_t* hRls);
+int DeleteDetail(const char* file_id);
+int GetDetail(const char* csFileId, int iVer, recordset_t* myRec);
+int AddError(const hash_t *hRls);
+
+int UpdateRecDetail(const hash_t *hRls);
+int UpdateUserTimestampDetail(const hash_t *hRls);
+int UpdateUserSeqDetail(const hash_t *hRls);
+int GetFirstSeqRecDetail(const char* csFileId, hash_t* hRec);
+int GetFirstVerRecDetail(const char* csFileId, int iSeq, hash_t* hRec);
+int GetLastSeqRecDetail(const char* csFileId, hash_t* hRec);
+int GetLastVerRecDetail(const char* csFileId, int iSeq, hash_t* hRec);
+
+int CheckTmpRecordByProvider(const hash_t* hRls);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

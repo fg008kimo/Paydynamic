@@ -1,0 +1,882 @@
+DROP PACKAGE TEST_RELEASE_PKG;
+
+CREATE OR REPLACE PACKAGE test_release_pkg
+IS
+   FUNCTION find_date (
+	in_posting_date    IN	TXN_HEADER.TH_HOST_POSTING_DATE%TYPE,
+	in_country         IN	TXN_DETAIL.TD_TXN_COUNTRY%TYPE,
+	in_service_code    IN	DEF_SERVICE_CODE.SC_CODE%TYPE,
+	in_find_type	   IN	VARCHAR2,
+	in_release_period  IN	INT)
+	RETURN VARCHAR;
+
+   FUNCTION find_po_res_setting(
+	in_date		   IN	TXN_HEADER.TH_HOST_POSTING_DATE%TYPE,
+	in_merchant_id	   IN	MERCHANT_RESERVED_AMT.MR_MERCHANT_ID%TYPE,
+	in_country         IN	MERCHANT_RESERVED_AMT.MR_COUNTRY_ID%TYPE,
+	in_ccy		   IN	MERCHANT_RESERVED_AMT.MR_CURRENCY_ID%TYPE,
+	in_service_code    IN	MERCHANT_RESERVED_AMT.MR_SERVICE_CODE%TYPE)
+	RETURN NUMBER;
+
+   FUNCTION f_sf_release_detail(
+	in_merchant_id	   IN	MERCHANT_BUCKET.MB_MERCHANT_ID%TYPE,
+	in_service_code	   IN	MERCHANT_BUCKET.MB_SERVICE_CODE%TYPE,
+	in_country	   IN	MERCHANT_BUCKET.MB_COUNTRY_ID%TYPE,
+	in_ccy		   IN	MERCHANT_BUCKET.MB_CURRENCY_ID%TYPE,
+	in_curr_date	   IN	MERCHANT_BUCKET.MB_POSTING_DATE%TYPE)
+	RETURN sf_release_tab;
+
+END test_release_pkg;
+/
+
+
+CREATE OR REPLACE PACKAGE BODY test_release_pkg
+IS
+
+FUNCTION find_date (
+	in_posting_date		IN TXN_HEADER.TH_HOST_POSTING_DATE%TYPE,
+	in_country		IN TXN_DETAIL.TD_TXN_COUNTRY%TYPE,
+	in_service_code		IN DEF_SERVICE_CODE.SC_CODE%TYPE,
+	in_find_type		IN VARCHAR2,
+	in_release_period	IN INT)
+	RETURN VARCHAR
+IS
+	v_date	VARCHAR (8);
+	iCnt		INTEGER := in_release_period;
+	iStep		INTEGER := 1;
+	iHolidayCnt	INTEGER := 0;
+BEGIN
+	v_date := in_posting_date;
+
+	IF iCnt = 0 THEN
+		iCnt := 1;
+	END IF;
+
+	WHILE (iCnt >= iStep)
+	LOOP
+
+		if in_find_type = 'APRV' or in_find_type = 'APRV_LAST' then
+   			SELECT TO_CHAR (TO_DATE (v_date, 'YYYYMMDD') - 1, 'YYYYMMDD')
+			INTO v_date
+			FROM DUAL;
+		elsif in_find_type = 'RLS' then
+   			SELECT TO_CHAR (TO_DATE (v_date, 'YYYYMMDD') + 1, 'YYYYMMDD')
+			INTO v_date
+			FROM DUAL;
+		else
+			EXIT;
+		end if;
+
+		SELECT NVL (COUNT (*), 0)
+		INTO iHolidayCnt
+		FROM holiday
+		WHERE h_country = in_country AND h_date = v_date AND h_service_code = in_service_code AND h_is_non_holiday = 0;
+
+		IF in_find_type = 'APRV_LAST' and iCnt = iStep THEN
+				iHolidayCnt := 0;
+		END IF;
+			
+		-- if SAT or SUN or Holiday, skip counting the date 
+		IF iHolidayCnt = 0 THEN
+			iStep := iStep + 1;
+		END IF;
+		
+
+	END LOOP;
+	RETURN v_date;
+
+END find_date;
+
+
+FUNCTION find_po_res_setting(
+	in_date		   IN	TXN_HEADER.TH_HOST_POSTING_DATE%TYPE,
+	in_merchant_id	   IN	MERCHANT_RESERVED_AMT.MR_MERCHANT_ID%TYPE,
+	in_country         IN	MERCHANT_RESERVED_AMT.MR_COUNTRY_ID%TYPE,
+	in_ccy		   IN	MERCHANT_RESERVED_AMT.MR_CURRENCY_ID%TYPE,
+	in_service_code    IN	MERCHANT_RESERVED_AMT.MR_SERVICE_CODE%TYPE)
+	RETURN NUMBER
+IS
+	v_setting	MERCHANT_RESERVED_AMT.MR_RESERVED_AMOUNT%TYPE := 0.0;
+	iDOW		INTEGER := 0;
+	iResult		INTEGER := 0;
+BEGIN
+
+	SELECT TO_NUMBER (TO_CHAR (TO_DATE (in_date, 'YYYYMMDD'), 'D')) - 1
+	INTO iDOW
+	FROM DUAL;
+
+	iResult := sp_merchant_res_amt_value(in_merchant_id, in_country, in_ccy, in_service_code, iDOW, 'R', 'A', v_setting);
+	if iResult != 0 then
+		v_setting := 0.0;
+	end if;
+	RETURN v_setting;
+
+END find_po_res_setting;
+
+
+FUNCTION f_sf_release_detail(
+	in_merchant_id	   IN	MERCHANT_BUCKET.MB_MERCHANT_ID%TYPE,
+	in_service_code	   IN	MERCHANT_BUCKET.MB_SERVICE_CODE%TYPE,
+	in_country	   IN	MERCHANT_BUCKET.MB_COUNTRY_ID%TYPE,
+	in_ccy		   IN	MERCHANT_BUCKET.MB_CURRENCY_ID%TYPE,
+	in_curr_date	   IN	MERCHANT_BUCKET.MB_POSTING_DATE%TYPE)
+	RETURN sf_release_tab
+
+IS
+	Result		sf_release_tab := sf_release_tab ();
+
+	n		INTEGER := 0;
+	iMaxDisplayCnt	INTEGER := 14;
+	iPORlsPeriod	INTEGER := 0;
+	iRlsPeriod	INTEGER := 0;
+	iDateCnt	INTEGER := 0;
+	iTmpCnt		INTEGER := 0;
+	iGetAvaPo	INTEGER := 0;
+	iChkResPo	INTEGER := 0;
+	iDow		INTEGER := 0;
+	iAPOtoAF	INTEGER := 0;
+	v_txn_type	MERCHANT_BAL_ACCT.MB_TXN_TYPE%TYPE;
+	v_1st_aprv_date	VARCHAR (8);
+	v_aprv_date	VARCHAR (8);
+	v_rel_date	VARCHAR (8) := NULL;
+	v_po_rel_date	VARCHAR (8) := NULL;
+	v_prev_rel_date	VARCHAR (8) := '19000101';
+	v_prev_po_rel_date	VARCHAR (8) := '19000101';
+	v_max_aprv_date	VARCHAR (8);
+	v_remain_lien	MERCHANT_LIEN_BUCKET.MB_BAL%TYPE := 0.0;
+	v_tmp_amt	MERCHANT_LIEN_BUCKET.MB_BAL%TYPE := 0.0;
+	v_total_amt	MERCHANT_LIEN_BUCKET.MB_BAL%TYPE := 0.0;
+	v_rls_amt	MERCHANT_BALANCE.M_CURRENT_BAL%TYPE := 0.0;
+	v_rls_amt_apo	MERCHANT_BALANCE.M_CURRENT_BAL%TYPE := 0.0;
+	v_rls_amt_afp	MERCHANT_BALANCE.M_CURRENT_BAL%TYPE := 0.0;
+	v_remain_ava_po	MERCHANT_BALANCE.M_CURRENT_BAL%TYPE := 0.0;
+	v_deduct_ft	MERCHANT_BALANCE.M_CURRENT_BAL%TYPE := 0.0;
+	v_res_setting	MERCHANT_RESERVED_AMT.MR_RESERVED_AMOUNT%TYPE := 0.0;
+	v_po_res	MERCHANT_BALANCE.M_RESERVED_PAYOUT%TYPE;
+	v_curr_po_res	MERCHANT_BALANCE.M_RESERVED_PAYOUT%TYPE := 0.0;
+	v_remain_res	MERCHANT_BALANCE.M_RESERVED_PAYOUT%TYPE := 0.0;
+	v_debug_code	VARCHAR (8);
+
+	TYPE cursor_rec IS RECORD
+	(
+	  v_date	MERCHANT_BUCKET.MB_POSTING_DATE%TYPE
+	);
+	TYPE t_cursor_tab IS TABLE OF cursor_rec;
+	l_cursor	t_cursor_tab := t_cursor_tab();
+
+BEGIN	
+
+
+dbms_output.put_line('Merchant: [' || in_merchant_id || '], Service: [' || in_service_code || '], Country:  [' || in_country || '], Currency: [' || in_ccy || '], Input Date: [' || in_curr_date || ']');
+
+	/*-- get the payout release period --*/
+	SELECT	nvl(rs_release_period, 0)
+	INTO	iPORlsPeriod
+	FROM 	def_service_code,
+		rule_service_release_period
+	WHERE sc_code = rs_service_code
+	AND rs_disabled = 0
+	AND rs_release_type = 'AVAPO'
+	AND sc_code = in_service_code;
+
+dbms_output.put_line('AVAPO period: [' || iPORlsPeriod || ']');
+
+	/*-- get the settlement release period --*/
+	SELECT	nvl(rs_release_period, 0)
+	INTO	iRlsPeriod
+	FROM 	def_service_code,
+		rule_service_release_period
+	WHERE sc_code = rs_service_code
+	AND rs_disabled = 0
+	AND rs_release_type = 'SETTFT'
+	AND sc_code = in_service_code;
+
+dbms_output.put_line('SETTLE period: [' || iRlsPeriod || ']');
+
+	/*-- get the display count of the release date --*/
+	if iRlsPeriod <= iMaxDisplayCnt then
+		iDateCnt := iRlsPeriod;
+	else
+		iDateCnt := iMaxDisplayCnt;
+	end if;
+
+dbms_output.put_line(' Display Count: [' || iDateCnt || ']');
+
+	/*-- check whether merchant support payout --*/
+	select MB_TXN_TYPE
+	into   v_txn_type
+	from MERCHANT_BAL_ACCT
+	where MB_MERCHANT_ID = in_merchant_id
+	and MB_COUNTRY = in_country
+	and MB_CCY_ID = in_ccy
+	and MB_SERVICE_CODE = in_service_code;
+
+dbms_output.put_line(' Merchant Txn Type: [' || v_txn_type || ']');
+
+	/*-- get lien bucket for non-support payout merchant --*/
+	if v_txn_type = 'D' then
+		--select case when m_total_hold >= MB_BAL then m_total_hold - MB_BAL else MB_BAL - m_total_hold end
+		select m_total_hold - MB_BAL
+		into v_remain_lien
+		from merchant_lien_bucket, merchant_balance
+		WHERE  mb_merchant_id = in_merchant_id
+		AND    mb_currency_id = in_ccy
+		AND    mb_country_id = in_country
+		AND    mb_service_code = in_service_code
+		AND    mb_merchant_id = m_merchant_id
+		AND    mb_currency_id = m_currency_id
+		AND    mb_country_id = m_country_id
+		AND    mb_service_code = m_service_code;
+
+		if v_remain_lien is NULL then
+			v_remain_lien := 0.0;
+		end if;
+
+dbms_output.put_line(' Remain Lien in AF: [' || v_remain_lien || ']');
+
+	else
+	/*-- get the payout reserve setting of the current date for support payout merchant --*/
+		select test_release_pkg.find_po_res_setting(in_curr_date, in_merchant_id, in_country, in_ccy, in_service_code)
+		into v_res_setting
+		from dual;
+
+dbms_output.put_line(' Payout Reserve Setting on [' || in_curr_date || ']: [' || v_res_setting || ']');
+
+	end if;
+
+	/*-- Check whether the funds movement @11:00 have been done --*/
+	/*-- It is possible that NO 'RLA' record can be found after 11:00 --*/
+/*
+	iTmpCnt := 0;
+
+	select count (*)
+	into iTmpCnt
+	from  txn_header
+	where th_txn_code = 'RLA'
+	and   th_approval_date = in_curr_date;
+
+	if iTmpCnt > 0 then
+		iAPOtoAF := 1;
+dbms_output.put_line(' Funds movement APO -> AF exists on [' || in_curr_date || ']');
+	else
+		iAPOtoAF := 0;
+dbms_output.put_line(' No funds movement APO -> AF exists on [' || in_curr_date || ']');
+	end if;
+*/
+
+	/*-- calculate back the approval date by the current date --*/
+	select test_release_pkg.find_date(in_curr_date, in_country, in_service_code, 'APRV', iRlsPeriod)
+	into v_1st_aprv_date
+	from dual;
+
+dbms_output.put_line(' 1st Aprv Date: [' || v_1st_aprv_date || ']');
+
+	/*-- list all date (total 60, TBC) --*/
+	SELECT to_char(to_date(v_1st_aprv_date, 'YYYYMMDD') + (ROWNUM-1), 'YYYYMMDD')
+	BULK COLLECT INTO l_cursor
+	FROM DUAL CONNECT BY ROWNUM <= 60;
+
+
+	/*-- loop all the approval date to get the release date and the records in merchant_bucket and merchant balance --*/
+	FOR i IN 1..l_cursor.COUNT
+	LOOP
+
+		/*-- get the corresponding FT and AF release date --*/
+		select	l_cursor(i).v_date, 
+			test_release_pkg.find_date(l_cursor(i).v_date, in_country, in_service_code, 'RLS', iPORlsPeriod),
+			test_release_pkg.find_date(l_cursor(i).v_date, in_country, in_service_code, 'RLS', iRlsPeriod)
+		into v_aprv_date,
+		     v_po_rel_date,
+		     v_rel_date
+		from dual;
+
+
+		/*-- count the release date for display --*/
+		if (v_rel_date != v_prev_rel_date) and (v_rel_date >= in_curr_date) then
+			iDateCnt := iDateCnt - 1;
+		end if;
+
+		EXIT WHEN iDateCnt < 0;
+
+		if (v_prev_rel_date != v_rel_date) or (v_prev_po_rel_date != v_po_rel_date) then
+			v_max_aprv_date := NULL;
+		end if;
+
+		/* reset the variable */
+		iTmpCnt := 0;
+		iChkResPo := 0;
+		v_rls_amt := 0.0;
+
+		/*-- get the records in merchant_bucket --*/
+		/*-- 1st: Find the released AF, funds already moved to SF (fact) --*/
+		select count (*)
+		into iTmpCnt
+		from MERCHANT_BUCKET
+                where MB_POSTING_DATE = v_aprv_date
+                and MB_MERCHANT_ID = in_merchant_id
+                and MB_COUNTRY_ID = in_country
+                and MB_CURRENCY_ID = in_ccy
+                and MB_SERVICE_CODE = in_service_code
+                and MB_BUCKET_TYPE = 'AF'
+                and MB_RELEASED_DATE is not null;
+
+		if iTmpCnt > 0 then
+			/*-- Released AF found --*/
+			/*-- Use the actual release date to override the estimated released date (in case the release period have been changed) --*/
+			select sum(nvl(MB_RELEASED_AMT, 0)),
+			       MB_RELEASED_DATE
+			into v_rls_amt,
+			     v_rel_date
+			from MERCHANT_BUCKET
+			where MB_POSTING_DATE = v_aprv_date
+			and MB_MERCHANT_ID = in_merchant_id
+			and MB_COUNTRY_ID = in_country
+			and MB_CURRENCY_ID = in_ccy
+			and MB_SERVICE_CODE = in_service_code
+			and MB_BUCKET_TYPE = 'AF'
+			and MB_RELEASED_DATE is not null
+			group by MB_RELEASED_DATE;
+
+			if v_txn_type = 'D' then
+				/* override the release amt by the SF record (if there is any released lien from AF, the actual amount is reflected in SF, not AF) */
+				iTmpCnt := 0;
+
+				select count (*)
+				into iTmpCnt
+				from MERCHANT_BUCKET
+				where MB_POSTING_DATE = v_aprv_date
+				and MB_MERCHANT_ID = in_merchant_id
+				and MB_COUNTRY_ID = in_country
+				and MB_CURRENCY_ID = in_ccy
+				and MB_SERVICE_CODE = in_service_code
+				and MB_BUCKET_TYPE = 'SF';
+
+				if iTmpCnt > 0 then
+					select mb_bal
+					into v_rls_amt
+					from MERCHANT_BUCKET
+					where MB_POSTING_DATE = v_aprv_date
+					and MB_MERCHANT_ID = in_merchant_id
+					and MB_COUNTRY_ID = in_country
+					and MB_CURRENCY_ID = in_ccy
+					and MB_SERVICE_CODE = in_service_code
+					and MB_BUCKET_TYPE = 'SF';
+				end if;
+			end if;
+
+			v_debug_code := 'AF1';
+			/*-- End of AF1 --*/
+
+		else
+			iTmpCnt := 0;
+
+			/*-- Released AF not found --*/
+			/*-- 2nd: Find the non-released AF with PID "000" (merchant support payout + some/all PIDs support payout) --*/
+			select count (*)
+			into iTmpCnt
+			from MERCHANT_BUCKET
+			where MB_POSTING_DATE = v_aprv_date
+			and MB_MERCHANT_ID = in_merchant_id
+			and MB_COUNTRY_ID = in_country
+			and MB_CURRENCY_ID = in_ccy
+			and MB_SERVICE_CODE = in_service_code
+			and MB_BUCKET_TYPE = 'AF'
+			and MB_PSP_ID = '000'
+			and MB_RELEASED_DATE is null;
+
+			if iTmpCnt > 0 then
+				/*-- Non-released AF with PID "000" found --*/
+				/*-- Sum ALL non-released AF for all PIDs --*/
+				/*-- The total sum will keep deducting by the "Balance Transfer Out - Inter Settlement" transaction until released to SF --*/
+				select sum(MB_BAL) - sum(MB_TRANSFER_OUT_BAL)
+				into v_rls_amt
+				from MERCHANT_BUCKET
+				where MB_POSTING_DATE = v_aprv_date
+				and MB_MERCHANT_ID = in_merchant_id
+				and MB_COUNTRY_ID = in_country
+				and MB_CURRENCY_ID = in_ccy
+				and MB_SERVICE_CODE = in_service_code
+				and MB_BUCKET_TYPE = 'AF'
+				and MB_RELEASED_DATE is null
+				and MB_BAL > MB_TRANSFER_OUT_BAL;
+
+				if v_rls_amt is NULL then
+					v_rls_amt := 0.0;
+				end if;
+	
+				v_debug_code := 'AF0(P)';
+				/*-- End of AF0(P) --*/
+
+			else
+				iTmpCnt := 0;
+
+				/*-- if no "000" records, find the non-released AF with PID <> "000" (before 11:00 or Merchant/PIDs not support payout) --*/
+				select count (*)
+				into iTmpCnt
+				from MERCHANT_BUCKET
+				where MB_POSTING_DATE = v_aprv_date
+				and MB_MERCHANT_ID = in_merchant_id
+				and MB_COUNTRY_ID = in_country
+				and MB_CURRENCY_ID = in_ccy
+				and MB_SERVICE_CODE = in_service_code
+				and MB_BUCKET_TYPE = 'AF'
+				and MB_PSP_ID <> '000'
+				and MB_RELEASED_DATE is null;
+
+				if iTmpCnt > 0 then
+					/*-- Non-released AF with PID <> "000" found --*/
+					/*-- Sum the non-released AF for all non-support payout PIDs as the predict SF release amount --*/
+					/*-- The total sum will keep deducting by the "Balance Transfer Out - Inter Settlement" transaction until released to SF --*/
+					select sum(MB_BAL) - sum(MB_TRANSFER_OUT_BAL)
+					into v_rls_amt
+					from MERCHANT_BUCKET
+					where MB_POSTING_DATE = v_aprv_date
+					and MB_MERCHANT_ID = in_merchant_id
+					and MB_COUNTRY_ID = in_country
+					and MB_CURRENCY_ID = in_ccy
+					and MB_SERVICE_CODE = in_service_code
+					and MB_BUCKET_TYPE = 'AF'
+					and MB_PSP_ID <> '000'
+					and MB_RELEASED_DATE is null
+					and MB_BAL > MB_TRANSFER_OUT_BAL;
+
+					if v_rls_amt is NULL then
+						v_rls_amt := 0.0;
+					end if;
+	
+					if iAPOtoAF = 0 then
+						iTmpCnt := 0;
+
+						/*-- Check any FT is released to APO in current day --*/
+						select count (*)
+						into iTmpCnt
+						from MERCHANT_BUCKET
+						where MB_POSTING_DATE = v_aprv_date
+						and MB_MERCHANT_ID = in_merchant_id
+						and MB_COUNTRY_ID = in_country
+						and MB_CURRENCY_ID = in_ccy
+						and MB_SERVICE_CODE = in_service_code
+						and MB_BUCKET_TYPE = 'FT'
+						and MB_RELEASED_DATE = in_curr_date 
+						and MB_RELEASED_TO_AF = 0;
+
+						if iTmpCnt > 0 then
+							/*-- The released FT still in available payout --*/
+							/*-- Get the real-time available payout and add to the predict SF release amount (if any) --*/
+							iGetAvaPo := iGetAvaPo + 1;
+
+						end if;
+					end if;
+
+
+					v_debug_code := 'AF0(D)';
+					/*-- If Merchant NOT support payout, should consider the change of lien balance (go to "Check Lien" part) --*/
+					/*-- Otherwise, end of AF0(D) --*/
+
+				else
+					iTmpCnt := 0;
+
+					/*-- 3rd: Find the released FT --*/
+					select count (*)
+					into iTmpCnt
+					from MERCHANT_BUCKET
+					where MB_POSTING_DATE = v_aprv_date
+					and MB_MERCHANT_ID = in_merchant_id
+					and MB_COUNTRY_ID = in_country
+					and MB_CURRENCY_ID = in_ccy
+					and MB_SERVICE_CODE = in_service_code
+					and MB_BUCKET_TYPE = 'FT'
+					and MB_RELEASED_DATE is not null;
+	
+					if iTmpCnt > 0 then
+
+						if iAPOtoAF = 0 then
+							iTmpCnt := 0;
+
+							/*-- Released FT found --*/
+							/*-- Check any FT is released to APO in current day --*/
+							select count (*)
+							into iTmpCnt
+							from MERCHANT_BUCKET
+							where MB_POSTING_DATE = v_aprv_date
+							and MB_MERCHANT_ID = in_merchant_id
+							and MB_COUNTRY_ID = in_country
+							and MB_CURRENCY_ID = in_ccy
+							and MB_SERVICE_CODE = in_service_code
+							and MB_BUCKET_TYPE = 'FT'
+							and MB_RELEASED_DATE = in_curr_date
+							and MB_RELEASED_TO_AF = 0;
+
+							if iTmpCnt > 0 then
+								/*-- The released FT still in available payout --*/
+								/*-- Get the real-time available payout and add to the predict SF release amount (if any) --*/
+								iGetAvaPo := iGetAvaPo + 1;
+							else
+								/*-- FT was released in previous day(s), nothing moved to AF --*/
+								v_rls_amt := 0.0;
+							end if;
+						else
+							/*-- Funds movement done, seems nothing moved to AF --*/
+							v_rls_amt := 0.0;
+						end if;
+
+						v_debug_code := 'FT1';
+						/*-- End of FT1 --*/
+
+					else
+
+						iTmpCnt := 0;
+
+						/*-- NO released FT found --*/
+						/*-- 4rd: Find the non-released FT --*/
+						select count (*)
+						into iTmpCnt
+						from MERCHANT_BUCKET
+						where MB_POSTING_DATE = v_aprv_date
+						and MB_MERCHANT_ID = in_merchant_id
+						and MB_COUNTRY_ID = in_country
+						and MB_CURRENCY_ID = in_ccy
+						and MB_SERVICE_CODE = in_service_code
+						and MB_BUCKET_TYPE = 'FT'
+						and MB_RELEASED_DATE is null;
+
+						if iTmpCnt > 0 then
+
+							if v_txn_type = 'D' then
+
+								/*-- Merchant not support payout, funds will be released to AF only --*/
+								select sum(MB_BAL)
+								into v_rls_amt
+								from MERCHANT_BUCKET
+								where MB_POSTING_DATE = v_aprv_date
+								and MB_MERCHANT_ID = in_merchant_id
+								and MB_COUNTRY_ID = in_country
+								and MB_CURRENCY_ID = in_ccy
+								and MB_SERVICE_CODE = in_service_code
+								and MB_BUCKET_TYPE = 'FT'
+								and MB_RELEASED_DATE is null;
+
+								/*-- Should consider the change of lien balance (go to "Check Lien" part) --*/
+
+							else
+
+								/*-- Merchant support payout, funds will be released to APO and AF --*/
+								v_rls_amt_apo := 0.0;
+								v_rls_amt_afp := 0.0;
+
+								for c_cursor in (
+
+									select TXN_TYPE, sum(MB_BAL) as sumbal
+									from MERCHANT_BUCKET, PSP_DETAIL
+									where MB_POSTING_DATE = v_aprv_date
+									and MB_MERCHANT_ID = in_merchant_id
+									and MB_COUNTRY_ID = in_country
+									and MB_CURRENCY_ID = in_ccy
+									and MB_SERVICE_CODE = in_service_code
+									and MB_BUCKET_TYPE = 'FT'
+									and MB_RELEASED_DATE is null
+									and MB_PSP_ID = PSP_ID
+									group by TXN_TYPE
+								)
+								loop
+									if c_cursor.TXN_TYPE = 'A' then
+										v_rls_amt_apo := c_cursor.sumbal;
+									else
+										v_rls_amt_afp := c_cursor.sumbal;
+									end if;
+								
+								end loop;
+
+								/*-- Calculate remaining APO with the reserved payout (if any) --*/
+								iChkResPo := 1;
+								iGetAvaPo := 0;
+							end if;
+
+							v_debug_code := 'FT0';
+							/*-- End of FT0 --*/
+
+						else
+
+							/*-- No FT found, nothing will be released --*/
+							v_rls_amt := 0.0;
+
+
+							/*-- Prevent wrong calculation if N/A case occur in the case of multiple release in same day --*/
+							if (v_prev_po_rel_date = v_po_rel_date) and (v_po_rel_date = in_curr_date) then
+
+								/*-- Check whether the funds movement @11:00 have been done --*/
+								if iAPOtoAF = 0 then
+									iGetAvaPo := iGetAvaPo + 1;
+								end if;
+							end if;
+
+							v_debug_code := 'N/A';
+							/*-- End of N/A --*/
+
+						end if;
+					end if;
+
+				end if;
+
+
+				/*-- For AF0(D) with FT->APO and FT1 cases --*/
+				if iGetAvaPo > 0
+				then
+					/*-- Get all the released FT in the current date (may be in different posting date) --*/
+					if v_max_aprv_date is NULL then
+						select SUM(MB_RELEASED_AMT),
+						       MAX(MB_POSTING_DATE)
+						into	v_total_amt,
+							v_max_aprv_date
+						from MERCHANT_BUCKET
+						where MB_MERCHANT_ID = in_merchant_id
+						and MB_COUNTRY_ID = in_country
+						and MB_CURRENCY_ID = in_ccy
+						and MB_SERVICE_CODE = in_service_code
+						and MB_BUCKET_TYPE = 'FT'
+						and MB_RELEASED_DATE = in_curr_date
+						and MB_RELEASED_TO_AF = 0;
+					end if;	
+
+					/*-- Get the remaining avaiable payout and remaining payout reserved ONCE only --*/
+					if iGetAvaPO = 1 then
+						select m_current_bal - m_total_float - m_total_hold - m_total_float_after_payout - m_fundin_payout - m_reserved_payout,
+						       m_reserved_payout
+						into v_remain_ava_po, v_curr_po_res
+						from merchant_balance
+						where m_merchant_id = in_merchant_id
+						and m_country_id = in_country
+						and m_currency_id = in_ccy
+						and m_service_code = in_service_code;
+
+						v_po_res := v_curr_po_res;
+						v_remain_res := v_res_setting - v_curr_po_res;
+
+
+dbms_output.put_line(' Current movable APO: [' || v_remain_ava_po || ']; Total APO released from FT: [' || v_total_amt || ']');
+dbms_output.put_line(' Current Payout Reserved: [' || v_curr_po_res || ']');
+					end if;
+
+dbms_output.put_line(' AF left for [' || v_aprv_date || ']: [' || v_rls_amt || ']');
+
+					/*-- All the remain/extra APO and Payout Reserved will be counted to the max_post_date --*/
+					if (v_aprv_date = v_max_aprv_date) then
+							
+						if (v_remain_res < 0) and v_remain_ava_po >= 0 then
+							v_tmp_amt := v_remain_res*(-1);
+dbms_output.put_line(' Movable APO to release: [' || v_remain_ava_po || '], Extra Payout Reserved to release: [' || v_tmp_amt || ']');
+							v_rls_amt := v_rls_amt + v_remain_ava_po + v_tmp_amt;
+							v_po_res := v_po_res - v_tmp_amt;
+							v_remain_res := 0.0;
+							v_remain_ava_po := 0.0;
+
+						elsif (v_remain_res < 0) and v_remain_ava_po < 0 then
+							v_tmp_amt := v_remain_res*(-1);
+							if v_tmp_amt > v_remain_ava_po*(-1) then
+								v_rls_amt := v_rls_amt + (v_remain_ava_po + v_tmp_amt);
+								v_remain_ava_po := 0.0;
+							else
+								v_remain_ava_po := v_remain_ava_po + v_tmp_amt;
+							end if;
+
+dbms_output.put_line(' Extra Payout Reserved to release: [' || v_tmp_amt || '] to cover the -ve APO, -ve APO left: [' || v_remain_ava_po || ']');
+							v_po_res := v_po_res - v_tmp_amt;
+							v_remain_res := 0.0;
+
+						elsif (v_remain_ava_po >= v_remain_res) and v_remain_ava_po > 0 then
+dbms_output.put_line(' Some movable APO: [' || v_remain_res || '] of [' || v_remain_ava_po || '] will keep in Payout Reserved, Payout Reserved become full');
+							v_rls_amt := v_rls_amt + v_remain_ava_po - v_remain_res;
+							v_po_res := v_po_res + v_remain_res;
+							v_remain_res := 0.0;
+							v_remain_ava_po := 0.0;
+
+						elsif (v_remain_ava_po < v_remain_res) and v_remain_ava_po > 0 then
+							v_po_res := v_po_res + v_remain_ava_po; 
+							v_remain_res := v_remain_res - v_remain_ava_po;
+dbms_output.put_line(' All movable APO: [' || v_remain_ava_po || '] will keep in Payout Reserved, need more [' || v_remain_res || '] to become full');
+							v_remain_ava_po := 0.0;
+						end if;
+					end if;
+				end if;
+
+
+				/*-- For FT0 case only --*/
+				if iChkResPo = 1 then
+
+					select test_release_pkg.find_po_res_setting(v_po_rel_date, in_merchant_id, in_country, in_ccy, in_service_code)
+					into v_res_setting
+					from dual;
+dbms_output.put_line(' Reserved Payout setting on [' || v_po_rel_date || ']: [' || v_res_setting || ']');
+
+
+					/*-- Get the current merchant balance if there are no calculated payout reserved --*/
+					if v_po_res is NULL then
+						select m_current_bal - m_total_float - m_total_hold - m_total_float_after_payout - m_fundin_payout - m_reserved_payout,
+						       m_reserved_payout
+						into v_remain_ava_po, v_curr_po_res
+						from merchant_balance
+						where m_merchant_id = in_merchant_id
+						and m_country_id = in_country
+						and m_currency_id = in_ccy
+						and m_service_code = in_service_code;
+
+						v_po_res := v_curr_po_res;
+						v_remain_res := v_res_setting - v_curr_po_res;
+
+dbms_output.put_line(' Current movable APO: [' || v_remain_ava_po || ']; Current Payout Reserved: [' || v_curr_po_res || ']');
+					else
+						v_remain_res := v_res_setting - v_po_res;
+					end if;
+
+
+					/*-- Get the max approval date of the case of multiple release in same day --*/
+					if v_max_aprv_date is NULL then
+						select max(MB_POSTING_DATE)
+						into   v_max_aprv_date
+						from MERCHANT_BUCKET
+						where MB_MERCHANT_ID = in_merchant_id
+						and MB_COUNTRY_ID = in_country
+						and MB_CURRENCY_ID = in_ccy
+						and MB_SERVICE_CODE = in_service_code
+						and MB_BUCKET_TYPE = 'FT'
+						and MB_POSTING_DATE >= v_aprv_date
+						and MB_POSTING_DATE <= test_release_pkg.find_date(v_po_rel_date, in_country, in_service_code, 'APRV_LAST', iPORlsPeriod)
+						and MB_RELEASED_DATE is NULL; 
+					end if;
+
+					v_remain_ava_po := v_remain_ava_po + v_rls_amt_apo;
+dbms_output.put_line(' FT to be released [' || v_rls_amt_apo || '] to APO, becomes [' || v_remain_ava_po || ']');
+
+					v_rls_amt := v_rls_amt + v_rls_amt_afp;
+dbms_output.put_line(' FT to be released [' || v_rls_amt_afp || '] to AF, becomes [' || v_rls_amt || ']');
+
+
+					/*-- Release the movable APO and extra Payout Reserved to the max approval date --*/
+					if v_aprv_date = v_max_aprv_date then
+						/*-- Handle APO --*/
+						if v_remain_ava_po > 0 and v_remain_res > 0 then
+							if v_remain_ava_po >= v_remain_res then
+								v_po_res := v_po_res + v_remain_res;
+dbms_output.put_line(' The movable APO [' || v_remain_ava_po || '] is enough to keep [' || v_remain_res || '] in Payout Reserved, becomes [' || v_po_res || ']');
+								v_remain_ava_po := v_remain_ava_po - v_remain_res;
+								v_remain_res := 0.0;
+							else
+								v_po_res := v_po_res + v_remain_ava_po;
+								v_remain_res := v_remain_res - v_remain_ava_po;
+dbms_output.put_line(' The movable APO [' || v_remain_ava_po || '] will all keep in Payout Reserved, becomes [' || v_po_res || '] , still need [' || v_remain_res || '] to fill up');
+								v_remain_ava_po := 0.0;
+								
+							end if;
+						end if;
+
+						if v_remain_ava_po > 0 then
+dbms_output.put_line(' Release the movable APO: [' || v_remain_ava_po || ']');
+							v_rls_amt := v_rls_amt + v_remain_ava_po;
+							v_remain_ava_po := 0.0;
+						end if;
+
+						/*-- Handle Payout Reserved --*/
+						if v_remain_res < 0 then
+							v_tmp_amt := v_remain_res*(-1);
+							if v_remain_ava_po < 0 then
+								if v_remain_ava_po*(-1) > v_tmp_amt then
+dbms_output.put_line(' The extra Payout Reserved [' || v_tmp_amt || '] is not enough to cover the current -ve APO[' || v_remain_ava_po || ']');
+									v_remain_ava_po := v_remain_ava_po + v_tmp_amt;
+									v_tmp_amt := 0.0;
+								else
+dbms_output.put_line(' The extra Payout Reserved [' || v_tmp_amt || '] is enough to cover the current -ve APO[' || v_remain_ava_po || ']');
+									v_tmp_amt := v_tmp_amt + v_remain_ava_po;
+									v_remain_ava_po := 0.0;
+								end if;
+							end if;
+
+							if v_tmp_amt > 0 then
+dbms_output.put_line(' Release the extra Payout Reserved [' || v_tmp_amt || ']');
+							end if;
+
+							v_rls_amt := v_rls_amt + v_tmp_amt;
+							v_po_res := v_po_res + v_remain_res;
+							v_remain_res := 0.0;
+						end if;
+
+					end if;
+
+				end if;
+
+			end if;
+
+
+			/*-- Check Lien: in case the lien only apply to AF (for non-support payout merchant) --*/
+			if v_txn_type = 'D' then
+
+				/*-- Get the max approval date of the case of multiple release in same day --*/
+				if v_max_aprv_date is NULL then
+					select max(MB_POSTING_DATE)
+					into   v_max_aprv_date
+					from MERCHANT_BUCKET
+					where MB_MERCHANT_ID = in_merchant_id
+					and MB_COUNTRY_ID = in_country
+					and MB_CURRENCY_ID = in_ccy
+					and MB_SERVICE_CODE = in_service_code
+					and MB_BUCKET_TYPE = 'FT'
+					and MB_POSTING_DATE >= v_aprv_date
+					and MB_POSTING_DATE <= test_release_pkg.find_date(v_rel_date, in_country, in_service_code, 'APRV_LAST', iRlsPeriod);
+				end if;
+
+				if v_rls_amt >= v_remain_lien then
+					if v_rls_amt > 0 and v_remain_lien > 0 then 
+dbms_output.put_line(' Remaining AF [' || v_rls_amt || '] >= Remaining Lien [' || v_remain_lien || '], keep [' || v_remain_lien || '] in Lien');
+						v_rls_amt := v_rls_amt - v_remain_lien;
+						v_remain_lien := 0.0;
+					end if;
+				
+				else
+dbms_output.put_line(' Remaining AF [' || v_rls_amt || '] < Remaining Lien [' || v_remain_lien || '], keep all in Lien');
+					v_remain_lien := v_remain_lien - v_rls_amt;
+					v_rls_amt := 0.0;
+				end if;
+
+				/*-- Release the Lien to the max approval date --*/
+				if v_remain_lien < 0 and v_aprv_date = v_max_aprv_date then
+					v_tmp_amt := v_remain_lien*(-1);
+					v_rls_amt := v_rls_amt + v_tmp_amt;
+					v_remain_lien := 0.0;
+dbms_output.put_line(' Release Lien [' || v_tmp_amt || '] to AF');
+				end if;
+
+			end if;
+			
+		end if;
+
+		if v_txn_type = 'D' then
+dbms_output.put_line('>>> [' || i || '] [' || v_aprv_date || '] [' || v_po_rel_date || '] [' || v_rel_date || '] [' || v_debug_code || '] Net Release: [' || v_rls_amt || '] Remin Lien: [' || v_remain_lien || ']');
+		else
+dbms_output.put_line('>>> [' || i || '] [' || v_aprv_date || '] [' || v_po_rel_date || '] [' || v_rel_date || '] [' || v_debug_code || '] Net Release: [' || v_rls_amt || ']');
+		end if;
+
+		v_prev_po_rel_date := v_po_rel_date;
+		v_prev_rel_date := v_rel_date;
+
+		Result.EXTEND;
+		n := n + 1;
+		result (n) :=
+			sf_release_OBJ(v_aprv_date,
+				       v_po_rel_date,
+				       v_rel_date,
+				       in_merchant_id,
+				       in_service_code,
+				       in_country,
+				       in_ccy,
+				       v_rls_amt);
+
+
+	END LOOP;
+
+	RETURN (Result);
+
+END f_sf_release_detail;
+
+
+END test_release_pkg;
+/
+

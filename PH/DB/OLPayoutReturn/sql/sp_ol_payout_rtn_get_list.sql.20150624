@@ -1,0 +1,134 @@
+CREATE OR REPLACE FUNCTION sp_ol_payout_rtn_get_list (
+    in_txn_id    ol_txn_header.oth_txn_id%type
+)
+RETURN ol_txn_id_tab
+PIPELINED
+IS
+    v_chk_txn_id    ol_txn_header.oth_txn_id%type;
+
+    v_txn_id        ol_txn_header.oth_txn_id%type;
+    v_txn_code      ol_txn_header.oth_txn_code%type;
+    v_status        ol_txn_header.oth_status%type;
+    v_ar_ind        ol_txn_header.oth_ar_ind%type;
+    v_recon_status  ol_txn_header.oth_recon_status%type;
+    v_batch_txn_id  ol_batch_txn_relation.obtr_batch_id%type;
+
+    v_cnt           NUMBER := 0;
+BEGIN
+
+    v_chk_txn_id := in_txn_id;
+
+    WHILE (true) LOOP
+
+        select oth_txn_code, oth_status, oth_ar_ind, oth_recon_status
+        into v_txn_code, v_status, v_ar_ind, v_recon_status
+        from ol_txn_header
+        where oth_txn_id = v_chk_txn_id;
+
+        if (v_status = 'C' and v_ar_ind = 'A') then
+            PIPE ROW (OL_TXN_ID_OBJ(v_chk_txn_id,
+                                    v_txn_code,
+                                    v_status,
+                                    v_ar_ind,
+                                    v_recon_status
+                                   ));
+            EXIT;
+        else
+            select obtr_batch_id
+            into   v_batch_txn_id
+            from (select obtr_batch_id
+                  from ol_batch_txn_relation
+                  where obtr_txn_id = v_chk_txn_id
+                  and obtr_batch_type = 'G'
+                  and obtr_txn_level = 'T'
+                  order by obtr_relation_timestamp desc
+            ) where rownum < 2;
+
+
+            v_cnt := 0;
+            for i in (select oth_txn_id, oth_txn_code, oth_status, oth_ar_ind, oth_recon_status
+                      from txn_code, ol_txn_header, ol_batch_txn_relation
+                      where obtr_batch_id = v_batch_txn_id
+                      and obtr_txn_level = 'T'
+                      and oth_txn_id = obtr_txn_id
+                      and obtr_txn_id != v_chk_txn_id
+                      and tc_code = oth_txn_code
+                      and tc_ofl_is_offset = 0
+                      and oth_status = 'C'
+                      and oth_ar_ind = 'A'
+                      order by obtr_relation_timestamp) loop
+
+                PIPE ROW (OL_TXN_ID_OBJ(i.oth_txn_id,
+                                        i.oth_txn_code,
+                                        i.oth_status,
+                                        i.oth_ar_ind,
+                                        i.oth_recon_status
+                                       ));
+                v_cnt := v_cnt + 1;
+            end loop;
+
+            if v_cnt > 0 then
+                EXIT;
+            end if;
+
+            begin
+                select otr_p1_txn_id
+                into v_txn_id
+                from ol_txn_relation
+                where otr_party_type = 'P'
+                and otr_txn_level = 'T'
+                and otr_relation_type = 'V'
+                and otr_p2_txn_id =  v_chk_txn_id;
+            exception
+               when no_data_found then
+                   v_txn_id := NULL;
+                   EXIT;
+               when too_many_rows then
+                   v_txn_id := NULL;
+                   EXIT;
+            end;
+
+            if (v_txn_id is not NULL) then
+
+                    begin
+                        select obtr_txn_id
+                        into v_chk_txn_id
+                        from ( select obtr_txn_id
+                               from ol_batch_txn_relation
+                               where obtr_batch_id in (select obtr_batch_id
+                                                       from (select obtr_batch_id
+                                                       from ol_batch_txn_relation
+                                                       where obtr_txn_id = v_txn_id
+                                                       and obtr_txn_level = 'T'
+                                                       order by obtr_relation_timestamp desc
+                                                       ) where rownum < 2
+                              )
+                        and obtr_txn_level = 'T'
+                        order by obtr_relation_timestamp desc
+                        )
+                        where rownum < 2;
+
+                    exception
+                       when no_data_found then
+                           v_chk_txn_id := NULL;
+                           EXIT;
+                    end;
+
+                    select count(1) into v_cnt
+                    from ol_txn_relation
+                    where otr_party_type = 'P'
+                    and   otr_txn_level = 'T'
+                    and   otr_relation_type = 'L'
+                    and   otr_p1_txn_id = v_txn_id
+                    and   otr_p2_txn_id = v_chk_txn_id;
+
+                    if (v_cnt = 0) then
+                        EXIT;
+                    end if;
+            end if;
+
+        end if;
+
+    END LOOP;
+END;
+/

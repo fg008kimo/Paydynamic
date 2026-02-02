@@ -1,0 +1,758 @@
+/*
+PDProTech (c)2018. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/04/04              David Wong
+Remove urldecode in callback                       2018/06/05              David Wong
+Add txnTimeOut					   2018/08/24		   David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "GpvMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include <zlib.h>
+#include "b64.h"
+#include "internal.h"
+#include "ObjPtr.h"
+#define __USE_XOPEN
+#include <time.h>
+#include <json-c/json.h>
+#include "myrecordset.h"
+
+static char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+
+
+void GpvMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+char *str_replace(char *orig, char *rep, char *with);
+
+
+int FormatMsg(const hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int iRet = PD_OK;
+	char *csTmp = NULL;
+	char *csPtr = NULL;
+	char *csBuf;
+	char *csMethod = NULL;
+	char *csTag;
+	char *csTmpBuf;
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	csTag = (char*) malloc (PD_TAG_LEN + 1);
+	csTmpBuf = (char*) malloc (PD_TMP_BUF_LEN + 1);
+
+	memset(outMsg, 0, sizeof(outMsg));
+	if (GetField_CString(hIn, "redirect_url", &csPtr)) {
+DEBUGLOG(("FormatMsg here\n"));
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, "?");
+
+// credential
+		if (GetField_CString(hIn, "credential", &csTmp)) {
+DEBUGLOG(("credential = [%s]\n", csTmp));
+			strcat((char*)outMsg, "credential");
+			strcat((char*)outMsg, MY_GPV_FIELD_TOKEN);
+			strcat((char*)outMsg, url_encode(csTmp));
+			strcat((char*)outMsg, MY_GPV_TOKEN);
+		}
+		else {
+DEBUGLOG(("credential is missing\n"));
+			iRet = PD_ERR;
+		}
+
+// TLG - Transaction Logging
+		if (GetField_CString(hIn, "psp_id", &csTmp)) {
+			int iDtlRet = PD_FALSE;
+DEBUGLOG(("Call DBPspUrl:IsRedirectURL\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspUrl", "IsRedirectURL");
+			iDtlRet = ((unsigned long)(DBObjPtr)(csTmp));
+DEBUGLOG(("IsRedirectUrl = [%d]\n", iDtlRet));
+
+			if (iDtlRet) {
+				if (GetField_CString(hIn, "txn_seq", &csTmp)) {
+DEBUGLOG(("Call DBDefTlgTagConvert:GetRandomTag\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBDefTlgTagConvert", "GetRandomTag");
+					iDtlRet = ((unsigned long)(DBObjPtr)("txn_seq", csTag));
+
+					if (iDtlRet == PD_OK) {
+DEBUGLOG(("org_tag [%s], new_tag [%s]\n", "txn_seq", csTag));
+						base64_encode((unsigned char*)csTmp, strlen(csTmp), csTmpBuf, PD_TMP_BUF_LEN);
+						strcat((char*)outMsg, csTag);
+						strcat((char*)outMsg, MY_GPV_FIELD_TOKEN);
+						strcat((char*)outMsg, csTmpBuf);
+						strcat((char*)outMsg, MY_GPV_TOKEN);
+					} else {
+DEBUGLOG(("Call DBDefTlgTagConvert:GetRandomTag failed! Skip insert TLG, iDtlRet = [%d]\n", iDtlRet));
+					}
+				} else {
+DEBUGLOG(("txn_seq not found! Skip insert TLG\n"));
+				}
+			}
+		}
+
+// url_method
+		if (GetField_CString(hIn, "url_method", &csMethod)) {
+DEBUGLOG(("url_method = [%s]\n", csMethod));
+		}
+		else
+			csMethod = strdup("");
+
+DEBUGLOG(("FormatMsg:: outmsg = [%s]\n", outMsg));
+		base64_encode(outMsg, strlen((char*)outMsg), csBuf, PD_MAX_BUFFER);
+DEBUGLOG(("FormatMsg:: after encode\n"));
+		outMsg[0] = '\0';
+		strcat((char*)outMsg, "redirect_url");
+		strcat((char*)outMsg, "=");
+		strcat((char*)outMsg, csBuf);
+		strcat((char*)outMsg, MY_GPV_TOKEN);
+		strcat((char*)outMsg, "url_method");
+		strcat((char*)outMsg, "=");
+		strcat((char*)outMsg, csMethod);
+		strcat((char*)outMsg, MY_GPV_TOKEN);
+		strcat((char*)outMsg, "ret_status=0");
+DEBUGLOG(("FormatMsg:: outMsg = [%s]\n", outMsg));
+
+		*outLen = strlen((const char*)outMsg);
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("***redirect_url is missing\n"));
+	}
+
+DEBUGLOG(("FormatMsg:: normal exit iRet = [%d]\n", iRet));
+	FREE_ME(csBuf);
+	FREE_ME(csTag);
+	FREE_ME(csTmpBuf);
+
+	return iRet;
+}
+
+
+int BreakDownMsg(hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int iRet = PD_OK;
+	char *csPtr;
+	hash_t *hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec, 0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n", inMsg, inLen));
+
+	//char csDst[PD_MAX_BUFFER + 1];
+	//int iLen = 0;
+	//urldecode(inMsg, strlen((const char *)inMsg), (unsigned char *)csDst, &iLen);
+
+	//if (Str2Cls(hRec, (char*)csDst, MY_GPV_TOKEN, MY_GPV_FIELD_TOKEN) == PD_OK) {
+	if (Str2Cls(hRec, (char*)inMsg, MY_GPV_TOKEN, MY_GPV_FIELD_TOKEN) == PD_OK) {
+		// data
+		if (GetField_CString(hRec, "data", &csPtr)) {
+DEBUGLOG(("data = [%s]\n", csPtr));
+			PutField_CString(hOut, "data_json", csPtr);
+
+			struct json_object *jobj, *jobj2;
+			enum json_type type;
+
+			jobj = json_tokener_parse((const char *)csPtr);
+			if (jobj != NULL) {
+				json_object_object_foreach(jobj, key, val) {
+					type = json_object_get_type(val);
+					switch (type) {
+						case json_type_string:
+//DEBUGLOG(("key = [%s]; val = [%s]\n", key, json_object_get_string(val)));
+							PutField_CString(hRec, key, json_object_get_string(val));
+						break;
+						case json_type_object:
+							jobj2 = json_tokener_parse(json_object_to_json_string(val));
+							if (jobj2 != NULL) {
+								json_object_object_foreach(jobj2, key, val) {
+									type = json_object_get_type(val);
+									switch (type) {
+										case json_type_string:
+//DEBUGLOG(("key = [%s]; val = [%s]\n", key, json_object_get_string(val)));
+											PutField_CString(hRec, key, json_object_get_string(val));
+										break;
+										case json_type_object:
+//DEBUGLOG(("key = [%s]; val = [%s]\n", key, json_object_to_json_string(val)));
+											PutField_CString(hRec, key, json_object_to_json_string(val));
+										break;
+										case json_type_null:
+//DEBUGLOG(("key = [%s]; val = [null]\n", key));
+										break;
+										default:
+DEBUGLOG(("unsupported type\n"));
+										break;
+									}
+								}
+							}
+						break;
+						default:
+DEBUGLOG(("unsupported type\n"));
+						break;
+					}
+				}
+			}
+
+			json_object_put(jobj);
+			json_object_put(jobj2);
+
+			// orderCode
+			if (GetField_CString(hRec, "orderCode", &csPtr)) {
+				PutField_CString(hOut, "txn_seq", csPtr);
+DEBUGLOG(("orderCode:txn_seq = [%s]\n", csPtr));
+			}
+			else {
+DEBUGLOG(("orderCode:txn_seq not found\n"));
+			}
+
+			// totalAmount
+			if (GetField_CString(hRec, "totalAmount", &csPtr)) {
+				char csTmp[PD_AMOUNT_LEN + 1];
+				trim_leading_zero(csTmp, csPtr);
+DEBUGLOG(("totalAmount:txn_amt = [%s]\n", csTmp));
+				PutField_CString(hOut, "txn_amt", csTmp);
+			} else {
+DEBUGLOG(("totalAmount:txn_amt not found\n"));
+			}
+
+			// orderStatus
+			if (GetField_CString(hRec, "orderStatus", &csPtr)) {
+				PutField_CString(hOut, "status", csPtr);
+DEBUGLOG(("orderStatus:status = [%s]\n", csPtr));
+			}
+			else {
+DEBUGLOG(("orderStatus:status not found\n"));
+			}
+
+			// tradeNo
+			if (GetField_CString(hRec, "tradeNo", &csPtr)) {
+				PutField_CString(hOut, "tid", csPtr);
+DEBUGLOG(("tradeNo:tid = [%s]\n", csPtr));
+			}
+			else {
+DEBUGLOG(("tradeNo:tid not found\n"));
+			}
+
+			// payTime
+			if (GetField_CString(hRec, "payTime", &csPtr)) {
+				char csTxnDate[PD_DATE_LEN + 1];
+				strncpy(csTxnDate, csPtr, PD_DATE_LEN);
+				csTxnDate[PD_DATE_LEN] = '\0';
+DEBUGLOG(("payTime:fundin_date = [%s]\n", csPtr));
+				PutField_CString(hOut, "fundin_date", csPtr);
+				PutField_CString(hOut, "txn_date", csTxnDate);
+			} else {
+DEBUGLOG(("payTime:fundin_date not found\n"));
+			}
+
+			// clearDate
+		}
+
+		// sign
+		if (GetField_CString(hRec, "sign", &csPtr)) {
+DEBUGLOG(("sign = [%s]\n", csPtr));
+			PutField_CString(hOut, "sign", csPtr);
+		}
+	}
+	else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+
+DEBUGLOG(("BreakDownMsg Exit\n"));
+	return iRet;
+}
+
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	return iRet;
+}
+
+
+int BuildAuthData(hash_t *hIn)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	*csBuf;
+	double	dTmp;
+	char	csTmpAmt[PD_TMP_BUF_LEN + 1];
+	char	csDateTime[PD_DATETIME_LEN * 2];
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+DEBUGLOG(("BuildAuthData()\n"));
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+	if (GetField_CString(hIn, "order_num", &csPtr)) {
+
+		json_object *jobj = json_object_new_object();
+
+// start of head
+		json_object *jobj2 = json_object_new_object();
+
+		// version
+DEBUGLOG(("version = [%s]\n", MY_GPV_VERSION));
+		json_object_object_add(jobj2, "version", json_object_new_string(MY_GPV_VERSION));
+
+		// method
+DEBUGLOG(("method = [%s]\n", MY_GPV_METHOD));
+		json_object_object_add(jobj2, "method", json_object_new_string(MY_GPV_METHOD));
+
+		// productId
+DEBUGLOG(("productId = [%s]\n", MY_GPV_PRODUCT_ID));
+		json_object_object_add(jobj2, "productId", json_object_new_string(MY_GPV_PRODUCT_ID));
+
+		// accessType
+DEBUGLOG(("accessType = [%s]\n", MY_GPV_ACCESS_TYPE));
+		json_object_object_add(jobj2, "accessType", json_object_new_string(MY_GPV_ACCESS_TYPE));
+
+		// mid
+		if (GetField_CString(hIn, "psp_merchant_id", &csPtr)) {
+DEBUGLOG(("mid = [%s]\n", csPtr));
+			json_object_object_add(jobj2, "mid", json_object_new_string(csPtr));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("psp_merchant_id is missing\n"));
+		}
+
+		// channelType
+DEBUGLOG(("channelType = [%s]\n", MY_GPV_CHANNEL_TYPE));
+		json_object_object_add(jobj2, "channelType", json_object_new_string(MY_GPV_CHANNEL_TYPE));
+
+		// reqTime
+		if (GetField_CString(hIn, "local_tm_date", &csPtr)) {
+			char *csPtr2;
+			if (GetField_CString(hIn, "local_tm_time", &csPtr2)) {
+				sprintf(csDateTime, "%s%s", csPtr, csPtr2);
+DEBUGLOG(("reqTime = [%s]\n", csDateTime));
+				json_object_object_add(jobj2, "reqTime", json_object_new_string(csDateTime));
+			}
+			else {
+				iRet = PD_ERR;
+DEBUGLOG(("local_tm_time is missing\n"));
+			}
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("local_tm_date is missing\n"));
+		}
+// end of head
+
+		json_object_object_add(jobj, "head", jobj2);
+
+// start of body
+		json_object *jobj3 = json_object_new_object();
+
+		// orderCode
+		if (GetField_CString(hIn, "order_num", &csPtr)) {
+DEBUGLOG(("orderCode = [%s]\n", csPtr));
+			json_object_object_add(jobj3, "orderCode", json_object_new_string(csPtr));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("order_num is missing\n"));
+		}
+
+		// totalAmount
+		if (GetField_Double(hIn, "psp_txn_amt", &dTmp)) {
+			sprintf((char*)csTmpAmt, "%012ld", double2long(dTmp));
+DEBUGLOG(("totalAmount = [%s]\n", csTmpAmt));
+			json_object_object_add(jobj3, "totalAmount", json_object_new_string(csTmpAmt));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("psp_txn_amt is missing\n"));
+		}
+
+		// subject
+DEBUGLOG(("subject = [%s]\n", MY_GPV_SUBJECT));
+		json_object_object_add(jobj3, "subject", json_object_new_string(MY_GPV_SUBJECT));
+
+		// body
+DEBUGLOG(("body = [%s]\n", MY_GPV_BODY));
+		json_object_object_add(jobj3, "body", json_object_new_string(MY_GPV_BODY));
+
+		// txnTimeOut
+		if (GetField_CString(hIn, "psp_key_id", &csPtr)) {
+DEBUGLOG(("psp_key_id = [%s]\n", csPtr));
+			struct tm orig_tm;
+			time_t epoch;
+			struct tm *converted_tm;
+			char csConverted[PD_DATETIME_LEN * 2];
+			if (strptime((const char*)csDateTime, "%Y%m%d%H%M%S", &orig_tm) != NULL) {
+				epoch = mktime(&orig_tm);
+				epoch = epoch + atoi(csPtr);
+				converted_tm = localtime(&epoch);
+				strftime(csConverted, sizeof(csConverted), "%Y%m%d%H%M%S", converted_tm);
+DEBUGLOG(("txnTimeOut = [%s]\n", csConverted));
+				json_object_object_add(jobj3, "txnTimeOut", json_object_new_string(csConverted));
+			}
+		}
+
+		// payMode
+DEBUGLOG(("payMode = [%s]\n", MY_GPV_PAY_MODE));
+		json_object_object_add(jobj3, "payMode", json_object_new_string(MY_GPV_PAY_MODE));
+
+// start of payExtra
+		json_object *jobj4 = json_object_new_object();
+
+		// payType
+DEBUGLOG(("payType = [%s]\n", MY_GPV_PAY_TYPE));
+		json_object_object_add(jobj4, "payType", json_object_new_string(MY_GPV_PAY_TYPE));
+
+		// bankCode
+		if (GetField_CString(hIn, "bank_code", &csPtr)) {
+DEBUGLOG(("bankCode = [%s]\n", csPtr));
+			json_object_object_add(jobj4, "bankCode", json_object_new_string(csPtr));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("bank_code is missing\n"));
+		}
+// end of payExtra
+
+		json_object_object_add(jobj3, "payExtra", jobj4);
+
+		// clientIp
+		if (GetField_CString(hIn, "org_ip_addr", &csPtr)) {
+DEBUGLOG(("clientIp = [%s]\n", csPtr));
+			json_object_object_add(jobj3, "clientIp", json_object_new_string(csPtr));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("org_ip_addr is missing\n"));
+		}
+
+		// notifyUrl
+		if (GetField_CString(hIn, "return_url_only", &csPtr)) {
+DEBUGLOG(("notifyUrl = [%s]\n", csPtr));
+			json_object_object_add(jobj3, "notifyUrl", json_object_new_string(csPtr));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("return_url_only is missing\n"));
+		}
+
+		// frontUrl
+		if (GetField_CString(hIn, "fe_url", &csPtr)) {
+DEBUGLOG(("frontUrl = [%s]\n", csPtr));
+			json_object_object_add(jobj3, "frontUrl", json_object_new_string(csPtr));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("fe_url is missing\n"));
+		}
+// end of body
+
+		json_object_object_add(jobj, "body", jobj3);
+
+		strcpy((char*)csBuf, str_replace((char*)(json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PLAIN)), "\\/", "/"));
+
+		PutField_CString(hIn, "data_json", csBuf);
+
+		json_object_put(jobj);
+		json_object_put(jobj2);
+		json_object_put(jobj3);
+		json_object_put(jobj4);
+	} else {
+		iRet = PD_ERR;
+DEBUGLOG(("BuildAuthData:: not necessary\n"));
+	}
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("BuildAuthData:: auth_data = [%s]\n", csBuf));
+	FREE_ME(csBuf);
+
+DEBUGLOG(("BuildAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildRspAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+	char *csPtr;
+	char *csBuf;
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+DEBUGLOG(("BuildRspAuthData()\n"));
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+// data_json
+	if (GetField_CString(hIn, "data_json", &csPtr)) {
+		strcat(csBuf, csPtr);
+	}
+	else {
+DEBUGLOG(("data_json is missing\n"));
+	}
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("BuildRspAuthData:: auth_data = [%s]\n", csBuf));
+	FREE_ME(csBuf);
+
+DEBUGLOG(("BuildRspAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+char *str_replace(char *orig, char *rep, char *with) {
+	char *result;	// the return string
+	char *ins;	// the next insert point
+	char *tmp;	// varies
+	int len_rep;	// length of rep (the string to remove)
+	int len_with;	// length of with (the string to replace rep with)
+	int len_front;	// distance between rep and end of last rep
+	int count;	// number of replacements
+
+	if (!orig || !rep)
+		return NULL;
+	len_rep = strlen(rep);
+	if (len_rep == 0)
+		return NULL; // empty rep causes infinite loop during count
+	if (!with)
+		with = "";
+	len_with = strlen(with);
+
+	// count the number of replacements needed
+	ins = orig;
+	for (count = 0; (tmp = strstr(ins, rep)); ++count) {
+		ins = tmp + len_rep;
+	}
+
+	tmp = result = malloc(strlen(orig) + (len_with - len_rep) * count + 1);
+
+	if (!result)
+		return NULL;
+
+	// first time through the loop, all the variable are set correctly
+	// from here on,
+	//    tmp points to the end of the result string
+	//    ins points to the next occurrence of rep in orig
+	//    orig points to the remainder of orig after "end of rep"
+	while (count--) {
+		ins = strstr(orig, rep);
+		len_front = ins - orig;
+		tmp = strncpy(tmp, orig, len_front) + len_front;
+		tmp = strcpy(tmp, with) + len_with;
+		orig += len_front + len_rep; // move to next "end of rep"
+	}
+	strcpy(tmp, orig);
+	return result;
+}
+
+
+int FormatInitMsg(const hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int	iRet = PD_OK;
+
+	char	*csPtr = NULL;
+	char	*csURL = NULL;
+	char	*csBuf;
+	char	*csTmp = NULL;
+
+DEBUGLOG(("FormatInitMsg()\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+	outMsg[0] = '\0';
+
+	char *csValueTmp;
+	csValueTmp = (char*) malloc (256);
+	DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+	if ((unsigned long)(DBObjPtr)("GPV_REQ_URL", csValueTmp) == FOUND) {
+		strcpy((char*)csBuf, "url");
+DEBUGLOG(("psp url = [%s]\n", csValueTmp));
+		strcat((char*)csBuf, MY_GPV_FIELD_TOKEN);
+		strcat((char*)csBuf, csValueTmp);
+DEBUGLOG(("psp_url = [%s]\n", csBuf));
+
+		sprintf((char*)outMsg, "%0*d", PD_WEB_HEADER_LEN_LEN, (int)strlen(csBuf));
+DEBUGLOG(("outMsg = [%s]\n", outMsg));
+		strcat((char*)outMsg, csBuf);
+	}
+	FREE_ME(csBuf);
+	FREE_ME(csValueTmp);
+
+// charset
+DEBUGLOG(("charset = [%s]\n", MY_GPV_CHARSET));
+	strcat((char*)outMsg, "charset");
+	strcat((char*)outMsg, MY_GPV_FIELD_TOKEN);
+	strcat((char*)outMsg, MY_GPV_CHARSET);
+	strcat((char*)outMsg, MY_GPV_TOKEN);
+
+// data
+	if (GetField_CString(hIn, "data_json", &csTmp)) {
+DEBUGLOG(("data = [%s]\n", csTmp));
+		strcat((char*)outMsg, "data");
+		strcat((char*)outMsg, MY_GPV_FIELD_TOKEN);
+		strcat((char*)outMsg, csTmp);
+		strcat((char*)outMsg, MY_GPV_TOKEN);
+	}
+	else {
+DEBUGLOG(("data_json is missing\n"));
+		iRet = PD_ERR;
+	}
+
+// signType
+DEBUGLOG(("signType = [%s]\n", MY_GPV_SIGNTYPE));
+	strcat((char*)outMsg, "signType");
+	strcat((char*)outMsg, MY_GPV_FIELD_TOKEN);
+	strcat((char*)outMsg, MY_GPV_SIGNTYPE);
+	strcat((char*)outMsg, MY_GPV_TOKEN);
+
+// sign
+	if (GetField_CString(hIn, "sign", &csTmp)) {
+DEBUGLOG(("sign = [%s]\n", url_encode(csTmp)));
+		strcat((char*)outMsg, "sign");
+		strcat((char*)outMsg, MY_GPV_FIELD_TOKEN);
+		strcat((char*)outMsg, url_encode(csTmp));
+//		strcat((char*)outMsg, MY_GPV_TOKEN);
+	}
+	else {
+DEBUGLOG(("sign is missing\n"));
+		iRet = PD_ERR;
+	}
+
+// extend
+// optional
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInitMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatInitMsg() Exit\n"));
+	FREE_ME(csPtr);
+	FREE_ME(csURL);
+
+	return iRet;
+}
+
+
+int BreakDownInitRspMsg(hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int iRet = PD_OK;
+	char *csPtr = NULL;
+	hash_t *hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec, 0);
+
+DEBUGLOG(("BreakDownInitRspMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n", inMsg, inLen));
+
+	char csDst[PD_MAX_BUFFER + 1];
+	int iLen = 0;
+	urldecode(inMsg, strlen((const char *)inMsg), (unsigned char *)csDst, &iLen);
+
+	if (Str2Cls(hRec, (char*)csDst, MY_GPV_TOKEN, MY_GPV_FIELD_TOKEN) == PD_OK) {
+		// charset
+		if (GetField_CString(hRec, "charset", &csPtr)) {
+DEBUGLOG(("charset = [%s]\n", csPtr));
+		}
+
+		// data
+		if (GetField_CString(hRec, "data", &csPtr)) {
+DEBUGLOG(("data = [%s]\n", csPtr));
+			PutField_CString(hOut, "data_json", csPtr);
+
+			struct json_object *jobj, *jobj2;
+			enum json_type type;
+
+			jobj = json_tokener_parse((const char *)csPtr);
+			if (jobj != NULL) {
+				json_object_object_foreach(jobj, key, val) {
+					type = json_object_get_type(val);
+					switch (type) {
+						case json_type_string:
+//DEBUGLOG(("key = [%s]; val = [%s]\n", key, json_object_get_string(val)));
+							PutField_CString(hRec, key, json_object_get_string(val));
+						break;
+						case json_type_object:
+							jobj2 = json_tokener_parse(json_object_to_json_string(val));
+							if (jobj2 != NULL) {
+								json_object_object_foreach(jobj2, key, val) {
+									type = json_object_get_type(val);
+									switch (type) {
+										case json_type_string:
+//DEBUGLOG(("key = [%s]; val = [%s]\n", key, json_object_get_string(val)));
+											PutField_CString(hRec, key, json_object_get_string(val));
+										break;
+										case json_type_object:
+//DEBUGLOG(("key = [%s]; val = [%s]\n", key, json_object_to_json_string(val)));
+											PutField_CString(hRec, key, json_object_to_json_string(val));
+										break;
+										case json_type_null:
+//DEBUGLOG(("key = [%s]; val = [null]\n", key));
+										break;
+										default:
+DEBUGLOG(("unsupported type\n"));
+										break;
+									}
+								}
+							}
+						break;
+						default:
+DEBUGLOG(("unsupported type\n"));
+						break;
+					}
+				}
+			}
+
+			json_object_put(jobj);
+			json_object_put(jobj2);
+
+			// respCode
+			if (GetField_CString(hRec, "respCode", &csPtr)) {
+DEBUGLOG(("respCode:return_code = [%s]\n", csPtr));
+				PutField_CString(hOut, "return_code", csPtr);
+			}
+
+			// respMsg
+			if (GetField_CString(hRec, "respMsg", &csPtr)) {
+DEBUGLOG(("respMsg:return_msg = [%s]\n", csPtr));
+				PutField_CString(hOut, "return_msg", csPtr);
+			}
+
+			// credential
+			if (GetField_CString(hRec, "credential", &csPtr)) {
+DEBUGLOG(("credential = [%s]\n", csPtr));
+				PutField_CString(hOut, "credential", csPtr);
+			}
+		}
+
+		// sign
+		if (GetField_CString(hRec, "sign", &csPtr)) {
+DEBUGLOG(("sign = [%s]\n", csPtr));
+			PutField_CString(hOut, "sign", csPtr);
+		}
+	} else {
+DEBUGLOG(("BreakDownInitRspMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+DEBUGLOG(("BreakDownInitRspMsg Exit\n"));
+	return iRet;
+}
+

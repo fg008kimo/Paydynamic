@@ -1,0 +1,90 @@
+CREATE OR REPLACE FUNCTION sp_txn_code_insert(
+	in_txn_code		txn_code.tc_code%type,
+	in_process_type		txn_code.tc_process_type%type,
+	in_process_code		txn_code.tc_process_code%type,
+	in_desc			txn_code.tc_desc%type,
+	in_voidable		txn_code.tc_voidable%type,
+	in_admin_fe_display	txn_code.tc_fe_display%type,
+	in_merchant_fe_display	txn_code.tc_merchant_fe_display%type,
+	in_merchant_txn_display txn_code.tc_merchant_txn_display%type,
+	in_psp_txn_display	txn_code.tc_psp_txn_display%type,
+	in_mi_fe_display	txn_code.tc_mi_fe_display%type,
+        in_ofl_fe_display       txn_code.tc_ofl_fe_display%type,
+        in_ofl_merchant_fe_display      txn_code.tc_ofl_merchant_fe_display%type,
+        in_ofl_merchant_txn_display     txn_code.tc_ofl_merchant_txn_display%type,
+        in_ofl_provider_txn_display     txn_code.tc_ofl_provider_txn_display%type,
+	in_mi_ofl_fe_display		txn_code.tc_mi_ofl_fe_display%type,
+        in_ofl_is_offset                txn_code.tc_ofl_is_offset%type,
+        in_ofl_void_code                txn_code.tc_ofl_void_code%type,
+        in_ofl_is_void                  txn_code.tc_ofl_is_void%type,
+        in_ofl_allow_cancel		txn_code.tc_ofl_allow_cancel%type,
+        in_ofl_allow_fe_init		txn_code.tc_ofl_allow_fe_init%type,
+	in_create_user		txn_code.tc_create_user%type)
+  RETURN NUMBEr IS
+BEGIN
+
+	INSERT INTO txn_code(
+		tc_code,
+		tc_process_type,
+		tc_process_code,
+		tc_desc,
+		tc_create_user,
+		tc_create_timestamp,
+		tc_update_user,
+		tc_update_timestamp,
+		tc_voidable,
+		tc_fe_display,
+		tc_merchant_fe_display,
+		tc_merchant_txn_display,
+		tc_psp_txn_display,
+		tc_mi_fe_display,
+                tc_ofl_fe_display,
+                tc_ofl_merchant_fe_display,
+                tc_ofl_merchant_txn_display,
+                tc_ofl_provider_txn_display,
+		tc_mi_ofl_fe_display,
+		tc_ofl_is_offset,
+                tc_ofl_void_code,
+                tc_ofl_is_void,
+                tc_ofl_allow_cancel,
+                tc_ofl_allow_fe_init
+		)
+	VALUES (	
+		in_txn_code,
+		in_process_type,
+		in_process_code,
+		in_desc,
+		in_create_user,
+		sysdate,
+		in_create_user,
+		sysdate,
+		in_voidable,
+		in_admin_fe_display,
+		in_merchant_fe_display,
+		in_merchant_txn_display,
+		in_psp_txn_display,
+		in_mi_fe_display,
+                in_ofl_fe_display,
+                in_ofl_merchant_fe_display,
+		in_ofl_merchant_txn_display,
+                in_ofl_provider_txn_display,
+		in_mi_ofl_fe_display,
+                in_ofl_is_offset,
+                in_ofl_void_code,
+                in_ofl_is_void,
+                in_ofl_allow_cancel,
+                in_ofl_allow_fe_init
+		);
+
+	IF SQL%ROWCOUNT = 0 THEN
+		RETURN 1;
+	ELSE
+		RETURN 0;
+	END IF;
+
+EXCEPTION
+	WHEN OTHERS THEN	
+		RETURN 9;
+
+END sp_txn_code_insert;
+/

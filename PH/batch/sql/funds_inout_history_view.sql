@@ -1,0 +1,168 @@
+DROP VIEW FUNDS_INOUT_HISTORY_VIEW;
+
+/* Formatted on 5/19/2014 6:08:24 PM (QP5 v5.252.13127.32867) */
+CREATE OR REPLACE FORCE VIEW FUNDS_INOUT_HISTORY_VIEW
+(
+   TXN_DATE,
+   FROM_CCY,
+   FROM_AMT,
+   BANK_CCY,
+   BANK_AMT,
+   OLD_RATE,
+   NEW_RATE,
+   BANK_BAL,
+   TRANSACTION_TYPE,
+   TYPE,
+   TRANSACTION_ID,
+   TIME
+)
+AS
+   SELECT OFH_TXN_DATE txndate,
+          OFH_FROM_CCY fromccy,
+          OFH_FROM_AMT fromamt,
+          OFH_BANK_CCY bankccy,
+          OFH_BANK_AMT bankamt,
+          OFH_OLD_RATE oldrate,
+          OFH_NEW_RATE newrate,
+          OFH_BANK_BAL bankbal,
+          OFH_TXN_TYPE || ' (Offline platform)' transactionType,
+          OFH_FUND_TYPE TYPE,
+          OFH_TXN_ID TRANSACTION_ID,
+          OFH_TIME TIME
+     FROM OL_FUNDS_IN_OUT_HISTORY
+   UNION ALL
+     SELECT txndate,
+            fromccy,
+            fromamt,
+            bankccy,
+            bankamt,
+            oldrate,
+            newrate,
+            bankbal,
+            transactionType,
+            --COUNT (th_txn_id) cnt,
+            CASE txncode
+               WHEN 'STR' THEN 'Fund Out'
+               WHEN 'OSR' THEN 'Fund Out'
+               WHEN 'FPP' THEN 'Fund Out'
+               WHEN 'OPS' THEN 'Fund Out'
+               ELSE 'Fund In'
+            END
+               AS TYPE,
+            --CASE COUNT (th_txn_id)
+            --   WHEN 1 THEN th_txn_id
+            --   ELSE MAX (th_txn_id)
+            --END
+            th_txn_id AS TransactionID,
+            MAX (time) AS time
+       FROM (SELECT th_txn_id,
+                    th_txn_code TxnCode,
+                    tc_desc transactionType,
+                    NVL (f_fundin_date, fo_fundout_date) AS TxnDate,
+                    NVL (f_fundin_ccy, fo_from_ccy) AS FromCCY,
+                    f_fundin_amount AS FromAmt,
+                    NVL (f_bank_ccy, fo_fundout_ccy) AS BankCCY,
+                    NVL (f_bank_amount, fo_fundout_amount) AS BankAmt,
+                    fi_old_rate AS oldrate,
+                    fi_new_rate AS newrate,
+                    NVL (fi_bank_bal, fo_bank_bal) AS bankbal,
+                    th_transaction_amount,
+                    NVL (f_id, fo_id) FundsId,
+                    NVL (f_update_timestamp, fo_update_timestamp) time
+               FROM (SELECT th_txn_id,
+                            tc_desc,
+                            th_txn_code,
+                            th_transaction_amount,
+                            td_batch_id,
+                            th_update_timestamp
+                       FROM txn_header, txn_detail, txn_code
+                      WHERE     th_txn_code IN ('PST',
+                                                'PSD',
+                                                'STR',
+                                                'FPM',
+                                                'FPP',
+                                                'OSD',
+                                                'OPS')
+                            AND th_txn_id = td_txn_id
+                            AND th_ar_ind = 'A'
+                            AND th_status = 'C'
+                            AND tc_code = th_txn_code
+                            AND td_batch_id IS NOT NULL
+                     UNION ALL
+                     SELECT oth_txn_id AS th_txn_id,
+                            tc_desc || ' (Offline platform)',
+                            oth_txn_code AS th_txn_code,
+                            oth_transaction_amount AS th_transaction_amount,
+                            otd_batch_id AS td_batch_id,
+                            oth_update_timestamp AS th_update_timestamp
+                       FROM ol_txn_header, ol_txn_detail, txn_code
+                      WHERE     oth_txn_code IN ('OSR', 'FIM')
+                            AND oth_txn_id = otd_txn_id
+                            AND oth_ar_ind = 'A'
+                            AND oth_status = 'C'
+                            AND tc_code = oth_txn_code
+                            AND otd_batch_id IS NOT NULL)
+                    LEFT JOIN
+                    (SELECT f_id,
+                            f_fundin_date,
+                            f_fundin_ccy,
+                            f_fundin_amount,
+                            f_bank_ccy,
+                            f_bank_amount,
+                            fi_old_rate,
+                            fi_new_rate,
+                            fi_bank_bal,
+                            f_update_timestamp
+                       FROM funds_in, funds_in_history
+                      WHERE     fi_funds_in_id = f_id
+                            AND fi_funds_in_ccy = f_fundin_ccy
+                            AND fi_bank_ccy = f_bank_ccy)
+                       ON     f_id = td_batch_id
+                          AND th_txn_code IN ('PST',
+                                              'PSD',
+                                              'FPM',
+                                              'OSD',
+                                              'FIM')
+                    LEFT JOIN
+                    (SELECT fo_id,
+                            NVL (fo_from_ccy, NULL) AS fo_from_ccy,
+                            NVL (fo_funds_out_ccy, fo_fundout_ccy)
+                               AS fo_fundout_ccy,
+                            NVL (fo_funds_out_amt, fo_fundout_amount)
+                               AS fo_fundout_amount,
+                            NVL (fo_new_bal, fo_bank_bal) AS fo_bank_bal,
+                            fo_fundout_date,
+                            fo_update_timestamp
+                       FROM (SELECT fo_id,
+                                    fo_fundout_ccy,
+                                    fo_fundout_amount,
+                                    fo_fundout_date,
+                                    fo_bank_bal,
+                                    fo_update_timestamp
+                               FROM funds_out)
+                            LEFT JOIN (SELECT fo_funds_out_id,
+                                              fo_from_ccy,
+                                              fo_funds_out_ccy,
+                                              fo_funds_out_amt,
+                                              fo_new_bal
+                                         FROM funds_out_history)
+                               ON fo_id = fo_funds_out_id)
+                       ON     fo_id = td_batch_id
+                          AND th_txn_code IN ('STR',
+                                              'FPP',
+                                              'OPS',
+                                              'OSR'))
+   GROUP BY transactionType,
+            th_txn_id,
+            txncode,
+            txndate,
+            fromccy,
+            fromamt,
+            bankccy,
+            bankamt,
+            oldrate,
+            newrate,
+            bankbal,
+            fundsid
+   ORDER BY txndate DESC, time DESC;
+

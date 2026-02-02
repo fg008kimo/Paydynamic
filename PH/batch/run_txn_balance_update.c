@@ -1,0 +1,1241 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[26];
+};
+static struct sqlcxp sqlfpn =
+{
+    25,
+    "run_txn_balance_update.pc"
+};
+
+
+static unsigned int sqlctx = 1503852253;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+ 
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/03/19              [WMC]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+#include "run_txn_balance_update.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_last_phdate[PD_DATE_LEN+1];
+
+static char    cDebug='Y';
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+int process_txn_balance(const char *csDate, recordset_t *rErrRec);
+int update_txn_balance(const char *csDate, recordset_t *rErrRec);
+int validate_txn_balance(const char *csDate, recordset_t *rErrRec);
+int send_alert_email(recordset_t *rErrRec);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = SUCCESS;
+	int	iDtlRet = PD_OK;
+
+	recordset_t *rErrRec;
+        rErrRec = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rErrRec, 0);
+
+DEBUGLOG(("batch_proc: Start!\n"));
+
+	iRet = parse_arg(argc,argv);
+        if (iRet != SUCCESS) {
+                printf("*usage: -d last_phdate\n");
+                return FAILURE;
+        }
+
+DEBUGLOG(("last_phdate = [%s]\n",cs_last_phdate));
+
+	// Process Txn Balance
+	if (iRet == SUCCESS) { 
+
+		iDtlRet = process_txn_balance(cs_last_phdate, rErrRec);
+		if (iDtlRet != PD_OK) {
+
+			// Send Alert Email	
+			iDtlRet = send_alert_email(rErrRec);
+		
+			iRet = FAILURE;
+		}
+	}
+
+	RecordSet_Destroy(rErrRec);
+        FREE_ME(rErrRec);	
+
+DEBUGLOG(("batch_proc: iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_last_phdate,"");
+
+	if (argc < 2) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"d:")) != EOF) {
+		switch (c) {
+			case 'd':
+                                strcpy(cs_last_phdate, optarg);
+                                break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_last_phdate,""))
+		return FAILURE;
+
+        return SUCCESS;
+}
+
+int process_txn_balance(const char *csDate, recordset_t *rErrRec)
+{
+	int	iRet = PD_OK;		
+	int	iDtlRet = PD_TRUE;
+
+	int	i = 0;
+	int	iPartyTypeCnt = 2;
+	int     iErrCnt = 0;
+
+	char	cPartyType = ' ';
+	
+	hash_t  *hGetErrRec = NULL;
+
+	hash_t  *hTxnBalLog;
+        hTxnBalLog = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxnBalLog,0);
+
+DEBUGLOG(("process_txn_balance: Start!\n"));
+
+	PutField_CString(hTxnBalLog, "txn_aprv_date", csDate);
+	PutField_CString(hTxnBalLog, "update_user", PD_UPDATE_USER);
+
+	// Check Txn Balance Log [Merchant] and [Psp] - Is Previous Completed
+	for (i=0;i<iPartyTypeCnt;i++) {	
+
+		if (iRet == PD_OK) {
+	
+			if (i == 0) {
+				cPartyType = PD_TYPE_MERCHANT;
+			} else if (i == 1) {
+				cPartyType = PD_TYPE_PSP;
+			}	
+			PutField_Char(hTxnBalLog, "party_type", cPartyType);	
+		
+			DBObjPtr = CreateObj(DBPtr,"DBTxnBalanceLog","IsPrevCompleted");
+	                iDtlRet = (unsigned long)(DBObjPtr)(hTxnBalLog);
+			if (iDtlRet == PD_TRUE) {
+DEBUGLOG(("Call DBTxnBalanceLog: IsPrevCompleted[%c]: True!!\n", cPartyType));
+			} else if (iDtlRet == PD_FALSE){
+DEBUGLOG(("Call DBTxnBalanceLog: IsPrevCompleted[%c]: False!!\n", cPartyType));
+				iRet = INT_PREV_TXN_BAL_UPD_NOT_CPL;
+			} else {
+DEBUGLOG(("Call DBTxnBalanceLog: IsPrevCompleted: Failure!!\n"));
+ERRLOG("run_txn_balance_update: process_txn_balance: Call DBTxnBalanceLog: IsPrevCompleted: Failure!!\n");
+				iRet = INT_ERR;
+			}
+		}
+	}
+
+	// Check Txn Balance Log [Merchant] and [Psp] - Is Existed
+        for (i=0;i<iPartyTypeCnt;i++) {
+
+		if (iRet == PD_OK) {
+
+                        if (i == 0) {
+                                cPartyType = PD_TYPE_MERCHANT;
+                        } else if (i == 1) {
+                                cPartyType = PD_TYPE_PSP;
+                        }
+                        PutField_Char(hTxnBalLog, "party_type", cPartyType);
+
+                       	DBObjPtr = CreateObj(DBPtr,"DBTxnBalanceLog","IsExisted");
+                     	iDtlRet = (unsigned long)(DBObjPtr)(hTxnBalLog);
+                      	if (iDtlRet == PD_TRUE) {
+DEBUGLOG(("Call DBTxnBalanceLog: IsExisted[%c]: True!!\n", cPartyType));
+                              	iRet = INT_TXN_BAL_LOG_EXISTS;
+                     	} else if (iDtlRet == PD_FALSE) {
+DEBUGLOG(("Call DBTxnBalanceLog: IsExisted[%c]: False!!\n", cPartyType));
+                      	} else {
+DEBUGLOG(("Call DBTxnBalanceLog: IsExisted: Failure!!\n"));
+ERRLOG("run_txn_balance_update: process_txn_balance: Call DBTxnBalanceLog: IsExisted: Failure!!\n");
+                               	iRet = INT_ERR;
+                     	}
+                }	
+	}
+
+	// Update Txn Balance Log [Merchant] and [Psp] to "Processing"
+        if (iRet == PD_OK) {
+        
+		for (i=0;i<iPartyTypeCnt;i++) {
+	
+                	if (iRet == PD_OK) {
+
+				if (i == 0) {
+                        	        cPartyType = PD_TYPE_MERCHANT;
+                        	} else if (i == 1) {
+                        	        cPartyType = PD_TYPE_PSP;
+                        	}
+				PutField_Char(hTxnBalLog, "party_type", cPartyType);
+				PutField_Int(hTxnBalLog, "is_completed", PD_FALSE);
+
+                   		DBObjPtr = CreateObj(DBPtr,"DBTxnBalanceLog","UpdateBalLog");
+                   		if ((unsigned long)(DBObjPtr)(hTxnBalLog) == PD_OK) {
+DEBUGLOG(("Call DBTxnBalanceLog: UpdateBalLog[%c]: [is_completed] = [0]: Success!!\n", cPartyType));
+                     		} else {
+DEBUGLOG(("Call DBTxnBalanceLog: UpdateBalLog[%c]: [is_completed] = [0]: Failure!!\n", cPartyType));
+ERRLOG("run_txn_balance_update: process_txn_balance: Call DBTxnBalanceLog: UpdateBalLog: Failure!!\n");
+                        	     	iRet = INT_ERR;
+                      		}
+			}
+		}
+
+             	if (iRet == PD_OK) {
+DEBUGLOG(("Call TxnCommit()!!\n"));
+                    	TxnCommit();
+             	} else {
+DEBUGLOG(("Call TxnAbort()!!\n"));
+                     	TxnAbort();
+              	}
+	}
+
+	// Update Txn Balance
+	if (iRet == PD_OK) {
+		iRet = update_txn_balance(csDate, rErrRec);
+	}
+
+	// Validate Txn Balance
+	if (iRet == PD_OK) {
+                iRet = validate_txn_balance(csDate, rErrRec);
+        }
+
+	// Update Txn Balance Log [Merchant] and [Psp] to "Completed"
+	if (iRet == PD_OK) {
+
+		for (i=0;i<iPartyTypeCnt;i++) {
+
+                	if (iRet == PD_OK) {
+	
+				if (i == 0) {
+	                                cPartyType = PD_TYPE_MERCHANT;
+	                        } else if (i == 1) {
+	                                cPartyType = PD_TYPE_PSP;
+	                        }
+	                        PutField_Char(hTxnBalLog, "party_type", cPartyType);
+				PutField_Int(hTxnBalLog, "is_completed", PD_TRUE);
+
+	            		DBObjPtr = CreateObj(DBPtr,"DBTxnBalanceLog","UpdateBalLog");
+	            		if ((unsigned long)(DBObjPtr)(hTxnBalLog) == PD_OK) {
+DEBUGLOG(("Call DBTxnBalanceLog: UpdateBalLog[%c]: [is_completed] = [1]: Success!!\n", cPartyType));
+				} else {
+DEBUGLOG(("Call DBTxnBalanceLog: UpdateBalLog[%c]: [is_completed] = [1]: Failure!!\n", cPartyType));
+ERRLOG("run_txn_balance_update: process_txn_balance: Call DBTxnBalanceLog: UpdateBalLog: Failure!!\n");
+					iRet = INT_ERR;
+	            		}
+			}
+		}
+
+		if (iRet == PD_OK) {
+DEBUGLOG(("Call TxnCommit()!!\n"));
+                  	TxnCommit();
+             	} else {
+DEBUGLOG(("Call TxnAbort()!!\n"));
+                     	TxnAbort();
+               	}
+	}
+
+	// Add Error Record into the Result
+	if (iRet != PD_OK) {
+
+		hGetErrRec = RecordSet_GetFirst(rErrRec);
+                while (hGetErrRec) {	
+
+			iErrCnt++;
+
+			hGetErrRec = RecordSet_GetNext(rErrRec);
+		}
+
+		if (iErrCnt == 0) {
+
+			hash_t  *hErrRec;
+        		hErrRec = (hash_t*) malloc (sizeof(hash_t));
+        		hash_init(hErrRec,0);
+
+			PutField_CString(hErrRec, "txn_aprv_date", csDate);
+			PutField_Int(hErrRec, "err_code", iRet);
+DEBUGLOG(("err_code = [%d]\n", iRet));
+
+			RecordSet_Add(rErrRec, hErrRec);
+			
+			iErrCnt++;
+                }
+	}
+
+	hash_destroy(hTxnBalLog);
+        FREE_ME(hTxnBalLog);
+	
+DEBUGLOG(("process_txn_balance: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int update_txn_balance(const char *csDate, recordset_t *rErrRec)
+{
+	int     iRet = PD_OK;
+	int	iDtlRet = PD_FOUND;
+
+	int	iCnt = 0;
+
+	hash_t  *hTxnBalDetail = NULL;
+
+	recordset_t *rTxnBalDetail;
+        rTxnBalDetail = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rTxnBalDetail, 0);
+
+DEBUGLOG(("update_txn_balance: Start!\n"));
+
+	// Get All Record(s) where Status = [P] in Txn Balance Detail
+	DBObjPtr = CreateObj(DBPtr,"DBTxnBalanceDetail","GetBalDetails");
+	iDtlRet = (unsigned long)(DBObjPtr)(csDate, PD_PROCESSING, rTxnBalDetail);
+	if (iDtlRet == PD_FOUND) {
+DEBUGLOG(("Call DBTxnBalanceDetail: GetBalDetails: Record(s) Found!!\n"));
+	
+		// Loop All Record(s)
+              	hTxnBalDetail = RecordSet_GetFirst(rTxnBalDetail);
+              	while ((iRet == PD_OK) && (hTxnBalDetail)) {
+
+			int	iSkip = PD_FALSE;
+
+			double  dPtr = 0.0;
+
+			char    cUpdateStatus = PD_COMPLETE;
+			char	cPtr = ' ';
+
+			char    *csTxnSeq = NULL;
+			char    *csTxnCode = NULL;
+			char    *csMerchantId = NULL;
+			char    *csServiceCode = NULL;
+			char    *csCountryId = NULL;
+			char    *csNetCcy = NULL;
+			char    *csPspId = NULL;
+			char    *csPspCcy = NULL;
+			char    *csPtr = NULL;
+
+			hash_t  *hMerchTxnBal;
+        		hMerchTxnBal = (hash_t*) malloc (sizeof(hash_t));
+        		hash_init(hMerchTxnBal,0);
+	
+        		hash_t  *hPspTxnBal;
+        		hPspTxnBal = (hash_t*) malloc (sizeof(hash_t));
+        		hash_init(hPspTxnBal,0);
+	
+			hash_t  *hErrRec;
+		        hErrRec = (hash_t*) malloc (sizeof(hash_t));
+        		hash_init(hErrRec,0);
+
+			PutField_CString(hMerchTxnBal,"update_user",PD_UPDATE_USER);
+        		PutField_CString(hPspTxnBal,"update_user",PD_UPDATE_USER);
+
+/* txn_seq */
+                       	if (GetField_CString(hTxnBalDetail,"txn_id",&csTxnSeq)) {
+DEBUGLOG(("[%d] txn_seq = [%s]\n", iCnt, csTxnSeq));
+                               	PutField_CString(hMerchTxnBal, "txn_seq", csTxnSeq);
+                               	PutField_CString(hPspTxnBal, "txn_seq", csTxnSeq);
+				PutField_CString(hErrRec,"txn_seq",csTxnSeq); 
+                      	} else {
+DEBUGLOG(("[%d] txn_seq not found!!\n", iCnt));
+				iSkip = PD_TRUE;
+                   	}
+
+/* txn_code */
+                     	if (iSkip != PD_TRUE) {
+                             	if (GetField_CString(hTxnBalDetail,"txn_code",&csTxnCode)) {
+DEBUGLOG(("[%d] txn_code = [%s]\n", iCnt, csTxnCode));
+                                     	PutField_CString(hMerchTxnBal, "txn_code", csTxnCode);
+                                     	PutField_CString(hPspTxnBal, "txn_code", csTxnCode);
+                             	} else {
+DEBUGLOG(("[%d] txn_code not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                              	}
+                     	}
+
+/* merchant_id */
+			if (iSkip != PD_TRUE) {
+                        	if (GetField_CString(hTxnBalDetail, "merchant_id", &csMerchantId)) {
+DEBUGLOG(("[%d] merchant_id = [%s]\n", iCnt, csMerchantId));
+					PutField_CString(hMerchTxnBal, "merchant_id", csMerchantId);
+				} else {
+DEBUGLOG(("[%d] merchant_id not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                        	}
+			}
+
+/* service_code */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_CString(hTxnBalDetail, "service_code", &csServiceCode)) {
+DEBUGLOG(("[%d] service_code = [%s]\n", iCnt, csServiceCode));
+                                        PutField_CString(hMerchTxnBal, "service_code", csServiceCode);
+                                } else {
+DEBUGLOG(("[%d] service_code not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }			
+
+/* country_id */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_CString(hTxnBalDetail, "country_id", &csCountryId)) {
+DEBUGLOG(("[%d] country_id = [%s]\n", iCnt, csCountryId));
+                                       	PutField_CString(hMerchTxnBal, "txn_country", csCountryId);
+                                } else {
+DEBUGLOG(("[%d] country_id not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+	
+/* net_ccy */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_CString(hTxnBalDetail, "net_ccy", &csNetCcy)) {
+DEBUGLOG(("[%d] net_ccy = [%s]\n", iCnt, csNetCcy));
+                                        PutField_CString(hMerchTxnBal, "net_ccy", csNetCcy);
+                                } else {
+DEBUGLOG(("[%d] net_ccy not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* open_bal */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "open_bal", &dPtr)) {
+DEBUGLOG(("[%d] open_bal = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "open_bal", dPtr);
+                                } else {
+DEBUGLOG(("[%d] open_bal not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* current_bal */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "current_bal", &dPtr)) {
+DEBUGLOG(("[%d] current_bal = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "current_bal", dPtr);
+                                } else {
+DEBUGLOG(("[%d] current_bal not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* total_float */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "total_float", &dPtr)) {
+DEBUGLOG(("[%d] total_float = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "total_float", dPtr);
+                                } else {
+DEBUGLOG(("[%d] total_float not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* total_reserved_amount */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "total_reserved_amt", &dPtr)) {
+DEBUGLOG(("[%d] total_reserved_amount = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "total_reserved_amount", dPtr);
+                                } else {
+DEBUGLOG(("[%d] total_reserved_amount not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* total_hold */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "total_hold", &dPtr)) {
+DEBUGLOG(("[%d] total_hold = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "total_hold", dPtr);
+                                } else {
+DEBUGLOG(("[%d] total_hold not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* fundin_payout */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "fundin_payout", &dPtr)) {
+DEBUGLOG(("[%d] fundin_payout = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "fundin_payout", dPtr);
+                                } else {
+DEBUGLOG(("[%d] fundin_payout not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* reserved_payout */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "reserved_payout", &dPtr)) {
+DEBUGLOG(("[%d] reserved_payout = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "reserved_payout", dPtr);
+                                } else {
+DEBUGLOG(("[%d] reserved_payout not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* total_float_after_payout */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "total_float_after_payout", &dPtr)) {
+DEBUGLOG(("[%d] total_float_after_payout = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "total_float_after_payout", dPtr);
+                                } else {
+DEBUGLOG(("[%d] total_float_after_payout not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* open_bal_settlement */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "open_bal_settlement", &dPtr)) {
+DEBUGLOG(("[%d] open_bal_settlement = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "open_bal_settlement", dPtr);
+                                } else {
+DEBUGLOG(("[%d] open_bal_settlement not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* current_bal_settlement */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "current_bal_settlement", &dPtr)) {
+DEBUGLOG(("[%d] current_bal_settlement = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "current_bal_settlement", dPtr);
+                                } else {
+DEBUGLOG(("[%d] current_bal_settlement not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+		
+/* total_float_settlement */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "total_float_settlement", &dPtr)) {
+DEBUGLOG(("[%d] total_float_settlement = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "total_float_settlement", dPtr);
+                                } else {
+DEBUGLOG(("[%d] total_float_settlement not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* total_hold_settlement */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "total_hold_settlement", &dPtr)) {
+DEBUGLOG(("[%d] total_hold_settlement = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hMerchTxnBal, "total_hold_settlement", dPtr);
+                                } else {
+DEBUGLOG(("[%d] total_hold_settlement not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* psp_id */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_CString(hTxnBalDetail, "psp_id", &csPspId)) {
+DEBUGLOG(("[%d] psp_id = [%s]\n", iCnt, csPspId));
+                                        PutField_CString(hPspTxnBal, "psp_id", csPspId);
+                                } else {
+DEBUGLOG(("[%d] psp_id not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+	
+/* psp_ccy */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_CString(hTxnBalDetail, "psp_ccy", &csPspCcy)) {
+DEBUGLOG(("[%d] psp_ccy = [%s]\n", iCnt, csPspCcy));
+                                        PutField_CString(hPspTxnBal, "txn_ccy", csPspCcy);
+                                } else {
+DEBUGLOG(("[%d] psp_ccy not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* psp_bal */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "psp_bal", &dPtr)) {
+DEBUGLOG(("[%d] psp_bal = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hPspTxnBal, "bal", dPtr);
+                                } else {
+DEBUGLOG(("[%d] psp_bal not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* psp_total_float */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "psp_total_float", &dPtr)) {
+DEBUGLOG(("[%d] psp_total_float = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hPspTxnBal, "total_float", dPtr);
+                                } else {
+DEBUGLOG(("[%d] psp_total_float not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+/* psp_hold */
+			if (iSkip != PD_TRUE) {
+                                if (GetField_Double(hTxnBalDetail, "psp_hold", &dPtr)) {
+DEBUGLOG(("[%d] psp_hold = [%lf]\n", iCnt, dPtr));
+                                        PutField_Double(hPspTxnBal, "total_hold", dPtr);
+                                } else {
+DEBUGLOG(("[%d] psp_hold not found!!\n", iCnt));
+					iSkip = PD_TRUE;
+                                }
+                        }
+
+			// Update Merchant Txn Balance and Psp Txn Balance
+			if (iSkip != PD_TRUE) {
+
+				// Lock Txn Header, Status = [C]
+				DBObjPtr = CreateObj(DBPtr, "DBTransaction", "MatchRespTxn");
+                		if ((unsigned long)(DBObjPtr)(csTxnSeq, PD_COMPLETE) != PD_FOUND) {
+DEBUGLOG(("[%d] Transaction status is not [%c]\n", iCnt, PD_COMPLETE));
+                        		iSkip = PD_TRUE;
+                		}
+
+				// Check Txn Balance Detail Information
+				if (iSkip != PD_TRUE) {
+
+					hash_t  *hIn;
+                			hIn = (hash_t*)  malloc (sizeof(hash_t));
+                			hash_init(hIn,0);
+
+                			hash_t  *hOut;
+                			hOut = (hash_t*)  malloc (sizeof(hash_t));
+                			hash_init(hOut,0);
+
+                			PutField_CString(hIn, "txn_seq", csTxnSeq);
+                			PutField_Int(hIn, "get_txn_header", PD_TRUE);
+                			PutField_Int(hIn, "get_txn_psp_detail", PD_TRUE);
+
+                			BOObjPtr = CreateObj(BOPtr, "BOTransaction", "GetTxnInfo");
+                			if ((*BOObjPtr)(hIn, hOut) == PD_OK) {
+DEBUGLOG(("[%d] Call BOTransaction: GetTxnInfo: Success!!\n", iCnt));
+
+/* check txn_code */
+                        			if(GetField_CString(hOut, "txn_code", &csPtr)){
+                                			if(strcmp(csTxnCode, csPtr)){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] txn_code not matched!! [%s][%s]\n", iCnt, csTxnCode, csPtr));
+                                			}
+                        			}
+
+/* check merchant_id */
+                        			if(GetField_CString(hOut, "merchant_id", &csPtr)){
+                                			if(strcmp(csMerchantId, csPtr)){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] merchant_id not matched!! [%s][%s]\n", iCnt, csMerchantId, csPtr));
+                                			}
+                        			}
+
+/* check net_ccy */
+                        			if(GetField_CString(hOut, "net_ccy", &csPtr)){
+                                			if(strcmp(csNetCcy, csPtr)){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] net_ccy not matched!! [%s][%s]\n", iCnt, csNetCcy, csPtr));
+                                			}
+                        			}
+
+/* check service_code */
+                        			if(GetField_CString(hOut, "service_code", &csPtr)){
+                                			if(strcmp(csServiceCode, csPtr)){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] service_code not matched!! [%s][%s]\n", iCnt, csServiceCode, csPtr));
+                                			}
+                        			}
+
+/* check psp_id */
+                        			if(GetField_CString(hOut, "psp_id", &csPtr)){
+                                			if(strcmp(csPspId, csPtr)){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] psp_id not matched!! [%s][%s]\n", iCnt, csPspId, csPtr));
+                                			}
+                        			}
+
+/* check psp_txn_ccy */
+                        			if(GetField_CString(hOut, "psp_txn_ccy", &csPtr)){
+                                			if(strcmp(csPspCcy, csPtr)){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] psp_txn_ccy not matched!! [%s][%s]\n", iCnt, csPspCcy, csPtr));
+                                			}
+                        			}
+
+/* check ar_ind */
+                        			if(GetField_Char(hOut, "ar_ind", &cPtr)){
+                                			if(cPtr != PD_ACCEPT){
+                                        			iSkip = PD_TRUE;
+DEBUGLOG(("[%d] txn ar_ind invalid!! [%c]\n", iCnt, cPtr));
+                                			}
+                        			}
+
+					} else {
+DEBUGLOG(("[%d] Call BOTransaction: GetTxnInfo: Failure!!\n", iCnt));
+                        			iSkip = PD_TRUE;
+                			}
+
+                			hash_destroy(hIn);
+                			FREE_ME(hIn);
+
+                			hash_destroy(hOut);
+                			FREE_ME(hOut);
+				}
+
+				// Update Merchant Balance Information in Txn Detail if not exist
+				if ((iRet == PD_OK) && (iSkip != PD_TRUE)) {
+
+                			DBObjPtr = CreateObj(DBPtr, "DBTransaction", "MerchBalInTxnDetail");
+                			if ((unsigned long)(DBObjPtr)(csTxnSeq) == PD_TRUE) {
+DEBUGLOG(("[%d] Merchant Balance Information already exists in Txn Detail, Skip Update!!\n", iCnt));
+						cUpdateStatus = PD_EXPIRED;
+                			} else {
+
+						// Update Txn Detail
+                        			DBObjPtr = CreateObj(DBPtr, "DBTransaction", "UpdateDetail");
+                        			iRet = (unsigned long)(*DBObjPtr)(hMerchTxnBal);
+                        			if (iRet == PD_OK) {
+DEBUGLOG(("[%d] Call DBTransaction: UpdateDetail: Success!!\n", iCnt));
+						} else {
+DEBUGLOG(("[%d] Call DBTransaction: UpdateDetail: Failure!!\n", iCnt));
+ERRLOG("run_txn_balance_update: update_txn_balance: Call DBTransaction: UpdateDetail: Failure!!\n");
+                                			iRet = INT_ERR;
+                       	 			}
+                			}
+				}
+
+				// Update Psp Balance Information in Txn Psp Detail if not exist
+                                if ((iRet == PD_OK) && (iSkip != PD_TRUE)) {
+	
+                			DBObjPtr = CreateObj(DBPtr, "DBTxnPspDetail", "PspBalInTxnPspDetail");
+                			if ((unsigned long)(DBObjPtr)(csTxnSeq) == PD_TRUE) {
+DEBUGLOG(("[%d] Psp Balance Information already exists in Txn Psp Detail, Skip Update!!\n", iCnt));
+						cUpdateStatus = PD_EXPIRED;
+			                } else {
+ 
+			                       	// Update Txn Psp Detail
+                			        DBObjPtr = CreateObj(DBPtr, "DBTxnPspDetail", "Update");
+                        			iRet = (unsigned long)(*DBObjPtr)(hPspTxnBal);
+                        			if (iRet == PD_OK) {
+DEBUGLOG(("[%d] Call DBTxnPspDetail: Update: Success!!\n", iCnt));
+						} else {
+DEBUGLOG(("[%d] Call DBTxnPspDetail: Update: Failure!!\n", iCnt));
+ERRLOG("run_txn_balance_update: update_txn_balance: Call DBTxnPspDetail: Update: Failure!!\n");
+                                			iRet = INT_ERR;
+                        			}
+                			}
+                                }
+			}
+	
+			// Update Status to [C]/[E]/[R] in Txn Balance Detail 
+			if (iRet == PD_OK) {
+
+				if (iSkip == PD_TRUE) {
+					cUpdateStatus = PD_REJECT;
+				}
+
+                		DBObjPtr = CreateObj(DBPtr, "DBTxnBalanceDetail", "UpdateStatus");
+                		if ((unsigned long)(DBObjPtr)(csTxnSeq, cUpdateStatus) == PD_OK) {
+DEBUGLOG(("[%d] Call DBTxnBalanceDetail: UpdateStatus: [status] = [%c]: Success!!\n", iCnt, cUpdateStatus));
+                		} else {
+DEBUGLOG(("[%d] Call DBTxnBalanceDetail: UpdateStatus: [status] = [%c]: Failure!!\n", iCnt, cUpdateStatus));
+ERRLOG("run_txn_balance_update: update_txn_balance: Call DBTxnBalanceDetail: UpdateStatus: Failure!!\n");
+					iRet = INT_ERR;
+				}
+			}
+
+			hash_destroy(hMerchTxnBal);
+                        FREE_ME(hMerchTxnBal);
+
+                        hash_destroy(hPspTxnBal);
+                        FREE_ME(hPspTxnBal);
+
+			// Call Txn Commit/Txn Abort
+			if (iRet == PD_OK) {
+DEBUGLOG(("[%d] Call TxnCommit()!!\n", iCnt));
+				TxnCommit();
+			} else {
+DEBUGLOG(("[%d] Call TxnAbort()!!\n", iCnt));
+				TxnAbort();
+
+				// Add Error Record into the Result
+				PutField_CString(hErrRec, "txn_aprv_date", csDate);
+				PutField_Int(hErrRec,"err_code",iRet);
+
+				RecordSet_Add(rErrRec, hErrRec);
+
+				break;
+			}
+
+			iCnt++;
+
+                    	hTxnBalDetail = RecordSet_GetNext(rTxnBalDetail);
+             	}
+	} else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBTxnBalanceDetail: GetBalDetails: No Record(s) Found!!\n"));
+        } else {
+DEBUGLOG(("Call DBTxnBalanceDetail: GetBalDetails: Failure!!\n"));
+ERRLOG("run_txn_balance_update: update_txn_balance: Call DBTxnBalanceDetail: GetBalDetails: Failure!!\n");
+		iRet = INT_ERR;
+	}
+
+	RecordSet_Destroy(rTxnBalDetail);
+        FREE_ME(rTxnBalDetail);
+
+DEBUGLOG(("update_txn_balance: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int validate_txn_balance(const char *csDate, recordset_t *rErrRec)
+{
+	int     iRet = PD_OK;
+	int	iDtlRet = FOUND;
+
+	int	iMerchCnt = 0;
+	int	iPspCnt = 0;
+
+	char	*csMerchTxnSeq = NULL;
+	char	*csPspTxnSeq = NULL;
+
+	hash_t	*hMerchTxnBal = NULL;
+	hash_t	*hPspTxnBal = NULL;
+
+	recordset_t *rMerchTxnBal;
+        rMerchTxnBal = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rMerchTxnBal, 0);
+	
+	recordset_t *rPspTxnBal;
+        rPspTxnBal = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rPspTxnBal, 0);
+
+DEBUGLOG(("validate_txn_balance: Start!\n"));
+
+	// Check Merchant Balance Information exists in Txn Detail By Approval Date
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","MerchBalNullInTxnDtByAprvDate");
+	iDtlRet = (unsigned long)(DBObjPtr)(csDate, rMerchTxnBal);
+	if (iDtlRet == FOUND) {
+DEBUGLOG(("Call DBTransaction: MerchBalNullInTxnDtByAprvDate: Record(s) Found!!\n"));
+		iRet = INT_TXN_BAL_NULL_EXISTS;
+
+		// Add Error Record(S) into the Result 
+		hMerchTxnBal = RecordSet_GetFirst(rMerchTxnBal);
+                while (hMerchTxnBal) {
+
+/* txn_seq */
+                    	if (GetField_CString(hMerchTxnBal,"txn_seq",&csMerchTxnSeq)) {
+DEBUGLOG(("[%d] txn_seq = [%s]\n", iMerchCnt, csMerchTxnSeq));
+			
+				hash_t  *hErrRec;
+                        	hErrRec = (hash_t*) malloc (sizeof(hash_t));
+                        	hash_init(hErrRec,0);
+
+                                       
+				PutField_CString(hErrRec, "txn_seq", csMerchTxnSeq);
+				PutField_CString(hErrRec, "txn_aprv_date", csDate);
+				PutField_Int(hErrRec,"err_code",iRet);
+
+                                RecordSet_Add(rErrRec, hErrRec);
+			}
+
+                      	iMerchCnt++;
+
+                      	hMerchTxnBal = RecordSet_GetNext(rMerchTxnBal);
+               	}
+
+	} else if (iDtlRet == NOT_FOUND) {
+DEBUGLOG(("Call DBTransaction: MerchBalNullInTxnDtByAprvDate: No Record(s) Found!!\n"));
+	} else {
+DEBUGLOG(("Call DBTransaction: MerchBalNullInTxnDtByAprvDate: Failure!!\n"));
+ERRLOG("run_txn_balance_update: update_txn_balance: Call DBTransaction: MerchBalNullInTxnDtByAprvDate: Failure!!\n");
+		iRet = INT_ERR;
+	}
+	
+	// Check Psp Balance Information exists in Txn Psp Detail By Approval Date
+	DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","PspBalNullInTxnPspDtByAprvDate");
+        iDtlRet = (unsigned long)(DBObjPtr)(csDate, rPspTxnBal);
+	if (iDtlRet == FOUND) {
+DEBUGLOG(("Call DBTxnPspDetail: PspBalNullInTxnPspDtByAprvDate: Record(s) Found!!\n"));
+                iRet = INT_TXN_BAL_NULL_EXISTS;
+
+		// Add Error Record(S) into the Result
+		hPspTxnBal = RecordSet_GetFirst(rPspTxnBal);
+                while (hPspTxnBal) {
+
+			int     iExist = PD_FALSE;
+
+/* txn_seq */
+                     	if (GetField_CString(hPspTxnBal,"txn_seq",&csPspTxnSeq)) {
+
+				// Check txn_seq exists in Merch Balance Null Loop
+				hMerchTxnBal = RecordSet_GetFirst(rMerchTxnBal);
+		               	while (hMerchTxnBal) {
+
+					if (GetField_CString(hMerchTxnBal,"txn_seq",&csMerchTxnSeq)) {
+
+						if (!strcmp(csMerchTxnSeq, csPspTxnSeq)) {
+							iExist = PD_TRUE;
+							break;		
+						}
+					}
+
+					hMerchTxnBal = RecordSet_GetNext(rMerchTxnBal);
+                        	}			
+
+				// Skip Psp Balance Null Record if exists in Merch Balance Null Record Loop
+				if (iExist == PD_TRUE) {
+DEBUGLOG(("[%d] txn_seq = [%s][exists in merch bal null record]\n", iPspCnt, csPspTxnSeq));
+				} else {
+DEBUGLOG(("[%d] txn_seq = [%s]\n", iPspCnt, csPspTxnSeq));
+
+					hash_t  *hErrRec;
+                        		hErrRec = (hash_t*) malloc (sizeof(hash_t));
+                        		hash_init(hErrRec,0);
+
+                                        PutField_CString(hErrRec, "txn_seq", csPspTxnSeq);
+					PutField_CString(hErrRec, "txn_aprv_date", csDate);
+                                	PutField_Int(hErrRec,"err_code",iRet);
+
+                                	RecordSet_Add(rErrRec, hErrRec);
+				}
+                      	}
+
+                      	iPspCnt++;
+
+                        hPspTxnBal = RecordSet_GetNext(rPspTxnBal);
+               	}
+
+        } else if (iDtlRet == NOT_FOUND) {
+DEBUGLOG(("Call DBTxnPspDetail: PspBalNullInTxnPspDtByAprvDate: No Record(s) Found!!\n"));
+        } else {
+DEBUGLOG(("Call DBTxnPspDetail: PspBalNullInTxnPspDtByAprvDate: Failure!!\n"));
+ERRLOG("run_txn_balance_update: update_txn_balance: Call DBTxnPspDetail: PspBalNullInTxnPspDtByAprvDate: Failure!!\n");
+		iRet = INT_ERR;
+	}
+
+     	RecordSet_Destroy(rMerchTxnBal);
+     	FREE_ME(rMerchTxnBal);
+	
+	RecordSet_Destroy(rPspTxnBal);
+        FREE_ME(rPspTxnBal);
+
+DEBUGLOG(("validate_txn_balance: iRet = [%d]\n", iRet));
+        return iRet;
+}
+
+int send_alert_email(recordset_t *rErrRec)
+{
+	int	iRet = PD_OK;
+
+	int	iCnt = 0;
+	int     iDynCnt = 0;
+
+	char    *csTxnAprvDate = NULL;
+
+	char 	csAlertDateTime[PD_TIMESTAMP_LEN + 1];
+	char    csErrMsg[PD_TMP_BUF_LEN+1];
+    	char    csPtr[PD_TMP_BUF_LEN+1];
+      	char    csTag[PD_TAG_LEN+1];
+
+	time_t  tNow = time(NULL);
+        struct  tm tStruct = *localtime(&tNow);
+
+	hash_t  *hErrRec = NULL;
+
+     	hash_t *hTemplate;
+     	hTemplate = (hash_t*) malloc (sizeof(hash_t));
+      	hash_init(hTemplate,0);
+
+DEBUGLOG(("send_alert_email: Start!\n"));
+
+	memset(csAlertDateTime, 0, sizeof(csAlertDateTime));
+	
+	// Loop All Error Record(s)
+DEBUGLOG(("send_alert_email: Loop All Error Record(s)\n"));
+
+	hErrRec = RecordSet_GetFirst(rErrRec);
+        while ((iRet == PD_OK) && (hErrRec)) {
+
+		int     iErrCode = PD_OK;
+
+	 	char    *csTxnSeq = NULL;
+
+		memset(csErrMsg, 0, sizeof(csErrMsg));
+		memset(csPtr, 0, sizeof(csPtr));
+        	memset(csTag, 0, sizeof(csTag));
+
+/* txn_aprv_date */
+                if (GetField_CString(hErrRec,"txn_aprv_date",&csTxnAprvDate)) {
+DEBUGLOG(("send_alert_email: [%d] txn_aprv_date = [%s]\n",iCnt,csTxnAprvDate));
+                } else {
+DEBUGLOG(("send_alert_email: [%d] txn_aprv_date not found!!\n",iCnt));
+ERRLOG("run_txn_balance_update: send_alert_email: txn_aprv_date not found!!\n");
+			iRet = INT_ERR;
+                }
+
+/* err_code */
+		if (iRet == PD_OK) {
+			if (GetField_Int(hErrRec,"err_code",&iErrCode)) {
+DEBUGLOG(("send_alert_email: [%d] err_code = [%d]\n",iCnt,iErrCode));
+
+				// Get Internal Messages
+                		DBObjPtr = CreateObj(DBPtr,"DBInternalMessages","GetMsg");
+                   		if ((unsigned long)(*DBObjPtr)(iErrCode,csErrMsg) == FOUND) {
+					sprintf(csPtr, csErrMsg);
+DEBUGLOG(("send_alert_email: [%d] err_msg = [%s]\n",iCnt,csPtr));
+	                     	} else {
+DEBUGLOG(("send_alert_email: Call DBInternalMessages: GetMsg: Failure!!\n"));
+ERRLOG("run_txn_balance_update: send_alert_email: Call DBInternalMessages: GetMsg: Failure!!\n");
+        	                     	iRet = INT_CODE_ERROR;
+        	              	}
+
+			} else {
+DEBUGLOG(("send_alert_email: [%d] err_code not found!!\n",iCnt));
+ERRLOG("run_txn_balance_update: send_alert_email: err_code not found!!\n");
+				iRet = INT_ERR;
+			}
+		}
+
+/* txn_seq */
+		if (iRet == PD_OK) {
+                	if (GetField_CString(hErrRec,"txn_seq",&csTxnSeq)) {
+DEBUGLOG(("send_alert_email: [%d] txn_seq = [%s]\n",iCnt,csTxnSeq));
+               		} else {
+//DEBUGLOG(("send_alert_email: [%d] txn_seq not found!!\n",iCnt));
+                	}
+		}
+
+		iCnt++;
+					
+               	hErrRec = RecordSet_GetNext(rErrRec);
+	}
+
+	 if (iRet == PD_OK) {
+
+              	// Record Exists
+            	if (iCnt > 0) {
+DEBUGLOG(("send_alert_email: Email Content:\n"));
+
+                     	// Alert Time
+			strftime(csAlertDateTime, sizeof(csAlertDateTime), PD_ALERT_DATETIME_FORMAT, &tStruct);
+                    	iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stimestamp-0", "SEC", "stimestamp-0", 0);
+                    	iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, "ftimestamp-0", "STR", "stimestamp-0", csAlertDateTime);
+DEBUGLOG(("send_alert_email: - [Alert Time] = [%s]\n", csAlertDateTime));
+
+			// Transaction Approval Date
+			iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "stxn_aprv_date-0", "SEC", "stxn_aprv_date-0", 0);
+                    	iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, "ftxn_aprv_date-0", "STR", "stxn_aprv_date-0",  csTxnAprvDate);
+DEBUGLOG(("send_alert_email: - [Transaction Approval Date] = [%s]\n", csTxnAprvDate));
+
+			// Error Message
+			iDynCnt = set_tpl_dyn_int(hTemplate, iDynCnt, "serror_message-0", "SEC", "serror_message-0", 0);
+			iDynCnt = set_tpl_dyn_cstring(hTemplate, iDynCnt, "ferror_message-0", "STR", "serror_message-0", csErrMsg);		
+DEBUGLOG(("send_alert_email: - [Error Message] = [%s]\n", csErrMsg));
+
+			// Function
+                        PutField_CString(hTemplate, "funct", PD_EML_FUNCT_TXN_BAL_UPD_ERR);
+                 	PutField_CString(hTemplate, "source", PD_EML_SOURCE_BATCH);
+                   	PutField_Char(hTemplate, "party_type", PD_TYPE_GLOBAL);
+                   	PutField_CString(hTemplate, "party_id", PD_EML_PARTY_ID_BATCH);
+
+                    	PutField_Int(hTemplate, "total_dyn", iDynCnt);
+
+                    	// Process Alert Email Template
+                      	BOObjPtr = CreateObj(BOPtr, "BOAlertEmail", "ProcessTpl");
+                     	if ((unsigned long)((*BOObjPtr)(hTemplate) == PD_OK)) {
+DEBUGLOG(("send_alert_email: Call BOAlertEmail: ProcessTpl: Success!!\n"));
+			} else {
+DEBUGLOG(("send_alert_email: Call BOAlertEmail: ProcessTpl: Failure!!\n"));
+ERRLOG("run_txn_balance_update: send_alert_email: Call BOAlertEmail: ProcessTpl: Failure!!\n");
+                            	iRet = INT_ERR;
+                       	}
+                } else {
+DEBUGLOG(("send_alert_email: No Error Record(s)\n"));
+		}
+        }
+
+	hash_destroy(hTemplate);
+        FREE_ME(hTemplate);
+
+DEBUGLOG(("send_alert_email: iRet = [%d]\n", iRet));
+        return iRet;
+}
+

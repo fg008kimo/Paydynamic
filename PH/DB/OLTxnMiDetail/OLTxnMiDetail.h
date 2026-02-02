@@ -1,0 +1,22 @@
+#ifndef _OL_TXN_MI_DETAIL_H_
+#define _OL_TXN_MI_DETAIL_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
+int Add(const hash_t* hRls);
+int Update(const hash_t* hRls);
+int GetOLTxnMiDetail(const char* csTxnId, 
+		recordset_t* myRec);
+int UpdateRemark(hash_t* hRls);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

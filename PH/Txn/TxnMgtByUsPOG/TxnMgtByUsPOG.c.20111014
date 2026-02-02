@@ -1,0 +1,402 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/10/03              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsPOG.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+#define PD_TR           "<tr>"
+#define PD_TD           "<td>"
+#define PD_BOLD         "<b>"
+#define PD_TD_STYLE     "<td class=\"format\">"
+#define PD_TR_END       "</tr>"
+#define PD_TD_END       "</td>"
+#define PD_BOLD_END     "</b>"
+
+
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnMgtByUsPOG(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char    *csBatchId;
+        char    *csTmp;
+        char    *csPspId;
+
+        double  dTmp;
+
+        char    cBatchMode;
+        int     iStatus;
+        int     iSeqNum;
+ 
+        long    lBatchId;
+
+        int     iTmp, i, iTotalPsp;
+        char    csTag[PD_TAG_LEN +1];
+
+        FILE    *fp;
+        char    csDateTime[PD_DATETIME_LEN + 1];
+        char    csDate[PD_DATE_LEN + 1];
+        char    csPayOutFilePath[PD_MAX_FILE_LEN + 1];
+        char    csPayOutFileName[PD_MAX_FILE_LEN + 1];
+        char    csPayOutFile[PD_MAX_FILE_LEN + 1];
+
+        hash_t  *hRec;
+        recordset_t        *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+        if(GetField_CString(hRequest,"batch_id",&csBatchId)){
+                PutField_CString(hContext,"batch_id",csBatchId);
+                PutField_CString(hTxn,"batch_id",csBatchId);
+
+DEBUGLOG(("Authorize::batch_id= [%s]\n",csBatchId));
+                lBatchId = ctol(csBatchId,strlen(csBatchId));
+        }
+        else{
+DEBUGLOG(("Authorize::batch_id not found!!\n"));
+ERRLOG("TxnMgtByUsPOG:Authorize::batch_id not found!!\n");
+                iRet=INT_ERR;
+        }
+
+        
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"update_user",csTmp);
+        }
+
+
+//get Header
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileHeader:GetHeader\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","GetHeader");
+                if ((*DBObjPtr)((unsigned long)lBatchId,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetHeader::found record = [%ld]\n",lBatchId));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+
+                                if (GetField_Int(hRec,"status",&iTmp)){
+DEBUGLOG(("GetHeader::status= [%d]\n",iTmp));
+                                        //Check Header ststus
+                                        if(iTmp != PD_PAYOUTFILE_APPROVED){
+                                                iRet=INT_ERR;
+DEBUGLOG(("GetHeader::invalid status!!!\n"));
+ERRLOG("TxnMgtByUsPOG:Authorize::GetDetail::invalid status!!!\n");
+                                        }
+                                }
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                }
+                else{
+DEBUGLOG(("GetHeader:: not found record for [%s]\n",csBatchId));
+ERRLOG("TxnMgtByUsPOG:Authorize::GetDetail::not found record!!\n");
+                        iRet=INT_NOT_RECORD;
+                }
+        }
+        RecordSet_Destroy(rRecordSet);
+
+
+
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetPspAssigned\n"));
+                recordset_init(rRecordSet, 0);
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetPspAssigned");
+
+                if ((*DBObjPtr)((unsigned long)lBatchId,rRecordSet) == PD_OK) {
+
+                        i = 0;
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+                                if (GetField_CString(hRec, "psp_id", &csTmp)) {
+                                    sprintf(csTag, "psp_id_%d", i);
+                                    PutField_CString(hTxn, csTag, csTmp);
+DEBUGLOG(("GetPspAssigned::psp_id = [%s]\n",csTmp));
+                                }              
+
+                                i++;
+
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        } 
+                        PutField_Int(hTxn,"total_count",i);
+                }
+                else{
+DEBUGLOG(("GetpspAssigned:: not found record for [%s]\n",csBatchId));
+ERRLOG("TxnMgtByUsPOG:Authorize::GetPspAssigned::not found record!!\n");
+                        iRet=INT_NOT_RECORD;
+                }
+        }
+        RecordSet_Destroy(rRecordSet);
+
+
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetail\n"));
+                recordset_init(rRecordSet, 0);
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetail");
+                if ((*DBObjPtr)((unsigned long)lBatchId,rRecordSet) != PD_OK) {
+DEBUGLOG(("GetDetail:: not found record for [%s]\n",csBatchId));
+ERRLOG("TxnMgtByUsPOC:Authorize::GetDetail::not found record!!\n");
+                        iRet=INT_NOT_RECORD;
+                }
+
+        }
+
+
+        // Write File
+        if(iRet==PD_OK) {
+
+                memset(csDate, '\0', sizeof(csDate));
+                memset(csDateTime, '\0', sizeof(csDateTime));
+                memset(csPayOutFile, '\0', sizeof(csPayOutFile));
+                memset(csPayOutFilePath, '\0', sizeof(csPayOutFilePath));
+                memset(csPayOutFileName, '\0', sizeof(csPayOutFileName));
+
+                strcpy(csDateTime, getdatetime());
+                strncpy(csDate, csDateTime, PD_DATE_LEN);
+
+DEBUGLOG(("Authorize::File Date [%s]\n", csDate));
+
+                GetField_Int(hTxn,"total_count", &iTotalPsp);
+
+                for (i=0; i<iTotalPsp; i++){
+                        sprintf(csTag,"psp_id_%d",i);
+                        GetField_CString(hTxn,csTag,&csPspId);
+
+                        /**********  the path may need to change ********/
+                        sprintf(csPayOutFilePath, "%s/%s", getenv("REPORT_DATA"), "payout_files");
+                        sprintf(csPayOutFileName, "%s_%s.xls", csPspId, csDate);
+
+                        PutField_CString(hTxn, "generated_file_name", csPayOutFileName);
+
+
+                        sprintf(csPayOutFile, "%s/%s", csPayOutFilePath, csPayOutFileName);
+
+DEBUGLOG(("Authorize::Open PayoutFile [%s] for psp_id [%s]\n", csPayOutFile, csPspId));
+                              
+                        
+                        fp = fopen(csPayOutFile, "w");
+                        if (fp == NULL) {
+DEBUGLOG(("Authorize::Open Payoutfile [%s] problem\n", csPayOutFile));
+ERRLOG("TxnMgtByUsPOC:Authorize::Open Payoutfile problem!!\n");
+                                iRet=INT_ERR;
+                        }
+
+                        if(iRet==PD_OK) {
+                                fprintf(fp, "<html><body><table>\n");  
+                                fprintf(fp, "%s%s%s%s Payout Records%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+                                             PD_TR, PD_TD, PD_BOLD, csPspId, PD_BOLD_END, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TD, PD_TD_END,
+                                             PD_TR_END);
+
+
+                                fprintf(fp, "<style type=\"text/css\"> .format{ mso-number-format:'\\@';} </style>\n");
+                        
+ 
+                                fprintf(fp, "%s%sPayout Trans No.%s%sReceiver Name%s%sID Card No.%s%sMobile No.%s%sBank%s%sBranch%s%sBank Account%s%sAmount%s%sProvince%s%sCity%s%sRemarks%s%s\n", PD_TR, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TD, PD_TD_END, PD_TR_END);
+
+                                hRec = RecordSet_GetFirst(rRecordSet);
+                                while (hRec) {
+
+                                        if (GetField_CString(hRec, "psp_id", &csTmp)) {
+DEBUGLOG(("Authorize::GetDetail:psp_id [%s]\n", csTmp));
+                                        }
+
+                                        if (GetField_Int(hRec, "seq_num", &iSeqNum)) {
+DEBUGLOG(("Authorize::GetDetail:seq_num [%d]\n", iSeqNum));
+
+                                        }
+
+                                        if (!strcmp(csPspId, csTmp)) {
+
+                                                  
+                                                GetField_Int(hRec, "status", &iStatus);
+                                                GetField_Char(hRec, "batch_mode", &cBatchMode);
+
+DEBUGLOG(("Authorize::GetDetail:status [%d] batch_mode [%c]\n", iStatus, cBatchMode));
+
+                                                if ((iStatus == PAYOUT_MASTER_TRANSACTION_APPROVED) && (cBatchMode == PD_OFFLINE)) {
+                                              
+                                                    fprintf(fp, "%s", PD_TR);
+
+                                                    // payout_trans_no 
+                                                    if (!GetField_CString(hRec, "merchant_ref", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:merchant_ref [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD_STYLE,csTmp,PD_TD_END);
+                                         
+                                                    // receiver name
+                                                    if (!GetField_CString(hRec, "account_name", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:account_name [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    // id card no 
+                                                    if (!GetField_CString(hRec, "identity_id", &csTmp)) {
+                                                            csTmp = strdup("0000000"); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:identity_id [%s]\n", csTmp));
+                                                    fprintf(fp, "%s[%s]%s",PD_TD,csTmp,PD_TD_END);
+                                                      
+                                                    // mobile no
+                                                    if (!GetField_CString(hRec, "phone_num", &csTmp)) {
+                                                            csTmp = strdup("0000000"); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:phone_num [%s]\n", csTmp));
+                                                    fprintf(fp, "%s[%s]%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    // bank
+                                                    if (!GetField_CString(hRec, "bank_name", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:bank_name [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    // branch
+                                                    if (!GetField_CString(hRec, "branch", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:branch [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    // bank account
+                                                    if (!GetField_CString(hRec, "account_num", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:account_num [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD_STYLE,csTmp,PD_TD_END);
+
+                                                    // amount
+                                                    if (!GetField_Double(hRec, "payout_amount", &dTmp)) {
+                                                            dTmp = 0.0;
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:payout_amount [%f]\n", dTmp));
+                                                    fprintf(fp, "%s%f%s",PD_TD,dTmp,PD_TD_END);
+
+                                                    // province
+                                                    if (!GetField_CString(hRec, "province", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:province [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    // city
+                                                    if (!GetField_CString(hRec, "city", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:city [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    // remarks
+                                                    if (!GetField_CString(hRec, "remark", &csTmp)) {
+                                                            csTmp = strdup(""); 
+                                                    }
+DEBUGLOG(("Authorize::GetDetail:remark [%s]\n", csTmp));
+                                                    fprintf(fp, "%s%s%s",PD_TD,csTmp,PD_TD_END);
+
+                                                    fprintf(fp, "%s\n", PD_TR_END);
+
+
+                                                    PutField_Int(hTxn, "status", PAYOUT_MASTER_TRANSACTION_GENERATED);
+
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:UpdateDetailByBatchId\n"));
+                                                    DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","UpdateDetailByBatchId");
+                                                    if ((*DBObjPtr)(csBatchId,iSeqNum,hTxn) != PD_OK) {
+                                                            iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileDetail:UpdateDetailByBatchId Failed\n"));
+
+                                                            break;
+                                                    } 
+
+                                                }
+                                                else {
+DEBUGLOG(("Authorize::GetDetail:seq_num [%d] unmatch Status [%d] or batch mode [%c]\n", iSeqNum, iStatus, cBatchMode));
+
+                                                } 
+                                        }
+                                        else{
+DEBUGLOG(("Authorize::GetDetail:seq_num [%d][%s] unmatch psp_id [%s]\n", iSeqNum, csTmp, csPspId));
+                                        }
+
+
+                                        hRec = RecordSet_GetNext(rRecordSet);
+
+                                }
+
+                                fprintf(fp, "</table></body></html>\n");  
+
+                                fclose(fp);
+                        }
+                      
+                }
+        }
+        RecordSet_Destroy(rRecordSet);
+        
+        if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileHeader:UpdateHeader\n"));
+
+                PutField_Int(hTxn, "status", PD_PAYOUTFILE_GENERATED);
+
+                DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileHeader","UpdateHeader");
+                if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileHeader:UpdateHeader Failed\n"));
+                }
+        }        
+
+
+        if(iRet!=PD_OK){
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(hTxn);
+
+
+DEBUGLOG(("TxnMgtByUsPOG Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

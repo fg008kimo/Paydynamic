@@ -1,0 +1,605 @@
+/*
+PDProTech (c)2018. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/09/24              David Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "dbutility.h"
+#include "BOOLBankStmt.h"
+#include "convert_abc.h"
+#include "math.h"
+
+OBJPTR(BO);
+OBJPTR(DB);
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define INT_BANK_CODE	"086103"
+#define DEFAULT_STMT_TIME	"000000"
+
+static char cDebug = 'Y';
+
+int iStmtFileId;
+char csRawFile[PD_MAX_FILE_LEN + 1];
+char csProcessFile[PD_MAX_FILE_LEN + 1];
+char csBankAcctType[PD_ACCT_TYPE_LEN + 1];
+
+int parse_arg(int argc, char **argv);
+
+
+int batch_init(int argc, char *argv[])
+{
+	if (argc < 9) {
+		printf("usage: -i stmt_file_id -r raw_file -o process_file -t bank_acct_type\n");
+		return FAILURE;
+	}
+	else
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char *argv[])
+{
+	int iRet = SUCCESS;
+
+	char *csTmp = NULL, *csTmp2 = NULL;
+	char csTmp3[PD_TMP_MSG_BUF_LEN] = "";
+	char *csTag = (char*) malloc (64);
+	int iTmp;
+
+	FILE *fin, *fout;
+	char cs_input_buf[PD_TMP_MSG_BUF_LEN] = "", cs_tmp_input_buf[PD_TMP_MSG_BUF_LEN] = "";
+	int iTotalLine = 0, iSBlankLine = 0, iEBlankLine = 0;
+	char *csFormatId = NULL;
+	char csDelimiter[2] = "";
+	int iNegAmount, iNegBalance, iTotalField, iStartRow, iEndRow;
+	int iLineCnt = 0, iFieldCnt = 0, iMatched = 0;
+
+	char cs_err_msg_buf[PD_TMP_BUF_LEN] = "";
+	double dCurrTxnAmt = 0.0;
+	int iErrorCode = 0;
+
+DEBUGLOG(("batch_proc: start\n"));
+
+	recordset_t *rFormat = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rFormat, 0);
+
+	hash_t *hFormat = NULL;
+	hash_t *hCurrRec = NULL;
+	hash_t *hError = NULL;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("*usage: -i stmt_file_id -r raw_file -o process_file -t bank_acct_type\n");
+		return iRet;
+	}
+
+DEBUGLOG(("stmt_file_id = [%d]\n", iStmtFileId));
+DEBUGLOG(("raw_file = [%s]\n", csRawFile));
+DEBUGLOG(("process_file = [%s]\n", csProcessFile));
+DEBUGLOG(("bank_acct_type = [%s]\n", csBankAcctType));
+
+	fin = fopen(csRawFile, "r");
+	if (fin == NULL) {
+DEBUGLOG(("Error opening file = [%s]\n", csRawFile));
+ERRLOG("convert_abc: batch_proc: Error opening file = [%s]\n", csRawFile);
+		return FAILURE;
+	} else {
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+			if (strlen_content(cs_input_buf) == 0) {
+				iSBlankLine++;
+			} else {
+				break;
+			}
+		}
+		rewind(fin);
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+			if (strlen_content(cs_input_buf) == 0) {
+				iEBlankLine++;
+			} else {
+				iEBlankLine = 0;
+			}
+			iTotalLine++;
+		}
+DEBUGLOG(("Summary: Total line = [%d] Starting/Ending Blank Line = [%d]/[%d]\n", iTotalLine, iSBlankLine, iEBlankLine));
+	}
+
+	fout = fopen(csProcessFile, "w");
+	if (fout == NULL) {
+DEBUGLOG(("Error opening file = [%s]\n", csProcessFile));
+ERRLOG("convert_abc: batch_proc: Error opening file = [%s]\n", csProcessFile);
+		fclose(fin);
+		return FAILURE;
+	}
+
+	// get stmt file format
+	if (iRet == SUCCESS) {
+DEBUGLOG(("call DBOLStmtFormat::GetFormat()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtFormat", "GetFormat");
+		if ((unsigned long)(*DBObjPtr)(INT_BANK_CODE, rFormat) != PD_OK) {
+DEBUGLOG(("call DBOLStmtFormat::GetFormat() fail\n"));
+ERRLOG("convert_abc: batch_proc: call DBOLStmtFormat::GetFormat() fail\n");
+			iErrorCode = INT_FORMAT_TEMPLATE_ERROR;
+			iRet = FAILURE;
+		}
+	}
+
+	// match stmt file format
+	if (iRet == SUCCESS) {
+		hFormat = RecordSet_GetFirst(rFormat);
+		while (hFormat) {
+			if (GetField_CString(hFormat, "format_id", &csFormatId)) {
+				// delimiter
+				sprintf(csTag, "delimiter_%s", csFormatId);
+				if (GetField_CString(hFormat, csTag, &csTmp)) {
+					sprintf(csDelimiter, "%c", atoi(csTmp));
+				} else {
+DEBUGLOG(("delimiter not found\n"));
+ERRLOG("convert_abc: batch_proc: delimiter not found\n");
+					iErrorCode = INT_FORMAT_TEMPLATE_ERROR;
+					iRet = FAILURE;
+					break;
+				}
+			} else {
+DEBUGLOG(("format_id not found\n"));
+ERRLOG("convert_abc: batch_proc: format_id not found\n");
+				iErrorCode = INT_FORMAT_TEMPLATE_ERROR;
+				iRet = FAILURE;
+				break;
+			}
+
+			// neg_amount
+			if (!GetField_CString(hFormat, "neg_amount", &csTmp)) {
+				iNegAmount = 0;
+			} else {
+				iNegAmount = atoi(csTmp);
+			}
+
+			// neg_balance
+			if (!GetField_CString(hFormat, "neg_balance", &csTmp)) {
+				iNegBalance = 0;
+			} else {
+				iNegBalance = atoi(csTmp);
+			}
+
+			// row_start
+			if (!GetField_CString(hFormat, "row_start", &csTmp)) {
+				iStartRow = 1;
+			} else {
+				iStartRow = atoi(csTmp) + iSBlankLine;
+			}
+
+			// row_end
+			if (!GetField_CString(hFormat, "row_end", &csTmp)) {
+				iEndRow = 1;
+			} else {
+				iEndRow = atoi(csTmp) + iEBlankLine;
+			}
+
+			// total_field
+			if (!GetField_CString(hFormat, "total_field", &csTmp)) {
+				iTotalField = 0;
+			} else {
+				iTotalField = atoi(csTmp);
+			}
+
+DEBUGLOG(("Summary: Total Field = [%d] Starting/Ending Row = [%d]/[%d]\n", iTotalField, iStartRow, iEndRow));
+
+			// check input file total field
+			iLineCnt = 0;
+			iFieldCnt = 0;
+			rewind(fin);
+			while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+				iLineCnt++;
+				if (iLineCnt == iStartRow) {
+					if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+					if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+					strcpy(cs_tmp_input_buf, cs_input_buf);
+					csTmp = mystrtok(cs_tmp_input_buf, csDelimiter);
+					while (csTmp != NULL) {
+						iFieldCnt++;
+						csTmp = mystrtok(NULL, csDelimiter);
+					}
+DEBUGLOG(("format_id[%s] delimiter[%s]\n", csFormatId, csDelimiter));
+DEBUGLOG(("line %03d count[%d]/total_field[%d] [%s]\n", iLineCnt, iFieldCnt, iTotalField, cs_input_buf));
+					if (iFieldCnt == iTotalField) iMatched = 1;
+					break;
+				}
+			}
+
+			if (iMatched) break;
+
+			hFormat = RecordSet_GetNext(rFormat);
+		}
+
+		// no stmt file format match
+		if (iMatched) {
+			PutField_Int(hFormat, "neg_amount", iNegAmount);
+			PutField_Int(hFormat, "neg_balance", iNegBalance);
+		} else {
+DEBUGLOG(("no stmt file format match\n"));
+ERRLOG("convert_abc: batch_proc: no stmt file format match\n");
+			iErrorCode = INT_INVALID_FILE_FORMAT;
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		iLineCnt = 0;
+		rewind(fin);
+		while (fgets(cs_input_buf, sizeof(cs_input_buf), fin) != NULL) {
+			iLineCnt++;
+
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+			if (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D) cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+			// output lines before and after detail records
+			if (iLineCnt < iStartRow || iLineCnt > iTotalLine - iEndRow + 1) {
+				fprintf(fout, "%.*s\n", (int)strlen(cs_input_buf), cs_input_buf);
+				continue;
+			}
+
+			{
+				hCurrRec = (hash_t*) malloc (sizeof(hash_t));
+				hash_init(hCurrRec, 0);
+				if (SplitLineByhFormat(cs_input_buf, csFormatId, hFormat, hCurrRec) != PD_OK) {
+DEBUGLOG(("call SplitLineByhFormat() fail\n"));
+ERRLOG("convert_abc: batch_proc: call SplitLineByhFormat() fail\n");
+					iErrorCode = INT_FORMAT_TEMPLATE_ERROR;
+					iRet = FAILURE;
+					break;
+				}
+
+				cs_err_msg_buf[0] = '\0';
+				if (CheckDetail(hFormat, hCurrRec, cs_err_msg_buf) != PD_OK) {
+DEBUGLOG(("call CheckDetail() fail\n"));
+ERRLOG("convert_abc: batch_proc: call CheckDetail() fail\n");
+					iErrorCode = INT_DETAIL_FIELD_ERROR;
+					iRet = FAILURE;
+					break;
+				}
+
+				if (GetField_CString(hCurrRec, "txn_amount", &csTmp)) {
+					dCurrTxnAmt = string2doublewithsign((const unsigned char *)csTmp);
+				}
+
+				if (!GetField_CString(hCurrRec, "statement_time", &csTmp)) {
+					sprintf(csTag, "content_desc_%s_%d", csFormatId, 2);
+					PutField_CString(hCurrRec, csTag, "statement_time");
+					PutField_CString(hCurrRec, "statement_time", DEFAULT_STMT_TIME);
+				}
+
+DEBUGLOG(("--------------------\n"));
+DEBUGLOG(("normal (Curr): txn_amount = [%.2lf]\n", dCurrTxnAmt));
+
+				if (dCurrTxnAmt != 0.0) {
+					// output curr record
+					for (iTmp = 1; iTmp <= iTotalField; iTmp++) {
+						sprintf(csTag, "content_desc_%s_%d", csFormatId, iTmp);
+//DEBUGLOG(("debug output curr record: csTag = [%s]\n", csTag));
+						if (GetField_CString(hCurrRec, csTag, &csTmp)) {
+//DEBUGLOG(("debug output curr record: csTmp = [%s]\n", csTmp));
+							strcpy(csTmp3, csTmp);
+							if (GetField_CString(hCurrRec, csTmp, &csTmp2)) {
+//DEBUGLOG(("debug output curr record: csTmp2 = [%s]\n", csTmp2));
+								strcpy(csTmp3, csTmp2);
+							}
+							if (iTmp != iTotalField)
+								fprintf(fout, "%.*s%s", (int)strlen(csTmp3), csTmp3, csDelimiter);
+							else
+								fprintf(fout, "%.*s\n", (int)strlen(csTmp3), csTmp3);
+						} else {
+							if (iTmp != iTotalField)
+								fprintf(fout, "%s", csDelimiter);
+							else
+								fprintf(fout, "\n");
+						}
+					}
+				}
+			}
+		}
+	}
+
+DEBUGLOG(("iErrorCode = [%d]\n", iErrorCode));
+	if (iErrorCode != 0) {
+		hError = (hash_t*) malloc (sizeof(hash_t));
+		hash_init(hError, 0);
+
+		PutField_Int(hError, "file_id", iStmtFileId);
+		//PutField_Int(hError, "message_code", iErrorCode);
+DEBUGLOG(("iErrorCode overrided to [%d]\n", INT_INVALID_FILE_FORMAT));
+		PutField_Int(hError, "message_code", INT_INVALID_FILE_FORMAT);
+		PutField_CString(hError, "create_user", PD_UPDATE_USER);
+
+DEBUGLOG(("call DBOLStmtConvertError::AddError()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtConvertError", "AddError");
+		if ((unsigned long)(*DBObjPtr)(hError) != PD_OK) {
+DEBUGLOG(("call DBOLStmtConvertError::AddError() fail\n"));
+ERRLOG("convert_abc: batch_proc: call DBOLStmtConvertError::AddError() fail\n");
+			iRet = FAILURE;
+		}
+
+		hash_destroy(hError);
+		FREE_ME(hError);
+	}
+
+	FREE_ME(csTag);
+
+	RecordSet_Destroy(rFormat);
+	FREE_ME(rFormat);
+
+	fclose(fin);
+	fclose(fout);
+
+DEBUGLOG(("batch_proc: iRet = [%d]\n", iRet));
+	return SUCCESS;
+}
+
+
+int batch_terminate(int argc, char *argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+	iStmtFileId = 0;
+	strcpy(csRawFile, "");
+	strcpy(csProcessFile, "");
+	strcpy(csBankAcctType, "");
+
+	while ((c = getopt(argc, argv, "i:r:o:t:")) != EOF) {
+		switch (c) {
+			case 'i':
+				iStmtFileId = atoi(optarg);
+				break;
+			case 'r':
+				strcpy(csRawFile, optarg);
+				break;
+			case 'o':
+				strcpy(csProcessFile, optarg);
+				break;
+			case 't':
+				strcpy(csBankAcctType, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (iStmtFileId == 0 || !strcmp(csRawFile, "") || !strcmp(csProcessFile, "") || !strcmp(csBankAcctType, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}
+
+
+int SplitLineByhFormat(const char *csLine, const char *csFormatId, const hash_t *hFormat, hash_t *hRls)
+{
+	int iRet = PD_OK;
+	char *csTag = (char*) malloc (64);
+	char csDelimiter[2], *csDesc = NULL;
+	char *csTmp;
+
+	char *csLineField, *csRemainField;
+	char csNewField[PD_TMP_MSG_BUF_LEN], csNewLine[PD_TMP_MSG_BUF_LEN];
+	int iField = 0;
+
+	/* delimiter */
+	sprintf(csTag, "delimiter_%s", csFormatId);
+	if (!GetField_CString(hFormat, csTag, &csTmp)) {
+DEBUGLOG(("SplitLineByhFormat: [%s] not found\n", csTag));
+ERRLOG("convert_abc: SplitLineByhFormat: [%s] not found\n", csTag);
+		iRet = PD_ERR;
+	} else {
+		sprintf(csDelimiter, "%c", atoi(csTmp));
+	}
+
+	strcpy(csNewLine, csLine);
+
+	csLineField = mystrtok_r(csNewLine, csDelimiter, &csRemainField);
+	while (csLineField != NULL && iRet == PD_OK) {
+		strcpy(csNewField, TrimAll((const unsigned char*)csLineField, strlen(csLineField)));
+
+		iField++;
+
+		if (*csNewField == '\0') {
+			csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+			continue;
+		}
+
+		csDesc = NULL;
+
+		/* desc - CONTENT */
+		sprintf(csTag, "content_desc_%s_%d", csFormatId, iField);
+		if (GetField_CString(hFormat, csTag, &csDesc)) {
+//DEBUGLOG(("debug desc %s (%s)[%s]\n", csTag, csDesc, csNewField));
+			PutField_CString(hRls, csTag, csDesc);
+			PutField_CString(hRls, csDesc, csNewField);
+		} else {
+//DEBUGLOG(("debug desc %s [%s]\n", csTag, csNewField));
+			PutField_CString(hRls, csTag, csNewField);
+		}
+
+		csLineField = mystrtok_r(NULL, csDelimiter, &csRemainField);
+	}
+
+	FREE_ME(csTag);
+	return iRet;
+}
+
+
+char *CS_DETAIL_TAG[18] = {"statement_date","statement_time","tfr_bank_name","tfr_bank_acct_num","tfr_type","tfr_channel","tfr_text","tfr_customer_text","sender_name","txn_ref_num","balance","amt_type","txn_amount","txn_ccy","bank_charge","sender_baid_name","recipient_baid_name","client_name"};
+char *CS_DETAIL_NAME[18] = {"Date","Time","Deposit Bank","Bank Account","Txn Category","Txn Channel","Txn Description","Bank Remark","Sender Name","Txn Ref Number","Balance","Credit/Debit","Amount","Currency","Bank Charge","Sender BAID Name","Recipient BAID Name","Client Name"};
+int INT_DETAIL_TAG = (int)sizeof(CS_DETAIL_TAG) / (int)sizeof(*CS_DETAIL_TAG);
+
+int INT_DETAIL_MAX_LEN[18]	= {   8,   6,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  15,   2,  13,   3,  13, 100, 100,  50};
+int INT_DETAIL_MAX_UTF8_LEN[18]	= {  -1,  -1,  50,  50, 200, 200,  50, 202,  50,  50,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1};
+int INT_DETAIL_CHECK_LEN[18]	= {   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1};
+
+int CheckDetail(const hash_t *hContext, hash_t *hRls, char *cs_err_msg_buf) {
+	int iRet = PD_OK;
+	int i;
+	char *csTmp = NULL;
+	double dTmp;
+
+	int iNegAmount, iNegBalance;
+
+	char cs_tmp_buf1[PD_TMP_BUF_LEN] = "";
+	char cs_tmp_buf2[PD_TMP_BUF_LEN] = "";
+
+	// neg_amount
+	if (!GetField_Int(hContext, "neg_amount", &iNegAmount)) {
+DEBUGLOG(("CheckDetail: neg_amount not found\n"));
+		iRet = PD_ERR;
+	}
+	// neg_balance
+	if (!GetField_Int(hContext, "neg_balance", &iNegBalance)) {
+DEBUGLOG(("CheckDetail: neg_balance not found\n"));
+		iRet = PD_ERR;
+	}
+
+	// txn_amount
+	i = 12;
+	if (GetField_CString(hRls, "txn_amount", &csTmp)) {
+		_deleteCharacters(csTmp, ",");
+
+		if (sscanf(csTmp, "%lf", &dTmp) == 1 ||
+		    sscanf(csTmp, "%*[^0-9+-.]%lf", &dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1, "%.2lf", dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than or equal to 0
+			if (dTmp > 1E-9) {
+//DEBUGLOG(("CheckDetail: txn_amount = [%s]\n", csTmp));
+			// Allow less than 0 when NEG_AMOUNT
+			} else {
+				if (iNegAmount == 1) {
+//DEBUGLOG(("CheckDetail: ## txn_amount = [%s] allowed\n", csTmp));
+				} else {
+DEBUGLOG(("CheckDetail: txn_amount [%s] invalid\n", csTmp));
+					INT_DETAIL_CHECK_LEN[i] = 0;
+					if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+					snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[Invalid %s]", CS_DETAIL_NAME[i]);
+					strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+				}
+			}
+		} else {
+DEBUGLOG(("CheckDetail: txn_amount [%s] invalid\n", csTmp));
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[Invalid %s]", CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+		}
+
+		PutField_CString(hRls, "txn_amount", csTmp);
+	} else {
+DEBUGLOG(("CheckDetail: txn_amount not found\n"));
+		INT_DETAIL_CHECK_LEN[i] = 0;
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[%s Not Found]", CS_DETAIL_NAME[i]);
+		strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+	}
+
+	// balance
+	i = 10;
+	if (GetField_CString(hRls, "balance", &csTmp)) {
+		_deleteCharacters(csTmp, ",");
+
+		if (sscanf(csTmp, "%lf", &dTmp) == 1 ||
+		    sscanf(csTmp, "%*[^0-9+-.]%lf", &dTmp) == 1) {
+
+			sprintf(cs_tmp_buf1, "%.2lf", dTmp);
+			csTmp = cs_tmp_buf1;
+
+			// Allow greater than or equal to 0
+			if (dTmp > -1E-9) {
+//DEBUGLOG(("CheckDetail: balance = [%s]\n", csTmp));
+			// Allow less than 0 when NEG_BALANCE
+			} else {
+				if (iNegBalance == 1) {
+//DEBUGLOG(("CheckDetail: ## balance = [%s] allowed\n", csTmp));
+				} else {
+DEBUGLOG(("CheckDetail: balance [%s] invalid\n", csTmp));
+					INT_DETAIL_CHECK_LEN[i] = 0;
+					if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+					snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[Invalid %s]", CS_DETAIL_NAME[i]);
+					strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+				}
+			}
+		} else {
+DEBUGLOG(("CheckDetail: balance [%s] invalid\n", csTmp));
+			INT_DETAIL_CHECK_LEN[i] = 0;
+			iRet = PD_ERR;
+			snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[Invalid %s]", CS_DETAIL_NAME[i]);
+			strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+		}
+
+		PutField_CString(hRls, "balance", csTmp);
+	} else {
+DEBUGLOG(("CheckDetail: balance not found\n", csTmp));
+		INT_DETAIL_CHECK_LEN[i] = 0;
+		iRet = PD_ERR;
+		snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[%s Not Found]", CS_DETAIL_NAME[i]);
+		strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+	}
+
+	// length
+	for (i = 0; i < INT_DETAIL_TAG; i++) {
+		if (INT_DETAIL_CHECK_LEN[i] > 0) {
+			if (GetField_CString(hRls, CS_DETAIL_TAG[i], &csTmp)) {
+				if (INT_DETAIL_MAX_LEN[i] != -1) {
+					if (strlen(csTmp) > INT_DETAIL_MAX_LEN[i]) {
+DEBUGLOG(("CheckDetail: %s [%s] too long\n", CS_DETAIL_NAME[i], csTmp));
+						if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+						snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[%s Too Long]", CS_DETAIL_NAME[i]);
+						strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+					}
+				}
+
+				if (INT_DETAIL_MAX_UTF8_LEN[i] != -1) {
+					if (strlen_utf8(csTmp) > INT_DETAIL_MAX_UTF8_LEN[i]) {
+DEBUGLOG(("CheckDetail: %s UTF8[%s] too long\n", CS_DETAIL_NAME[i], csTmp));
+						if (iRet != PD_ERR) iRet = PD_OTHER_ERR;
+						snprintf(cs_tmp_buf1, sizeof(cs_tmp_buf1), "[%s Too Long]", CS_DETAIL_NAME[i]);
+						strncat(cs_tmp_buf2, cs_tmp_buf1, sizeof(cs_tmp_buf2) - strlen(cs_tmp_buf2) - 1);
+					}
+				}
+			}
+		}
+
+		INT_DETAIL_CHECK_LEN[i] = 1;
+	}
+
+	if (iRet != PD_OK) {
+		sprintf(cs_err_msg_buf, "%s", cs_tmp_buf2);
+DEBUGLOG(("CheckDetail: err_msg = %s\n", cs_err_msg_buf));
+	}
+
+	return iRet;
+}
+

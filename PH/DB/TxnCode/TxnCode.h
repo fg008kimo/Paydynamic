@@ -1,0 +1,38 @@
+#ifndef _TXN_CODE_H_
+#define _TXN_CODE_H_
+
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int FindTxnCode(unsigned char* TxnCode,
+		unsigned char* TxnCodeDesc,
+                const unsigned char* ProcessType,
+                const unsigned char* ProcessCode);
+
+int IsVoidable(const unsigned char* TxnCode,
+	       const unsigned char* ProcessType,
+               const unsigned char* ProcessCode);
+
+int IsOffset(const unsigned char* TxnCode);
+
+int IsVoid(const unsigned char* TxnCode);
+
+int OflIsVoidable(const unsigned char* TxnCode);
+
+int AllowCancel(const unsigned char* TxnCode);
+
+int AllowFeInit(const unsigned char* TxnCode);
+
+int FindVoidTxnCode(const unsigned char* csTxnCode,
+		    unsigned char* csVoidTxnCode);
+
+int GetInitPFCodeByDesc(const unsigned char* TxnDesc, unsigned char* TxnCode);
+int GetAmtTypeByPFInitType(const unsigned char* TxnDesc, unsigned char* AmtType);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

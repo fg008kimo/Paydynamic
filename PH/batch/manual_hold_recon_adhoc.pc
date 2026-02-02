@@ -1,0 +1,198 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+#include <sys/stat.h>
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cs_input_file[PD_TMP_BUF_LEN + 1];
+
+static char cDebug = 'Y';
+
+OBJPTR(Txn);
+OBJPTR(DB);
+
+int parse_arg(int argc, char **argv);
+int process_main();
+
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc != 3) {
+		printf("usage: -f input_file\n");
+		return FAILURE;
+	}
+	else
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+	int iTmpRet = PD_OK;
+	FILE *fproc;
+	char cs_input_buf[PD_MAX_BUFFER + 1];
+	char csTmp[PD_MAX_BUFFER + 1]; 
+
+	hash_t *hContext;
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext, 0);
+
+	hash_t *hRequest;
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRequest, 0);
+
+	hash_t *hResponse;
+	hResponse = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hResponse, 0);
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage: -f input_file\n");
+		return (iRet);
+	}
+
+	fproc = fopen(cs_input_file, "r");
+	if (fproc == NULL) {
+DEBUGLOG(("batch_proc: Error opening file = [%s]\n", cs_input_file));
+ERRLOG("manual_hold_recon: batch_proc: Error opening file = [%s]\n", cs_input_file);
+		return FAILURE;
+	}
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_statement_ref[PD_TXN_SEQ_LEN];
+		varchar v_stat_txn_id[PD_TXN_SEQ_LEN];
+
+		short	ind_stat_txn_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		select obt_txn_id
+		from ol_baid_txn
+		where obt_stat_txn_id = (
+			select olsd_stat_txn_id
+			from ol_statement_detail
+			where olsd_statement_ref = :hv_statement_ref
+		)
+		and obt_status = 'C'
+		and obt_ar_ind = 'A'
+		and obt_sub_status = '118';
+
+	while ((iRet == SUCCESS) && (fgets(cs_input_buf, PD_MAX_BUFFER, fproc) != NULL)) {
+DEBUGLOG(("--------------------------------------------------\n"));
+
+		cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+
+		hv_statement_ref.len = strlen(cs_input_buf);
+		memcpy(hv_statement_ref.arr, cs_input_buf, hv_statement_ref.len);
+DEBUGLOG(("statement_ref = [%.*s]\n", hv_statement_ref.len, hv_statement_ref.arr));
+
+		EXEC SQL OPEN c_cursor_getinfo;
+		do {
+			EXEC SQL FETCH c_cursor_getinfo
+			INTO
+				:v_stat_txn_id:ind_stat_txn_id;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			if (ind_stat_txn_id >= 0) {
+				sprintf(csTmp, "%.*s", v_stat_txn_id.len, v_stat_txn_id.arr);
+DEBUGLOG(("stat_txn_id = [%s](%d)\n", csTmp, strlen(csTmp)));
+				PutField_CString(hRequest, "org_txn_seq", csTmp);
+
+				sprintf(csTmp, "%c", PD_HOLD);
+DEBUGLOG(("hold_type = [%s](%d)\n", csTmp, strlen(csTmp)));
+				PutField_CString(hRequest, "hold_type", csTmp);
+
+				sprintf(csTmp, "%c", PD_STMT_LEVEL);
+DEBUGLOG(("txn_type = [%s](%d)\n", csTmp, strlen(csTmp)));
+				PutField_CString(hRequest, "txn_type", csTmp);
+
+				PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+
+				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsMHR", "Authorize");
+				iTmpRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+				if (iTmpRet == PD_OK) {
+DEBUGLOG(("batch_proc: call TxnOmtByUsMHR: Authorize() success, iTmpRet = [%d]\n", iTmpRet));
+					EXEC SQL COMMIT WORK;
+				}
+				else {
+DEBUGLOG(("batch_proc: call TxnOmtByUsMHR: Authorize() failed, iTmpRet = [%d]\n", iTmpRet));
+ERRLOG("manual_hold_recon: batch_proc: call TxnOmtByUsMHR: Authorize() failed, iTmpRet = [%d]\n", iTmpRet);
+					iRet = FAILURE;
+				}
+			}
+		}
+		while (PD_TRUE && iRet == SUCCESS);
+		EXEC SQL CLOSE c_cursor_getinfo;
+	}
+
+	FREE_ME(hResponse);
+	FREE_ME(hRequest);
+	FREE_ME(hContext);
+
+	fclose(fproc);
+
+DEBUGLOG(("--------------------------------------------------\n"));
+DEBUGLOG(("iRet = [%d]\n", iRet));
+	return iRet;
+
+sql_error:
+DEBUGLOG(("manual_hold_recon_adhoc error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getinfo;
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+	strcpy(cs_input_file, "");
+
+	while ((c = getopt(argc, argv, "f:")) != EOF) {
+		switch (c) {
+			case 'f':
+				strcpy(cs_input_file, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_input_file, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}
+

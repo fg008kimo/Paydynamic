@@ -1,0 +1,197 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/04/12              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOOffset.h"
+
+char    cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOOffset(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     ProcessPartyBalance(hash_t* hInRec)
+{
+	int	iRet = PD_OK;
+
+	double  dAmt = 0.0;
+        double  dAvaBalance = 0.0;
+        double  dTmp = 0.0;
+
+	char	*csCode = NULL;
+	char	*csPspId = NULL;
+	char	*csCountry = NULL;
+	char	*csCcy = NULL;	
+	char	*csUser = NULL;
+	char	*csTmp = NULL;
+	
+	hash_t	*hTxn;
+	hTxn = (hash_t *)malloc(sizeof(hash_t));
+	hash_init(hTxn, 0);
+	
+/* code */
+	if (GetField_CString(hInRec, "code", &csCode)) {
+DEBUGLOG(("ProcessPartyBalance::code [%s]\n", csCode));
+	} else {
+DEBUGLOG(("ProcessPartyBalance::code missing\n"));
+ERRLOG("BOOffset::ProcessPartyBalance::code missing!!\n");
+                iRet = INT_CODE_ERROR;
+                PutField_Int(hInRec, "internal_error", iRet);
+        }
+
+/* psp_id */
+	if (GetField_CString(hInRec, "psp_id", &csPspId)) {
+DEBUGLOG(("ProcessPartyBalance::psp_id [%s]\n", csPspId));
+       	} else {
+DEBUGLOG(("ProcessPartyBalance::psp_id missing\n"));
+ERRLOG("BOOffset::ProcessPartyBalance::psp_id missing!!\n");
+             	iRet = INT_PSP_RETURN_ERROR;
+               	PutField_Int(hInRec, "internal_error", iRet);
+    	}
+
+/* country */
+	if (GetField_CString(hInRec, "txn_country", &csCountry)) {
+DEBUGLOG(("ProcessPartyBalance::country [%s]\n", csCountry));
+	} else {
+DEBUGLOG(("ProcessPartyBalance::country missing\n"));
+ERRLOG("BOOffset::ProcessPartyBalance::country missing!!\n");
+                iRet = INT_COUNTRY_PSP_NOT_AVABILE;
+                PutField_Int(hInRec, "internal_error", iRet);
+        }
+
+/* ccy */
+	if (GetField_CString(hInRec, "txn_ccy", &csCcy)) {
+DEBUGLOG(("ProcessPartyBalance::ccy [%s]\n", csCcy));
+	} else {
+DEBUGLOG(("ProcessPartyBalance::ccy missing\n"));
+ERRLOG("BOOffset::ProcessPartyBalance::ccy missing!!\n");
+                iRet = INT_CURRENCY_CODE_NOT_FOUND;
+                PutField_Int(hInRec, "internal_error", iRet);
+        }
+
+/* txn_amt */
+        if(GetField_Double(hInRec,"txn_amt",&dAmt)){
+DEBUGLOG(("ProcessPartyBalance::txn_amt= [%f]\n",dAmt));
+                PutField_Double(hInRec, "net_amt", dAmt);
+	} else {
+DEBUGLOG(("ProcessPartyBalance::txn_amt missing\n"));
+ERRLOG("BOOffset::ProcessPartyBalance::txn_amt missing!!\n");
+                iRet = INT_PAY_AMOUNT_NOT_FOUND;
+                PutField_Int(hInRec, "internal_error", iRet);
+        }         
+
+/* udpate_user */
+        if(GetField_CString(hInRec,"add_user",&csUser)){
+DEBUGLOG(("ProcessPartyBalance::add_user= [%s]\n",csUser));
+	}
+
+/*
+ * PSP Balance = PSP Available + PSP Lien (Hold) 
+ *
+ * PSP Available Balance = PSP Available + PSP Float
+ * 
+ * PSP Total Balance = PSP Available + PSP Float + PSP Lien (Hold)
+ */
+
+	// Get PSP Available Balance for Update
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOOffset::ProcessPartyBalance::Call BOBalance:GetAvalPspBalanceForUpdate\n"));
+        	BOObjPtr = CreateObj(BOPtr,"BOBalance","GetAvalPspBalanceForUpdate");
+              	if((unsigned long)((*BOObjPtr)(csCountry, csCcy, csPspId, &dAvaBalance) != PD_OK)) {
+DEBUGLOG(("BOOffset::BOBalance:GetAvalPspBalanceForUpdate Failed\n"));
+ERRLOG("BOOffset::BOBalance:GetAvalPspBalanceForUpdate Failed\n");
+                   	iRet=INT_ERR;
+               	} else {
+DEBUGLOG(("BOOffset::ProcessPartyBalance::PSP Balance [%lf]\n", dAvaBalance));
+			
+			// Get approval date and approval timestamp
+			DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+			if ((*DBObjPtr)(hInRec) == PD_OK) {
+				if (GetField_CString(hInRec, "approval_date", &csTmp))  {
+DEBUGLOG(("BOOffset::ProcessPartyBalance::PSP approval_date [%s]\n", csTmp));
+				}
+
+				if (GetField_CString(hInRec, "approval_timestamp", &csTmp))  {
+DEBUGLOG(("BOOffset::ProcessPartyBalance::PSP approval_timestamp [%s]\n", csTmp));
+				}
+			}
+              	}
+      	}
+
+	// Check Balance (PSP Available Balance)
+	if (iRet == PD_OK) {
+		if (newround(dAmt,PD_DECIMAL_LEN) > newround(dAvaBalance,PD_DECIMAL_LEN)) {
+DEBUGLOG(("BOOffset::ProcessPartyBalance::CANNOT process as not enought PSP [%s] Balance [%lf] Amt [%lf]\n", csPspId, dAvaBalance, dAmt));
+			iRet = INT_INSUFFICIENT_FUND;
+			PutField_Int(hInRec, "internal_error", iRet);
+		}
+	}
+
+	// Debit Balance (PSP Balance)
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOOffset::Call DBPspBalance:DebitBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+		if ((*DBObjPtr)(csPspId,csCountry, csCcy, PD_PSP_BAL, dAmt, csUser) != PD_OK) {
+DEBUGLOG(("BOOffset::DBPspBalance:DebitBalance Failed\n"));
+			iRet = INT_ERR;
+		}
+	}
+
+	// Get PSP Total Balance (PSP Balance, PSP Float and PSP Lien)
+	if (iRet == PD_OK) {
+           	hash_init(hTxn,0);
+
+DEBUGLOG(("BOOffset::Call DBPspBalance:GetBalance\n"));
+                DBObjPtr = CreateObj(DBPtr,"DBPspBalance","GetBalance");
+                if ((*DBObjPtr)(csPspId, csCountry, csCcy, hTxn) == PD_OK) {
+
+                        if (GetField_Double(hTxn, "balance", &dTmp)) {
+DEBUGLOG(("Psp GetBalance::balance = [%f]\n",dTmp));
+                                PutField_Double(hInRec, "bal", dTmp);
+				PutField_Double(hInRec, "current_bal", dTmp);
+                        }
+
+                        if (GetField_Double(hTxn, "total_float", &dTmp)) {
+DEBUGLOG(("Psp GetBalance::total_float = [%f]\n",dTmp));
+                                PutField_Double(hInRec, "total_float", dTmp);
+                        }
+
+                        if (GetField_Double(hTxn, "total_hold", &dTmp)) {
+DEBUGLOG(("Psp GetBalance::total_hold = [%f]\n",dTmp));
+                                PutField_Double(hInRec, "total_hold", dTmp);
+                        }
+                }
+                else {
+ERRLOG("BOOffset::PSP GetBalance::Balance for PspId[%s] not found\n",csPspId);
+DEBUGLOG(("Psp GetBalance::Balance for PspId[%s] not found\n", csPspId));
+                        iRet = INT_ERR;
+                }
+
+		hash_destroy(hTxn);
+	}
+
+	FREE_ME(hTxn);
+
+DEBUGLOG(("ProcessPartyBalance::Return iRet [%d]\n", iRet));
+
+	return iRet;	
+}
+

@@ -1,0 +1,196 @@
+CREATE OR REPLACE FUNCTION sp_ol_payout_rtn_allow_chk (
+    in_txn_id       ol_txn_header.oth_txn_id%type,
+    out_recon_cnt   OUT NUMBER,
+    out_unrecon_cnt OUT NUMBER,
+    out_level       OUT NUMBER
+) RETURN NUMBER IS
+    g_recon_cnt   NUMBER := 0;
+    g_unrecon_cnt NUMBER := 0;
+    g_level       NUMBER := 0;
+    g_rtn         NUMBER := 1;  -- 1: error
+
+    g_total_cnt   NUMBER := 0;
+    
+    PROCEDURE  p_check_status (iv_txn_id IN VARCHAR2,
+                               iv_recon_cnt IN OUT NUMBER,
+                               iv_unrecon_cnt IN OUT NUMBER,
+                               iv_level IN OUT NUMBER,
+                               iv_rtn OUT NUMBER)
+    IS
+        v_status       ol_txn_header.oth_status%type;
+        v_ar_ind       ol_txn_header.oth_ar_ind%type;
+        v_recon_status ol_txn_header.oth_recon_status%type;
+        
+        l_txn_id        ol_txn_header.oth_txn_id%type;
+        l_chk_txn_id   ol_txn_header.oth_txn_id%type;
+        l_batch_txn_id ol_batch_txn_relation.obtr_batch_id%type;
+          
+        l_batch_cnt NUMBER := 0;          
+    begin    
+        g_total_cnt := g_total_cnt + 1;
+        
+        if g_total_cnt > 20 then
+            iv_rtn:= 1;
+            return; -- prevent loop too much
+        end if;
+        
+        iv_level := iv_level + 1;
+                
+        select oth_status, oth_ar_ind, oth_recon_status
+        into  v_status, v_ar_ind, v_recon_status
+        from ol_txn_header
+        where oth_txn_id = iv_txn_id;
+        
+        --dbms_output.put_line('Cnt [' || g_total_cnt || ']');
+        --dbms_output.put_line('txn_id [' || iv_txn_id || '] status ['|| v_status || '] ar_ind [' || v_ar_ind || '] recon_status [' || v_recon_status || ']');
+        
+        if v_status = 'C' and v_ar_ind = 'A' then
+            if v_recon_status in ('U', 'R') then   -- unrecon or recon       
+                if  v_recon_status = 'U' then
+                    iv_unrecon_cnt := iv_unrecon_cnt + 1;
+                end if;            
+            
+                if v_recon_status = 'R' then
+                    iv_recon_cnt := iv_recon_cnt + 1; 
+                end if;
+                iv_rtn := 0; -- success
+            else 
+                iv_rtn := 1; -- error
+            end if;
+        else
+            --dbms_output.put_line('NOT C A');
+            
+            select count(1)
+            into l_batch_cnt
+            from ol_batch_txn_relation
+            where obtr_txn_id = iv_txn_id
+            and obtr_batch_type = 'G'
+            and obtr_txn_level = 'T';
+            
+            --dbms_output.put_line('batch Cnt ' || l_batchCnt);
+            
+            if l_batch_cnt > 0 then
+                -- check any void recon.
+                begin
+                    select otr_p1_txn_id
+                    into l_txn_id
+                    from ol_txn_relation
+                    where otr_party_type = 'P'
+                    and otr_txn_level = 'T'
+                    and otr_relation_type = 'V'
+                    and otr_p2_txn_id =  iv_txn_id;
+                exception
+                   when no_data_found then
+                       l_txn_id := NULL;
+                end;
+                
+                --dbms_output.put_line('l_tmp_txn_id [' || l_tmp_txn_id || ']');
+                
+                if l_txn_id is NULL then
+                    -- no void code found, find the lastest batch for the txn_id
+                    
+                    iv_level := iv_level + 1;
+                    
+                    select obtr_batch_id
+                    into l_batch_txn_id
+                    from (
+                        select obtr_batch_id
+                        from ol_batch_txn_relation
+                        where obtr_txn_id = iv_txn_id
+                        and obtr_batch_type = 'G'
+                        and obtr_txn_level = 'T'
+                        order by obtr_relation_timestamp desc
+                    ) where rownum < 2;            
+                    
+                    for i in (
+                        select oth_status, oth_ar_ind, oth_recon_status
+                        from txn_code, ol_txn_header, ol_batch_txn_relation
+                        where obtr_batch_id = l_batch_txn_id
+                        and obtr_txn_level = 'T'
+                        and oth_txn_id = obtr_txn_id
+                        and obtr_txn_id != iv_txn_id
+                        and tc_code = oth_txn_code
+                        and tc_ofl_is_offset = 0
+                        and oth_status = 'C'
+                        and oth_ar_ind = 'A'
+                        order by obtr_relation_timestamp) loop
+                        
+                        if i.oth_recon_status in ('U', 'R') then        
+                            if  i.oth_recon_status = 'U' then
+                                iv_unrecon_cnt := iv_unrecon_cnt + 1;
+                            end if;            
+            
+                            if i.oth_recon_status = 'R' then
+                                iv_recon_cnt := iv_recon_cnt + 1; 
+                            end if;
+                            
+                            iv_rtn := 0; -- success
+                        else 
+                            iv_rtn := 1; -- error
+                            EXIT;
+                        end if;
+                    end loop;
+                -- end: not found void txnid
+                else 
+                
+                    -- void found
+                    iv_level := iv_level - 1;
+                    
+                    begin
+                        select otr_p2_txn_id
+                        into l_chk_txn_id
+                        from ol_txn_relation
+                        where otr_party_type = 'P'
+                        and otr_txn_level = 'T'
+                        and otr_relation_type = 'L'
+                        and otr_p1_txn_id = l_txn_id;
+                    exception
+                        when no_data_found then
+                            l_chk_txn_id := NULL;
+                    end;
+                    
+                    --dbms_output.put_line('l_chk_txn_id [' || l_chk_txn_id || ']');
+                    
+                    if l_chk_txn_id is not null then 
+                        p_check_status(l_chk_txn_id, iv_recon_cnt, iv_unrecon_cnt,iv_level, iv_rtn);
+                    else
+                        iv_rtn := 1;
+                    end if;
+                end if;
+            else
+                iv_rtn := 1; -- error
+            end if; 
+        end if;
+        
+        --dbms_output.put_line('x rtn [' || iv_rtn || ']');
+        --dbms_output.put_line('xlRtn [' || lRtn || '] ');
+        --dbms_output.put_line('xrecon_cnt [' || v_recon_cnt || '] ');
+        --dbms_output.put_line('xv_unrecon_cnt [' || v_unrecon_cnt || '] ');
+         
+    END;
+BEGIN
+
+    p_check_status(in_txn_id, g_recon_cnt, g_unrecon_cnt, g_level, g_rtn);
+    
+    -- success
+    if g_rtn = 0 then
+        out_recon_cnt   := g_recon_cnt;
+        out_unrecon_cnt := g_unrecon_cnt;
+        out_level       := g_level;
+
+        /*    
+        dbms_output.put_line('final process in_txn_id [' || in_txn_id || ']');
+        dbms_output.put_line('final process l_recon_cnt [' || l_recon_cnt || ']');
+        dbms_output.put_line('final process l_unrecon_cnt [' || l_unrecon_cnt || ']');
+        */
+    else
+        NULL;
+        /*dbms_output.put_line('NOT Process');*/
+        
+    end if;
+    
+    return g_rtn;
+    
+end;
+/
+

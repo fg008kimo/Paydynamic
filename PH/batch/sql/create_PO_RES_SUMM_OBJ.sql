@@ -1,0 +1,37 @@
+DROP TYPE PO_RES_SUMM_OBJ;
+
+CREATE OR REPLACE TYPE PO_RES_SUMM_OBJ is object (client_id          varchar(10),
+                                                  client_name        varchar(50),
+					    	  merchant_id        varchar(15),
+                                                  merchant_name      varchar(50),
+                                                  merchant_short_name   varchar(20),
+                                                  country_code       char(2),
+                                                  country            varchar(50),
+                                                  service_code       char(3),
+                                                  service_desc       varchar(50),
+                                                  currency           varchar(3),
+                                                  status             char(1),
+                                                  sun_res_amt        number,
+                                                  sun_remain_res_amt        number,
+                                                  sun_effect_date    varchar(14),
+                                                  mon_res_amt        number,
+                                                  mon_remain_res_amt        number,
+                                                  mon_effect_date    varchar(14),
+                                                  tue_res_amt        number,
+                                                  tue_remain_res_amt        number,
+                                                  tue_effect_date    varchar(14),
+                                                  wed_res_amt        number,
+                                                  wed_remain_res_amt        number,
+                                                  wed_effect_date    varchar(14),
+                                                  thu_res_amt        number,
+                                                  thu_remain_res_amt        number,
+                                                  thu_effect_date    varchar(14),
+                                                  fri_res_amt        number,
+                                                  fri_remain_res_amt        number,
+                                                  fri_effect_date    varchar(14),
+                                                  sat_res_amt        number,
+                                                  sat_remain_res_amt        number,
+                                                  sat_effect_date    varchar(14)
+                                                 )
+/
+

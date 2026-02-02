@@ -1,0 +1,305 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/02/08              [WWK] 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_PROCESS_ALL_BANK	"ALL"
+#define	PD_SERVER_ID_LEN	3
+
+char cs_server_id[PD_SERVER_ID_LEN+1];
+
+char csTmp[PD_TMP_BUF_LEN+1];
+char csKey[PD_TMP_BUF_LEN+1];
+char csBank[PD_TMP_BUF_LEN+1];
+char* csProcessList;
+
+char cDebug;
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int GetNextJobSeq();
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	hash_t *hProcessBank;
+	hash_t *hTmp;
+	char cTmp;
+	int iExecuteJob;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	hProcessBank = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hProcessBank,0);
+
+	hTmp = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTmp,0);
+
+	int iSeq = 0;
+	iSeq = GetNextJobSeq();
+
+	if (iSeq <= 0)
+		return FAILURE;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("run_auto_upload_stmt Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_server_id[PD_SERVER_ID_LEN];
+
+		varchar	v_prov_pathname[PD_TMP_BUF_LEN+1];
+		varchar	v_nature[PD_ACCT_TYPE_LEN+1];
+		varchar	v_process_bank[PD_TMP_BUF_LEN+1];
+		varchar	v_nature_path[PD_TMP_BUF_LEN+1];
+
+		short	ind_prov_pathname = -1;
+		short	ind_nature = -1;
+		short	ind_process_bank = -1;
+		short	ind_nature_path = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_server_id.len = strlen(cs_server_id);
+	memcpy(hv_server_id.arr,cs_server_id,hv_server_id.len);
+DEBUGLOG(("hv_server_id = [%.*s]\n",hv_server_id.len,hv_server_id.arr));
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		SELECT	OAUS_PROVIDER_PATHNAME,
+			OAUS_NATURE,
+			DECODE(OAUS_PROCESS_BANK_CODE,'000','ALL',(SELECT BANK_ABBREV_NAME FROM BANK_DESC WHERE INTERNAL_BANK_CODE=OAUS_PROCESS_BANK_CODE)) process_bank,
+			OAUS_NATURE_PATH
+		FROM 	OL_AUTO_UPLOAD_STMT_SETTING
+		WHERE	OAUS_SERVER_ID = :hv_server_id
+		AND	OAUS_DISABLED = 0
+		ORDER BY
+			OAUS_PROVIDER_PATHNAME,
+			OAUS_NATURE,
+			OAUS_LEVEL DESC;
+	
+	EXEC SQL OPEN c_cursor_getinfo;
+
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_prov_pathname:ind_prov_pathname,
+			:v_nature:ind_nature,
+			:v_process_bank:ind_process_bank,
+			:v_nature_path:ind_nature_path;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		if (ind_prov_pathname >= 0 && ind_nature >= 0 && ind_process_bank >= 0 && ind_nature_path >= 0) {
+
+			hash_init(hTmp,0);
+			iExecuteJob = PD_FALSE;
+
+			//nature_path
+			sprintf(csTmp,"%.*s",v_nature_path.len, v_nature_path.arr);
+			PutField_CString(hTmp,"nature_path",csTmp);
+
+			//provider_path
+			sprintf(csTmp,"%.*s",v_prov_pathname.len, v_prov_pathname.arr);
+			PutField_CString(hTmp,"provider_path",csTmp);
+			
+
+			sprintf(csKey,"%.*s_%.*s",v_prov_pathname.len, v_prov_pathname.arr, v_nature.len, v_nature.arr);
+DEBUGLOG(("[%s]\n",csKey));
+
+			sprintf(csBank,"%.*s",v_process_bank.len,v_process_bank.arr);
+DEBUGLOG(("  Next Bank[%s]\n",csBank));
+
+			char *csCmd = (char*) malloc (PD_MAX_FILE_LEN  +1);
+			if (strcmp(csBank,PD_PROCESS_ALL_BANK) == 0) {
+				if (GetField_CString(hProcessBank,csKey,&csProcessList)) {
+DEBUGLOG(("  - Found, List[%s]\n",csProcessList));
+					PutField_CString(hTmp,"process_bank",csProcessList);
+					PutField_Int(hTmp,"exclude_mode",1);
+					sprintf(csCmd, "auto_upload_stmt_process.sh %d %.*s %.*s %s 1 >/dev/null 2>&1 &", iSeq, v_nature_path.len, v_nature_path.arr, v_prov_pathname.len,v_prov_pathname.arr, csProcessList);
+				} else {
+					PutField_CString(hTmp,"process_bank",csBank);
+					PutField_Int(hTmp,"exclude_mode",0);
+					sprintf(csCmd, "auto_upload_stmt_process.sh %d %.*s %.*s %s 0 >/dev/null 2>&1 &", iSeq, v_nature_path.len, v_nature_path.arr, v_prov_pathname.len,v_prov_pathname.arr, csBank);
+				}
+				DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobStatus", "GetStatus");
+				if ((unsigned long)(*DBObjPtr)(hTmp) == PD_FOUND) {
+					if (GetField_Char(hTmp,"status",&cTmp)) {
+						if (cTmp != PD_AUTO_UPL_JOB_STATUS_PENDING) {
+							iExecuteJob = PD_TRUE;
+						} else {
+							iExecuteJob = PD_FALSE;
+						}
+					}
+				} else {
+					iExecuteJob = PD_TRUE;
+				}
+			} else {
+				if (GetField_CString(hProcessBank,csKey,&csProcessList)) {
+					sprintf(csTmp,"%s_%s",csProcessList,csBank);
+					PutField_CString(hProcessBank,csKey,csTmp);
+DEBUGLOG(("  - Found, List[%s]\n",csProcessList));
+				} else {
+					PutField_CString(hProcessBank,csKey,csBank);
+DEBUGLOG(("  - NOT FOUND, insert [%s] into new list [%s]\n",csBank, csKey));
+				}
+
+				PutField_CString(hTmp,"process_bank",csBank);
+				PutField_Int(hTmp,"exclude_mode",0);
+				sprintf(csCmd, "auto_upload_stmt_process.sh %d %.*s %.*s %s 0 >/dev/null 2>&1 &", iSeq, v_nature_path.len, v_nature_path.arr, v_prov_pathname.len,v_prov_pathname.arr, csBank);
+				DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobStatus", "GetStatus");
+				if ((unsigned long)(*DBObjPtr)(hTmp) == PD_FOUND) {
+					if (GetField_Char(hTmp,"status",&cTmp)) {
+						if (cTmp != PD_AUTO_UPL_JOB_STATUS_PENDING) {
+							iExecuteJob = PD_TRUE;
+						} else {
+							iExecuteJob = PD_FALSE;
+						}
+					}
+				} else {
+					iExecuteJob = PD_TRUE;
+				}
+			}
+
+			PutField_Int(hTmp,"job_seq",iSeq);
+			PutField_Char(hTmp,"status",PD_AUTO_UPL_JOB_STATUS_INITIAL);
+			PutField_CString(hTmp,"create_user",PD_UPDATE_USER);
+			PutField_CString(hTmp,"update_user",PD_UPDATE_USER);
+
+			if (iExecuteJob) {
+				system(csCmd);
+DEBUGLOG(("  !!!CALL system(%s);\n",csCmd));
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadJobStatus", "Add");
+				if ((unsigned long)(*DBObjPtr)(hTmp) == PD_OK) {
+DEBUGLOG(("  DB initial success\n"));
+				}
+			} else {
+DEBUGLOG(("  SKIP!!!\n"));
+			}
+
+			FREE_ME(csCmd);
+		}
+
+
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+
+DEBUGLOG(("Normal exit!\n"));
+
+	FREE_ME(hProcessBank);
+	FREE_ME(hTmp);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("run_auto_upload_stmt error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /*EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;*/
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char	c;
+	strcpy(cs_server_id,"");
+
+	if (argc < 2) {
+DEBUGLOG(("argc = [%d]\n",argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc,argv,"s:")) != EOF) {
+		switch (c) {
+			case 's':
+				strcpy(cs_server_id,optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_server_id,""))
+		return FAILURE;
+
+
+        return SUCCESS;
+}
+
+int GetNextJobSeq()
+{
+        EXEC SQL WHENEVER SQLERROR GOTO getseq_err;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                int	hv_seq;
+                short   ind_seq = -1;
+        EXEC SQL END DECLARE SECTION;
+
+//DEBUGLOG(("GetNextJobSeq()\n"));
+        EXEC SQL SELECT OL_AUTO_UPLOAD_STMT_SEQ.NEXTVAL
+                   INTO :hv_seq:ind_seq
+                 FROM dual;
+
+        if (ind_seq >= 0)  {
+		//Delete Old Log record in DB
+		EXEC SQL DELETE FROM OL_AUTO_UPLOAD_ERR_LOG WHERE OAUEL_JOB_SEQ = :hv_seq;
+
+                return hv_seq;
+        }
+        else
+                return PD_ERR;
+
+getseq_err:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    return PD_ERR;
+}

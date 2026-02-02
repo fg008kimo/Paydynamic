@@ -1,0 +1,325 @@
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/03/31              [MSN]
+Add more fields for DSR				   2020/06/16		   [MSN]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOTransaction.h"
+
+static char cDebug;
+
+void BOTransaction(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+OBJPTR(DB);
+
+int GetTxnInfo(const hash_t *hIn, hash_t *hOut)
+{
+	int	iRet = PD_OK;
+	double	dPtr = 0.0;
+	char	cPtr;
+	char	*csPtr = NULL;
+	char	*csTxnSeq = NULL;
+	char	csTag[PD_TAG_LEN + 1];
+
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	hash_t *hRec;
+
+	/*---default: NOT to get anything---*/
+	int	iGetTxnHeader = PD_FALSE;
+	int	iGetTxnDetail = PD_FALSE;
+	int	iGetTxnPspDetail = PD_FALSE;
+	/*----------------------------------*/
+
+DEBUGLOG(("GetTxnInfo() start\n"));
+
+	if(GetField_CString(hIn, "txn_seq", &csTxnSeq)){
+DEBUGLOG(("Get Transaction info for [%s]\n", csTxnSeq));
+
+		GetField_Int(hIn, "get_txn_header", &iGetTxnHeader);
+		GetField_Int(hIn, "get_txn_detail", &iGetTxnDetail);
+		GetField_Int(hIn, "get_txn_psp_detail", &iGetTxnPspDetail);
+DEBUGLOG((" get txn_header = [%d]\n", iGetTxnHeader));
+DEBUGLOG((" get txn_detail = [%d]\n", iGetTxnDetail));
+DEBUGLOG((" get txn_psp_detail = [%d]\n", iGetTxnPspDetail));
+	
+	}
+	else{
+		iRet = INT_TXN_ID_NOT_FOUND;
+DEBUGLOG((" txn_seq is missing!!\n"));
+ERRLOG("BOTransaction::GetTxnInfo() txn_seq is missing!!\n");
+	}
+
+
+/* txn_header */
+	if(iRet == PD_OK && iGetTxnHeader){
+DEBUGLOG(("Call DBTransaction::GetTxnHeader()\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				sprintf(csTag, "channel_code");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "txn_code");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "client_id");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "merchant_id");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "service_code");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "merchant_ref");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "host_posting_date");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "txn_amt");
+				if (GetField_Double(hRec, csTag, &dPtr)) {
+					PutField_Double(hOut, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+				}
+
+				sprintf(csTag, "net_amt");
+				if (GetField_Double(hRec, csTag, &dPtr)) {
+					PutField_Double(hOut, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+				}
+
+				sprintf(csTag, "net_ccy");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "reserve_amt");
+				if (GetField_Double(hRec, csTag, &dPtr)) {
+					PutField_Double(hOut, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+				}
+
+				sprintf(csTag, "status");
+				if (GetField_Char(hRec, csTag, &cPtr)) {
+					PutField_Char(hOut, csTag, cPtr);
+DEBUGLOG((" %s = [%c]\n", csTag, cPtr));
+				}
+
+				sprintf(csTag, "ar_ind");
+				if (GetField_Char(hRec, csTag, &cPtr)) {
+					PutField_Char(hOut, csTag, cPtr);
+DEBUGLOG((" %s = [%c]\n", csTag, cPtr));
+				}
+
+				sprintf(csTag, "sub_status");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "local_tm_date");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "local_tm_time");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "ip_addr");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+				break; //only one record
+			}
+			RecordSet_Destroy(rRecordSet);
+		}
+		else {
+			iRet = INT_ERR;
+DEBUGLOG(("GetTxnHeader failed for [%s]\n", csTxnSeq));
+ERRLOG("BOTransaction::GetTxnInfo() GetTxnHeader failed for [%s]!!\n", csTxnSeq);
+		}
+	}
+
+/* txn_detail */
+	if(iRet == PD_OK && iGetTxnDetail){
+DEBUGLOG(("Call DBTransaction::GetTxnDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				sprintf(csTag, "txn_country");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "txn_ccy");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "selected_pay_method");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "customer_tag");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "customer_group");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "failure_url");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "success_url");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "language");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "selected_pid");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "bank_code");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "customer_id");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+				break; //only one record
+			}
+			RecordSet_Destroy(rRecordSet);
+		}
+		else {
+			iRet = INT_ERR;
+DEBUGLOG(("GetTxnDetail failed for [%s]\n",csTxnSeq));
+ERRLOG("BOTransaction::GetTxnInfo() GetTxnDetail failed for [%s]!!\n", csTxnSeq);
+		}
+	}
+
+/* txn_psp_detail */
+	if(iRet == PD_OK && iGetTxnPspDetail){
+DEBUGLOG(("Call DBTxnPspDetail::GetTxnPspDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","GetTxnPspDetail");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				sprintf(csTag, "psp_id");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "txn_ccy");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, "psp_txn_ccy", csPtr);
+DEBUGLOG((" psp_txn_ccy = [%s]\n", csPtr));
+				}
+
+				sprintf(csTag, "pid_group");
+				if (GetField_CString(hRec, csTag, &csPtr)) {
+					PutField_CString(hOut, csTag, csPtr);
+DEBUGLOG((" %s = [%s]\n", csTag, csPtr));
+				}
+
+				sprintf(csTag, "txn_amt");
+				if (GetField_Double(hRec, csTag, &dPtr)) {
+					PutField_Double(hOut, "psp_txn_amt", dPtr);
+DEBUGLOG((" psp_txn_amt = [%lf]\n", dPtr));
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+				break; //only one record
+			}
+			RecordSet_Destroy(rRecordSet);
+		}
+		else {
+			iRet = INT_ERR;
+DEBUGLOG(("GetTxnPspDetail failed for [%s]\n",csTxnSeq));
+ERRLOG("BOTransaction::GetTxnInfo() GetTxnPspDetail failed for [%s]!!\n", csTxnSeq);
+		}
+	}
+
+	FREE_ME(rRecordSet);
+DEBUGLOG(("GetTxnInfo iRet = [%d]\n", iRet));
+	return iRet;
+}

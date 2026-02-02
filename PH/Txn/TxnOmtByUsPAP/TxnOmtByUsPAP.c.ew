@@ -1,0 +1,205 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2017/03/21              Elvis Wong
+Support both action_id and batch_id                2017/06/30              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsPAP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+
+void TxnOmtByUsPAP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+        
+	int     iErrRetCode = 0;
+
+        char    *csId = strdup("");
+        char    *csUser = NULL;
+        char    *csTmp = NULL;
+
+        hash_t *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn, 0);
+
+DEBUGLOG(("Authorize\n"));
+
+	// Lock Payout Action (Offline)
+DEBUGLOG(("Authorize::Call DBPayoutActionLock::CheckTheActionCtl\n"));
+     	DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","CheckTheActionCtl");
+      	iRet = (unsigned long)(*DBObjPtr)(PD_OFFLINE);
+       	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBPayoutActionLock::TakeTheActionCtl\n"));
+            	DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","TakeTheActionCtl");
+              	iRet = (unsigned long)(*DBObjPtr)(PD_OFFLINE);
+		if (iRet == PD_OK) {
+                	TxnCommit();
+DEBUGLOG(("Authorize::Call TxnCommit()\n"));
+		}
+   	}
+	if (iRet != PD_OK) {
+		PutField_Int(hResponse,"total_cnt",0);
+                iRet = INT_OTHER_PAYOUT_PROCESSING;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::Call DBPayoutActionLock::ActionCtl Failed!!\n"));		
+	}
+
+	// Action Id and Batch Id Handling
+        if (iRet == PD_OK) {
+	
+/* action_id */
+		if (GetField_CString(hRequest, "action_id", &csId)) {
+DEBUGLOG(("Authorize::action_id = [%s]\n", csId));
+			PutField_CString(hContext,"action_id",csId);
+			PutField_CString(hTxn,"action_id",csId);
+		} else {
+/* batch_id */
+			if (GetField_CString(hRequest, "batch_id", &csId)) {
+DEBUGLOG(("Authorize::batch_id = [%s]\n", csId));
+				PutField_CString(hContext,"batch_id",csId);
+				PutField_CString(hTxn,"batch_id",csId);
+			} else {
+DEBUGLOG(("Authorize:batch_id not found!!\n"));
+ERRLOG("TxnOmtByUsPAP::Authorize::batch_id not found!!\n");
+                             	iRet = INT_BATCH_ID_NOT_FOUND;
+                            	PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+	
+/* ip_addr */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest, "ip_addr", &csTmp)) {
+DEBUGLOG(("Authorize::ip_addr = [%s]\n", csTmp));
+        	}
+	}
+
+/* user */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest, "add_user", &csUser)) {
+               	 	PutField_CString(hContext, "update_user", csUser);
+                	PutField_CString(hContext, "add_user", csUser);
+DEBUGLOG(("Authorize::add_user = [%s]\n", csUser));
+        	} else {
+DEBUGLOG(("Authorize:: add_user not found!!\n"));
+ERRLOG("TxnOmtByUsPAP: Authorize:: add_user not found!!\n");
+                        iRet = INT_USER_NOT_FOUND;
+                        PutField_Int(hContext,"internal_error",iRet);
+                }
+	}
+
+	// Get Payout Api Pre-Generate Records
+        if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call BOOLPayout::GetPayoutApiPregenRecords\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOOLPayout","GetPayoutApiPregenRecords");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+                if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::Call BOOLPayout::GetPayoutApiPregenRecords Failure!!!\n"));
+ERRLOG("TxnOmtByUsPAP: Authorize::Call BOOLPayout::GetPayoutApiPregenRecords Failure!!!\n");
+       			PutField_Int(hContext,"internal_error",iRet);
+                }
+        }
+
+	// Handle Pre-Generate Payout Api
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::call BOOLPayout::HandlePreGeneratePayoutApi\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOOLPayout","HandlePreGeneratePayoutApi");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+        	if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::Call BOOLPayout::HandlePreGeneratePayoutApi Failed!!\n"));
+ERRLOG("TxnOmtByUsPAP::Call BOOLPayout::HandlePreGeneratePayoutApi Failed!!\n");
+                        PutField_Int(hContext,"internal_error",iRet);
+		}
+       	}
+
+	// Handle Error Return Code
+        if ((iRet != INT_OTHER_PAYOUT_PROCESSING) && (GetField_Int(hContext,"internal_error",&iErrRetCode))) {
+DEBUGLOG(("Authorize::err_ret_code  = [%d]\n", iErrRetCode));
+
+                TxnAbort();
+DEBUGLOG(("Authorize::Call TxnAbort()\n"));
+
+		// status
+		PutField_Char(hTxn, "status", PD_OL_PO_API_PENDING);
+
+DEBUGLOG(("Authorize::Call DBOLPayoutApiPregenHD:: MatchPregenStatus_ForUpdate\n"));
+                DBObjPtr = CreateObj(DBPtr, "DBOLPayoutApiPregenHD", "MatchPregenStatus_ForUpdate");
+                if (((unsigned long)(*DBObjPtr)(hTxn)) == PD_FOUND) {
+	
+			RemoveField_Char(hTxn, "status");
+                	PutField_Int(hTxn,"pregen_ret_code",iErrRetCode);
+                	PutField_CString(hTxn,"update_user",csUser);
+
+DEBUGLOG(("Authorize::Call DBOLPayoutApiPregenHD:: Update\n"));
+                	DBObjPtr = CreateObj(DBPtr, "DBOLPayoutApiPregenHD", "Update");
+                	iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                	if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLPayoutApiPregenHD:: Update Failure!!!\n"));
+ERRLOG("TxnOmtByUsPAP::Authorize::Call DBOLPayoutApiPregenHD:: Update Failure!!!\n");
+                        	iRet = INT_ERR;
+                	}
+		} else {
+DEBUGLOG(("Authorize::Call DBOLPayoutApiPregenHD:: MatchPregenStatus_ForUpdate not found!!!\n"));
+ERRLOG("TxnOmtByUsPAP::Authorize::Call DBOLPayoutApiPregenHD:: MatchPregenStatus_ForUpdate not found!!!\n");
+			iRet = INT_TXN_STATUS_NOT_MATCH;
+		}
+
+		if (iRet == PD_OK) {
+			TxnCommit();
+DEBUGLOG(("Authorize::Call TxnCommit()\n"));
+
+			iRet = iErrRetCode;
+		}
+
+		// Remove internal_error
+                RemoveField_Int(hContext, "internal_error");
+        }
+
+	// Release Payout Action (Offline)
+	if (iRet != INT_OTHER_PAYOUT_PROCESSING) {	
+DEBUGLOG(("Authorize::Call DBPayoutActionLock::ReleaseTheActionCtl\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutActionLock","ReleaseTheActionCtl");
+		if (((unsigned long)(*DBObjPtr)(PD_OFFLINE)) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBPayoutActionLock::ReleaseTheActionCtl iRet = [%d]\n",iRet));
+		} else {
+			TxnCommit();
+DEBUGLOG(("Authorize::Call TxnCommit()\n"));
+		}
+	}
+
+	hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+        FREE_ME(csId);
+
+DEBUGLOG(("TxnOmtByUsPAP Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}
+

@@ -1,0 +1,58 @@
+#ifndef _PR_PAYOUT_GENERATE_H
+#define _PR_PAYOUT_GENERATE_H
+#include "common.h"
+
+#define PD_MY_DELIMITOR			","
+#define PD_MY_TOKEN			'"'
+
+#define PD_VNC_PSP_LEN			50
+#define PD_MERCH_ACCOUNT_NMB_LEN	50
+#define	NUM_OF_CHAR			26
+#define MAX_NUM_OF_RECORD		2000
+#define	IMPORT_MAX_FILE			40
+#define	IMPORT_FIELD_LEN		50
+
+#define PD_PAYOUT_STATUS_TYPE_LEN	2
+
+#define	IDX_HEADER_FILE_ID		0
+#define	IDX_HEADER_FILENAME		5
+#define	IDX_HEADER_FILE_SEQ		1
+#define	IDX_HEADER_FILE_DATE		4
+#define	IDX_HEADER_TOTAL_COUNT		7
+#define	IDX_HEADER_TOTAL_AMT		8
+#define	IDX_HEADER_PSP			6	
+#define	IDX_HEADER_STATUS		3
+#define IDX_HEADER_CCY_CD		2	
+#define IDX_HEADER_MEMBER_FEE		9
+#define IDX_HEADER_POSTDATETIME		11
+
+#define	IDX_DETAIL_FILE_ID		2
+#define IDX_DETAIL_ACCOUNT_NUM		12
+#define	IDX_DETAIL_ACCOUNT_NAME		13
+#define	IDX_DETAIL_PAYOUT_AMT		9
+#define	IDX_DETAIL_TXN_SEQ		10
+#define	IDX_DETAIL_SEQ_NUM		5
+#define	IDX_DETAIL_BANK_NAME		14
+#define	IDX_DETAIL_BRANCH		15
+#define	IDX_DETAIL_PROVINCE		16
+#define	IDX_DETAIL_CITY			17
+#define	IDX_DETAIL_REF_ID		3
+#define	IDX_DETAIL_MERCHANT_REF		11
+#define IDX_DETAIL_COUNTRY		8
+#define IDX_DETAIL_IDENTITY_ID		18
+#define IDX_DETAIL_PHONE		19
+#define IDX_DETAIL_DST_CCY_CD		7
+#define IDX_DETAIL_REQ_CCY_CD		6
+#define IDX_DETAIL_BANK_CODE		20
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

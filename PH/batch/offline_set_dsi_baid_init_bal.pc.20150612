@@ -1,0 +1,357 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+char cDebug = 'Y';
+char csCutoffDatetime[PD_DATE_LEN + PD_TIME_LEN + 1];
+
+int parse_arg(int argc, char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = PD_OK;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("Usage: offline_set_dsi_baid_init_bal.exec -d cut_off_datetime\n");
+		return (PD_ERR);
+	}
+
+	int iTmpRet;
+	char csNewPspTxnSeq[PD_TXN_SEQ_LEN + 1];
+	int iCreateTxn;
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(myHash, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_type_deposit[PD_ACCT_TYPE_LEN];
+		varchar hv_cutoff_datetime[PD_DATE_LEN + PD_TIME_LEN];
+
+		varchar v_baid[PD_BAID_LEN + 1];
+		varchar v_ccy[PD_CCY_ID_LEN + 1];
+		varchar v_psp_id[PD_PSP_ID_LEN + 1];
+		varchar v_country[PD_COUNTRY_LEN + 1];
+		varchar v_stmt_txn_id[PD_TXN_SEQ_LEN + 1];
+		double v_balance;
+		double v_tmp;
+
+		short ind_baid = -1;
+		short ind_ccy = -1;
+		short ind_psp_id = -1;
+		short ind_country = -1;
+		short ind_stmt_txn_id = -1;
+		short ind_balance = -1;
+		short ind_tmp = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (iRet == PD_OK) {
+		hv_type_deposit.len = strlen(PD_NATURE_DEPOSIT);
+		memcpy(hv_type_deposit.arr, PD_NATURE_DEPOSIT, hv_type_deposit.len);
+DEBUGLOG(("offline_set_dsi_baid_init_bal: hv_type_deposit = [%.*s]\n", hv_type_deposit.len, hv_type_deposit.arr));
+
+		hv_cutoff_datetime.len = strlen(csCutoffDatetime);
+		memcpy(hv_cutoff_datetime.arr, csCutoffDatetime, hv_cutoff_datetime.len);
+DEBUGLOG(("offline_set_dsi_baid_init_bal: hv_cutoff_datetime = [%.*s]\n", hv_cutoff_datetime.len, hv_cutoff_datetime.arr));
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: ===== ===== ===== ===== =====\n"));
+
+		// get deposit baid
+		EXEC SQL DECLARE c_cursor_get_deposit_baid CURSOR FOR
+			select obai_baid, ob_acct_ccy, opd_psp_id, country
+			from ol_bank_acct_id, ol_bank_accts, ol_psp_detail, bank_desc
+			where obai_status = 'O'
+			and obai_int_bank_code = ob_int_bank_code
+			and obai_bank_acct_num = ob_bank_acct_num
+			and obai_psp_id = opd_psp_id
+			and opd_bank_acct_type = :hv_type_deposit
+			and ob_int_bank_code = internal_bank_code;
+
+		EXEC SQL OPEN c_cursor_get_deposit_baid;
+		for (;;) {
+			v_balance = 0.0;
+
+			hash_destroy(myHash);
+			hash_init(myHash, 0);
+
+			EXEC SQL FETCH c_cursor_get_deposit_baid
+			INTO	:v_baid:ind_baid,
+				:v_ccy:ind_ccy,
+				:v_psp_id:ind_psp_id,
+				:v_country:ind_country;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			// baid
+			if (ind_baid >= 0) {
+				v_baid.arr[v_baid.len] = '\0';
+DEBUGLOG(("offline_set_dsi_baid_init_bal: baid = [%s]\n", (const char*)v_baid.arr));
+			} else {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: baid is empty\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// ccy
+			if (ind_ccy >= 0) {
+				v_ccy.arr[v_ccy.len] = '\0';
+DEBUGLOG(("offline_set_dsi_baid_init_bal: ccy = [%s]\n", (const char*)v_ccy.arr));
+			} else {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: ccy is empty\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// psp_id
+			if (ind_psp_id >= 0) {
+				v_psp_id.arr[v_psp_id.len] = '\0';
+DEBUGLOG(("offline_set_dsi_baid_init_bal: psp_id = [%s]\n", (const char*)v_psp_id.arr));
+			} else {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: psp_id is empty\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// country
+			if (ind_country >= 0) {
+				v_country.arr[v_country.len] = '\0';
+DEBUGLOG(("offline_set_dsi_baid_init_bal: country = [%s]\n", (const char*)v_country.arr));
+			} else {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: country is empty\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+			// try to get baid balance
+			if (iRet == PD_OK) {
+				EXEC SQL DECLARE c_cursor_get_baid_bal CURSOR FOR
+					select obab_bal
+					from ol_baid_bal
+					where obab_baid = :v_baid
+					and obab_country_id = :v_country
+					and obab_currency_id = :v_ccy;
+
+				EXEC SQL OPEN c_cursor_get_baid_bal;
+
+				EXEC SQL FETCH c_cursor_get_baid_bal
+				INTO	:v_tmp:ind_tmp;
+
+				if (SQLCODE != SQL_NOT_FOUND) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: baid balance already exists, skip\n"));
+DEBUGLOG(("offline_set_dsi_baid_init_bal: ===== ===== ===== ===== =====\n"));
+					EXEC SQL CLOSE c_cursor_get_baid_bal;
+					continue;
+				}
+
+				EXEC SQL CLOSE c_cursor_get_baid_bal;
+			}
+
+			// get balance of last statement record
+			if (iRet == PD_OK) {
+				EXEC SQL DECLARE c_cursor_get_last_stmt CURSOR FOR
+					select olsd_stat_txn_id,
+						olsd_balance
+					from (select *
+						from ol_statement_detail
+						where olsd_baid = :v_baid
+						and olsd_statement_ref is not null
+						and olsd_create_timestamp < to_date(:hv_cutoff_datetime, 'yyyymmddhh24miss') + 1/24/60/60
+						order by olsd_file_id desc, olsd_statement_seq desc)
+					where rownum = 1;
+
+				EXEC SQL OPEN c_cursor_get_last_stmt;
+
+				EXEC SQL FETCH c_cursor_get_last_stmt
+				INTO	:v_stmt_txn_id:ind_stmt_txn_id,
+					:v_balance:ind_balance;
+
+				if (SQLCODE == SQL_NOT_FOUND) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: no statement record found\n"));
+					iCreateTxn = PD_FALSE;
+
+					v_balance = 0.0;
+DEBUGLOG(("offline_set_dsi_baid_init_bal: balance = [%lf]\n", v_balance));
+				} else {
+					iCreateTxn = PD_TRUE;
+
+					// stmt_txn_id
+					if (ind_stmt_txn_id >= 0) {
+						v_stmt_txn_id.arr[v_stmt_txn_id.len] = '\0';
+DEBUGLOG(("offline_set_dsi_baid_init_bal: stmt_txn_id = [%s]\n", (const char*)v_stmt_txn_id.arr));
+					} else {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: stmt_txn_id is empty\n"));
+						iRet = PD_ERR;
+						EXEC SQL CLOSE c_cursor_get_last_stmt;
+						break;
+					}
+
+					// balance
+					if (ind_balance >= 0) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: balance = [%lf]\n", v_balance));
+					} else {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: balance is empty\n"));
+						iRet = PD_ERR;
+						EXEC SQL CLOSE c_cursor_get_last_stmt;
+						break;
+					}
+				}
+
+				EXEC SQL CLOSE c_cursor_get_last_stmt;
+			}
+
+			// create baid balance
+			if (iRet == PD_OK) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Call DBOLBAIDBal:UpdateBalance\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLBAIDBal", "UpdateBalance");
+				iTmpRet = (unsigned long)(*DBObjPtr)((const char*)v_baid.arr, (const char*)v_country.arr, (const char*)v_ccy.arr,
+									PD_IND_CREDIT, v_balance, PD_UPDATE_USER);
+				if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: DBOLBAIDBal:UpdateBalance Failed\n"));
+ERRLOG("offline_set_dsi_baid_init_bal: DBOLBAIDBal:UpdateBalance Failed\n");
+					iRet = PD_ERR;
+					break;
+				}
+			}
+
+			// create baid txn
+			if (iRet == PD_OK && iCreateTxn) {
+				PutField_Int(myHash, "db_commit", PD_FALSE);
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Call DBOLTxnSeq:GetNextOmtTxnSeq()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+				strcpy((char*)csNewPspTxnSeq, (*DBObjPtr)());
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: txn_seq = [%s]\n", csNewPspTxnSeq));
+				PutField_CString(myHash, "txn_seq", csNewPspTxnSeq);
+
+				PutField_Char(myHash, "ar_ind", PD_ACCEPT);
+
+				PutField_Double(myHash, "txn_amt", v_balance);
+
+				PutField_CString(myHash, "add_user", PD_UPDATE_USER);
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Call DBOLTransaction:Add()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Add");
+				iTmpRet = (unsigned long)(*DBObjPtr)(myHash);
+				if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: DBOLTransaction: Add Error\n"));
+ERRLOG("offline_set_dsi_baid_init_bal: DBOLTransaction:Add Error\n");
+					iRet = PD_ERR;
+					break;
+				}
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Call DBSystemControl:GetApprovalDT()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "GetApprovalDT");
+				(*DBObjPtr)(myHash);
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Call DBOLTransaction:Update()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+				iTmpRet = (unsigned long)(*DBObjPtr)(myHash);
+				if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: DBOLTransaction: Update Error\n"));
+ERRLOG("offline_set_dsi_baid_init_bal: DBOLTransaction:Update Error\n");
+					iRet = PD_ERR;
+					break;
+				}
+
+				PutField_CString(myHash, "psp_id", (const char*)v_psp_id.arr);
+
+				PutField_CString(myHash, "baid", (const char*)v_baid.arr);
+
+				PutField_CString(myHash, "txn_ccy", (const char*)v_ccy.arr);
+
+				PutField_Double(myHash, "bal", v_balance);
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Call DBOLTxnPspDetail:Add()\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+				iTmpRet = (unsigned long)(*DBObjPtr)(myHash);
+				if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_set_dsi_baid_init_bal: DBOLTxnPspDetail: Add Error\n"));
+ERRLOG("offline_set_dsi_baid_init_bal: DBOLTxnPspDetail: Add Error\n");
+					iRet = PD_ERR;
+					break;
+				}
+			}
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: ===== ===== ===== ===== =====\n"));
+		}
+
+		EXEC SQL CLOSE c_cursor_get_deposit_baid;
+	}
+
+	hash_destroy(myHash);
+	FREE_ME(myHash);
+
+DEBUGLOG(("offline_set_dsi_baid_init_bal: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+
+sql_error:
+DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("offline_set_dsi_baid_init_bal:: sql error\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_get_deposit_baid;
+	EXEC SQL CLOSE c_cursor_get_baid_bal;
+	EXEC SQL CLOSE c_cursor_get_last_stmt;
+	EXEC SQL ROLLBACK RELEASE;
+	FREE_ME(myHash);
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+	strcpy(csCutoffDatetime, "");
+
+	while ((c = getopt(argc, argv, "d:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(csCutoffDatetime, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csCutoffDatetime, "")) {
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}

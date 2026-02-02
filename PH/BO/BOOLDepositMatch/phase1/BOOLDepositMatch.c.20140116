@@ -1,0 +1,992 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/10/23              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "dbutility.h"
+#include "BOOLDepositMatch.h"
+#include "myrecordset.h"
+#include "myhash.h"
+#include "math.h"
+#include <time.h>
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOOLDepositMatch(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+/* hContext: int_bank_code, bank_acct_num */
+int GetUnallocatedStmt(const hash_t* hContext, recordset_t* rRecordSet)
+{
+	int iRet = PD_OK;
+
+	char *csTmp;
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(myHash, 0);
+
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "int_bank_code", &csTmp)) {
+DEBUGLOG(("GetUnallocatedStmt:: int_bank_code = [%s]\n", csTmp));
+			PutField_CString(myHash, "int_bank_code", csTmp);
+		} else {
+DEBUGLOG(("GetUnallocatedStmt:: int_bank_code not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "bank_acct_num", &csTmp)) {
+DEBUGLOG(("GetUnallocatedStmt:: bank_acct_num = [%s]\n", csTmp));
+			PutField_CString(myHash, "bank_acct_num", csTmp);
+		} else {
+DEBUGLOG(("GetUnallocatedStmt:: bank_acct_num not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("GetUnallocatedStmt:: call DBSystemParameter::FindCode()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(*DBObjPtr)(PD_OFL_STMT_DATE_RANGE, csTmp) == PD_FOUND) {
+DEBUGLOG(("GetUnallocatedStmt:: stmt_date_range = [%d]\n", atoi(csTmp)));
+			PutField_Int(myHash, "stmt_date_range", atoi(csTmp));
+		} else {
+DEBUGLOG(("GetUnallocatedStmt:: cannot find [%s] in system parameter\n", PD_OFL_STMT_DATE_RANGE));
+ERRLOG("BOOLDepositMatch:: GetUnallocatedStmt:: cannot find [%s] in system parameter\n", PD_OFL_STMT_DATE_RANGE);
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("GetUnallocatedStmt:: call DBOLStatement::GetUnallocatedRecords()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetUnallocatedRecords");
+		if ((unsigned long)(*DBObjPtr)(myHash, rRecordSet) != PD_OK) {
+DEBUGLOG(("GetUnallocatedStmt:: call DBOLStatement::GetUnallocatedRecords() failed\n"));
+ERRLOG("BOOLDepositMatch:: GetUnallocatedStmt:: call DBOLStatement::GetUnallocatedRecords() failed\n");
+			iRet = PD_ERR;
+		}
+	}
+
+	hash_destroy(myHash);
+	FREE_ME(myHash);
+
+DEBUGLOG(("GetUnallocatedStmt() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int ProcessMatching(const hash_t* hContext) {
+	int iRet = PD_OK;
+
+	char *csStmtRef, *csIntBankCode, *csBankAcctNum, *csStmtDate, *csTxnAmount, *csMerchantId, *csServiceCode, *csCountry, *csFldName, *csValue;
+	char *csTag = (char*) malloc (64);
+	char *csTxnId = strdup("");
+	char *csDepositDatetime = strdup("");
+	char *csTmp, *csTmp2;
+	int iMatchFifo, iIsMatched, iInsertPair, iFieldCnt, iIndex;
+	double dMatchFifoAmtLimit;
+
+	hash_t *hStmtDtl;
+	hStmtDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hStmtDtl, 0);
+
+	hash_t *hBankAcctDtl;
+	hBankAcctDtl = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBankAcctDtl, 0);
+
+	hash_t *hMatchBfAf;
+	hMatchBfAf = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMatchBfAf, 0);
+
+	recordset_t *rMatchCriteria;
+	rMatchCriteria = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchCriteria, 0);
+
+	hash_t *hMatchCriteria;
+
+	hash_t *hMatchValue;
+	hMatchValue = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMatchValue, 0);
+
+	recordset_t *rMatchResult;
+	rMatchResult = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchResult, 0);
+
+	hash_t *hMatchResult;
+
+	// get statement_ref
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "statement_ref", &csStmtRef)) {
+DEBUGLOG(("ProcessMatching:: statement_ref = [%s]\n", csStmtRef));
+		} else {
+DEBUGLOG(("ProcessMatching:: statement_ref not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get statement detail by statement_ref
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStatement::GetStmtDtl()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtl");
+		if ((unsigned long)(*DBObjPtr)(csStmtRef, hStmtDtl) != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLStatement::GetStmtDtl() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get int_bank_code
+	if (iRet == PD_OK) {
+		if (GetField_CString(hStmtDtl, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("ProcessMatching:: int_bank_code = [%s]\n", csIntBankCode));
+		} else {
+DEBUGLOG(("ProcessMatching:: int_bank_code not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get bank_acct_num
+	if (iRet == PD_OK) {
+		if (GetField_CString(hStmtDtl, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("ProcessMatching:: bank_acct_num = [%s]\n", csBankAcctNum));
+		} else {
+DEBUGLOG(("ProcessMatching:: bank_acct_num not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get statement_date
+	if (iRet == PD_OK) {
+		if (GetField_CString(hStmtDtl, "statement_date", &csStmtDate)) {
+DEBUGLOG(("ProcessMatching:: statement_date = [%s]\n", csStmtDate));
+		} else {
+DEBUGLOG(("ProcessMatching:: statement_date not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get txn_amount
+	if (iRet == PD_OK) {
+		if (GetField_CString(hStmtDtl, "txn_amount", &csTxnAmount)) {
+DEBUGLOG(("ProcessMatching:: txn_amount = [%s]\n", csTxnAmount));
+		} else {
+DEBUGLOG(("ProcessMatching:: txn_amount not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get bank account detail by int_bank_code & bank_acct_num
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLMerchantBankAcct::GetMerchBankAcctDtl()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLMerchantBankAcct", "GetMerchBankAcctDtl");
+		if ((unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, hBankAcctDtl) != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLMerchantBankAcct::GetMerchBankAcctDtl() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get merchant_id
+	if (iRet == PD_OK) {
+		if (GetField_CString(hBankAcctDtl, "merchant_id", &csMerchantId)) {
+DEBUGLOG(("ProcessMatching:: merchant_id = [%s]\n", csMerchantId));
+		} else {
+DEBUGLOG(("ProcessMatching:: merchant_id not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get service_code
+	if (iRet == PD_OK) {
+		if (GetField_CString(hBankAcctDtl, "service_code", &csServiceCode)) {
+DEBUGLOG(("ProcessMatching:: service_code = [%s]\n", csServiceCode));
+		} else {
+DEBUGLOG(("ProcessMatching:: service_code not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get country
+	if (iRet == PD_OK) {
+		if (GetField_CString(hBankAcctDtl, "country", &csCountry)) {
+DEBUGLOG(("ProcessMatching:: country = [%s]\n", csCountry));
+		} else {
+DEBUGLOG(("ProcessMatching:: country not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get match_fifo
+	if (iRet == PD_OK) {
+		if (GetField_Int(hBankAcctDtl, "match_fifo", &iMatchFifo)) {
+DEBUGLOG(("ProcessMatching:: match_fifo = [%d]\n", iMatchFifo));
+			if (iMatchFifo) {
+				if (GetField_Double(hBankAcctDtl, "match_fifo_amt_limit", &dMatchFifoAmtLimit)) {
+DEBUGLOG(("ProcessMatching:: match_fifo_amt_limit = [%lf]\n", dMatchFifoAmtLimit));
+				} else {
+DEBUGLOG(("ProcessMatching:: match_fifo_amt_limit not found\n"));
+					iRet = PD_ERR;
+				}
+			}
+		} else {
+DEBUGLOG(("ProcessMatching:: match_fifo not found\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get matching period by statement_date
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLRuleDepositMatching::GetRuleDepositMatchingByDate()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLRuleDepositMatching", "GetRuleDepositMatchingByDate");
+		if ((unsigned long)(*DBObjPtr)(csMerchantId, csIntBankCode, csCountry, csStmtDate, hMatchBfAf) != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLRuleDepositMatching::GetRuleDepositMatchingByDate() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// get match criteria
+	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLAutoMatchCriteria::GetAutoMatchCriteria()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLAutoMatchCriteria", "GetAutoMatchCriteria");
+		if ((unsigned long)(*DBObjPtr)(csMerchantId, rMatchCriteria) != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLAutoMatchCriteria::GetAutoMatchCriteria() failed\n"));
+			iRet = PD_ERR;
+		}
+	}
+
+	// loop match criteria
+	hMatchCriteria = RecordSet_GetFirst(rMatchCriteria);
+	while (hMatchCriteria) {
+		iRet = PD_OK;
+
+		// reset hMatchValue
+		hash_destroy(hMatchValue);
+		hash_init(hMatchValue, 0);
+
+		// reset rMatchResult
+		RecordSet_Destroy(rMatchResult);
+		recordset_init(rMatchResult, 0);
+
+		iIsMatched = 0;
+		iInsertPair = 0;
+
+		// get field_cnt
+		if (iRet == PD_OK) {
+			if (GetField_Int(hMatchCriteria, "field_cnt", &iFieldCnt)) {
+DEBUGLOG(("ProcessMatching:: field_cnt = [%d]\n", iFieldCnt));
+				PutField_Int(hMatchValue, "field_cnt", iFieldCnt);
+			} else {
+DEBUGLOG(("ProcessMatching:: field_cnt not found\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+		// put default match values
+		if (iRet == PD_OK) {
+			PutField_CString(hMatchValue, "merchant_id", csMerchantId);
+			PutField_CString(hMatchValue, "service_code", csServiceCode);
+		}
+
+		// get tag_name
+		if (iRet == PD_OK) {
+			for (iIndex = 1; iIndex <= iFieldCnt; iIndex++) {
+				sprintf(csTag, "tag_name_%d", iIndex);
+
+				if (GetField_CString(hMatchCriteria, csTag, &csFldName)) {
+DEBUGLOG(("ProcessMatching:: [%s] = [%s]\n", csTag, csFldName));
+				} else {
+DEBUGLOG(("ProcessMatching:: [%s] not found\n", csTag));
+					iRet = PD_ERR;
+					break;
+				}
+
+				if (GetField_CString(hStmtDtl, csFldName, &csValue)) {
+DEBUGLOG(("ProcessMatching:: [%s] = [%s]\n", csFldName, csValue));
+					PutField_CString(hMatchValue, csFldName, csValue);
+				} else {
+DEBUGLOG(("ProcessMatching:: [%s] not found\n", csFldName));
+					iRet = PD_ERR;
+					break;
+				}
+			}
+		}
+
+		// match deposit
+		if (iRet == PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLTransaction::MatchStmt()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "MatchStmt");
+			if ((unsigned long)(*DBObjPtr)(hMatchValue, hMatchBfAf, rMatchResult) != PD_OK) {
+DEBUGLOG(("ProcessMatching:: call DBOLTransaction::MatchStmt() failed\n"));
+				// to be implemented:
+				// 	match stmt failed
+			}
+		}
+
+		hMatchResult = RecordSet_GetFirst(rMatchResult);
+		while (hMatchResult) {
+
+			if (GetField_CString(hMatchResult, "txn_id", &csTmp) &&
+				GetField_CString(hMatchResult, "deposit_datetime", &csTmp2)) {
+DEBUGLOG(("ProcessMatching:: txn_id = [%s], deposit_datetime = [%s]\n", csTmp, csTmp2));
+				if (!iIsMatched) {
+					iIsMatched = 1;
+					strcpy(csTxnId, csTmp);
+					strcpy(csDepositDatetime, csTmp2);
+				} else {
+					// match more than one deposit req
+					if (iMatchFifo) {
+						if (atof(csTxnAmount) < dMatchFifoAmtLimit) {
+							// FIFO
+DEBUGLOG(("ProcessMatching:: FIFO\n"));
+							if (strcmp(csTmp2, csDepositDatetime) < 0) {
+								strcpy(csTxnId, csTmp);
+								strcpy(csDepositDatetime, csTmp2);
+							}
+						} else {
+							// insert into ol_deposit_match_pair
+DEBUGLOG(("ProcessMatching:: FIFO but over amt limit\n"));
+							iInsertPair = 1;
+							break;
+						}
+					} else {
+						// insert into ol_deposit_match_pair
+DEBUGLOG(("ProcessMatching:: not FIFO\n"));
+						iInsertPair = 1;
+						break;
+					}
+				}
+			}
+
+			hMatchResult = RecordSet_GetNext(rMatchResult);
+		}
+
+		if (iIsMatched) {
+			if (iInsertPair) {
+// insert all records into ol_deposit_match_pair
+				hMatchResult = RecordSet_GetFirst(rMatchResult);
+				while (hMatchResult) {
+					PutField_CString(hMatchResult, "stmt_ref", csStmtRef);
+					PutField_CString(hMatchResult, "create_user", PD_UPDATE_USER);
+					DBObjPtr = CreateObj(DBPtr, "DBOLDepositMatchPair", "Add");
+					iRet = (unsigned long)(*DBObjPtr)(hMatchResult);
+
+					// to be implemented: handle error
+
+					hMatchResult = RecordSet_GetNext(rMatchResult);
+				}
+			} else {
+// match the record
+				iRet = CompleteMatching(csStmtRef, csTxnId, 0, 'S', PD_UPDATE_USER);
+			}
+
+			break;
+		}
+
+		hMatchCriteria = RecordSet_GetNext(rMatchCriteria);
+	}
+
+	free(csTag);
+
+	// hash destroy
+	// recordset destroy
+
+DEBUGLOG(("ProcessMatching() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+/*
+int StmtMatchDeposit(const char* csMerchantId)
+{
+	int iRet = PD_OK;
+
+	char *csTmp, *csTmp2, *csIntBankCode, *csBankAcctNum, *csServiceCode, *csCountry, *csStmtRef, *csStmtDate, *csTxnAmount, *csFldName, *csValue;
+	char *csTxnId = strdup("");
+	char *csDepositDatetime = strdup("");
+	char *csTag = (char*) malloc (64);
+
+	int iMatchFifo, iFieldCnt, iIndex, iIsMatched, iInsertPair;
+
+	double dMatchFifoAmtLimit;
+
+	recordset_t *rMatchCriteria;
+	rMatchCriteria = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchCriteria, 0);
+
+	recordset_t *rBankAcct;
+	rBankAcct = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rBankAcct, 0);
+
+	recordset_t *rStmtDtl;
+	rStmtDtl = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rStmtDtl, 0);
+
+	recordset_t *rMatchResult;
+	rMatchResult = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rMatchResult, 0);
+
+	hash_t *hMatchCriteria;
+
+	hash_t *hBankAcct;
+
+	hash_t *hStmtDtl;
+
+	hash_t *hMatchResult;
+
+	hash_t *hMatchBfAf;
+	hMatchBfAf = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMatchBfAf, 0);
+
+	hash_t *hMatchValue;
+	hMatchValue = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hMatchValue, 0);
+
+DEBUGLOG(("StmtMatchDeposit:: input csMerchantId = [%s]\n", csMerchantId));
+
+	// get match criteria
+	if (iRet == PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLAutoMatchCriteria::GetAutoMatchCriteria()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLAutoMatchCriteria", "GetAutoMatchCriteria");
+		iRet = (unsigned long)(*DBObjPtr)(csMerchantId, rMatchCriteria);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLAutoMatchCriteria::GetAutoMatchCriteria() failed!!!\n"));
+ERRLOG("BOOLDepositMatch:: StmtMatchDeposit:: call DBOLAutoMatchCriteria::GetAutoMatchCriteria() failed!!!\n");
+			iRet = PD_ERR;
+		}
+	}
+
+	// get bank accts
+	if (iRet == PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLMerchantBankAcct::GetAllAvaDepositBankAccts()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLMerchantBankAcct", "GetAllAvaDepositBankAccts");
+		iRet = (unsigned long)(*DBObjPtr)(csMerchantId, rBankAcct);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLMerchantBankAcct::GetAllAvaDepositBankAccts() failed!!!\n"));
+ERRLOG("BOOLDepositMatch:: StmtMatchDeposit:: call DBOLMerchantBankAcct::GetAllAvaDepositBankAccts() failed!!!\n");
+			iRet = PD_ERR;
+		}
+	}
+
+	// loop bank accts
+	if (iRet == PD_OK) {
+		hBankAcct = RecordSet_GetFirst(rBankAcct);
+		while (hBankAcct) {
+
+			// reset rStmtDtl
+			RecordSet_Destroy(rStmtDtl);
+			recordset_init(rStmtDtl, 0);
+
+			// get int_bank_code
+			if (GetField_CString(hBankAcct, "int_bank_code", &csIntBankCode)) {
+DEBUGLOG(("StmtMatchDeposit:: int_bank_code = [%s]\n", csIntBankCode));
+			} else {
+DEBUGLOG(("StmtMatchDeposit:: int_bank_code not found\n"));
+				hBankAcct = RecordSet_GetNext(rBankAcct);
+				continue;;
+			}
+
+			// get bank_acct_num
+			if (GetField_CString(hBankAcct, "bank_acct_num", &csBankAcctNum)) {
+DEBUGLOG(("StmtMatchDeposit:: bank_acct_num = [%s]\n", csBankAcctNum));
+			} else {
+DEBUGLOG(("StmtMatchDeposit:: bank_acct_num not found\n"));
+				hBankAcct = RecordSet_GetNext(rBankAcct);
+				continue;
+			}
+
+			// get service_code
+			if (GetField_CString(hBankAcct, "service_code", &csServiceCode)) {
+DEBUGLOG(("StmtMatchDeposit:: service_code = [%s]\n", csServiceCode));
+			} else {
+DEBUGLOG(("StmtMatchDeposit:: service_code not found\n"));
+				hBankAcct = RecordSet_GetNext(rBankAcct);
+				continue;
+			}
+
+			// get country
+			if (GetField_CString(hBankAcct, "country", &csCountry)) {
+DEBUGLOG(("StmtMatchDeposit:: country = [%s]\n", csCountry));
+			} else {
+DEBUGLOG(("StmtMatchDeposit:: country not found\n"));
+				hBankAcct = RecordSet_GetNext(rBankAcct);
+				continue;
+			}
+
+			// get match_fifo
+			if (GetField_Int(hBankAcct, "match_fifo", &iMatchFifo)) {
+DEBUGLOG(("StmtMatchDeposit:: match_fifo = [%d]\n", iMatchFifo));
+
+				if (iMatchFifo) {
+					if (GetField_Double(hBankAcct, "match_fifo_amt_limit", &dMatchFifoAmtLimit)) {
+DEBUGLOG(("StmtMatchDeposit:: match_fifo_amt_limit = [%lf]\n", dMatchFifoAmtLimit));
+					} else {
+DEBUGLOG(("StmtMatchDeposit:: match_fifo_amt_limit not found\n"));
+						hBankAcct = RecordSet_GetNext(rBankAcct);
+						continue;
+					}
+				}
+			} else {
+DEBUGLOG(("StmtMatchDeposit:: match_fifo not found\n"));
+				hBankAcct = RecordSet_GetNext(rBankAcct);
+				continue;
+			}
+
+			// get unallocated stmt records
+DEBUGLOG(("StmtMatchDeposit:: call DBOLStatement::GetUnallocatedRecords()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetUnallocatedRecords");
+			iRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csBankAcctNum, rStmtDtl);
+
+			if (iRet != PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLStatement::GetUnallocatedRecords() failed!!!\n"));
+				hBankAcct = RecordSet_GetNext(rBankAcct);
+				continue;
+			}
+
+			// loop unallocated stmt records
+			if (iRet == PD_OK) {
+				hStmtDtl = RecordSet_GetFirst(rStmtDtl);
+				while (hStmtDtl) {
+
+					// get statement_ref
+					if (GetField_CString(hStmtDtl, "statement_ref", &csStmtRef)) {
+DEBUGLOG(("StmtMatchDeposit:: statement_ref = [%s]\n", csStmtRef));
+					} else {
+DEBUGLOG(("StmtMatchDeposit:: statement_ref not found\n"));
+						hStmtDtl = RecordSet_GetNext(rStmtDtl);
+						continue;
+					}
+
+					// get statement_date
+					if (GetField_CString(hStmtDtl, "statement_date", &csStmtDate)) {
+DEBUGLOG(("StmtMatchDeposit:: statement_date = [%s]\n", csStmtDate));
+					} else {
+DEBUGLOG(("StmtMatchDeposit:: statement_date not found\n"));
+						hStmtDtl = RecordSet_GetNext(rStmtDtl);
+						continue;
+					}
+
+					// get txn_amount
+					if (GetField_CString(hStmtDtl, "txn_amount", &csTxnAmount)) {
+DEBUGLOG(("StmtMatchDeposit:: txn_amount = [%s]\n", csTxnAmount));
+					} else {
+DEBUGLOG(("StmtMatchDeposit:: txn_amount not found\n"));
+						hStmtDtl = RecordSet_GetNext(rStmtDtl);
+						continue;
+					}
+
+					// get matching period by date
+DEBUGLOG(("StmtMatchDeposit:: call DBOLRuleDepositMatching::GetRuleDepositMatchingByDate()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLRuleDepositMatching", "GetRuleDepositMatchingByDate");
+					iRet = (unsigned long)(*DBObjPtr)(csMerchantId, csIntBankCode, csCountry, csStmtDate, hMatchBfAf);
+
+					if (iRet != PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLRuleDepositMatching::GetRuleDepositMatchingByDate() failed!!!\n"));
+						hStmtDtl = RecordSet_GetNext(rStmtDtl);
+						continue;
+					}
+
+					// loop match criteria
+					hMatchCriteria = RecordSet_GetFirst(rMatchCriteria);
+					while (hMatchCriteria) {
+
+						// reset hMatchValue
+						hash_destroy(hMatchValue);
+						hash_init(hMatchValue, 0);
+
+						// reset rMatchResult
+						RecordSet_Destroy(rMatchResult);
+						recordset_init(rMatchResult, 0);
+
+						iIsMatched = 0;
+						iInsertPair = 0;
+
+						PutField_CString(hMatchValue, "merchant_id", csMerchantId);
+						PutField_CString(hMatchValue, "service_code", csServiceCode);
+
+						// get field_cnt
+						if (GetField_Int(hMatchCriteria, "field_cnt", &iFieldCnt)) {
+DEBUGLOG(("StmtMatchDeposit:: field_cnt = [%d]\n", iFieldCnt));
+							PutField_Int(hMatchValue, "field_cnt", iFieldCnt);
+						} else {
+DEBUGLOG(("StmtMatchDeposit:: field_cnt not found\n"));
+							hMatchCriteria = RecordSet_GetNext(rMatchCriteria);
+							continue;
+						}
+
+						// get tag_name
+						for (iIndex = 1; iIndex <= iFieldCnt; iIndex++) {
+
+							sprintf(csTag, "tag_name_%d", iIndex);
+							if (GetField_CString(hMatchCriteria, csTag, &csFldName)) {
+DEBUGLOG(("StmtMatchDeposit:: [%s] = [%s]\n", csTag, csFldName));
+							} else {
+								// to be implemented:
+								// 	skip to next hMatchCriteria
+							}
+
+							if (GetField_CString(hStmtDtl, csFldName, &csValue)) {
+DEBUGLOG(("StmtMatchDeposit:: [%s] = [%s]\n", csFldName, csValue));
+								PutField_CString(hMatchValue, csFldName, csValue);
+							} else {
+								// to be implemented:
+								// 	skip to next hMatchCriteria
+							}
+						}
+
+						// match deposit
+DEBUGLOG(("StmtMatchDeposit:: call DBOLTransaction::MatchStmt()\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "MatchStmt");
+						iRet = (unsigned long)(*DBObjPtr)(hMatchValue, hMatchBfAf, rMatchResult);
+
+						if (iRet != PD_OK) {
+DEBUGLOG(("StmtMatchDeposit:: call DBOLTransaction::MatchStmt() failed!!!\n"));
+							// to be implemented:
+							// 	match stmt failed
+						}
+
+						hMatchResult = RecordSet_GetFirst(rMatchResult);
+						while (hMatchResult) {
+
+							if (GetField_CString(hMatchResult, "txn_id", &csTmp) &&
+								GetField_CString(hMatchResult, "deposit_datetime", &csTmp2)) {
+DEBUGLOG(("StmtMatchDeposit:: txn_id = [%s]\n", csTmp));
+								if (!iIsMatched) {
+									iIsMatched = 1;
+									strcpy(csTxnId, csTmp);
+									strcpy(csDepositDatetime, csTmp2);
+								} else {
+									// match more than one deposit req
+									if (iMatchFifo) {
+										if (atof(csTxnAmount) < dMatchFifoAmtLimit) {
+											// FIFO
+DEBUGLOG(("StmtMatchDeposit:: FIFO\n"));
+											if (strcmp(csTmp2, csDepositDatetime) < 0) {
+												strcpy(csTxnId, csTmp);
+												strcpy(csDepositDatetime, csTmp2);
+											}
+										} else {
+											// insert into ol_deposit_match_pair
+DEBUGLOG(("StmtMatchDeposit:: FIFO but over amt limit\n"));
+											iInsertPair = 1;
+											break;
+										}
+									} else {
+										// insert into ol_deposit_match_pair
+DEBUGLOG(("StmtMatchDeposit:: not FIFO\n"));
+										iInsertPair = 1;
+										break;
+									}
+								}
+							}
+
+							hMatchResult = RecordSet_GetNext(rMatchResult);
+						}
+
+						if (iIsMatched) {
+							if (iInsertPair) {
+// insert all records to ol_deposit_match_pair
+								hMatchResult = RecordSet_GetFirst(rMatchResult);
+								while (hMatchResult) {
+									PutField_CString(hMatchResult, "stmt_ref", csStmtRef);
+									PutField_CString(hMatchResult, "create_user", PD_UPDATE_USER);
+									DBObjPtr = CreateObj(DBPtr, "DBOLDepositMatchPair", "Add");
+									iRet = (unsigned long)(*DBObjPtr)(hMatchResult);
+
+									// to be implemented: handle error
+
+									hMatchResult = RecordSet_GetNext(rMatchResult);
+								}
+							} else {
+// match the record
+								iRet = CompleteMatching(csStmtRef, csTxnId, 0, 'S', PD_UPDATE_USER);
+ 							}
+
+							break;
+						}
+
+						hMatchCriteria = RecordSet_GetNext(rMatchCriteria);
+					}
+
+					// process match stmt
+
+					hStmtDtl = RecordSet_GetNext(rStmtDtl);
+				}
+			}
+
+			hBankAcct = RecordSet_GetNext(rBankAcct);
+		}
+	}
+
+	free(csTag);
+
+	// hash destroy
+	// recordset destroy
+
+DEBUGLOG(("StmtMatchDeposit() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+*/
+
+
+int CompleteMatching(const char* csStmtRef,
+			const char* csTxnSeq,
+			const int iOverrideAmt,
+			const char cMatchingType,
+			const char* csAddUser) {
+	int iRet = PD_OK;
+
+	char* csServiceCode;
+	char* csTxnCode;
+	char* csClientId;
+	char* csMerchantId;
+	char* csChannelCode;
+	char* csPtr;
+	char csDateTime[PD_DATETIME_LEN +1];
+	char* csPayMethod;
+	char* csTxnCountry;
+	char* csTxnCcy;
+	char* csBankCode;
+	double dTxnAmt;
+	int iPayMethodFound = PD_FALSE;
+
+	recordset_t *rRecordSet;
+	hash_t *hRec, *hTxn, *hStmt, *hDummy;
+
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+	hStmt = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hStmt, 0);
+
+	hDummy = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hDummy, 0);
+
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+		if ((DBObjPtr)(csTxnSeq, rRecordSet) == PD_OK) {
+DEBUGLOG(("CompleteMatching::txn header found record = [%s]\n", csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+
+				// txn_seq
+				PutField_CString(hTxn, "from_txn_seq", csTxnSeq);
+
+				// add_user
+				PutField_CString(hTxn, "add_user", csAddUser);
+
+				// service_code
+				if (GetField_CString(hRec, "service_code", &csServiceCode)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - service code = [%s]\n", csServiceCode));
+					PutField_CString(hTxn, "org_service_code", csServiceCode);
+				}
+
+				// txn_code
+				if (GetField_CString(hRec, "txn_code", &csTxnCode)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - txn_code = [%s]\n", csTxnCode));
+					PutField_CString(hTxn, "txn_code", csTxnCode);
+					PutField_CString(hTxn, "org_txn_code", csTxnCode);
+				}
+
+				// client_id
+				if (GetField_CString(hRec, "client_id", &csClientId)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - client_id = [%s]\n", csClientId));
+					PutField_CString(hTxn, "merchant_client_id", csClientId);
+					PutField_CString(hTxn, "org_client_id", csClientId);
+				}
+
+				// merchant_id
+				if (GetField_CString(hRec, "merchant_id", &csMerchantId)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - merchant_id = [%s]\n", csMerchantId));
+					PutField_CString(hTxn, "merchant_id", csMerchantId);
+					PutField_CString(hTxn, "org_merchant_id", csMerchantId);
+				}
+
+				// channel_code
+				if (GetField_CString(hRec, "channel_code", &csChannelCode)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - channel_code = [%s]\n", csChannelCode));
+					PutField_CString(hTxn, "org_channel_code", csChannelCode);
+				}
+
+				// txn_amt
+				if (GetField_Double(hRec, "txn_amt", &dTxnAmt)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - txn_amt = [%lf]\n", dTxnAmt));
+					PutField_Double(hTxn, "org_txn_amt", dTxnAmt);
+				}
+
+				// local_tm_date
+				if (GetField_CString(hRec, "local_tm_date", &csPtr)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - local_tm_date = [%s]\n", csPtr));
+					strcpy(csDateTime, csPtr);
+				}
+
+				// local_tm_time
+				if (GetField_CString(hRec, "local_tm_time", &csPtr)) {
+DEBUGLOG(("CompleteMatching::GetTxnHeader - local_tm_time = [%s]\n", csPtr));
+					memcpy(&csDateTime[PD_DATE_LEN], csPtr, PD_TIME_LEN);
+					csDateTime[PD_DATETIME_LEN] = '\0';
+					PutField_CString(hTxn, "org_local_tm_datetime", csDateTime);
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		RecordSet_Destroy(rRecordSet);
+	}
+
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnDetail");
+		if ((DBObjPtr)(csTxnSeq, rRecordSet) == PD_OK) {
+DEBUGLOG(("CompleteMatching::txn detail found record = [%s]\n", csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+
+				// selected_pay_method
+				if (GetField_CString(hRec, "selected_pay_method", &csPayMethod)) {
+DEBUGLOG(("CompleteMatching::GetTxnDetail - selected_pay_method = [%s]\n", csPayMethod));
+					PutField_CString(hTxn, "selected_pay_method", csPayMethod);
+					iPayMethodFound = PD_TRUE;
+				}
+
+				// txn_country
+				if (GetField_CString(hRec, "txn_country", &csTxnCountry)) {
+DEBUGLOG(("CompleteMatching::GetTxnDetail - txn_country = [%s]\n", csTxnCountry));
+					PutField_CString(hTxn, "org_txn_country", csTxnCountry);
+				}
+
+				// txn_ccy
+				if (GetField_CString(hRec, "txn_ccy", &csTxnCcy)) {
+DEBUGLOG(("CompleteMatching::GetTxnDetail - txn_ccy = [%s]\n", csTxnCcy));
+					PutField_CString(hTxn, "txn_ccy", csTxnCcy);
+					PutField_CString(hTxn, "org_txn_ccy", csTxnCcy);
+					// assume same ccy for offline
+					PutField_CString(hTxn, "dst_txn_ccy", csTxnCcy);
+				}
+
+				// bank_code
+				if (GetField_CString(hRec, "bank_code", &csBankCode)) {
+DEBUGLOG(("CompleteMatching::GetTxnDetail - bank_code = [%s]\n", csBankCode));
+					PutField_CString(hTxn, "bank_code", csPtr);
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		RecordSet_Destroy(rRecordSet);
+	}
+
+	if (iRet == PD_OK) {
+		BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "AddTxnAmtElement");
+		if ((unsigned long)((*BOObjPtr)(hTxn)) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("CompleteMatching() BOOLTxnElements:AddTxnAmtElement failed!!!\n"));
+ERRLOG("BOOLDepositMatch: CompleteMatching() BOOLTxnElements:AddTxnAmtElement failed!!!\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		PutField_CString(hStmt, "statement_ref", csStmtRef);
+		PutField_CString(hStmt, "txn_id", csTxnSeq);
+		PutField_Char(hStmt, "status", PD_STATUS_APPROVED);
+		switch (cMatchingType)
+		{
+			case 'S':
+				PutField_CString(hStmt, "sub_status", "103");
+				break;
+			case 'A':
+				PutField_CString(hStmt, "sub_status", "104");
+				break;
+			case 'M':
+				PutField_CString(hStmt, "sub_status", "105");
+				break;
+			default:
+				break;
+		}
+		PutField_CString(hStmt, "update_user", csAddUser);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "UpdateStatusWithLog");
+		if ((unsigned long)((*DBObjPtr)(hStmt)) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("CompleteMatching() DBOLStatement:UpdateStatusWithLog failed!!!\n"));
+ERRLOG("BOOLDepositMatch: CompleteMatching() DBOLStatement:UpdateStatusWithLog failed!!!\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		PutField_Int(hTxn, "init_mode", 1);
+
+		BOObjPtr = CreateObj(BOPtr, "BOExchange", "GetExchangeInfo");
+		if ((unsigned long)((*BOObjPtr)(hTxn, hDummy)) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("CompleteMatching() BOExchange:GetExchangeInfo failed!!!\n"));
+ERRLOG("BOOLDepositMatch: CompleteMatching() BOExchange:GetExchangeInfo failed!!!\n");
+		}
+
+		RemoveField_Int(hTxn, "init_mode");
+	}
+
+	if (iRet == PD_OK) {
+		PutField_Int(hTxn, "init_mode", 1);
+
+		BOObjPtr = CreateObj(BOPtr, "BOFee", "GetTxnFee");
+		if ((unsigned long)((*BOObjPtr)(hTxn, hDummy)) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("CompleteMatching() BOFee:GetTxnFee failed!!!\n"));
+ERRLOG("BOOLDepositMatch: CompleteMatching() BOFee:GetTxnFee failed!!!\n");
+		}
+
+		RemoveField_Int(hTxn, "init_mode");
+	}
+
+/*
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "UpdateDetail");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+	}
+*/
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Chk pt 1\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "AddTxnFeeElements");
+		iRet = (unsigned long)(*BOObjPtr)(hTxn);
+	}
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+	hash_destroy(hStmt);
+	FREE_ME(hStmt);
+	hash_destroy(hDummy);
+	FREE_ME(hDummy);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+DEBUGLOG(("CompleteMatching() exit iRet = [%d]\n", iRet));
+	return iRet;
+}

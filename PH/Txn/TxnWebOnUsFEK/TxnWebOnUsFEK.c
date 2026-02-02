@@ -1,0 +1,155 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/09/21              Cody Chan
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnWebOnUsFEK.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+void TxnWebOnUsFEK(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+        char    *csValue = strdup("");
+	char*	csPtr = NULL;
+	char*	csOrgTxnSeq;
+	char	cPtr;
+	char	cStatus;
+	hash_t  *hRec;
+	double	dTmp = 0.0;
+	
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+
+	
+
+DEBUGLOG(("TxnWebOnUsFEK Authorize()\n"));
+	if (GetField_CString(hRequest,"txn_seq",&csOrgTxnSeq)) {
+	
+
+		PutField_CString(hResponse,"txn_seq",csOrgTxnSeq);
+DEBUGLOG(("TxnWebOnUsFEK org_txn_seq = [%s]\n",csOrgTxnSeq));
+        	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+        	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("TxnWebOnUsFEK found record = [%s]\n",csOrgTxnSeq));
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                       	 	if (GetField_CString(hRec,"merchant_id",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsFEK:merchant_id= [%s]\n",csPtr));
+					PutField_CString(hResponse,"merchant_id",csPtr);
+                        	}
+                       	 	if (GetField_CString(hRec,"merchant_ref",&csPtr)) {
+DEBUGLOG(("TxnWebOnUsFEK:merchant_ref= [%s]\n",csPtr));
+					PutField_CString(hResponse,"merchant_ref",csPtr);
+                        	}
+				if (GetField_CString(hRec,"channel_code",&csValue)) {
+DEBUGLOG(("TxnWebOnUsFEK:channel_code= [%s]\n",csValue));
+					PutField_CString(hResponse,"channel_code",csValue);
+                                }
+				if (GetField_Char(hRec,"status",&cStatus)) {
+DEBUGLOG(("TxnWebOnUsFEK:status= [%c]\n",cStatus));
+					PutField_Char(hResponse,"status",cStatus);
+                                }
+				if (GetField_Char(hRec,"ar_ind",&cPtr)) {
+DEBUGLOG(("TxnWebOnUsFEK:ar_ind= [%c]\n",cPtr));
+					PutField_Char(hResponse,"ar_ind",cPtr);
+                                }
+				if (GetField_CString(hRec,"txn_code",&csValue)) {
+DEBUGLOG(("TxnWebOnUsFEK:txn_code= [%s]\n",csValue));
+					PutField_CString(hContext,"txn_code",csValue);
+                                }
+				if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("TxnWebOnUsFEK:txn_amt= [%lf]\n",dTmp));
+					PutField_Double(hResponse,"txn_amt",dTmp);
+                                }
+				hRec = RecordSet_GetNext(rRecordSet);
+                	}
+        	}
+		else {
+DEBUGLOG(("TxnWebOnUsFEK not found record for [%s]\n",csOrgTxnSeq));
+		}
+        	RecordSet_Destroy(rRecordSet);
+
+	}
+	else 	
+		iRet = INT_ERR;
+
+
+        if ( iRet == PD_OK) {
+/* Check Merchant */
+                BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hResponse);
+DEBUGLOG(("BOMerchant->GetMerchantDetail = [%d]\n",iRet));
+
+        }
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext,"merchant_key",&csPtr)) {
+DEBUGLOG(("BPMerchant: GetMerchantDetail - merchant_key = [%s]\n",csPtr));
+                	PutField_CString(hResponse,"merchant_key",csPtr);
+                 }
+	}
+	if (iRet == PD_OK ) {
+        	recordset_init(rRecordSet,0);
+        	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+        	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                       	 	if (GetField_CString(hRec,"success_url",&csValue)) {
+DEBUGLOG(("TxnWebOnUsFEK:success_url= [%s]\n",csValue));
+					PutField_CString(hResponse,"success_url",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"success_callback_url",&csValue)) {
+DEBUGLOG(("TxnWebOnUsFEK:success_callback_url= [%s]\n",csValue));
+					PutField_CString(hResponse,"success_callback_url",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"failure_url",&csValue)) {
+DEBUGLOG(("TxnWebOnUsFEK:failure_url= [%s]\n",csValue));
+					PutField_CString(hResponse,"failure_url",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"failure_callback_url",&csValue)) {
+DEBUGLOG(("TxnWebOnUsFEK:failure_callback_url= [%s]\n",csValue));
+					PutField_CString(hResponse,"failure_callback_url",csValue);
+                        	}
+                       		hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+
+
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+	//FREE_ME(csPtr);
+        FREE_ME(csValue);
+
+DEBUGLOG(("TxnWebOnUsFEK Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

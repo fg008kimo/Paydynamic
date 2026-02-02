@@ -1,0 +1,519 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "getrate.h"
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+#include "ExchangeRate.h"
+#include "SystemParameter.h"
+
+OBJPTR(DB);
+char    cDebug;
+
+struct string
+{
+	char *ptr;
+	size_t len;
+};
+
+void init_string(struct string *s)
+{
+	s->len = 0;
+	s->ptr = malloc(s->len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "malloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	s->ptr[0] = '\0';
+}
+
+size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s)
+{
+	size_t new_len = s->len + size*nmemb;
+	s->ptr = realloc(s->ptr, new_len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "realloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	memcpy(s->ptr+s->len, ptr, size*nmemb);
+	s->ptr[new_len] = '\0';
+	s->len = new_len;
+
+	return size*nmemb;
+}
+
+
+////convert Date format from "DD MON YYYY" to "YYYYMMDD"////
+int convertDateFormat(const char *sDate, rData *oResp)
+{
+	int i=0;
+	char sDD[PD_DD_LEN+1];
+	char sMON[4];
+	char sYYYY[PD_YYYY_LEN+1];
+	char sMM[PD_MM_LEN+1];
+
+	char csMonth[12][4]={"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+	char iMonth[12][PD_MM_LEN+1]={"01","02","03","04","05","06","07","08","09","10","11","12"};
+
+	int iCheck = sscanf(sDate,"%2s %3s %4s", sDD, sMON, sYYYY);
+	if(iCheck!=3)
+	{
+DEBUGLOG(("convertDateFormat Error: %s\n", sDate));
+		return FAILURE;
+	}
+
+	do{
+		if(strncmp(sMON,csMonth[i],(PD_MM_LEN+1))==0){
+			strcpy(sMM, iMonth[i]);
+			break;
+		}
+		else{
+			i++;
+			if(i>12){
+DEBUGLOG(("convertDateFormat Error: %s\n", sDate));
+				return FAILURE;
+			}
+		}
+	}while(PD_TRUE);
+	
+	sMM[PD_MM_LEN]='\0';
+
+	snprintf(oResp->sDate, strlen("yyyymmdd")+1, "%s%s%s", sYYYY, sMM, sDD);
+
+	return SUCCESS;
+}
+
+
+
+int checkRespString(struct string *s, rData *oResp)
+{
+	int bResult = FAILURE;
+	char sRespHeader[RESP_HEADER_LEN]={0};
+
+	////check the header, for success case, Header = "FXP/1.1 200 ok"////
+	strncpy(sRespHeader, s->ptr, RESP_HEADER_LEN);
+
+	if(strncmp(RESP_HEADER,sRespHeader,RESP_HEADER_LEN)!=0)
+	{
+		DEBUGLOG(("Error: %s\n", s->ptr));
+	}
+
+	else
+	{
+		////get the effect date////
+		char *sRate = strstr(s->ptr,"GMT");
+		char sDate[12];
+		
+		strncpy(sDate, sRate-strlen("dd mon yyyy hh:mi:ss "), strlen("dd mon yyyy"));
+		sDate[strlen("dd mon yyyy")]='\0';
+		if(convertDateFormat(sDate, oResp)==SUCCESS)
+		{
+
+			////get the values of min_bid, bid, max_bid, min_ask, ask, max_ask////
+			int rc =sscanf(sRate+4,"%s %s %s %s %s %s", oResp->min_bid, oResp->bid, oResp->max_bid, oResp->min_ask, oResp->ask, oResp->max_ask);
+			if( rc!=6)
+			{
+				DEBUGLOG(("Output Invalid: %s\n",sRate+4));
+			}
+			else
+			{
+				////some values will appear as "na", replace them by mid value////
+				if((strncmp("na",oResp->bid,2)!=0)&&(strncmp("na",oResp->ask,2)!=0))
+				{
+					if(strncmp("na",oResp->min_bid,2)==0) strcpy(oResp->min_bid,oResp->bid);
+					if(strncmp("na",oResp->max_bid,2)==0) strcpy(oResp->max_bid,oResp->bid);
+					if(strncmp("na",oResp->min_ask,2)==0) strcpy(oResp->min_ask,oResp->ask);
+					if(strncmp("na",oResp->max_ask,2)==0) strcpy(oResp->max_ask,oResp->ask);
+
+					bResult=SUCCESS;
+				}
+				else
+					DEBUGLOG(("id[%s %s]: All return values are 'na'. Process Ended\n", oResp->sFromCCY, oResp->sToCCY));
+			}
+		}
+		
+	}
+
+
+	free(s->ptr);
+	return bResult;
+
+}
+
+
+
+void createReqString(char * sReq, char* sFromCCY, char* sToCCY)
+{
+	struct tm *ts;  
+        long ltime;
+                                
+        time( &ltime ); 
+                
+        /* Obtain coordinated universal time: */
+        ts = gmtime( &ltime );
+        char sDate[DATE_LEN]={0};
+        strftime(sDate,sizeof(sDate),"%a %d %b %Y %H:%M:%S", ts);
+        
+        ////Construct the request URL with all parameters////
+        snprintf(sReq, REQ_STRING_LEN, "%s%s&Quotecurrency: %s&Basecurrency: %s&Date: %s GMT&Quotetype: %s",REQUEST_URL,REQUEST_HEADER, sFromCCY, sToCCY,sDate,QUOTE_TYPE);
+}
+
+
+
+int proc_CURL(const char *sReq, rData *oRespData)
+{
+        CURL *curl;
+        CURLcode res;
+
+	curl = curl_easy_init();
+        if(curl)
+        {
+                struct string sBuffer;
+                init_string(&sBuffer);
+
+                curl_easy_setopt(curl, CURLOPT_URL,sReq);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sBuffer);
+                res = curl_easy_perform(curl);
+
+                curl_easy_cleanup(curl);
+
+		////check the response string to get the return values////
+                if(checkRespString(&sBuffer, oRespData)==SUCCESS)
+                {
+DEBUGLOG(("id[%s %s] date[%s] values[%s %s %s %s %s %s]\n",oRespData->sFromCCY,oRespData->sToCCY,oRespData->sDate,oRespData->min_bid,oRespData->bid,oRespData->max_bid,oRespData->min_ask,oRespData->ask,oRespData->max_ask ));
+                }
+		else
+		{
+			return FAILURE;
+		}
+	}
+	else
+	{
+		DEBUGLOG(("Init CURL failed\n"));
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+int proc_Rate(rData *oResult)
+{
+	////calculate the final result////
+
+	hash_t *hRate;
+	double dRate;
+	double dBid;
+	double dMaxBid;
+	double dMedBid;
+	double dMinBid;
+	double dMaxAsk;
+	double dMedAsk;
+	double dMinAsk;
+	double dMinMax;
+	double dMeanMinMax;
+
+	dMaxBid =  atof(oResult->max_bid);
+	dMedBid =  atof(oResult->bid);
+	dMinBid =  atof(oResult->min_bid);
+	dBid    =  atof(oResult->bid);
+	dRate	=  atof(oResult->bid);
+	dMaxAsk =  atof(oResult->max_ask);
+	dMedAsk =  atof(oResult->ask);
+	dMinAsk =  atof(oResult->min_ask);
+
+	dMeanMinMax=0.0; 
+
+	if(strcmp(oResult->sFromCCY,oResult->sToCCY)==0)
+		dMinMax = 1;
+	else
+		dMinMax= 0.0;
+
+	dRate = dMinMax;
+
+	DEBUGLOG(("Overall: id[%s %s] date[%s] values[%f %f %f %f %f %f] MeanMinMax[%f] MinMax[%f] rate[%f]\n",oResult->sFromCCY, oResult->sToCCY, oResult->sDate, dMinBid, dMedBid, dMaxBid, dMinAsk, dMedAsk, dMaxAsk, dMeanMinMax, dMinMax, dRate));
+
+
+	hRate = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRate,0);
+
+	PutField_CString(hRate,"from_ccy_id",oResult->sFromCCY);
+	PutField_CString(hRate,"to_ccy_id",oResult->sToCCY);
+	PutField_CString(hRate,"create_user",PD_UPDATE_USER);
+	PutField_CString(hRate,"effect_date",oResult->sDate);
+
+	PutField_Double(hRate,"rate",dRate);
+	PutField_Double(hRate,"bid",dBid);
+	PutField_Double(hRate,"max_bid",dMaxBid);
+	PutField_Double(hRate,"med_bid",dMedBid);
+	PutField_Double(hRate,"min_bid",dMinBid);
+	PutField_Double(hRate,"max_ask",dMaxAsk);
+	PutField_Double(hRate,"med_ask",dMedAsk);
+	PutField_Double(hRate,"min_ask",dMinAsk);
+	PutField_Double(hRate,"min_max",dMinMax);
+	PutField_Double(hRate,"mean_min_max",dMeanMinMax);
+
+
+	////insert the record into table exchange_rate////
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","Add");
+
+	if ((unsigned long int)(*DBObjPtr)(hRate) == PD_OK) {
+	}
+	else {
+		DEBUGLOG(("Add Rate Error\n"));
+		return FAILURE;
+	}
+
+
+	return SUCCESS;
+}
+
+
+int proc_crossRate(rData *oResult, rData *oResultBaseNfrom, rData *oResultBaseNto)
+{
+	////calculate the final result from three request results////
+
+	hash_t *hRate;
+	double dRate;
+	double dBid;
+	double dMaxBid;
+	double dMedBid;
+	double dMinBid;
+	double dMaxAsk;
+	double dMedAsk;
+	double dMinAsk;
+	double dMinMax;
+	double dMeanMinMax;
+
+	dMaxBid =  atof(oResult->max_bid);
+	dMedBid =  atof(oResult->bid);
+	dMinBid =  atof(oResult->min_bid);
+	dBid    =  atof(oResult->bid);
+	dMaxAsk =  atof(oResult->max_ask);
+	dMedAsk =  atof(oResult->ask);
+	dMinAsk =  atof(oResult->min_ask);
+
+DEBUGLOG(("to_min_bid = [%f] + to_max_ask = [%f] / from_min_bid [%f]+ from_max_ask [%f]\n",oResultBaseNto->min_bid,oResultBaseNto->max_ask,oResultBaseNfrom->min_bid,oResultBaseNfrom->max_ask));
+	dMeanMinMax= (atof(oResultBaseNto->min_bid) + atof(oResultBaseNto->max_ask))/(atof(oResultBaseNfrom->min_bid) + atof(oResultBaseNfrom->max_ask));
+
+	if(strcmp(oResult->sFromCCY,oResult->sToCCY)==0)
+		dMinMax = 1;
+	else
+		dMinMax= atof(oResultBaseNto->max_ask)/atof(oResultBaseNfrom->max_ask);
+
+	dRate = dMinMax;
+
+	DEBUGLOG(("Overall: id[%s %s] date[%s] values[%f %f %f %f %f %f] MeanMinMax[%f] MinMax[%f] rate[%f]\n",oResult->sFromCCY, oResult->sToCCY, oResult->sDate, dMinBid, dMedBid, dMaxBid, dMinAsk, dMedAsk, dMaxAsk, dMeanMinMax, dMinMax, dRate));
+
+
+	hRate = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRate,0);
+
+	PutField_CString(hRate,"from_ccy_id",oResult->sFromCCY);
+	PutField_CString(hRate,"to_ccy_id",oResult->sToCCY);
+	PutField_CString(hRate,"create_user",PD_UPDATE_USER);
+	PutField_CString(hRate,"effect_date",oResult->sDate);
+
+	PutField_Double(hRate,"rate",dRate);
+	PutField_Double(hRate,"bid",dBid);
+	PutField_Double(hRate,"max_bid",dMaxBid);
+	PutField_Double(hRate,"med_bid",dMedBid);
+	PutField_Double(hRate,"min_bid",dMinBid);
+	PutField_Double(hRate,"max_ask",dMaxAsk);
+	PutField_Double(hRate,"med_ask",dMedAsk);
+	PutField_Double(hRate,"min_ask",dMinAsk);
+	PutField_Double(hRate,"min_max",dMinMax);
+	PutField_Double(hRate,"mean_min_max",dMeanMinMax);
+
+
+	////insert the record into table exchange_rate////
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","Add");
+
+	if ((unsigned long int)(*DBObjPtr)(hRate) == PD_OK) {
+	}
+	else {
+		DEBUGLOG(("Add Rate Error\n"));
+		return FAILURE;
+	}
+
+
+	return SUCCESS;
+}
+
+int findBasedCurrency(char *sCode, char *sValue)
+{
+	////there is a based currency for calculating a more accurate exchange rate. i.e. USD////
+
+	DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+	if((unsigned long int)(*DBObjPtr)(sCode,sValue) == FOUND)
+	{
+		if(strlen(sValue)!=PD_CCY_ID_LEN)
+		{
+			DEBUGLOG(("Invalid Base Currency Code:[%s]\n",sValue));
+			return FAILURE;
+		}
+		else
+		{
+			DEBUGLOG(("Base Currency Code:[%s]\n",sValue));
+		}
+	}
+	else
+	{
+		DEBUGLOG(("Find Base Currency Code Error\n"));
+		return FAILURE;
+	}
+	return SUCCESS;
+}
+
+
+int batch_init(int argc, char* argv[])
+{
+/*	if(argc<2)
+	{
+		DEBUGLOG(("Please input enought arguments\n"));
+		return FAILURE;
+	}
+	else  {
+        	return SUCCESS;
+	}
+*/
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iLoop = 0;
+	int iRec = 0;
+	int jLoop = 0;
+	int iRestrict = PD_FALSE;
+	char aCcyList[MAX_CYY_NUM][PD_CCY_ID_LEN+1];
+	char sReqString[REQ_STRING_LEN];
+	char sBaseCurrency[PD_CCY_ID_LEN+1];
+	rData oResult;
+	rData oResultBaseNfrom;
+	rData oResultBaseNto;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar v_currencyId[PD_CCY_ID_LEN+1];
+
+		short ind_v_currencyId	= -1;
+		int   iCount = -1;
+        EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL SELECT COUNT (*) INTO :iCount FROM currency
+		WHERE disabled = 0;
+
+
+        DEBUGLOG(("Num of active record in table[CURRENCY] = %d\n", iCount));
+        if(iCount<=0)
+                return FAILURE;
+
+	EXEC SQL DECLARE currency_cursor CURSOR FOR
+		SELECT currency_id
+		FROM currency
+		WHERE disabled = 0;
+
+	EXEC SQL OPEN currency_cursor;
+
+	for(iLoop=0; iLoop<iCount; iLoop++)
+	{
+		EXEC SQL FETCH currency_cursor
+			INTO :v_currencyId:ind_v_currencyId;
+		
+
+		if(ind_v_currencyId>=0)
+		{
+			v_currencyId.arr[v_currencyId.len]='\0';
+			snprintf(aCcyList[iRec], PD_CCY_ID_LEN+1, "%s", v_currencyId.arr);
+DEBUGLOG(("Currency_ID List[%d] = %s\n", iRec, aCcyList[iRec]));
+			iRec ++;
+		}
+	}
+
+	EXEC SQL CLOSE currency_cursor;
+/*
+	if(findBasedCurrency(BASE_CURR_CODE,sBaseCurrency)!=SUCCESS)
+	{
+		return FAILURE;
+	}
+*/
+	for(iLoop=0; iLoop<iRec; iLoop++)
+	{
+		for(jLoop=0; jLoop<iRec; jLoop++)
+		{
+			createReqString(sReqString, aCcyList[iLoop], aCcyList[jLoop]);
+DEBUGLOG(("The request string = [%s]\n", sReqString));
+			snprintf(oResult.sFromCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[iLoop]);
+			snprintf(oResult.sToCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[jLoop]);
+
+			if(proc_CURL(sReqString, &oResult)==SUCCESS)
+			{
+
+				DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+				iRestrict = (unsigned long)(*DBObjPtr)(oResult.sToCCY);
+				if(iRestrict == PD_TRUE && strcmp(oResult.sToCCY,oResult.sFromCCY)){
+
+					DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+					if((unsigned long) ((*DBObjPtr)(oResult.sToCCY,sBaseCurrency))==PD_FOUND){
+
+						createReqString(sReqString, sBaseCurrency, aCcyList[iLoop]);
+						snprintf(oResultBaseNfrom.sFromCCY, PD_CCY_ID_LEN+1, "%s", sBaseCurrency);
+						snprintf(oResultBaseNfrom.sToCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[iLoop]);
+
+						if(proc_CURL(sReqString, &oResultBaseNfrom)==SUCCESS)
+						{
+							createReqString(sReqString, sBaseCurrency, aCcyList[jLoop]);
+							snprintf(oResultBaseNto.sFromCCY, PD_CCY_ID_LEN+1, "%s", sBaseCurrency);
+							snprintf(oResultBaseNto.sToCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[jLoop]);
+
+							if(proc_CURL(sReqString, &oResultBaseNto)==SUCCESS)
+							{
+								proc_crossRate(&oResult, &oResultBaseNfrom, &oResultBaseNto);
+							}
+						}
+					}
+				}
+				else{
+					proc_Rate(&oResult);
+				}
+
+			}
+		}
+	}
+
+
+	return SUCCESS;
+
+
+sql_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;    
+
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+

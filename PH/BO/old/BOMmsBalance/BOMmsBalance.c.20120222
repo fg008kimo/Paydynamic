@@ -1,0 +1,890 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/11/29              Virginia Yun
+combine Hanlder and process balance		   2011/12/21		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOMmsBalance.h"
+
+char    cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOMmsBalance(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int GetPspCountry(hash_t *hRls);
+int GetMerchCountryService(hash_t *hRls);
+int IsNotFirstRec(hash_t *hRls);
+
+int ProcessPspBalance(hash_t *hRls);
+int ProcessMBBalance(hash_t *hRls);
+int ProcessBankBalance(hash_t *hRls);
+int ProcessMerchantBalance(hash_t *hRls);
+
+
+
+int TxnTypeHandler(hash_t *hRls)
+{
+	int	iRet = PD_OK;
+	char	cTmp;
+	char	*csTmp;
+
+	if (GetField_Char(hRls,"isd_ind",&cTmp)) {
+DEBUGLOG(("BOMmsBalance::TxnTypeHandler: isd_ind [%c]\n", cTmp));
+		if (cTmp == PD_SOURCE) {
+			if(GetField_CString(hRls,"src_party_type",&csTmp)){
+				if(!strcmp(csTmp,PD_MMS_PARTY_PSP))
+					iRet = ProcessPspBalance(hRls);
+				else if(!strcmp(csTmp,PD_MMS_PARTY_MERCH))
+					iRet = ProcessMerchantBalance(hRls);
+				else if(!strcmp(csTmp,PD_MMS_PARTY_MB))
+					iRet = ProcessMBBalance(hRls);
+				else if(!strcmp(csTmp,PD_MMS_PARTY_BANK))
+					iRet = ProcessBankBalance(hRls);
+			}
+			else{
+DEBUGLOG(("BOMmsBalance::TxnTypeHandler: get src_party_type failed\n"));
+ERRLOG("BOMmsBalance::TxnTypeHandler: get src_party_type failed\n");
+				iRet = INT_ERR;
+			}
+
+		} else if (cTmp == PD_DESTINATION ) {
+			if(GetField_CString(hRls,"dst_party_type",&csTmp)){
+				if(!strcmp(csTmp,PD_MMS_PARTY_PSP))
+					iRet = ProcessPspBalance(hRls);
+				else if(!strcmp(csTmp,PD_MMS_PARTY_MERCH))
+					iRet = ProcessMerchantBalance(hRls);
+				else if(!strcmp(csTmp,PD_MMS_PARTY_MB))
+					iRet = ProcessMBBalance(hRls);
+				else if(!strcmp(csTmp,PD_MMS_PARTY_BANK))
+					iRet = ProcessBankBalance(hRls);
+			}
+			else{
+DEBUGLOG(("BOMmsBalance::TxnTypeHandler: get dst_party_type failed\n"));
+ERRLOG("BOMmsBalance::TxnTypeHandler: get dst_party_type failed\n");
+				iRet = INT_ERR;
+			}
+
+		} else {
+DEBUGLOG(("BOMmsBalance::TxnTypeHandler: invalid isd_ind [%c]\n", cTmp));
+ERRLOG("BOMmsBalance::TxnTypeHandler: invalid isd_ind [%c]\n", cTmp);
+			iRet = INT_ERR;
+		}
+	}	
+	else {
+DEBUGLOG(("BOMmsBalance::TxnTypeHandler: get isd_ind failed\n"));
+ERRLOG("BOMmsBalance::TxnTypeHandler: get isd_ind failed\n");
+		iRet = INT_ERR;
+	}
+	
+DEBUGLOG(("BOMmsBalance::TxnTypeHandlerHandler: exit iRet = [%d]\n", iRet));
+	
+	return 	iRet;
+}
+
+
+int GetPspCountry(hash_t *hRls)
+{
+	char *csPspId = NULL;
+	char *csTxnCountry = NULL;
+	hash_t  *hRec;
+	int	iRet = PD_OK;
+
+	recordset_t     *rRecordSet;
+
+
+	if (GetField_CString(hRls, "txn_country", &csTxnCountry)) {
+DEBUGLOG(("GetPspCountry::country = [%s]\n",csTxnCountry));
+		return iRet;
+	}
+
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+DEBUGLOG(("BOMmsBalance::GetPspCountry:Call PspCountry:GetPspCountry\n"));
+
+	GetField_CString(hRls, "psp_id", &csPspId);
+
+DEBUGLOG(("BOMmsBalance::GetPspContry:psp_id [%s]\n", csPspId));
+
+	DBObjPtr = CreateObj(DBPtr,"DBPspCountry","GetPspCountry");
+	if ((*DBObjPtr)(csPspId, rRecordSet) == PD_OK) {
+DEBUGLOG(("GetPspCountry::found record = [%s]\n", csPspId));
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+			if (GetField_CString(hRec,"country",&csTxnCountry)) {
+DEBUGLOG(("GetPspCountry::country = [%s]\n",csTxnCountry));
+				PutField_CString(hRls, "txn_country", csTxnCountry);
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}	
+	else{
+DEBUGLOG(("GetPspCountry:: not found record for [%s]\n",csPspId));
+ERRLOG("BOMmsBalance:GetPspCountry::GetPspCountry::not found record!!\n");
+		iRet = INT_NOT_RECORD;
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	return iRet;
+
+}
+
+int GetMerchCountryService(hash_t *hRls)
+{
+	char	*csTxnSeq = NULL;
+	char	*csServiceCode = NULL;
+	int	iRet = PD_OK;
+
+	char    *csTxnCountry = strdup("");
+
+	hash_t  *hRec;
+	recordset_t     *rRecordSet;
+
+	if (GetField_CString(hRls, "txn_country", &csTxnCountry) &&
+		GetField_CString(hRls, "service_code", &csServiceCode)) {
+DEBUGLOG(("GetPspCountry::country = [%s] service = [%s]\n",csTxnCountry, csServiceCode));
+		return iRet;
+	}
+
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	/* Get Service From MmsTxnHeader */
+DEBUGLOG(("BOMmsBalance::GetMerchCountryService:Call MmsTransaction:GetMmsTxnHeader\n"));
+
+	GetField_CString(hRls, "txn_seq", &csTxnSeq);
+
+DEBUGLOG(("BOMmsBalance::GetMerchCountryService:txn_seq [%s]\n", csTxnSeq));
+
+	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","GetMmsTxnHeader");
+	if ((*DBObjPtr)(csTxnSeq, rRecordSet) == PD_OK) {
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+			if (GetField_CString(hRec,"service_code",&csServiceCode)) {
+DEBUGLOG(("GetMerchCountryService::service_code = [%s]\n",csServiceCode));
+
+				PutField_CString(hRls, "service_code", csServiceCode);
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	else {
+DEBUGLOG(("GetMerchCountryService:: service_code not found for [%s]\n",csTxnSeq));
+ERRLOG("BOMmsBalance:GetMerchCountryService::GetMmsTxnHeader::not found record!!\n");
+		iRet = INT_NOT_RECORD;
+	}
+
+	/* Get Country by Service */
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOMmsBalance::GetMerchCountryService:Call Service:FindCountryByService\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBService","FindCountryByService");
+		if ((unsigned long)((*DBObjPtr)(csServiceCode, csTxnCountry)) == FOUND) {
+
+DEBUGLOG(("GetMerchCountryService::country = [%s]\n",csTxnCountry));
+			PutField_CString(hRls, "txn_country", csTxnCountry);
+		}
+		else {
+DEBUGLOG(("GetMerchCountryService:: country not found for service [%s]\n",csTxnCountry));
+ERRLOG("BOMmsBalance:GetMerchCountryService::Service::FindCountryByService::not found record!!\n");
+			iRet = INT_NOT_RECORD;
+		}
+	}
+
+	FREE_ME(csTxnCountry);
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+	return iRet;
+
+}
+
+int IsNotFirstRec(hash_t *hRls)
+{
+	int	iRet = PD_OK;
+	int	iTmpRet = PD_OK;
+
+	char	*csTxnSeq;
+	char	*csDtlTxnSeq;
+
+	if (GetField_CString(hRls, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("IsNotFirstRec::txn_seq = [%s]\n",csTxnSeq));
+	}
+	else {
+DEBUGLOG(("IsNotFirstRec:txn_seq not found!!\n"));
+ERRLOG("BOMmsBalance::IsNotFirstRec::txn_seq not found\n");
+		iRet = INT_ERR;
+	}
+
+	if (GetField_CString(hRls, "dtl_txn_seq", &csDtlTxnSeq)) {
+DEBUGLOG(("IsNotFirstRec::dtl_txn_seq = [%s]\n",csDtlTxnSeq));
+	}
+	else {
+DEBUGLOG(("IsNotFirstRec:dtl_txn_seq not found!!\n"));
+ERRLOG("BOMmsBalance::IsNotFirstRec::dtl_txn_seq not found\n");
+		iRet = INT_ERR;
+	}
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOMmsBalance::IsNotFirstRec:Call MmsTransaction:ChkNonFirstProcessRecord\n"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","ChkNonFirstProcessRecord");
+		iTmpRet = (unsigned long)(*DBObjPtr)(csTxnSeq, csDtlTxnSeq);
+
+		if (iTmpRet == PD_FOUND) {
+DEBUGLOG(("IsNotFistRec::FOUND Non-first record\n"));
+			PutField_Char(hRls, "found_record", PD_YES);
+		}
+		else if (iTmpRet == PD_NOT_FOUND) { 
+DEBUGLOG(("IsNotFistRec::NOT FOUND Non-first record\n"));
+			PutField_Char(hRls, "found_record", PD_NO);
+		} 
+		else {
+DEBUGLOG(("IsNotFirstRec::ChkNonFirstProcessRecord ERR\n"));
+ERRLOG("BOMmsBalance::IsNotFirstRec::ChkNonFirstProcessRecord ERR\n");
+			iRet = INT_NOT_RECORD;
+		}
+	}
+
+	return iRet;
+}
+
+
+int ProcessPspBalance(hash_t *hRls)
+{
+	int	iRet = PD_OK;
+
+	char	*csPspId = NULL;
+	char	*csCountry = NULL;
+	char	*csCcy = NULL;
+	char	*csUpdateUser = NULL;
+
+	double	dAmt = 0.0;
+	double  dProcessingCost = 0.0;
+	double  dBankCharge= 0.0;
+
+	char 	cTmp;
+	char 	cType;
+	double  dAvaBalance = 0.0;
+	double  dTransferAmt= 0.0;
+
+
+	if (GetField_Char(hRls,"isd_ind",&cType)) {
+DEBUGLOG(("ProcessPspBalance::isd_ind= [%c]\n",cType));
+	}
+
+/* psp_id */
+	if(GetField_CString(hRls,"psp_id",&csPspId)){
+DEBUGLOG(("ProcessPspBalance::psp_id = [%s]\n",csPspId));
+	}
+	else{
+DEBUGLOG(("ProcessPspBalance:psp_id not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::psp_id not found\n");
+		iRet = INT_PSP_ID_NOT_FOUND;
+	}
+
+
+/* Ccy */
+	if(GetField_CString(hRls,"txn_ccy",&csCcy)){
+DEBUGLOG(("ProcessPspBalance::ccy = [%s]\n",csCcy));
+	}
+	else{
+DEBUGLOG(("ProcessPspBalance:ccy not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::ccy Failed\n");
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+	}
+
+/* Update_user */
+	if(GetField_CString(hRls,"update_user",&csUpdateUser)){
+DEBUGLOG(("ProcessPspBalance::update_user = [%s]\n",csUpdateUser));
+	}
+	else{
+DEBUGLOG(("ProcessPspBalance:update_user not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::update_user Failed\n");
+	}
+
+/* For in-transit */
+/* Amt */
+	if(GetField_Double(hRls,"txn_amt",&dAmt)){
+DEBUGLOG(("ProcessPspBalance::txn_amt = [%lf]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("ProcessPspBalance:txn_amt not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::txn_amt Failed\n");
+		iRet = INT_TXN_AMT_MISSING;
+	}
+
+/* For processing_cost */
+	if(GetField_Double(hRls,"processing_cost",&dProcessingCost)){
+DEBUGLOG(("ProcessPspBalance::processing_cost = [%lf]\n",dProcessingCost));
+	}
+	else{
+DEBUGLOG(("ProcessPspBalance:processing_cost not found!!\n"));
+		dProcessingCost = 0.0;
+	}
+
+/* For bank_charge */
+        if(GetField_Double(hRls,"bank_charge",&dBankCharge)){
+DEBUGLOG(("ProcessPspBalance::bank_charge = [%lf]\n",dBankCharge));
+        }
+        else{
+DEBUGLOG(("ProcessPspBalance:bank_charge not found!!\n"));
+                dBankCharge = 0.0;
+        }
+
+/* Get Country */
+	if (iRet == PD_OK){
+		if (GetPspCountry(hRls) == PD_OK) {
+			if (GetField_CString(hRls, "txn_country", &csCountry)) {
+DEBUGLOG(("ProcessPspBalance::txn_country = [%s]\n",csCountry));
+			}
+			else {
+DEBUGLOG(("ProcessPspBalance::txn_country Failed\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::txn_country Failed\n");
+
+				iRet = INT_COUNTRY_PSP_NOT_AVABILE;
+			}
+		} else {
+DEBUGLOG(("ProcessPspBalance::GetPspCountry Failed\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::GetPpsCountry Failed\n");
+			iRet = INT_COUNTRY_PSP_NOT_AVABILE;
+		}
+	}
+
+
+/* Debit Balance - Amt */
+	if (iRet == PD_OK){
+DEBUGLOG(("BOMmsBalance::ProcessPspBalance::Call BOBalance:GetAvalPspBalanceForUpdate\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOBalance","GetAvalPspBalanceForUpdate");
+		if((unsigned long)((*BOObjPtr)(csCountry, csCcy, csPspId, &dAvaBalance) != PD_OK)) {
+DEBUGLOG(("BOMmsBalance::ProcessPspBalance::BOBalance:GetAvalPspBalanceForUpdate Failed\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::BOBalance:GetAvalPspBalanceForUpdate Failed\n");
+			iRet=INT_ERR;
+		}
+		else {
+DEBUGLOG(("BOMmsBalance::ProcessPspBalance::PSP Balance [%lf]\n", dAvaBalance));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (cType == PD_SOURCE) {
+
+			//iRet = IsNotFirstRec(hRls);
+
+			if (iRet == PD_OK){
+				/****** only debit Amt while has previous record found for prevent duplicate debit *****/
+				//if (GetField_Char(hRls, "found_record", &cTmp))
+				if (GetField_Char(hRls, "cal_amt_ind", &cTmp))
+				{
+DEBUGLOG(("ProcessPspBalance::cal_amt_ind [%c]\n", cTmp));
+					if(cTmp == PD_YES)
+						dTransferAmt = dAmt + dProcessingCost;
+					else
+						dTransferAmt = dProcessingCost;
+
+
+					if (dAvaBalance - dTransferAmt <  0) {
+DEBUGLOG(("ProcessPspBalance::Not enought Ava Balance for pps [%s] balance [%lf] amt [%lf] processing_cost [%lf]\n", csPspId, dAvaBalance, dAmt, dProcessingCost));
+							iRet = INT_INSUFFICIENT_FUND;
+					}
+				}
+				else {
+DEBUGLOG(("ProcessPspBalance::found_record fail\n"));
+ERRLOG("BOMmsBalance::ProcessPspBalance::found_record fail\n");
+					iRet = INT_ERR;
+				}
+			}
+/*
+			else {
+DEBUGLOG(("ProcessPspBalance::IsNotFirstRec fail\n"));
+			}
+*/
+
+			if(iRet == PD_OK){
+DEBUGLOG(("ProcessPspBalance::Call DBPspBalance:DebitBalance\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBPspBalance","DebitBalance");
+				if ((*DBObjPtr)(csPspId,csCountry, csCcy, PD_PSP_BAL, dTransferAmt, csUpdateUser) != PD_OK) {
+DEBUGLOG(("ProcessPspBalance::DBPspBalance:DebitBalance[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessPspBalance::Debit Balance[%lf] failed\n",dTransferAmt);
+					iRet = INT_ERR;
+				}
+			}
+
+		}
+
+		else{ //DEST
+			dTransferAmt = dAmt - dProcessingCost - dBankCharge;
+
+			if ((dAvaBalance + dTransferAmt)<0){
+DEBUGLOG(("ProcessPspBalance::Not enought Ava Balance for pps [%s] balance [%lf] amt [%lf] processing_cost [%lf] BankCharge [%lf]\n",csPspId,dAvaBalance,dAmt,dProcessingCost,dBankCharge));
+                        	iRet = INT_ERR;
+			}
+			else{
+DEBUGLOG(("ProcessPspBalance::Call DBPspBalance:CreditBalance\n"));
+                		DBObjPtr = CreateObj(DBPtr,"DBPspBalance","CreditBalance");
+                		if ((*DBObjPtr)(csPspId,csCountry, csCcy, PD_PSP_BAL, dTransferAmt, csUpdateUser) != PD_OK) {
+DEBUGLOG(("ProcessPspBalance::DBPspBalance:CreditBalance[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessPspBalance::Credit Balance[%lf] failed\n",dTransferAmt);
+                        		iRet = INT_ERR;
+                		}
+			}
+		}
+
+	}
+
+
+	return iRet;		
+}
+
+int ProcessMBBalance(hash_t *hRls)
+{
+	int     iRet = PD_OK;
+
+	char	cType;
+	char    *csMBId = NULL;
+	char    *csCcy = NULL;
+	char    *csUpdateUser = NULL;
+
+	double  dAmt = 0.0;
+	double  dProcessingCost = 0.0;
+	double  dBankCharge = 0.0;
+	double  dAvaBalance = 0.0;
+	double  dTransferAmt= 0.0;
+
+	if (GetField_Char(hRls,"isd_ind",&cType)) {
+DEBUGLOG(("ProcessMBBalance::isd_ind= [%c]\n",cType));
+	}
+
+/* mb_id */
+	if(GetField_CString(hRls,"mb_id",&csMBId)){
+DEBUGLOG(("ProcessMBBalance::mb_id = [%s]\n",csMBId));
+	}
+	else{
+DEBUGLOG(("ProcessMBBalance:mb_id not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMBBalance::mb_id not found\n");
+		iRet = INT_MB_ID_NOT_FOUND;
+	}
+
+/* Ccy */
+	if(GetField_CString(hRls,"txn_ccy",&csCcy)){
+DEBUGLOG(("ProcessMBBalance::ccy = [%s]\n",csCcy));
+	}
+	else{
+DEBUGLOG(("ProcessMBBalance:ccy not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMBBalance::ccy Failed\n");
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+	}
+
+/* Update_user */
+	if(GetField_CString(hRls,"update_user",&csUpdateUser)){
+DEBUGLOG(("ProcessMBBalance::update_user = [%s]\n",csUpdateUser));
+	}
+	else{
+DEBUGLOG(("MBSourcealance:update_user not found!!\n"));
+ERRLOG("BOMmsBalance::MBSouceBalance::update_user Failed\n");
+	}
+
+/* For in-transit */
+/* Amt */
+	if(GetField_Double(hRls,"txn_amt",&dAmt)){
+DEBUGLOG(("ProcessMBBalance::txn_amt = [%lf]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("ProcessMBBalance:txn_amt not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMBBalance::txn_amt Failed\n");
+		iRet = INT_TXN_AMT_MISSING;
+	}
+
+/* For processing_cost */
+        if(GetField_Double(hRls,"processing_cost",&dProcessingCost)){
+DEBUGLOG(("MBDestBalance::processing_cost = [%lf]\n",dProcessingCost));
+        }
+        else{
+DEBUGLOG(("MBDestBalance:processing_cost not found!!\n"));
+                dProcessingCost = 0.0;
+        }
+
+/* For bank_charge */
+        if(GetField_Double(hRls,"bank_charge",&dBankCharge)){
+DEBUGLOG(("MBDestBalance::bank_charge = [%lf]\n",dBankCharge));
+        }
+        else{
+DEBUGLOG(("MBDestBalance:bank_charge not found!!\n"));
+                dBankCharge = 0.0;
+        }
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOMmsBalance::ProcessMBBalance::Call MmsMBBalance:GetAvalMBBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMmsMBBalance", "GetAvalMBBalance");
+		if((unsigned long)(*DBObjPtr)(csMBId, csCcy, &dAvaBalance) != PD_OK){
+
+DEBUGLOG(("BOMmsBalance::ProcessMBBalance::MmsMBBalance:GetAvalMBBalance Failed\n"));
+ERRLOG("BOMmsBalance::ProcessMBBalance::MmsMBBalance:GetAvalMBBalance Failed\n");
+			iRet=INT_ERR;
+		}
+		else {
+DEBUGLOG(("BOMmsBalance::ProcessMBBalance::MB Balance [%lf]\n", dAvaBalance));
+		}
+
+	}
+
+	if (iRet == PD_OK){
+		if(cType==PD_SOURCE){
+			dTransferAmt = dAmt;
+			
+			if ((dAvaBalance - dTransferAmt) < 0) {
+DEBUGLOG(("ProcessMBBalance::Not enought Ava Balance for mb_id [%s] balance [%lf] amt [%lf]\n", csMBId, dAvaBalance, dAmt));
+                        	iRet = INT_ERR;
+                	}
+			else{
+DEBUGLOG(("ProcessMBBalance::Call DBMmsMBBalance:DebitBalance\n"));
+                		DBObjPtr = CreateObj(DBPtr,"DBMmsMBBalance","DebitBalance");
+                		if ((*DBObjPtr)(csMBId,csCcy, dTransferAmt, csUpdateUser) != PD_OK) {
+DEBUGLOG(("ProcessMBBalance::DBMmsMBBalance:DebitBalance[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessMBBalance::Debit Balance[%lf] failed\n",dTransferAmt);
+                        		iRet = INT_ERR;
+                		}
+			}
+		}
+		else{ //DEST
+			dTransferAmt = dAmt - dProcessingCost - dBankCharge;
+
+			if ((dAvaBalance + dTransferAmt) < 0) {
+DEBUGLOG(("ProcessMBBalance::Not enought Ava Balance for mb_id [%s] balance [%lf] amt [%lf]\n", csMBId, dAvaBalance, dAmt));
+                                iRet = INT_ERR;
+                        }
+                        else{
+DEBUGLOG(("ProcessMBBalance::Call DBMmsMBBalance:CreditBalance\n"));
+                                DBObjPtr = CreateObj(DBPtr,"DBMmsMBBalance","CreditBalance");
+                                if ((*DBObjPtr)(csMBId,csCcy, dTransferAmt, csUpdateUser) != PD_OK) {
+DEBUGLOG(("ProcessMBBalance::DBMmsMBBalance:CreditBalance[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessMBBalance::Credit Balance[%lf] failed\n",dTransferAmt);
+                                        iRet = INT_ERR;
+                                }
+                        }
+		}
+	}
+
+	return iRet;
+
+}
+
+int ProcessBankBalance(hash_t *hRls)
+{
+	int     iRet = PD_OK;
+
+	char	cType;
+	char    *csBankId = NULL;
+	char    *csCcy = NULL;
+	char    *csUpdateUser = NULL;
+
+	double  dAmt = 0.0;
+	double  dProcessingCost = 0.0;
+	double  dBankCharge = 0.0;
+	double  dAvaBalance = 0.0;
+	double  dTransferAmt= 0.0;
+
+	if (GetField_Char(hRls,"isd_ind",&cType)) {
+DEBUGLOG(("ProcessBankBalance::isd_ind= [%c]\n",cType));
+	}
+
+/* bank_id */
+	if(GetField_CString(hRls,"bank_id",&csBankId)){
+DEBUGLOG(("ProcessBankBalance::bank_id = [%s]\n",csBankId));
+	}
+	else{
+DEBUGLOG(("ProcessBankBalance:bank_id not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessBankBalance::bank_id not found\n");
+		iRet = INT_BANK_ID_NOT_FOUND;
+	}
+
+/* Ccy */
+	if(GetField_CString(hRls,"txn_ccy",&csCcy)){
+DEBUGLOG(("ProcessBankBalance::ccy = [%s]\n",csCcy));
+	}
+	else{
+DEBUGLOG(("ProcessBankBalance:ccy not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessBankBalance::ccy Failed\n");
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+	}
+
+/* Update_user */
+	if(GetField_CString(hRls,"update_user",&csUpdateUser)){
+DEBUGLOG(("ProcessBankBalance::update_user = [%s]\n",csUpdateUser));
+	}
+	else{
+DEBUGLOG(("ProcessBankBalance:update_user not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessBankBalance::update_user Failed\n");
+	}
+
+/* For in-transit */
+/* Amt */
+	if(GetField_Double(hRls,"txn_amt",&dAmt)){
+DEBUGLOG(("ProcessBankBalance::txn_amt = [%lf]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("ProcessBankBalance:txn_amt not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessBankBalance::txn_amt Failed\n");
+		iRet = INT_TXN_AMT_MISSING;
+	}
+
+/* For processing_cost */
+	if(GetField_Double(hRls,"processing_cost",&dProcessingCost)){
+DEBUGLOG(("ProcessBankBalance::processing_cost = [%lf]\n",dProcessingCost));
+	}
+	else{
+DEBUGLOG(("ProcessBankBalance:processing_cost not found!!\n"));
+		dProcessingCost = 0.0;
+	}
+
+/* For bank_charge */
+        if(GetField_Double(hRls,"bank_charge",&dBankCharge)){
+DEBUGLOG(("ProcessBankBalance::bank_charge = [%lf]\n",dBankCharge));
+        }
+        else{
+DEBUGLOG(("ProcessBankBalance:bank_charge not found!!\n"));
+                dBankCharge = 0.0;
+        }
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOMmsBalance::ProcessBankBalance::Call MmsBankBalance:GetAvalBankBalance\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMmsBankBalance", "GetAvalBankBalance");
+		if((unsigned long)(*DBObjPtr)(csBankId,csCcy,&dAvaBalance) != PD_OK){
+
+DEBUGLOG(("BOMmsBalance::ProcessBankBalance::MmsBankBalance:GetAvalBankBalance Failed\n"));
+ERRLOG("BOMmsBalance::ProcessBankBalance::MmsBankBalance:GetAvalBankBalance Failed\n");
+			iRet=INT_ERR;
+		}
+		else {
+DEBUGLOG(("BOMmsBalance::ProcessBankBalance::Bank Balance [%lf]\n", dAvaBalance));
+		}
+	}
+
+	if (iRet == PD_OK){
+		if(cType==PD_SOURCE){
+			dTransferAmt = dAmt + dProcessingCost;
+
+			if ((dAvaBalance - dTransferAmt) < 0) {
+DEBUGLOG(("ProcessBankBalance::Not enought Ava Balance for bank_id [%s] balance [%lf] amt [%lf] processing_cost [%lf] bank_charge[%lf]\n", csBankId, dAvaBalance, dAmt, dProcessingCost,dBankCharge));
+				iRet = INT_ERR;
+			}
+			else{
+DEBUGLOG(("ProcessBankBalance::Call DBMmsBankBalance:DebitBalance\n"));
+                		DBObjPtr = CreateObj(DBPtr,"DBMmsBankBalance","DebitBalance");
+                		if ((*DBObjPtr)(csBankId,csCcy, dTransferAmt, csUpdateUser) != PD_OK) {
+DEBUGLOG(("ProcessBankBalance::DBMmsBankBalance:DebitBalance[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessBankBalance::Debit Balance[%lf] failed\n",dTransferAmt);
+                        		iRet = INT_ERR;
+                		}
+			}
+		}
+		else{//DEST
+			dTransferAmt = dAmt - dBankCharge;
+
+			if ((dAvaBalance + dTransferAmt) < 0) {
+DEBUGLOG(("ProcessBankBalance::Not enought Ava Balance for bank_id [%s] balance [%lf] amt [%lf] processing_cost [%lf] bank_charge[%lf]\n", csBankId, dAvaBalance, dAmt, dProcessingCost,dBankCharge));
+				iRet = INT_ERR;
+			}
+			else{
+DEBUGLOG(("ProcessBankBalance::Call DBMmsBankBalance:CreditBalance\n"));
+                		DBObjPtr = CreateObj(DBPtr,"DBMmsBankBalance","CreditBalance");
+                		if ((*DBObjPtr)(csBankId, csCcy, dTransferAmt, csUpdateUser) != PD_OK) {
+DEBUGLOG(("ProcessBankBalance::DBMmsBankBalance:CreditBalance[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessBankBalance::CreditBalance[%lf] failed\n",dTransferAmt);
+                        		iRet = INT_ERR;
+                		}
+			}
+		}
+	}
+
+	return iRet;
+
+}
+
+int ProcessMerchantBalance(hash_t *hRls)
+{
+	int     iRet = PD_OK;
+
+	char	cType;
+	char    *csMerchId = NULL;
+	char    *csCountry = NULL;
+	char    *csService = NULL;
+	char    *csCcy = NULL;
+	char    *csUpdateUser = NULL;
+	char	*csTxnSeq = NULL;
+
+	double  dAmt = 0.0;
+	double  dProcessingCost = 0.0;
+	double  dAvaBalance = 0.0;
+	double  dTransferAmt= 0.0;
+
+
+	if (GetField_Char(hRls,"isd_ind",&cType)) {
+DEBUGLOG(("ProcessMerchantBalance::isd_ind= [%c]\n",cType));
+	}
+
+/* txn_seq */
+	if(GetField_CString(hRls,"txn_seq",&csTxnSeq)){
+DEBUGLOG(("ProcessMerchantBalance::txn_seq = [%s]\n",csTxnSeq));
+	}
+	else{
+DEBUGLOG(("ProcessMerchantBalance:txn_seq not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::txn_seq not found\n");
+		iRet = INT_ERR;
+	}
+
+/* merchant_id */
+	if(GetField_CString(hRls,"merchant_id",&csMerchId)){
+DEBUGLOG(("ProcessMerchantBalance::merchant_id = [%s]\n",csMerchId));
+	}
+	else{
+DEBUGLOG(("ProcessMerchantBalance:merchant_id not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::merchant_id not found\n");
+		iRet = INT_MERCHANT_ID_NOT_FOUND;
+	}
+
+
+/* Ccy */
+	if(GetField_CString(hRls,"txn_ccy",&csCcy)){
+DEBUGLOG(("ProcessMerchantBalance::ccy = [%s]\n",csCcy));
+	}
+	else{
+DEBUGLOG(("ProcessMerchantBalance:ccy not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::ccy Failed\n");
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+	}
+
+/* Update_user */
+	if(GetField_CString(hRls,"update_user",&csUpdateUser)){
+DEBUGLOG(("ProcessMerchantBalance::update_user = [%s]\n",csUpdateUser));
+	}
+	else{
+DEBUGLOG(("ProcessMerchantBalance:update_user not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::update_user Failed\n");
+	}
+
+/* For in-transit */
+/* Amt */
+	if(GetField_Double(hRls,"txn_amt",&dAmt)){
+DEBUGLOG(("ProcessMerchantBalance::txn_amt = [%lf]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("ProcessMerchantBalance:txn_amt not found!!\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::txn_amt Failed\n");
+		iRet = INT_TXN_AMT_MISSING;
+	}
+
+/* For processing_cost */
+	if(GetField_Double(hRls,"processing_cost",&dProcessingCost)){
+DEBUGLOG(("ProcessMerchantBalance::processing_cost = [%lf]\n",dProcessingCost));
+	}
+	else{
+DEBUGLOG(("ProcessMerchantBalance:processing_cost not found!!\n"));
+		dProcessingCost = 0.0;
+	}
+
+/* Get Country and Service */
+	if (iRet == PD_OK){
+		if (GetMerchCountryService(hRls) == PD_OK) {
+
+			if (GetField_CString(hRls, "service_code", &csService)) {
+DEBUGLOG(("ProcessMerchantBalance::service_code = [%s]\n",csService));
+			}
+			else {
+DEBUGLOG(("ProcessMerchantBalance::service_code Failed\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::service_code Failed\n");
+				iRet = INT_ERR;
+			}
+
+			if (GetField_CString(hRls, "txn_country", &csCountry)) {
+DEBUGLOG(("ProcessMerchantBalance::txn_country = [%s]\n",csCountry));
+			}
+			else {
+DEBUGLOG(("ProcessMerchantBalance::txn_country Failed\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::txn_country Failed\n");
+				iRet = INT_ERR;
+			}
+
+		} else {
+DEBUGLOG(("ProcessMerchantBalance::GetMerchCountryService Failed\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::GetMerchCountryService Failed\n");
+			iRet = INT_ERR;
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOMmsBalance::ProcessMerchantBalance::Call BOBalance:GetAvalBalanceForUpdate\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOBalance","GetAvalBalanceForUpdate");
+		if((unsigned long)((*BOObjPtr)(csCountry, csCcy, csService, csMerchId, &dAvaBalance) != PD_OK)) {
+DEBUGLOG(("BOMmsBalance::ProcessMerchantBalance::BOBalance:GetAvalBalanceForUpdate Failed\n"));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::BOBalance:GetAvalBalanceForUpdate Failed\n");
+			iRet=INT_ERR;
+		}
+		else {
+DEBUGLOG(("BOMmsBalance::MechSourceBalance::Merch Balance [%lf]\n", dAvaBalance));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if(cType==PD_SOURCE){
+			dTransferAmt = dAmt + dProcessingCost;
+
+			if((dAvaBalance-dTransferAmt)<0){
+DEBUGLOG(("ProcessMerchantBalance::Not enought Ava Balance for merchant_id [%s] balance [%lf] amt [%lf] processing_cost [%lf]\n", csMerchId, dAvaBalance, dAmt, dProcessingCost));
+				iRet = INT_INSUFFICIENT_FUND;
+			}
+			else{
+DEBUGLOG(("ProcessMerchantBalance::Call BOBalance:UpdateMerchantAvalAmt\n"));
+				BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateMerchantAvalAmt"); 
+				if ((unsigned long)((*BOObjPtr)(hRls, csCountry, csService, csCcy, csMerchId,dTransferAmt*(-1)) != PD_OK)) {
+DEBUGLOG(("ProcessMerchantBalance::BOBalance:UpdateMerchantAvalAmt:Debit[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::Debit Balance[%lf] failed\n",dTransferAmt);
+					iRet=INT_ERR;
+				}
+			}
+		}
+
+		else{ //DEST
+
+                       dTransferAmt = dAmt - dProcessingCost;
+
+                        if((dAvaBalance + dTransferAmt)<0){
+DEBUGLOG(("ProcessMerchantBalance::Not enought Ava Balance for merchant_id [%s] balance [%lf] amt [%lf] processing_cost [%lf]\n", csMerchId, dAvaBalance, dAmt, dProcessingCost));
+                                iRet = INT_INSUFFICIENT_FUND;
+                        }
+                        else{
+DEBUGLOG(("ProcessMerchantBalance::Call BOBalance:UpdateMerchantAvalAmt\n"));
+                                BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdateMerchantAvalAmt");
+                                if ((unsigned long)((*BOObjPtr)(hRls, csCountry, csService, csCcy, csMerchId,dTransferAmt) != PD_OK)) {
+DEBUGLOG(("ProcessMerchantBalance::BOBalance:UpdateMerchantAvalAmt:Credit[%lf] Failed\n",dTransferAmt));
+ERRLOG("BOMmsBalance::ProcessMerchantBalance::Creidt Balance[%lf] failed\n",dTransferAmt);
+                                        iRet=INT_ERR;
+				}
+			}
+		}
+	}
+
+	return iRet;   
+
+}

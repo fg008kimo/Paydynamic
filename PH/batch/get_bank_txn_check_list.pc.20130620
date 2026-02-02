@@ -1,0 +1,148 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/06/10              Stan Poon
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "batchcommon.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char	cDebug;
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	char	csPspId[PD_PSP_ID_LEN+1];
+	char	csBankCode[PD_BANK_CODE_LEN+1];
+	int	iCount = 0;
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar         v_psp_id[PD_PSP_ID_LEN+1];
+		varchar         v_bank_code[PD_BANK_CODE_LEN+1];
+		short           ind_psp_id = -1;
+		short           ind_bank_code = -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_getbankcode CURSOR FOR
+		select	bc1.bc_party_id, bc1.bc_bank_code
+		from	bank_txn_check bc1
+		where	bc1.bc_disabled = 0
+		and	(bc1.bc_party_id = '000'
+			OR (bc1.bc_party_id <> '000' 
+			and not exists (select * from bank_txn_check bc2
+			where bc2.bc_disabled = 0 and bc2.bc_party_id = '000' and bc2.bc_bank_code = bc1.bc_bank_code)))
+		order by bc1.bc_bank_code, bc1.bc_party_id asc;
+
+        EXEC SQL OPEN c_cursor_getbankcode;
+        do{
+                EXEC SQL FETCH c_cursor_getbankcode
+                INTO    :v_psp_id:ind_psp_id,
+			:v_bank_code:ind_bank_code;
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		sprintf(csPspId,"%.*s",v_psp_id.len,v_psp_id.arr);
+		sprintf(csBankCode,"%.*s",v_bank_code.len,v_bank_code.arr);
+
+		if (!strcmp(csPspId,"000")) {
+			iCount = 0;
+
+        		EXEC SQL DECLARE c_cursor_getpsp CURSOR FOR
+				SELECT	PD.PSP_ID
+				FROM	PSP_MASTER, PSP_DETAIL PD, PSP_COUNTRY PC
+				WHERE	PM_CLIENT_ID = PD.CLIENT_ID
+				AND	PM_STATUS = 'O'
+				AND	PD.ONLINE_MODE = 'Y'
+				AND	PD.STATUS = 'O'
+				AND	PD.DISABLED = 0
+				AND	PD.PSP_ID = PC.PSP_ID
+				AND	EXISTS (SELECT *
+					FROM	BANK_MAPPING
+					WHERE	BM_PSP_CHANNEL_ID = NVL(PD.OVERRIDED_BANK_CODE_CHANNEL, PD.PSP_CHANNEL_CODE)
+					AND	BM_INT_BANK_CODE = :v_bank_code
+					AND	BM_COUNTRY = PC.COUNTRY
+					AND	BM_DISABLED = 0)
+				AND	EXISTS (SELECT *
+					FROM	PSP_PAY_METHOD, SERVICE_PAY_METHOD, BANK_SERVICE_MAPPING
+					WHERE	PP_COUNTRY = PC.COUNTRY
+					AND	PP_PSP_ID = PD.PSP_ID
+					AND	PP_DISABLED = 0
+					AND	PP_PAY_METHOD = SP_PAY_METHOD
+					AND	SP_DISABLED = 0
+					AND	BS_SERVICE_CODE = SP_SERVICE_CODE
+					AND	BS_INT_BANK_CODE = :v_bank_code
+					AND	BS_DISABLED = 0)
+				ORDER BY PD.PSP_ID ASC;
+
+			EXEC SQL OPEN c_cursor_getpsp;
+			do {
+					EXEC SQL FETCH c_cursor_getpsp
+					INTO    :v_psp_id:ind_psp_id;
+
+					if (SQLCODE == SQL_NOT_FOUND) {
+						break;
+					}
+
+					printf("%.*s;",v_psp_id.len,v_psp_id.arr);
+					printf("%.*s",v_bank_code.len,v_bank_code.arr);
+					if (iCount == 0) {
+						printf(";");
+						iCount++;
+					}
+					printf("\n");
+
+			} while(PD_TRUE);
+		} else {
+			printf("%.*s;",v_psp_id.len,v_psp_id.arr);
+			printf("%.*s;\n",v_bank_code.len,v_bank_code.arr);
+		}
+
+	}while(PD_TRUE);
+
+
+        EXEC SQL CLOSE c_cursor_getbankcode;
+        EXEC SQL CLOSE c_cursor_getpsp;
+
+        return SUCCESS;
+sql_error:
+    DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getbankcode;
+    EXEC SQL CLOSE c_cursor_getpsp;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}

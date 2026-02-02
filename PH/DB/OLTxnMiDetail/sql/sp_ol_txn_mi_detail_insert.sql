@@ -1,0 +1,103 @@
+create or replace function sp_ol_txn_mi_detail_insert(
+       in_txn_id                                ol_txn_mi_detail.otm_txn_id%type,
+       in_entity_id                             ol_txn_mi_detail.otm_entity_id%type,
+       in_party_type                            ol_txn_mi_detail.otm_party_type%type,
+       in_party_id                              ol_txn_mi_detail.otm_party_id%type,
+       in_txn_ccy                               ol_txn_mi_detail.otm_txn_ccy%type,
+       in_txn_country                           ol_txn_mi_detail.otm_txn_country%type,
+       in_txn_product                           ol_txn_mi_detail.otm_txn_product%type,
+       in_open_acct_bal                         ol_txn_mi_detail.otm_open_acct_bal%type,
+       in_acct_bal                            	ol_txn_mi_detail.otm_acct_bal%type,
+       in_open_intransit                        ol_txn_mi_detail.otm_open_intransit%type,
+       in_intransit                             ol_txn_mi_detail.otm_intransit%type,
+       in_open_ar_bal                          	ol_txn_mi_detail.otm_open_ar_bal%type,
+       in_ar_bal                           	ol_txn_mi_detail.otm_ar_bal%type,
+       in_txn_date                          	ol_txn_mi_detail.otm_txn_date%type,
+       in_report_date                           ol_txn_mi_detail.otm_report_date%type,
+       in_cost_rate                             ol_txn_mi_detail.otm_cost_rate%type,
+       in_actual_cost                           ol_txn_mi_detail.otm_actual_cost%type,
+       in_remittance_slip_date                  ol_txn_mi_detail.otm_remittance_slip_date%type,
+       in_converted_ccy                         ol_txn_mi_detail.otm_converted_ccy%type,
+       in_converted_amount                      ol_txn_mi_detail.otm_converted_amount%type,
+       in_remark                           	ol_txn_mi_detail.otm_remark%type,
+       in_prev_grp_txn_id                       ol_txn_mi_detail.otm_prev_grp_txn_id%type,
+       in_next_grp_txn_id                       ol_txn_mi_detail.otm_next_grp_txn_id%type,
+       in_acr_prorata                           ol_txn_mi_detail.otm_acr_prorata%type,
+       in_entity_ccy                            ol_txn_mi_detail.otm_entity_ccy%type,
+       in_entity_txn_amount                     ol_txn_mi_detail.otm_entity_txn_amount%type,
+       in_user                          	ol_txn_mi_detail.otm_create_user%type)
+  RETURN NUMBER IS
+begin
+                insert into ol_txn_mi_detail
+                        (otm_txn_id,
+			otm_entity_id,
+			otm_party_type,
+			otm_party_id,
+			otm_txn_ccy,
+			otm_txn_country,
+			otm_txn_product,
+			otm_open_acct_bal,
+			otm_acct_bal,
+			otm_open_intransit,
+			otm_intransit,
+			otm_open_ar_bal,
+			otm_ar_bal,
+			otm_txn_date,
+			otm_report_date,
+			otm_cost_rate,
+			otm_actual_cost,
+			otm_remittance_slip_date,
+			otm_converted_ccy,
+			otm_converted_amount,
+			otm_remark,
+			otm_prev_grp_txn_id,
+			otm_next_grp_txn_id,
+			otm_acr_prorata,
+			otm_entity_ccy,
+			otm_entity_txn_amount,
+                        otm_create_user,
+                        otm_create_timestamp,
+                        otm_update_user,
+                        otm_update_timestamp)
+                 values(in_txn_id,
+			in_entity_id,
+			in_party_type,
+			in_party_id,
+			in_txn_ccy,
+			in_txn_country,
+			in_txn_product,
+			in_open_acct_bal,
+			in_acct_bal,
+			in_open_intransit,
+			in_intransit,
+			in_open_ar_bal,
+			in_ar_bal,
+			in_txn_date,
+			in_report_date,
+			in_cost_rate,
+			in_actual_cost,
+			in_remittance_slip_date,
+			in_converted_ccy,
+			in_converted_amount,
+			in_remark,
+			in_prev_grp_txn_id,
+			in_next_grp_txn_id,
+			in_acr_prorata,		
+			in_entity_ccy,
+			in_entity_txn_amount,
+                        in_user,
+                        sysdate,
+                        in_user,
+                        sysdate);
+
+                IF SQL%ROWCOUNT = 0 THEN
+                        RETURN 1;
+                ELSE
+                        RETURN 0;
+                END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+end sp_ol_txn_mi_detail_insert;
+/

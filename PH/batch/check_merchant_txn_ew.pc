@@ -1,0 +1,256 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/16              LokMan Chow
+Use Email Alert Template                           2014/07/22              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define MAIL_ALERT_TPL_PATH  "/home/php3dev/src/batch/check_merchant_txn_ew.tpl"
+#define MAIL_TITLE "No Transaction for Merchant"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char 	cs_merchant_id[PD_MERCHANT_ID_LEN+1];
+char    cs_merchant_name[PD_NAME_LEN+1];
+char 	cs_period[PD_DATE_LEN+1];
+char    cs_Tag[PD_TAG_LEN+1];
+char    cDebug;
+int     i_tpl_init;
+int     i_tpl_type;
+
+OBJPTR(DB);
+int parse_arg(int argc,char **argv);
+int process_txn(tpl_t *tpl);
+
+int batch_init(int argc, char* argv[])
+{
+//printf("batch_init: argc = %d argv[0] = %s argv[1] = %s argv[2] = %s\n", argc, argv[0], argv[1], argv[2]);
+	if (argc < 4) {
+		//printf("batch_init: usage: -i merchant_id -n merchant_name -p period [minutes] -t table_type\n")
+		return FAILURE;
+	}
+	else
+		return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+	tpl_t   *tpl = tpl_alloc();
+        char    *csContent;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+		//printf("batch_proc: usage: -i merchant_id -n merchant_name -p period [minutes] -t table_type\n")
+                return SUCCESS;
+        }
+	
+	if(iRet == SUCCESS){
+		//tpl_t   *tpl = tpl_alloc();
+        	//char    *csContent;
+
+        	// Load template
+        	if (tpl_load(tpl, MAIL_ALERT_TPL_PATH) == TPL_OK)
+        	{
+                	i_tpl_init = 0;
+        	}
+        	else
+        	{
+               		(void)puts("Error loading template file!");
+               		return SUCCESS;
+        	}
+
+        	iRet = process_txn(tpl);
+
+		if (i_tpl_init == 1)
+        	{
+                	// Table (Template Type)
+//printf("batch_proc: Table(Template type = %d)\n", i_tpl_type);
+                	{
+                        	tpl_select_section(tpl, "TABLE_START");
+                        	sprintf(cs_Tag, "tpl%d", i_tpl_type);
+                        	tpl_set_field_fmt(tpl, "TPL_NUM", "%s", cs_Tag);
+                        	tpl_append_section(tpl);
+                        	tpl_deselect_section(tpl);
+                	}
+
+                	// Table (Title)
+                	{
+//printf("batch_proc: Table(Title)\n");
+                        	tpl_select_section(tpl, "TITLE");
+                        	tpl_set_field_fmt(tpl, "tpl_Title", "%s", MAIL_TITLE);
+                        	tpl_append_section(tpl);
+                        	tpl_deselect_section(tpl);
+                	}
+
+                	// Table (Timestamp)
+                	{
+//printf("batch_proc: Table(Timestamp)\n");
+                        	tpl_select_section(tpl, "TIMESTAMP");
+                        	tpl_set_field_fmt(tpl, "tpl_Timestamp", write_tpl_timestamp());
+                        	tpl_append_section(tpl);
+                        	tpl_deselect_section(tpl);
+                	}
+        	}
+
+        	// Unload templete
+        	{
+                	i_tpl_init = 0;
+                	csContent = malloc(tpl_length(tpl) + 1);
+                	tpl_get_content(tpl, csContent);
+                	(void)puts(csContent);
+                	tpl_free(tpl);
+        	}
+	}
+
+//printf("merchant_batch_proc: iRet=%d\n", iRet);
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_txn(tpl_t *tpl)
+{               
+ 
+        int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_merchant_id[PD_MERCHANT_ID_LEN];
+		int	hv_period;
+
+		int	v_cnt;
+
+		short	ind_cnt = -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_merchant_id.len = strlen(cs_merchant_id);
+        memcpy(hv_merchant_id.arr,cs_merchant_id,hv_merchant_id.len);
+
+	hv_period = atoi(cs_period);
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select  count(*)
+		from	txn_header
+		where	th_txn_code in ('DSP','DSI')
+		and	th_merchant_id = :hv_merchant_id 
+		and	th_create_timestamp  between sysdate-(:hv_period/1440) and sysdate;
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO
+		 	:v_cnt:ind_cnt;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if(ind_cnt<0)
+			v_cnt = 0;
+
+		if(v_cnt==0){
+			iRet = FAILURE;
+		}
+ 	}
+        while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_gettxn;
+
+	// EW Test
+	//iRet = FAILURE;
+
+	//if(iRet == FAILURE)
+	{
+		iRet = FAILURE;	
+
+		i_tpl_init = 1;
+
+              	// Table (ROW)
+               	tpl_select_section(tpl, "ROW");
+               	tpl_set_field_fmt(tpl, "tpl_Merchant", "No Transaction from [%s (%s)] for more than %s minutes", cs_merchant_name, cs_merchant_id, cs_period);
+              	tpl_append_section(tpl);
+		tpl_deselect_section(tpl);
+	}
+
+//printf("process_txn: iRet=%d\n", iRet);
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    return PD_ERR;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+
+	strcpy(cs_merchant_id,"");
+	strcpy(cs_merchant_name,"");
+	strcpy(cs_period,"5");
+	i_tpl_type = 0;
+
+	while ((c = getopt(argc,argv,"i:n:p:t:")) != EOF) {
+//printf("parse_arg: c = %c \n", c);
+		switch (c) {
+			case 'i':
+//printf("parse_arg: case i, optarg = %s \n", optarg);
+				strcpy(cs_merchant_id, optarg);
+				break;
+			case 'n':
+//printf("parse_arg: case n, optarg = %s \n", optarg);
+				strcpy(cs_merchant_name, optarg);
+				break;
+			case 'p':
+//printf("parse_arg: case p, optarg = %s \n", optarg);
+				strcpy(cs_period, optarg);
+				break;
+			case 't':
+//printf("parse_arg: case t, atoi(optarg) = %d \n", atoi(optarg));
+                                i_tpl_type = atoi(optarg);				
+				break;
+			default:
+//printf("parse_arg: Error (Not Option)! \n");
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_merchant_id,""))
+		return FAILURE;
+
+	cs_merchant_id[strlen(cs_merchant_id)]='\0';
+	cs_merchant_name[strlen(cs_merchant_name)]='\0';
+	cs_period[strlen(cs_period)]='\0';
+
+	return SUCCESS;
+}

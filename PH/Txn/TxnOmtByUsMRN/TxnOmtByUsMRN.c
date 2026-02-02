@@ -1,0 +1,434 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/02/04              David Wong
+Handle sub_status requirement                      2014/04/24              David Wong
+*/
+
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsMRN.h"
+#include "myrecordset.h"
+#include "math.h"
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+
+void TxnOmtByUsMRN(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	recordset_t *rTmp, *rRec;
+	hash_t *hTmp, *hRec, *hTxnRec;
+
+	int iRet = PD_OK;
+	int iTmpRet;
+	char *csTmp = NULL;
+	char csTmp2[PD_DATETIME_LEN];
+	char *csPspTxnSeq = NULL;
+	char *csMerchantRef = NULL;
+	char *csMerchantId = NULL;
+	char *csServiceCode = NULL;
+	char *csMerchTxnSeq = NULL;
+	char *csUser = NULL;
+	char *csCcy = NULL;
+	char *csCountry = NULL;
+
+	char *csChannelCode = NULL;
+	char *csTxnCode = NULL;
+	char *csSubStatus = NULL;
+	char *csTxnCcy = NULL;
+	char *csBankCode = NULL;
+	char *csBankAcctNum = NULL;
+	char cStatus;
+	char cArInd;
+	double dDepositAmt = 0.0;
+	int iTxnHoldInd = 0;
+
+	double dTmp;
+	char csTxnDateTime[PD_DATETIME_LEN + 1];
+	int	iHasMerchRef = PD_TRUE;
+
+	rTmp = (recordset_t*) malloc (sizeof(recordset_t));
+
+	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRec, 0);
+
+	hTxnRec = (hash_t*) malloc (sizeof(hash_t*));
+	hash_init(hTxnRec, 0);
+
+// tc
+	GetField_CString(hRequest, "txn_code", &csTmp);
+	PutField_CString(hTxnRec, "txn_code", csTmp);
+DEBUGLOG(("Authorize() tc = [%s]\n", csTmp));
+
+// txnid
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "org_txn_seq", &csPspTxnSeq)) {
+DEBUGLOG(("Authorize() txnid = [%s]\n", csPspTxnSeq));
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() txnid is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() txnid is missing!!!\n");
+		}
+	}
+
+/* check AutoExpiry */
+	if (GetField_Int(hContext, "has_merch_ref", &iHasMerchRef)) {
+DEBUGLOG(("Authorize() has_merch_ref = [%d]\n", iHasMerchRef));
+	}
+
+
+// mer_ref_no
+	if (iRet == PD_OK) {
+		if (iHasMerchRef == PD_TRUE) {
+			if (GetField_CString(hRequest, "mer_ref_no", &csMerchantRef)) {
+				PutField_CString(hTxnRec, "merchant_ref", csMerchantRef);
+DEBUGLOG(("Authorize() mer_ref_no = [%s]\n", csMerchantRef));
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() mer_ref_no is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() mer_ref_no is missing!!!\n");
+			}
+		}
+	}
+
+// mid
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "merchant_id", &csMerchantId)) {
+			PutField_CString(hTxnRec, "merchant_id", csMerchantId);
+DEBUGLOG(("Authorize() mid = [%s]\n", csMerchantId));
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() mid is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() mid is missing!!!\n");
+		}
+	}
+
+// get client id
+	if (iRet == PD_OK) {
+		recordset_init(rTmp, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLMerchDetail", "GetMerchant");
+		if ((*DBObjPtr)(csMerchantId, rTmp) != PD_OK) {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBOLMerchDetail::GetMerchant() failed!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() call DBOLMerchDetail::GetMerchant() failed!!!\n");
+		} else {
+			hTmp = RecordSet_GetFirst(rTmp);
+			if (GetField_CString(hTmp, "merchant_client_id", &csTmp)) {
+				PutField_CString(hTxnRec, "client_id", csTmp);
+DEBUGLOG(("Authorize() client_id = [%s]\n", csTmp));
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() client_id is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() client_id is missing!!!\n");
+			}
+		}
+		RecordSet_Destroy(rTmp);
+	}
+
+// ccy
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "txn_ccy", &csCcy)) {
+			PutField_CString(hTxnRec, "txn_ccy", csCcy);
+DEBUGLOG(("Authorize() ccy = [%s]\n", csCcy));
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() ccy is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() ccy is missing!!!\n");
+		}
+	}
+
+// service
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "service_code", &csServiceCode)) {
+			PutField_CString(hTxnRec, "service_code", csServiceCode);
+DEBUGLOG(("Authorize() service = [%s]\n", csServiceCode));
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() service is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() service is missing!!!\n");
+		}
+	}
+
+// get pay method
+	if (iRet == PD_OK) {
+		recordset_init(rTmp, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBServicePayMethod", "FindPayMethod");
+		if ((*DBObjPtr)(csServiceCode, rTmp) != PD_OK) {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() call DBServicePayMethod::FindPayMethod() failed!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() call DBServicePayMethod::FindPayMethod() failed!!!\n");
+		} else {
+			hTmp = RecordSet_GetFirst(rTmp);
+			if (GetField_CString(hTmp, "pay_method", &csTmp)) {
+				PutField_CString(hTxnRec, "pay_method", csTmp);
+DEBUGLOG(("Authorize() pay_method = [%s]\n", csTmp));
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() pay_method is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() pay_method is missing!!!\n");
+			}
+		}
+		RecordSet_Destroy(rTmp);
+	}
+
+// country
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "txn_country", &csCountry)) {
+			PutField_CString(hTxnRec, "txn_country", csCountry);
+DEBUGLOG(("Authorize() country = [%s]\n", csCountry));
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() country is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() country is missing!!!\n");
+		}
+	}
+
+// user
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "add_user", &csUser)) {
+			PutField_CString(hTxnRec, "add_user", csUser);
+			PutField_CString(hTxnRec, "update_user", csUser);
+DEBUGLOG(("Authorize() user = [%s]\n", csUser));
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() user is missing!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() user is missing!!!\n");
+		}
+	}
+
+// check unique merchant ref
+	if (iRet == PD_OK) {
+		if (iHasMerchRef == PD_TRUE) {
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "MatchMerchantRef");
+			if ((unsigned long)(DBObjPtr)(csMerchantId, csMerchantRef) == PD_FOUND) {
+				iRet = INT_DUP_MERCHANT_REF;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize() MerchantId[%s][%s]Duplicate Merchant Ref\n", csMerchantId, csMerchantRef));
+ERRLOG("TxnOmtByUsMRN::Authorize() MerchantId[%s][%s]Duplicate Merchant Ref\n", csMerchantId, csMerchantRef);
+			}
+		}
+	}
+
+// Get psp side txn header
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+		if ((unsigned long)(*DBObjPtr)(csPspTxnSeq, rRec) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTransaction::GetTxnHeader() failed!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() call DBOLTransaction::GetTxnHeader() failed!!!\n");
+		} else {
+DEBUGLOG(("Authorize() txn header found record = [%s]\n", csPspTxnSeq));
+			hRec = RecordSet_GetFirst(rRec);
+
+			PutField_Int(hTxnRec, "db_commit", PD_FALSE);
+
+			// txn_id
+			GetField_CString(hContext, "txn_seq", &csMerchTxnSeq);
+			PutField_CString(hTxnRec, "txn_seq", csMerchTxnSeq);
+
+			// input_channel
+			if (GetField_CString(hContext, "channel_code", &csChannelCode)) {
+				PutField_CString(hTxnRec, "channel_code", csChannelCode);
+			}
+
+			// status
+			GetField_Char(hRec, "status", &cStatus);
+			PutField_Char(hTxnRec, "status", PD_TO_PSP);
+
+			// ar_ind
+			GetField_Char(hRec, "ar_ind", &cArInd);
+
+			// txn_code - done
+			GetField_CString(hRec, "txn_code", &csTxnCode);
+
+			// process_type
+			if (GetField_CString(hContext, "process_type", &csTmp)) {
+				PutField_CString(hTxnRec, "process_type", csTmp);
+			}
+
+			// process_code
+			if (GetField_CString(hContext, "process_code", &csTmp)) {
+				PutField_CString(hTxnRec, "process_code", csTmp);
+			}
+
+			// client_id - done
+
+			// merchant_id - done
+
+			// merchant_ref - done
+
+			// host_posting_date
+			if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+				PutField_CString(hTxnRec, "host_posting_date", csTmp);
+			}
+
+			// internal_code
+			PutField_Int(hTxnRec, "internal_code", 0); 
+
+			// response_code
+			PutField_CString(hTxnRec, "response_code", "0");
+
+			// transaction_amount, deposit_amt, display_amt
+			if (GetField_Double(hRec, "txn_amt", &dTmp)) {
+				PutField_Double(hTxnRec, "txn_amt", dTmp);
+				PutField_Double(hTxnRec, "deposit_amt", dTmp);
+				PutField_Double(hTxnRec, "display_amt", dTmp);
+				dDepositAmt = dTmp;
+			}
+
+			// local_tm_date
+			if (GetField_CString(hContext, "local_tm_date", &csTmp)) {
+				PutField_CString(hTxnRec, "local_tm_date", csTmp);
+				strcpy(csTxnDateTime, csTmp);
+				PutField_CString(hTxnRec, "transmission_datetime", csTxnDateTime);
+				PutField_CString(hTxnRec, "tm_date", csTmp);
+			}
+
+			// local_tm_time
+			if (GetField_CString(hContext, "local_tm_time", &csTmp)) {
+				PutField_CString(hTxnRec, "local_tm_time", csTmp);
+				strcat(csTxnDateTime, csTmp);
+				PutField_CString(hTxnRec, "transmission_datetime", csTxnDateTime);
+				PutField_CString(hTxnRec, "tm_time", csTmp);
+			}
+
+			// client_ip
+			if (GetField_CString(hRequest, "ip_addr", &csTmp)) {
+				PutField_CString(hTxnRec, "ip_addr", csTmp);
+			}
+
+			// service_code - done
+
+			// sub_status
+			GetField_CString(hRec, "sub_status", &csSubStatus);
+//			PutField_CString(hTxnRec, "sub_status", PD_SENT_TO_PSP);
+
+DEBUGLOG(("Authorize() call DBOLTransaction::Add()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Add");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hTxnRec);
+			if (iTmpRet != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTransaction::Add() failed\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() call DBOLTransaction::Add() failed\n");
+			}
+		}
+		RecordSet_Destroy(rRec);
+	}
+
+// Get psp side txn psp detail
+	if (iRet == PD_OK) {
+		// reset hRec
+		hash_destroy(hRec);
+		hash_init(hRec, 0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "GetTxnPspDetail");
+		if ((unsigned long)(*DBObjPtr)(csPspTxnSeq, hRec) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTxnPspDetail::GetTxnPspDetail() failed!!!\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() call DBOLTxnPspDetail::GetTxnPspDetail() failed!!!\n");
+		} else {
+DEBUGLOG(("Authorize() txn psp detail found record = [%s]\n", csPspTxnSeq));
+
+			// txn_ccy - done
+			GetField_CString(hRec, "txn_ccy", &csTxnCcy);
+
+			// txn_country - done
+
+			// pay_method - done
+
+			// cust_deposit_datetime
+			if (GetField_CString(hRec, "txn_timestamp", &csTmp)) {
+				strncpy(csTmp2, csTmp, 12);
+				csTmp2[12] = '\0';
+				PutField_CString(hTxnRec, "cust_deposit_datetime", csTmp2);
+			}
+
+			// bank_acct_num
+			if (GetField_CString(hRec, "bank_acct_num", &csBankAcctNum)) {
+				PutField_CString(hTxnRec, "bank_acct_num", csBankAcctNum);
+			}
+
+			// bank_code
+			if (GetField_CString(hRec, "bank_code", &csBankCode)) {
+				PutField_CString(hTxnRec, "bank_code", csBankCode);
+			}
+
+			// txn_hold_ind
+			GetField_Int(hRec, "txn_hold_ind", &iTxnHoldInd);
+
+DEBUGLOG(("Authorize() call DBOLTransaction::AddDetail()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "AddDetail");
+			iTmpRet = (unsigned long)(*DBObjPtr)(hTxnRec);
+			if (iTmpRet != PD_OK) {
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() call DBOLTransaction::AddDetail() failed\n"));
+ERRLOG("TxnOmtByUsMRN::Authorize() call DBOLTransaction::AddDetail() failed\n");
+			}
+		}
+	}
+
+/* for fallback grep log */
+	if (iRet == PD_OK) {
+		if (iHasMerchRef) {
+DEBUGLOG(("Authorize() for fallback grep log %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%c,%c,%.2lf,%d\n",
+			csMerchantRef, csMerchantId, csCcy, csServiceCode, csCountry, csChannelCode, csTxnCode, csSubStatus, csTxnCcy, csBankCode, csBankAcctNum, cStatus, cArInd, dDepositAmt, iTxnHoldInd));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		BOObjPtr = CreateObj(BOPtr, "BOOLDepositMatch", "CompleteMatching");
+
+DEBUGLOG(("Authorize() call BOOLDepositMatch::CompleteMatching()\n"));
+                if (iHasMerchRef == PD_TRUE) {
+			iRet = (unsigned long)(*BOObjPtr)(csPspTxnSeq, csMerchTxnSeq, 0, 'R', csUser);
+		} else {
+			iRet = (unsigned long)(*BOObjPtr)(csPspTxnSeq, csMerchTxnSeq, 0, 'E', csUser);
+		}
+	}
+
+	// hash_destroy(hTmp);
+	// FREE_ME(hTmp);
+	// hash_destroy(hRec);
+	// FREE_ME(hRec);
+	// hash_destroy(hTxnRec);
+	// FREE_ME(hTxnRec);
+	// RecordSet_Destroy(rTmp);
+	// FREE_ME(rTmp);
+	// RecordSet_Destroy(rRec);
+	// FREE_ME(rRec);
+
+DEBUGLOG(("Authorize() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+}
+

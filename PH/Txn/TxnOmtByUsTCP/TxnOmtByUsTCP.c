@@ -1,0 +1,1186 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/07/20              [WWK]
+Add CrrProduct field and handling into Authorize   2019/03/11              [MIC]
+Add provider folder name handling                  2021/06/24              [MIC]
+*/
+
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsTCP.h"
+#include "myrecordset.h"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(Txn);
+
+int AddTaskLog(hash_t* hITTLog, int iLogBatchSeq, char* csTaskAction, char cActionType, char* csObject, char* csKey, char* csField, char* csValue, char* csOldValue);
+int CheckFolderName(const char* csTmp);
+
+void TxnOmtByUsTCP(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	int	iDtlRet = PD_OK;
+	char	*csTmp;
+	char	csTag[PD_TMP_BUF_LEN+1];
+	int	iTmp;
+	
+	char	*csProvName = NULL;
+	char	*csProvCode = NULL;
+	char	*csDsiProvFlrName = NULL;
+	char	*csPoaProvFlrName = NULL;
+	char	*csIntProvFlrName = NULL;
+	char	*csProvId = NULL;
+	char	cAction;
+	char	csAction[2];
+	char	csStatus[PD_STATUS_LEN+1];
+	
+	char	cIttLogAction;
+	char 	csNewProvFlrName[PD_PROV_PATHNAME_LEN + 1];
+	char 	csNature[PD_NATURE_LEN + 1];
+	char 	csNaturePath[PD_NATURE_PATH_LEN + 1];
+	char	*csCcy;
+	char	cBusinessType;
+	int	iPOSplitLimit;
+	char	*csUser;
+	char	*csTmpPrefix = NULL;
+	char	*csCrrProduct = NULL;		
+
+	char	*csAcctType = NULL;
+	char	*csDisplayName = NULL;
+	char	*csTmpBAIDCat = NULL;
+	char	*csVirtualBankCode = NULL;
+	char	*csVirtualAcctNum = NULL;
+
+	char    csJobId[PD_JOB_ID_LEN];
+	char    csOrgProvFlrName[PD_PROV_PATHNAME_LEN+1]; 
+	char	csSysClientId[PD_CLIENT_ID_LEN+1];
+	char	csClientId[PD_CLIENT_ID_LEN+1];
+	char	csSysPspId[PD_PSP_ID_LEN+1];
+	char	csPHDate[PD_DATETIME_LEN + 1];
+	char	csTmDateTime[PD_DATETIME_LEN + 1];
+	char	csTmDate[PD_DATE_LEN + 1];
+	char	csTmTime[PD_TIME_LEN + 1];
+
+	int	iClientIDCodeInNum = -1;
+	int	iPspIDCodeInNum = -1;
+
+	char	csLogBatchId[PD_TXN_SEQ_LEN+1];
+	int	iLogBatchSeq = 1;
+
+	hash_t *hPspMaster = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hPspMaster,0);
+
+	hash_t *hOlPspDetail = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOlPspDetail,0);
+
+	hash_t *hOlBankAcctId = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOlBankAcctId,0);
+
+	hash_t *hTmpRS_OPD;
+	recordset_t *rTmpRS_OPD = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rTmpRS_OPD,0);
+
+	hash_t *hTmpRS_BAID;
+	recordset_t *rTmpRS_BAID = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rTmpRS_BAID,0);
+	
+	hash_t *hITTLog = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hITTLog,0);
+
+
+
+	
+
+//Get Values from API
+	if (iRet == PD_OK) {
+
+//API: action
+		if (GetField_CString(hRequest, "action", &csTmp)) {
+DEBUGLOG(("Authorize() action = [%s]\n", csTmp));
+			cAction = csTmp[0];
+			if (cAction == PD_ACTION_ADD) {
+				strcpy(csAction, "CREATE");
+			}
+			else{
+				strcpy(csAction, "UPDATE");
+			}
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: action not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: action not found!!\n");
+		}
+		
+//API: client_id
+		if (GetField_CString(hRequest, "client_id", &csProvId)) {
+DEBUGLOG(("Authorize() client_id = [%s]\n", csProvId));
+		} else {
+			if (cAction == PD_ACTION_UPDATE) {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: client_id not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: client_id not found!!\n");
+			}
+		}
+		
+//API: prov_name
+		if (GetField_CString(hRequest, "prov_name", &csProvName)) {
+DEBUGLOG(("Authorize() prov_name = [%s]\n", csProvName));
+		} else {
+			iRet = INT_ITT_PROVIDER_NAME_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: prov_name not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: prov_name not found!!\n");
+		}
+
+//API: prov_code
+		if (GetField_CString(hRequest, "prov_code", &csProvCode)) {
+DEBUGLOG(("Authorize() prov_code = [%s]\n", csProvCode));
+		}
+		
+//API: status
+		if (GetField_CString(hRequest, "status", &csTmp)) {
+			strcpy(csStatus,csTmp);
+DEBUGLOG(("Authorize() status = [%s]\n", csStatus));
+		}
+
+		
+//API: dsi_prov_flr_name
+		if (iRet == PD_OK) {
+			if (GetField_CString(hRequest, "dsi_prov_flr_name", &csDsiProvFlrName)) {
+DEBUGLOG(("Authorize() dsi_prov_flr_name = [%s]\n", csDsiProvFlrName));
+				iRet = CheckFolderName(csDsiProvFlrName);
+				if(iRet != PD_OK) {
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: dsi_prov_flr_name [%s] contain non-support char!!\n", csDsiProvFlrName));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: dsi_prov_flr_name contain non-support char!!\n");
+				}
+			}
+		}
+
+//API: poa_prov_flr_name
+		if (iRet == PD_OK) {
+			if (GetField_CString(hRequest, "poa_prov_flr_name", &csPoaProvFlrName)) {
+DEBUGLOG(("Authorize() poa_prov_flr_name = [%s]\n", csPoaProvFlrName));
+				iRet = CheckFolderName(csPoaProvFlrName);
+				if(iRet != PD_OK) {
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: poa_prov_flr_name [%s] contain non-support char!!\n", csPoaProvFlrName));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: poa_prov_flr_name contain non-support char!!\n");
+				}
+			}
+		}
+		
+
+//API: int_prov_flr_name
+		if (iRet == PD_OK) {
+			if (GetField_CString(hRequest, "int_prov_flr_name", &csIntProvFlrName)) {
+DEBUGLOG(("Authorize() int_prov_flr_name = [%s]\n", csIntProvFlrName));
+				iRet = CheckFolderName(csIntProvFlrName);
+				if(iRet != PD_OK) {
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: int_prov_flr_name [%s] contain non-support char!!\n", csIntProvFlrName));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: int_prov_flr_name contain non-support char!!\n");
+				}
+			}
+		}			
+		
+//API: ccy
+		if (GetField_CString(hRequest, "txn_ccy", &csCcy)) {
+DEBUGLOG(("Authorize() ccy = [%s]\n", csCcy));
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+				iRet = INT_CURRENCY_CODE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: ccy not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: ccy not found!!\n");
+			}
+		}
+
+//API: type
+		if (GetField_CString(hRequest, "type", &csTmp)) {
+			cBusinessType = csTmp[0];
+DEBUGLOG(("Authorize() type = [%c]\n", cBusinessType));
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+				iRet = INT_BUSINESS_TYPE_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: type not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: type not found!!\n");
+			}
+		}
+
+//API: po_split_limit
+		if (GetField_CString(hRequest, "po_split_limit", &csTmp)) {
+			iPOSplitLimit = atoi(csTmp);
+			if (iPOSplitLimit < 0) {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: po_split_limit [%d] <= 0!!\n",iPOSplitLimit));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: po_split_limit [%d] <= 0!!\n",iPOSplitLimit);
+			} else {
+DEBUGLOG(("Authorize() po_split_limit = [%d]\n", iPOSplitLimit));
+			}
+		} else {
+			if (cAction == PD_ACTION_ADD) {
+				iRet = INT_ITT_PO_SPLIT_LIMIT_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: po_split_limit not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: po_split_limit not found!!\n");
+			}
+		}
+
+//API: user
+		if (GetField_CString(hRequest, "add_user", &csUser)) {
+			PutField_CString(hContext,"create_user",csUser);
+			PutField_CString(hContext,"update_user",csUser);
+			
+DEBUGLOG(("Authorize() user = [%s]\n", csUser));
+		} else {
+			iRet = INT_USER_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize() user NOT FOUND!!!\n"));
+ERRLOG("TxnOmtByUsTCP::Authorize() user NOT FOUND!!!\n");
+		}
+
+//API: product_code
+		if(GetField_CString(hRequest, "product_code", &csCrrProduct))
+		{
+DEBUGLOG(("Authorize() product_code = [%s]\n", csCrrProduct));
+		}
+		else{
+			if (cAction == PD_ACTION_ADD) {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: product_code not found!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize:: product_code not found!!\n");
+			}
+		}
+	}
+
+	
+	
+//Check duplicated provider foldername for different provider validation
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "dsi_prov_flr_name", &csDsiProvFlrName)) {
+			DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting","CheckDupProvPathname");
+			iDtlRet = (unsigned long)(*DBObjPtr)(csProvId, csDsiProvFlrName);
+			if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname dsi_prov_flr_name [%s] is not duplicated\n", csDsiProvFlrName));
+			}
+			else if (iDtlRet == PD_FOUND){
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname dsi_prov_flr_name [%s] is duplicated\n", csDsiProvFlrName));
+ERRLOG("TxnOmtByUsTCP::Call DBOLAutoUploadStmtSetting:CheckDupProvPathname dsi_prov_flr_name duplicated!!! iDtlRet = [%d]\n", iDtlRet);
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else{
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname dsi_prov_flr_name NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet));
+ERRLOG("TxnOmtByUsTCP::Call DBOLAutoUploadStmtSetting:CheckDupProvPathname NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet);
+			}
+		}
+	}
+	
+	
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "poa_prov_flr_name", &csPoaProvFlrName)) {
+			DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting","CheckDupProvPathname");
+			iDtlRet = (unsigned long)(*DBObjPtr)(csProvId, csPoaProvFlrName);
+			if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname poa_prov_flr_name [%s] is not duplicated\n", csPoaProvFlrName));
+			}
+			else if (iDtlRet == PD_FOUND){
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname poa_prov_flr_name [%s] is duplicated\n", csPoaProvFlrName));
+ERRLOG("TxnOmtByUsTCP::Call DBOLAutoUploadStmtSetting:CheckDupProvPathname poa_prov_flr_name duplicated!!! iDtlRet = [%d]\n", iDtlRet);
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else{
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname poa_prov_flr_name NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet));
+ERRLOG("TxnOmtByUsTCP::Call DBOLAutoUploadStmtSetting:CheckDupProvPathname poa_prov_flr_name NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet);
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+	
+	
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest, "int_prov_flr_name", &csIntProvFlrName)) {
+			DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting","CheckDupProvPathname");
+			iDtlRet = (unsigned long)(*DBObjPtr)(csProvId, csIntProvFlrName);
+			if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname int_prov_flr_name [%s] is not duplicated\n", csIntProvFlrName));
+			}
+			else if (iDtlRet == PD_FOUND){
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname int_prov_flr_name [%s] is duplicated\n", csIntProvFlrName));
+ERRLOG("TxnOmtByUsTCP::Call DBOLAutoUploadStmtSetting:CheckDupProvPathname int_prov_flr_name duplicated!!! iDtlRet = [%d]\n", iDtlRet);
+			}
+			else{
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLAutoUploadStmtSetting:CheckDupProvPathname int_prov_flr_name NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet));
+ERRLOG("TxnOmtByUsTCP::Call DBOLAutoUploadStmtSetting:CheckDupProvPathname NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet);
+			}
+		}
+	}
+	
+	
+
+//Call DBOLBankAccts:GetVirtualBankAcctsByCcy, get virtual bank code & bank acct number
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+			hash_t *hVirtualBankAcct = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hVirtualBankAcct,0);
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAccts","GetVirtualBankAcctsByCcy");
+			iDtlRet = (unsigned long)(*DBObjPtr)(csCcy,hVirtualBankAcct);
+
+			if (iDtlRet == PD_FOUND) {
+				if (GetField_CString(hVirtualBankAcct,"int_bank_code",&csVirtualBankCode)) {
+DEBUGLOG(("Call DBOLBankAccts:GetVirtualBankAcctsByCcy int_bank_code = [%s]\n",csVirtualBankCode));
+				}
+
+				if (GetField_CString(hVirtualBankAcct,"bank_acct_num",&csVirtualAcctNum)) {
+DEBUGLOG(("Call DBOLBankAccts:GetVirtualBankAcctsByCcy bank_acct_num = [%s]\n",csVirtualAcctNum));
+				}
+			} else {
+				iRet = INT_ITT_VIRTUAL_BANK_AC_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLBankAccts:GetVirtualBankAcctsByCcy NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet));
+ERRLOG("TxnOmtByUsTCP::Call DBOLBankAccts:GetVirtualBankAcctsByCcy NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet);
+			}
+
+			hash_destroy(hVirtualBankAcct);
+			FREE_ME(hVirtualBankAcct);
+		}
+	}
+
+//Get Next Log BatchID Sequence
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr, "DBIttTaskLog","GetNextITTTaskBatchSeq");
+		strcpy(csLogBatchId, (*DBObjPtr)());
+DEBUGLOG(("Authorize() LogBatchId = [%s]\n",csLogBatchId));
+
+		PutField_CString(hITTLog,"batch_id",csLogBatchId);
+		PutField_CString(hITTLog,"api_code",PD_ITT_API_CREATE_PROVIDER);
+		PutField_CString(hITTLog,"create_user",csUser);
+		PutField_CString(hITTLog,"update_user",csUser);
+	}
+
+
+	if (cAction == PD_ACTION_ADD) {
+		cIttLogAction = PD_ITT_LOG_INSERT;
+	}
+	else{
+		cIttLogAction = PD_ITT_LOG_UPDATE;
+	}
+	
+
+/************************
+ * 1) create psp_master *
+ * **********************/
+
+DEBUGLOG(("Authorize() - %s PSP_MASTER\n", csAction));
+
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+	//client_id : expected auto-gen in create
+			DBObjPtr = CreateObj(DBPtr,"DBPspMaster","GetNextClientIdCode");
+			if ((unsigned long)((*DBObjPtr)(&iClientIDCodeInNum)) == PD_OK) {
+DEBUGLOG(("Call DBPspMaster:GetNextClientIdCode: next client_id code [%d]\n",iClientIDCodeInNum));
+
+				if (iClientIDCodeInNum < 0) {
+DEBUGLOG(("Call DBPspMaster:GetNextClientIdCode code_in_num error!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Call DBPspMaster:GetNextClientIdCode code_in_num error!!\n");
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+				} else {
+					if (iClientIDCodeInNum > PD_CLIENT_ID_MAX_VALUE) {
+DEBUGLOG(("Call DBPspMaster:GetNextClientIdCode code_in_num max error!!\n"));
+ERRLOG("TxnOmtByUsBAI:: Create PSP_MASTER:: Call DBPspMaster:GetNextClientIdCode code_in_num max error!!\n");
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+					}
+				}
+
+				if (iRet == PD_OK) {
+					csTmpPrefix = strdup("");
+					DBObjPtr = CreateObj(DBPtr,"DBIttDefPrefix","FindCode");
+					if ((unsigned long)(*DBObjPtr)(PD_OFL_CLIENT_ID_PREFIX,csTmpPrefix) == PD_FOUND) {
+						iTmp = PD_CLIENT_ID_LEN - strlen(csTmpPrefix);
+						sprintf(csSysClientId, "%s%0*d", csTmpPrefix, iTmp, iClientIDCodeInNum);
+						PutField_Int(hPspMaster, "code_in_num", iClientIDCodeInNum);
+						sprintf(csTag,"%d",iClientIDCodeInNum);
+						AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_code_in_num",csTag,"");
+						PutField_CString(hPspMaster, "client_id", csSysClientId);
+						AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_client_id",csSysClientId,"");
+DEBUGLOG(("Create PSP_MASTER:: client_id = [%s]\n",csSysClientId));
+					}
+				}
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBPspMaster:GetNextClientIdCode: generate Client ID Fail !!!\n"));
+ERRLOG("TxnOmtByUsTCP::Call DBPspMaster:GetNextClientIdCode: generate Client ID Fail !!!\n");
+			}
+		}
+		else{
+			PutField_CString(hPspMaster, "client_id", csProvId);
+			AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_client_id",csProvId,"");
+		}
+	}
+
+
+		
+//client_name (API: prov_name)
+	if (iRet == PD_OK) {
+		if(csProvName != NULL){
+			PutField_CString(hPspMaster,"client_name",csProvName);
+			AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"PSP_MASTER","","pm_client_name",csProvName,"");
+DEBUGLOG(("%s PSP_MASTER:: client_name = [%s]\n",csAction, csProvName));
+		}
+		else{
+			PutField_CString(hPspMaster,"client_name","");
+			AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"PSP_MASTER","","pm_client_name","","");
+DEBUGLOG(("%s PSP_MASTER:: client_name = empty\n", csAction));
+		}
+	}
+
+//status : (API: status)
+	if (iRet == PD_OK) {
+		
+		if (cAction == PD_ACTION_ADD) {
+			strcpy(csStatus, PD_ACC_OPEN);
+		}
+
+		PutField_CString(hPspMaster,"status",csStatus);
+		AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_status",csStatus,"");
+DEBUGLOG(("%s PSP_MASTER:: status = [%s] (default value)\n",csAction, csStatus));
+	}
+
+//mode_type : default value "OFL"
+	if (iRet == PD_OK) {
+		PutField_CString(hPspMaster,"mode_type",PD_PSP_MASTER_MODE_OFFLINE);
+		AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_mode_type",PD_PSP_MASTER_MODE_OFFLINE,"");
+DEBUGLOG(("%s PSP_MASTER:: mode_type = [%s] (default value)\n",csAction, PD_PSP_MASTER_MODE_OFFLINE));
+	}
+
+//code (API: prov_code)
+	if (iRet == PD_OK) {
+		if (csProvCode != NULL) {
+			PutField_CString(hPspMaster,"code",csProvCode);
+			AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_code",csProvCode,"");
+DEBUGLOG(("%s PSP_MASTER:: prov_code = [%s]\n", csAction, csProvCode));
+		}
+		else{
+			PutField_CString(hPspMaster,"code","");
+			AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction,"PSP_MASTER","","pm_code","","");
+DEBUGLOG(("%s PSP_MASTER:: prov_code = empty\n", csAction));
+		}
+
+	}
+
+//user 
+        if (iRet == PD_OK) {
+                PutField_CString(hPspMaster,"create_user",csUser);
+				PutField_CString(hPspMaster,"update_user",csUser);
+DEBUGLOG(("%s PSP_MASTER:: user = [%s]\n", csAction, csUser));
+        }
+
+
+//Call DBPspMaster::Add
+	if (iRet == PD_OK) {	
+		if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize() call DBPspMaster::Add()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspMaster", "Add");
+			iRet = (unsigned long)(*DBObjPtr)(hPspMaster);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Authorize() call DBPspMaster::Add() FAILURE!!! iRet = [%d]\n",iRet));
+			} else {
+DEBUGLOG(("Authorize() call DBPspMaster::Add() SUCCESS!!!\n"));
+DEBUGLOG(("   - ClientID [%s]\n",csSysClientId));
+			}
+		}
+		else{
+DEBUGLOG(("Authorize() call DBPspMaster::Update()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspMaster", "Update");
+			iRet = (unsigned long)(*DBObjPtr)(hPspMaster);
+			if (iRet != PD_OK) {
+DEBUGLOG(("Authorize() call DBPspMaster::Update() FAILURE!!! iRet = [%d]\n",iRet));
+			} else {
+DEBUGLOG(("Authorize() call DBPspMaster::Update() SUCCESS!!!\n"));
+DEBUGLOG(("   - ClientID [%s]\n",csProvId));
+			}
+		}
+	}
+
+	iLogBatchSeq++;
+
+//End Create PSP_MASTER
+
+
+
+/**************************************
+ * 2) create ol_psp_detail            *
+ *    create crr_psp_product_code_map *
+ * ************************************/
+DEBUGLOG(("Authorize() - Create OL_PSP_DETAIL\n"))
+
+
+//Call DBOLDefBankAcctType:GetAllFEDisplay, loop to insert new PID
+	if (iRet == PD_OK) {
+		hTmpRS_OPD = NULL;
+		recordset_init(rTmpRS_OPD,0);
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLDefBankAcctType","GetAllFEDisplay");
+		iDtlRet = (unsigned long)(*DBObjPtr)(rTmpRS_OPD);
+DEBUGLOG(("Call DBOLDefBankAcctType:GetAllFEDisplay\n"));
+	}
+
+	if (iRet == PD_OK && iDtlRet == PD_OK) {
+		
+
+		hTmpRS_OPD = RecordSet_GetFirst(rTmpRS_OPD);
+		while (hTmpRS_OPD && iDtlRet == PD_OK) {
+
+			if (GetField_CString(hTmpRS_OPD,"acct_type",&csAcctType)) {
+DEBUGLOG(("GetAllFEDisplay() acct_type = [%s]\n",csAcctType));
+			} else {
+				iDtlRet = INT_ERR;
+DEBUGLOG(("Call DBOLDefBankAcctType:GetAllFEDisplay() acct_type NOT FOUND!!!\n"));
+ERRLOG("TxnOmtByUsTCP: Call DBOLDefBankAcctType:GetAllFEDisplay() acct_type NOT FOUND!!!\n");
+			}
+
+			if (GetField_CString(hTmpRS_OPD,"display_name",&csDisplayName)) {
+DEBUGLOG(("GetAllFEDisplay() display_name = [%s]\n",csDisplayName));
+			} else {
+				iDtlRet = INT_ERR;
+DEBUGLOG(("Call DBOLDefBankAcctType:GetAllFEDisplay() display_name NOT FOUND!!!\n"));
+ERRLOG("TxnOmtByUsTCP: Call DBOLDefBankAcctType:GetAllFEDisplay() display_name NOT FOUND!!!\n");
+			}
+
+			if (cAction == PD_ACTION_ADD) {
+//Get Next PID code_in_num
+//
+				if (iDtlRet == PD_OK) {
+					DBObjPtr = CreateObj(DBPtr,"DBOLPspDetail","GetNextPIDCode");
+					if ((unsigned long)((*DBObjPtr)(&iPspIDCodeInNum)) == PD_OK) {
+DEBUGLOG(("Call DBOLPspDetail:GetNextPIDCode  next psp_id code [%d]\n",iPspIDCodeInNum));
+
+						if (iPspIDCodeInNum < 0) {
+DEBUGLOG(("Call DBOLPspDetail:GetNextPIDCode code_in_num error!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Call DBOLPspDetail:GetNextPIDCode code_in_num error!!\n");
+							iDtlRet = INT_ERR;
+						} else {
+							if (iPspIDCodeInNum > PD_PID_MAX_VALUE) {
+DEBUGLOG(("Call DBOLPspDetail:GetNextPIDCode code_in_num max error!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Create OL_PSP_DETAIL:: Call DBOLPspDetail:GetNextPIDCode code_in_num max error!!\n");
+								iDtlRet = INT_ERR;
+							}
+						}
+					} else {
+						iDtlRet = INT_ERR;
+DEBUGLOG(("Call DBOLPspDetail:GetNextPIDCode: generate PID Fail !!!\n"));
+ERRLOG("TxnOmtByUsTCP::Call DBOlPspDetail:GetNextPIDCode: generate PID Fail !!!\n");
+					}
+				}
+
+//psp_id : expected auto-gen in create
+				if (iDtlRet == PD_OK) {
+					csTmpPrefix = strdup("");
+					DBObjPtr = CreateObj(DBPtr,"DBIttDefPrefix","FindCode");
+					if ((unsigned long)(*DBObjPtr)(PD_OFL_PSP_ID_PREFIX,csTmpPrefix) == PD_FOUND) {
+						memset(csSysPspId, 0, sizeof(csSysPspId));
+						iTmp = PD_ITT_DEF_PID_LEN - strlen(csTmpPrefix);
+						sprintf(csSysPspId, "%s%0*d", csTmpPrefix, iTmp, iPspIDCodeInNum);
+						PutField_Int(hOlPspDetail, "code_in_num", iPspIDCodeInNum);
+						sprintf(csTag,"%d",iPspIDCodeInNum);
+						AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_code_in_num",csTag,"");
+						PutField_CString(hOlPspDetail, "psp_id", csSysPspId);
+						AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_psp_id",csSysPspId,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: psp_id = [%s]\n",csSysPspId));
+					}
+				}
+
+//psp_name: expected auto-gen with "[client_name]_[acct_type]"
+				if (iDtlRet == PD_OK) {
+					sprintf(csTag,"%s_%s",csProvName,csDisplayName);
+					PutField_CString(hOlPspDetail,"psp_name",csTag);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_psp_name",csTag,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: psp_name = [%s]\n",csTag));
+				}
+
+//disabled: default 0
+				if (iDtlRet == PD_OK) {
+					PutField_Int(hOlPspDetail,"disabled",PD_FALSE);
+					sprintf(csTag,"%d",PD_FALSE);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_disabled",csTag,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: disabled = [%d]\n",PD_FALSE));
+				}
+
+//client_id: system generate while create psp_master
+				if(iDtlRet == PD_OK) {
+					PutField_CString(hOlPspDetail,"client_id",csSysClientId);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_client_id",csSysClientId,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: client_id = [%s]\n",csSysClientId));
+				}
+
+//bank_acct_type: OL_DEF_BANK_ACCT_TYPE.OBC_TYPE
+				if (iDtlRet == PD_OK) {
+					PutField_CString(hOlPspDetail,"bank_acct_type",csAcctType);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_bank_acct_type",csAcctType,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: bank_acct_type = [%s]\n",csAcctType));
+				}
+
+//ccy (API: ccy)
+				if (iDtlRet == PD_OK) {
+					PutField_CString(hOlPspDetail,"ccy",csCcy);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_currency_id",csCcy,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: ccy = [%s]\n",csCcy));
+				}
+
+//status: default 'O'
+				if (iDtlRet == PD_OK) {
+					PutField_CString(hOlPspDetail,"status",PD_ACC_OPEN);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_status",PD_ACC_OPEN,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: status = [%s] (default value)\n",PD_ACC_OPEN));
+				}
+
+//payout_split_limit
+				if (iDtlRet == PD_OK) {
+					if (!strcmp(csAcctType,PD_NATURE_PAYOUT)) {
+						iTmp = iPOSplitLimit;
+					} else {
+						iTmp = 0;
+					}
+
+					PutField_Int(hOlPspDetail,"payout_split_limit",iTmp);
+					sprintf(csTag,"%d",iPOSplitLimit);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_payout_split_limit",csTag,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: payout_split_limit = [%d]\n",iPOSplitLimit));
+				}
+
+//business_type
+				if (iDtlRet == PD_OK) {
+					PutField_Char(hOlPspDetail,"business_type",cBusinessType);
+					sprintf(csTag,"%c",cBusinessType);
+					AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"OL_PSP_DETAIL","","opd_business_type",csTag,"");
+DEBUGLOG(("Create OL_PSP_DETAIL:: business_type = [%c]\n",cBusinessType));
+				}
+
+//user
+					if (iDtlRet == PD_OK) {
+							PutField_CString(hOlPspDetail,"create_user",csUser);
+DEBUGLOG(("Create OL_PSP_DETAIL:: user = [%s]\n", csUser));
+					 }
+
+
+//Call DBOLPspDetail::Add
+				if (iDtlRet == PD_OK) {	
+DEBUGLOG(("Authorize() call DBOLPspDetail::Add()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "Add");
+					iDtlRet = (unsigned long)(*DBObjPtr)(hOlPspDetail);
+					if (iDtlRet != PD_OK) {
+DEBUGLOG(("Authorize() call DBOLPspDetail::Add() FAILURE!!! iDtlRet = [%d]\n",iDtlRet));
+					} else {
+DEBUGLOG(("Authorize() call DBOLPspDetail::Add() SUCCESS!!!\n"));
+DEBUGLOG(("   - PSP ID         : [%s]\n",csSysPspId));
+DEBUGLOG(("   - Bank Acct Type : [%s]\n",csAcctType));
+					}
+				}
+
+
+DEBUGLOG(("Authorize() Create OL_PSP_DETAIL Finished!!\n"))
+
+				iLogBatchSeq++;
+
+				if (csCrrProduct != NULL) 
+				{
+					if (iDtlRet == PD_OK) 
+					{
+						hash_t *hCrrPspProductCodeMap = (hash_t*) malloc (sizeof(hash_t));
+						hash_init(hCrrPspProductCodeMap,0);
+
+//psp_id
+						PutField_CString(hCrrPspProductCodeMap, "psp_id", csSysPspId);
+										AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"CRR_PSP_PRODUCT_CODE_MAP","","pm_psp_id",csSysPspId,"");
+DEBUGLOG(("Create CRR_PSP_PRODUCT_CODE_MAP:: psp_id = [%s]\n",csSysPspId));
+
+//business_type
+						PutField_Char(hCrrPspProductCodeMap, "business_type", cBusinessType);  
+						sprintf(csTag,"%c",cBusinessType);
+										AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"CRR_PSP_PRODUCT_CODE_MAP","","pm_business_type",csTag,"");
+DEBUGLOG(("Create CRR_PSP_PRODUCT_CODE_MAP:: business_type = [%c]\n",cBusinessType));
+
+//product_code
+						PutField_CString(hCrrPspProductCodeMap, "product_code", csCrrProduct);	  
+										AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"CRR_PSP_PRODUCT_CODE_MAP","","pm_product_code",csCrrProduct,"");
+DEBUGLOG(("Create CRR_PSP_PRODUCT_CODE_MAP:: product_code = [%s]\n",csCrrProduct));
+
+//user
+						PutField_CString(hCrrPspProductCodeMap, "create_user", csUser);	
+DEBUGLOG(("Create CRR_PSP_PRODUCT_CODE_MAP:: user = [%s]\n", csUser));
+
+//disabled: default 0
+										PutField_Int(hCrrPspProductCodeMap,"disabled", PD_FALSE);
+						sprintf(csTag,"%d",PD_FALSE);		
+										AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,cIttLogAction,"CRR_PSP_PRODUCT_CODE_MAP","","pm_disabled",csTag,"");
+DEBUGLOG(("Create CRR_PSP_PRODUCT_CODE_MAP:: disabled = [%d]\n",PD_FALSE));
+
+//Call DBCrrPspProductCodeMap::Add
+DEBUGLOG(("Authorize() call DBCrrPspProductCodeMap::Add()\n"));
+						DBObjPtr = CreateObj(DBPtr, "DBCrrPspProductCodeMap", "Add");
+						iDtlRet = (unsigned long)(*DBObjPtr)(hCrrPspProductCodeMap);
+						if(iDtlRet != PD_OK)
+						{
+DEBUGLOG(("Authorize() call DBCrrPspProductCodeMap::Add() FAILURE!!! iDtlRet = [%d]\n", iDtlRet));
+ERRLOG("TxnOmtByUsTCP::Call DBCrrPspProductCodeMap:Add NOT FOUND!!! iDtlRet = [%d]\n", iDtlRet);
+						}
+						else
+						{
+DEBUGLOG(("Authorize() call DBCrrPspProductCodeMap::Add() SUCCESS!!!\n"));
+						}
+						hash_destroy(hCrrPspProductCodeMap);
+						FREE_ME(hCrrPspProductCodeMap);
+					}
+
+					iLogBatchSeq++;
+				}
+
+
+/**********************************************
+ * 3) create ol_bank_acct_id (by another API) *
+ * ********************************************/
+DEBUGLOG(("Authorize() - Create OL_BANK_ACCT_ID\n"))
+
+
+				if (iDtlRet == PD_OK) {
+//Call DBOLRuleBaidAutoGen:GetCatTypeByAcctType, loop to insert new BAID for each category type
+					hTmpRS_BAID = NULL;
+					recordset_init(rTmpRS_BAID,0);
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLRuleBaidAutoGen","GetCatTypeByAcctType");
+					iDtlRet = (unsigned long)(*DBObjPtr)(csAcctType,rTmpRS_BAID);
+DEBUGLOG(("Call DBOLRuleBaidAutoGen:GetCatTypeByAcctType\n"));
+
+					if (iDtlRet == PD_OK) {
+
+						hTmpRS_BAID = RecordSet_GetFirst(rTmpRS_BAID);
+						while (hTmpRS_BAID && iDtlRet == PD_OK) {
+
+							if (GetField_CString(hTmpRS_BAID,"baid_cat_type",&csTmpBAIDCat)) {
+DEBUGLOG(("GetCatTypeByAcctType baid_cat_type = [%s]\n",csTmpBAIDCat));
+							} else {
+								iDtlRet = INT_ERR;
+DEBUGLOG(("Call DBOLRuleBaidAutoGen:GetCatTypeByAcctType() baid_cat_type NOT FOUND!!!\n"));
+ERRLOG("TxnOmtByUsTCP: Call DBOLRuleBaidAutoGen:GetCatTypeByAcctType() baid_cat_type NOT FOUND!!!\n");
+							}
+
+//category
+							if (iDtlRet == PD_OK) {
+								PutField_CString(hOlBankAcctId,"category",csTmpBAIDCat);
+DEBUGLOG(("CREATE OL_BANK_ACCT_ID:: category = [%s]\n", csTmpBAIDCat));
+							}
+
+							PutField_CString(hOlBankAcctId, "action", "A");
+							PutField_CString(hOlBankAcctId, "psp_id", csSysPspId);
+							PutField_CString(hOlBankAcctId, "status", PD_ACC_OPEN);
+							PutField_CString(hOlBankAcctId, "init_bal", "0.00");
+							PutField_CString(hOlBankAcctId, "add_user", csUser);
+
+							PutField_CString(hOlBankAcctId, "int_bank_code", csVirtualBankCode);
+							PutField_CString(hOlBankAcctId, "bank_acct_num", csVirtualAcctNum);
+
+							DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "FindCode");
+							if ((unsigned long)(*DBObjPtr)("CTPHDATE", csPHDate) == FOUND) {
+printf("Current Processor Hub Date = [%s]\n", csPHDate);
+							PutField_CString(hOlBankAcctId, "PHDATE", csPHDate);
+							} else {
+							iRet = INT_ERR;
+printf("Current Processor Hub Date Not Found\n");
+							}
+
+							PutField_CString(hOlBankAcctId, "channel_code", PD_CHANNEL_OMT);
+
+							strcpy(csTmDateTime, getdatetime());
+							sprintf(csTmDate, "%.*s", PD_DATE_LEN, csTmDateTime);
+							PutField_CString(hOlBankAcctId, "local_tm_date", csTmDate);
+							sprintf(csTmTime, "%.*s", PD_TIME_LEN, &csTmDateTime[PD_DATE_LEN]);
+							PutField_CString(hOlBankAcctId, "local_tm_time", csTmTime);
+
+							//Key for call TxnOmtByUsBAI
+							sprintf(csTag,"%s||%s",csSysPspId,csTmpBAIDCat);
+							AddTaskLog(hITTLog,iLogBatchSeq,PD_ITT_ACTION_CREATE_PROVIDER,PD_ITT_LOG_FUNCTION,"TxnOmtByUsBAI",csTag,"","","");
+
+//Call TxnOmtByUsBAI::Authorize
+							if (iDtlRet == PD_OK) {
+								TxnObjPtr = CreateObj(TxnObjPtr, "TxnOmtByUsBAI", "Authorize");
+								iDtlRet = (unsigned long)(*TxnObjPtr)(hOlBankAcctId,hOlBankAcctId,hOlBankAcctId);
+								if (iDtlRet != PD_OK) {
+DEBUGLOG(("Authorize() call TxnOmtByUsBAI::Authorize() FAILURE!!!\n"));
+								} else {
+DEBUGLOG(("Authorize() call TxnOmtByUsBAI::Authorize() ret [%d]\n",iDtlRet));
+								}
+							}
+
+
+							iLogBatchSeq++;
+
+							//Go To next BAID Category Type
+							hTmpRS_BAID = RecordSet_GetNext(rTmpRS_BAID);
+						}
+
+					}
+				}
+			}
+
+/**********************************************
+ * 4) create/update OL_AUTO_UPLOAD_STMT_SETTING  *
+* ********************************************/
+DEBUGLOG(("Authorize() - %s OL_AUTO_UPLOAD_STMT_SETTING\n", csAction));
+			if (iDtlRet == PD_OK) {
+				if(!strcmp(csAcctType,PD_NATURE_DEPOSIT) || 
+					!strcmp(csAcctType,PD_NATURE_PAYOUT) || 
+					!strcmp(csAcctType,PD_NATURE_INTERMEDIATE) ) {
+
+											
+					/*skip empty input field*/
+					if ((csDsiProvFlrName == NULL && !strcmp(csAcctType,PD_NATURE_DEPOSIT)) || 
+						(csPoaProvFlrName == NULL &&  !strcmp(csAcctType,PD_NATURE_PAYOUT)) || 
+						(csIntProvFlrName == NULL && !strcmp(csAcctType,PD_NATURE_INTERMEDIATE))){
+							hTmpRS_OPD = RecordSet_GetNext(rTmpRS_OPD);							
+							continue;
+					}
+					
+					hash_t *hOlAutoUplStmtSett = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(hOlAutoUplStmtSett,0);
+					
+					hash_t *hGetAttribute = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(hGetAttribute,0);
+					
+					if (cAction == PD_ACTION_UPDATE) {
+						DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting", "GetByProvId");
+						iDtlRet = (unsigned long)(*DBObjPtr)(csProvId,csAcctType,hGetAttribute);
+						if(iDtlRet == PD_FOUND){
+							iDtlRet = PD_OK;
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::GetByProvId() SUCCESS!!!\n"));
+							if (GetField_CString(hGetAttribute, "provider_path", &csTmp)) {
+								strcpy(csOrgProvFlrName, csTmp);
+DEBUGLOG(("Authorize() DBOLAutoUploadStmtSetting::GetByProvId(): provider_path = [%s]\n", csOrgProvFlrName));
+							}
+							else{
+								iDtlRet = INT_ERR;
+DEBUGLOG(("Authorize:: call DBOLAutoUploadStmtSetting::GetByProvId(): provider_path not found!!\n"));
+							}
+						}
+						else if(iDtlRet == PD_NOT_FOUND){
+							strcpy(csOrgProvFlrName, "");
+DEBUGLOG(("Authorize() DBOLAutoUploadStmtSetting::GetByProvId(): provider_path = [%s]\n", ""));
+							iDtlRet = PD_OK;
+						}
+						else{
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::GetByProvId() FAILURE!!! iDtlRet = [%d]\n",iDtlRet));
+						}
+					}
+/*server_id*/
+					if (iDtlRet == PD_OK) {
+						PutField_CString(hOlAutoUplStmtSett, "server_id", PD_SERVER_ID_CORE00);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_SERVER_ID", PD_SERVER_ID_CORE00,"");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: server_id = [%s]\n", csAction, PD_SERVER_ID_CORE00));
+						
+						
+						if (!strcmp(csAcctType,PD_NATURE_DEPOSIT)) {
+							strcpy(csNewProvFlrName, csDsiProvFlrName);
+							strcpy(csNature, PD_NATURE_DEPOSIT);
+							strcpy(csNaturePath, PD_NATURE_PATH_DEPOSIT);
+						}
+						else if (!strcmp(csAcctType,PD_NATURE_PAYOUT)) {
+							strcpy(csNewProvFlrName, csPoaProvFlrName);
+							strcpy(csNature, PD_NATURE_PAYOUT);
+							strcpy(csNaturePath, PD_NATURE_PATH_PAYOUT);
+						}
+						else if (!strcmp(csAcctType,PD_NATURE_INTERMEDIATE)) {
+							strcpy(csNewProvFlrName, csIntProvFlrName);
+							strcpy(csNature, PD_NATURE_INTERMEDIATE);
+							strcpy(csNaturePath, PD_NATURE_PATH_INTERMEDIATE);
+						}
+						
+/*prov_pathname*/
+						PutField_CString(hOlAutoUplStmtSett, "prov_pathname", csNewProvFlrName);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_PROVIDER_PATHNAME", csNewProvFlrName,"");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: prov_pathname = [%s]\n",csAction, csNewProvFlrName));
+						
+/*nature*/
+						PutField_CString(hOlAutoUplStmtSett, "nature", csNature);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_NATURE", csNature,"");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: nature = [%s]\n",csAction, csNature));					
+
+/*level*/
+						PutField_Int(hOlAutoUplStmtSett, "level", 0);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_LEVEL", "0","");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: level = [%d]\n", csAction, 0));
+
+/*create_user*/
+						PutField_CString(hOlAutoUplStmtSett, "create_user", csUser);
+						PutField_CString(hOlAutoUplStmtSett, "update_user", csUser);
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: create_user = [%s]\n", csAction, csUser));
+
+/*disabled*/
+						PutField_Int(hOlAutoUplStmtSett, "disabled", PD_DISABLED);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_DISABLED", PD_FIELD_ENABLE,"");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: disabled = [%s]\n", csAction, PD_FIELD_ENABLE));
+
+/*prov_id*/
+						if (cAction == PD_ACTION_ADD) {
+							strcpy(csClientId, csSysClientId);
+						}
+						else{
+							strcpy(csClientId, csProvId);
+						}
+						PutField_CString(hOlAutoUplStmtSett, "prov_id", csClientId);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_PROVIDER_ID", csClientId,"");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: prov_id = [%s]\n", csAction, csClientId));
+
+
+
+/*nature_path*/
+						PutField_CString(hOlAutoUplStmtSett, "nature_path", csNaturePath);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_NATURE_PATH", csNaturePath,"");	
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: nature_path = [%s]\n", csAction, csNaturePath));
+						
+/*process_bank_code*/
+						PutField_CString(hOlAutoUplStmtSett, "process_bank_code", PD_PROCESS_BANK_CODE_ALL_BANK);
+						AddTaskLog(hITTLog,iLogBatchSeq, PD_ITT_ACTION_CREATE_PROVIDER, cIttLogAction, PD_OL_AUTO_UPLOAD_STMT_SETTING, "", "OAUS_PROCESS_BANK_CODE", PD_PROCESS_BANK_CODE_ALL_BANK,"");
+DEBUGLOG(("%s OL_AUTO_UPLOAD_STMT_SETTING:: process_bank_code = [%s]\n", csAction, PD_PROCESS_BANK_CODE_ALL_BANK));
+
+						if (cAction == PD_ACTION_ADD) {
+							DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting", "Add");
+							iDtlRet = (unsigned long)(*DBObjPtr)(hOlAutoUplStmtSett);
+							if (iDtlRet != PD_OK) {
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::Add() FAILURE!!! iDtlRet = [%d]\n",iDtlRet));
+							} 
+							else {
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::Add() SUCCESS!!!\n"));
+							}
+						}
+						else{
+							DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting", "UpdateProvPathnameByProvId");
+							iDtlRet = (unsigned long)(*DBObjPtr)(hOlAutoUplStmtSett);
+							if (iDtlRet != PD_OK) {
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::UpdateProvPathnameByProvId() FAILURE!!! iDtlRet = [%d]\n",iDtlRet));
+							} 
+							else {
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::UpdateProvPathnameByProvId() SUCCESS!!!\n"));
+							}
+							
+							if (iDtlRet == PD_OK) {
+								DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSetting", "GetByProvId");
+								iDtlRet = (unsigned long)(*DBObjPtr)(csProvId,csAcctType,hGetAttribute);
+								if(iDtlRet == PD_FOUND){
+									iDtlRet = PD_OK;
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::GetByProvId() SUCCESS!!!\n"));								
+									if (GetField_CString(hGetAttribute, "job_id", &csTmp)) {
+										strcpy(csJobId, csTmp);
+DEBUGLOG(("Authorize() DBOLAutoUploadStmtSetting::GetByProvId(): job_id = [%s]\n", csJobId));
+									}
+									else{
+										iDtlRet = INT_ERR;
+DEBUGLOG(("Authorize:: call DBOLAutoUploadStmtSetting::GetByProvId(): job_id not found!!\n"));
+									}
+
+								}
+								else{
+DEBUGLOG(("Authorize() call DBOLAutoUploadStmtSetting::GetByProvId() FAILURE!!! iDtlRet = [%d]\n",iDtlRet));
+								}
+							}
+
+							/*Update action add change log*/
+							if (iDtlRet == PD_OK) {
+								if(strcmp(csOrgProvFlrName, csNewProvFlrName)){
+									PutField_CString(hOlAutoUplStmtSett, "job_id", csJobId);
+									PutField_CString(hOlAutoUplStmtSett, "prov_pathname_fr", csOrgProvFlrName);
+									PutField_CString(hOlAutoUplStmtSett, "prov_pathname_to", csNewProvFlrName);
+									DBObjPtr = CreateObj(DBPtr, "DBOLAutoUploadStmtSettLog", "Add");
+									iDtlRet = (unsigned long)(*DBObjPtr)(hOlAutoUplStmtSett);
+									if (iDtlRet != PD_OK) {
+DEBUGLOG(("Authorize() call OLAutoUploadStmtSettLog::Add() FAILURE!!! iDtlRet = [%d]\n",iDtlRet));
+									} 
+									else {
+DEBUGLOG(("Authorize() call OLAutoUploadStmtSettLog::Add() SUCCESS!!!\n"));
+									}
+								}
+							}
+							
+							
+						}
+					}
+					hash_destroy(hOlAutoUplStmtSett);
+					FREE_ME(hOlAutoUplStmtSett);
+					
+					hash_destroy(hGetAttribute);
+					FREE_ME(hGetAttribute);
+					
+					iLogBatchSeq++;
+				}
+				
+			}
+
+			
+			
+			
+			//Go To next PSP Acct Type
+			hTmpRS_OPD = RecordSet_GetNext(rTmpRS_OPD);
+
+		} //end while for looping insert new PID
+
+	} else {
+		iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBOLDefBankAcctType:GetAllFEDisplay FAILED!!!\n"));
+ERRLOG("TxnOmtByUsTCP:: Authorize() Call DBOLDefBankAcctType:GetAllFEDisplay FAILED!!!\n");
+	}
+
+	RecordSet_Destroy(rTmpRS_BAID);
+	FREE_ME(rTmpRS_BAID);
+
+	RecordSet_Destroy(rTmpRS_OPD);
+	FREE_ME(rTmpRS_OPD);
+
+	if (iDtlRet != PD_OK) {
+		iRet = iDtlRet;
+	}
+	
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("UpdateTaskLogByBatch()\n"));
+		PutField_Int(hITTLog,"ret_code",iRet);
+		DBObjPtr = CreateObj(DBPtr,"DBIttTaskLog","UpdateRetCodeByBatch");
+		iRet = (unsigned long)(*DBObjPtr)(hITTLog);
+		if (iRet != PD_OK) {
+DEBUGLOG(("  FAILURE!!! iRet = [%d]\n",iRet));
+		} else {
+DEBUGLOG(("  SUCCESS!!!\n"));
+		}
+	}
+	
+	if (cAction == PD_ACTION_ADD) {
+		PutField_CString(hResponse,"client_id",csSysClientId);
+	}
+	else{
+		PutField_CString(hResponse,"client_id",csProvId);
+	}
+
+
+
+
+	hash_destroy(hPspMaster);
+	FREE_ME(hPspMaster);
+
+	hash_destroy(hOlPspDetail);
+	FREE_ME(hOlPspDetail);
+
+	hash_destroy(hOlBankAcctId);
+	FREE_ME(hOlBankAcctId);
+
+	hash_destroy(hITTLog);
+	FREE_ME(hITTLog);
+
+
+
+DEBUGLOG(("Authorize() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int AddTaskLog(hash_t* hITTLog, int iLogBatchSeq, char* csTaskAction, char cActionType, char* csObject, char* csKey, char* csField, char* csValue, char* csOldValue)
+{
+	int iRet = PD_OK;
+
+	PutField_Int(hITTLog,"batch_seq",iLogBatchSeq);
+	PutField_CString(hITTLog,"task_action",csTaskAction);
+	PutField_Char(hITTLog,"action_type",cActionType);
+	PutField_CString(hITTLog,"object",csObject);
+	PutField_Int(hITTLog,"ret_code",PD_ITT_INIT_RET_CODE);
+
+	RemoveField_CString(hITTLog,"key");
+	RemoveField_CString(hITTLog,"field");
+	RemoveField_CString(hITTLog,"value");
+	RemoveField_CString(hITTLog,"old_value");
+
+	if (cActionType == PD_ITT_LOG_INSERT) {
+		PutField_CString(hITTLog,"field",csField);
+		PutField_CString(hITTLog,"value",csValue);
+	} 
+
+	if (cActionType == PD_ITT_LOG_UPDATE) {
+		PutField_CString(hITTLog,"key",csKey);
+		PutField_CString(hITTLog,"field",csField);
+		PutField_CString(hITTLog,"value",csValue);
+		PutField_CString(hITTLog,"old_value",csOldValue);
+	}
+
+	if (cActionType == PD_ITT_LOG_DELETE) {
+		PutField_CString(hITTLog,"key",csKey);
+	} 
+
+	if (cActionType == PD_ITT_LOG_FUNCTION) {
+		PutField_CString(hITTLog,"key",csKey);
+	}
+
+//DEBUGLOG(("AddTaskLog()\n"));
+	DBObjPtr = CreateObj(DBPtr, "DBIttTaskLog", "Add");
+	iRet = (unsigned long)(*DBObjPtr)(hITTLog);
+	if (iRet != PD_OK) {
+//DEBUGLOG(("  FAILURE!!! iRet = [%d]\n",iRet));
+	} else {
+//DEBUGLOG(("  SUCCESS!!!\n"));
+	}
+
+
+	return iRet;
+}
+
+
+int CheckFolderName(const char* csTmp)
+{
+	while (*csTmp) {
+		if (!(*csTmp >= 'a' && *csTmp <= 'z') &&
+			!(*csTmp >= 'A' && *csTmp <= 'Z') &&
+			!(*csTmp >= '0' && *csTmp <= '9') &&
+			!(*csTmp == '/' || *csTmp == '-' || *csTmp == '_')) {
+				return PD_ERR;
+DEBUGLOG(("Authorize()::CheckFolderName %s char[%c] NOT MATCH [a-zA-Z0-9/-_]!!!\n", csTmp, *csTmp));
+ERRLOG("TxnOmtByUsTCP::Authorize::CheckFolderName() %s char[%c] NOT MATCH [a-zA-Z0-9/-_]!!!\n", csTmp, *csTmp);
+			break;
+		} else {
+// DEBUGLOG(("Authorize() int_prov_flr_name [%c]\n",*csTmp));
+		}
+		csTmp++;
+	}
+	return PD_OK;
+}

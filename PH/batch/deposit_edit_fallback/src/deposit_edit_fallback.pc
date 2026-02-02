@@ -1,0 +1,264 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define MY_PARSE_TOKEN            "&"
+#define MY_PARSE_FIELD_TOKEN      "="
+#define MY_OUT_TOKEN              ","
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+char cDebug = 'Y';
+
+char csProcessDate[PD_DATE_LEN + 1];
+
+int parse_arg(int argc, char **argv);
+int Process();
+
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("Usage: deposit_edit_fallback.exec -d process_date \n");
+		return FAILURE;
+	}
+
+	iRet = Process();
+
+	if (iRet == FAILURE) {
+DEBUGLOG(("process Abort\n")); 
+		TxnAbort();		
+	} else {
+DEBUGLOG(("process Completed\n")); 
+		//TxnAbort();
+	}
+
+	return iRet;
+}
+
+int	Process () {
+
+	int iRet = SUCCESS;
+	int iTmpRet;
+
+        hash_t *hRequest;
+	hash_t *hContext;
+	hash_t *hResponse;
+
+	hRequest = (hash_t *)malloc(sizeof(hash_t));
+        hContext = (hash_t*) malloc (sizeof(hash_t));
+        hResponse= (hash_t*) malloc (sizeof(hash_t));
+
+        hash_init(hContext, 0);
+        hash_init(hResponse, 0);
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("process edit start\n")); 
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_process_date [PD_DATE_LEN];
+
+		int	v_rec_no;
+		varchar	v_new_txn_id[PD_TXN_SEQ_LEN + 1];
+                varchar v_merch_ref[PD_MERCHANT_REF_LEN + 1];
+                varchar	v_deposit_amt [20 + 1];
+                varchar v_cust_deposit_datetime[PD_DATETIME_LEN + 1];
+                varchar v_bank_code[PD_AC_BANK_LEN + 1];
+                varchar v_bank_acct_num[PD_BANK_ACCT_NUM_LEN + 1];
+                varchar v_deposit_ref[PD_BANK_REF_LEN];
+                varchar v_deposit_bank[PD_BANK_DESC_LEN];
+
+		short ind_rec_no = -1;
+		short ind_new_txn_id = -1;
+                short ind_merch_ref = -1;
+                short ind_deposit_amt = -1;
+                short ind_cust_deposit_datetime = -1;
+                short ind_bank_code = -1;
+                short ind_bank_acct_num = -1;
+                short ind_deposit_ref = -1;
+                short ind_deposit_bank= -1;
+        EXEC SQL END DECLARE SECTION;
+
+
+	hv_process_date.len = strlen(csProcessDate);
+	memcpy(hv_process_date.arr, csProcessDate, hv_process_date.len);
+DEBUGLOG(("deposit_edit_fallback:: Process process_date [%.*s]\n", hv_process_date.len, hv_process_date.arr)); 
+
+        EXEC SQL DECLARE c_cursor_get_list CURSOR FOR
+                select rec_no,
+                       new_txn_id,
+                       merch_ref,
+                       to_char(deposit_amt),
+                       cust_deposit_datetime,
+                       bank_code,
+                       bank_acct_num,
+                       deposit_ref,
+                       deposit_bank
+                  from tmp_ol_odi_edit_final
+                 where rec_date = :hv_process_date
+                   and NVL(error_code , -1) = 0
+                   and new_txn_id is not null
+                  order by rec_no;
+
+	EXEC SQL OPEN c_cursor_get_list;
+	do {
+		EXEC SQL FETCH c_cursor_get_list
+		INTO
+                	:v_rec_no:ind_rec_no,
+                	:v_new_txn_id:ind_new_txn_id,
+	                :v_merch_ref:ind_merch_ref,
+			:v_deposit_amt:ind_deposit_amt,
+			:v_cust_deposit_datetime:ind_cust_deposit_datetime,
+			:v_bank_code:ind_bank_code,
+			:v_bank_acct_num:ind_bank_acct_num,
+			:v_deposit_ref:ind_deposit_ref,
+			:v_deposit_bank:ind_deposit_bank;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		hash_init(hRequest, 0);
+
+                if (ind_rec_no >= 0) {
+DEBUGLOG(("get_list: rec_no = [%d]\n", v_rec_no));
+                }
+
+		if (ind_new_txn_id >= 0) {
+                        v_new_txn_id.arr[v_new_txn_id.len] = '\0';
+DEBUGLOG(("get_list: [%d] txn_seq = [%s]\n", v_rec_no, (const char*)v_new_txn_id.arr));
+			PutField_CString(hRequest, "org_txn_seq", (const char*)v_new_txn_id.arr);
+                }  
+
+		if (ind_bank_code >= 0) {
+                        v_bank_code.arr[v_bank_code.len] = '\0';
+DEBUGLOG(("get_list: [%d] bank_code = [%s]\n", v_rec_no, (const char*)v_bank_code.arr));
+			PutField_CString(hRequest, "int_bank_code", (const char*)v_bank_code.arr);
+		}
+
+		if (ind_bank_acct_num >= 0) {
+                        v_bank_acct_num.arr[v_bank_acct_num.len] = '\0';
+DEBUGLOG(("get_list: [%d] bank_acct_num = [%s]\n", v_rec_no, (const char*)v_bank_acct_num.arr));
+			PutField_CString(hRequest, "bank_acct_num", (const char*)v_bank_acct_num.arr);
+		}
+
+		if (ind_deposit_amt >= 0) {
+                        v_deposit_amt.arr[v_deposit_amt.len] = '\0';
+DEBUGLOG(("get_list: [%d] deposit_amt = [%s]\n", v_rec_no, (const char*)v_deposit_amt.arr));
+			PutField_CString(hRequest, "deposit_amt", (const char*)v_deposit_amt.arr);
+		}
+
+		if (ind_cust_deposit_datetime >= 0) {
+                        v_cust_deposit_datetime.arr[v_cust_deposit_datetime.len] = '\0';
+DEBUGLOG(("get_list: [%d] cust_deposit_datetime = [%s]\n", v_rec_no, (const char*)v_cust_deposit_datetime.arr));
+			PutField_CString(hRequest, "cust_deposit_datetime", (const char*)v_cust_deposit_datetime.arr);
+		}
+
+		if (ind_deposit_bank >= 0) {
+                        v_deposit_bank.arr[v_deposit_bank.len] = '\0';
+DEBUGLOG(("get_list: [%d] deposit_bank = [%s]\n", v_rec_no, (const char*)v_deposit_bank.arr));
+			PutField_CString(hRequest, "deposit_bank", (const char*)v_deposit_bank.arr);
+		}
+	
+		if (ind_deposit_ref >= 0) {
+                        v_deposit_ref.arr[v_deposit_ref.len] = '\0';
+DEBUGLOG(("get_list: [%d] deposit_ref = [%s]\n", v_rec_no, (const char*)v_deposit_ref.arr));
+			PutField_CString(hRequest, "deposit_ref", (const char*)v_deposit_ref.arr);
+		}
+
+		PutField_CString(hRequest, "add_user", PD_UPDATE_USER);
+
+
+DEBUGLOG(("deposit_edit_fallback: call TxnOmtByUsDRE:Authorize\n"));
+
+                TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsDRE", "Authorize");
+                iTmpRet = (unsigned long)(*TxnObjPtr)(hContext , hRequest, hResponse);
+                if (iTmpRet != PD_OK) {
+DEBUGLOG(("deposit_edit_fallback: TxnOmtByUsDRE:Authorize Failed\n"));
+ERRLOG("deposit_edit_fallback: TxnOmtByUsDRE:Authorize Failed\n");
+                        iRet = FAILURE;
+			break;
+                } else {
+DEBUGLOG(("deposit_edit_fallback: [%d] Authorize Succ\n", v_rec_no));
+		}
+
+		hash_destroy(hRequest);
+
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_get_list;
+
+	hash_destroy(hRequest);
+	FREE_ME(hRequest);
+
+	hash_destroy(hContext);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hResponse);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("get_list_error: code %d\n", sqlca.sqlcode));
+ERRLOG("deposit_edit_fallback get_list_error code %d\n", sqlca.sqlcode);
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_get_list;
+        return PD_ERR;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+
+	while ((c = getopt(argc, argv, "d:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(csProcessDate, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csProcessDate, "") ) {
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}

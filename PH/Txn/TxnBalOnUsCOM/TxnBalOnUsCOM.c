@@ -1,0 +1,685 @@
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/03/03              [WMC]
+Add function SendToQueue			   2020/04/01		   [MSN]
+Add:
+    - 2 fields for merchant open balance
+    - function DoLogging			   2020/04/08		   [MSN]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnBalOnUsCOM.h"
+#include "myrecordset.h"
+#include "dbutility.h"
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Msg);
+
+void TxnBalOnUsCOM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int	CheckAmount(const char* csCcy, const char* csType, const char* csAmt);
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	double	dPtr = 0.0;
+
+	char	*csMid = NULL;
+	char	*csCcy = NULL;
+	char	*csPspId = NULL;
+	char	*csPspCcy = NULL;
+	char	*csPtr = NULL;
+	
+	char	csTag[PD_TAG_LEN+1];
+	
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authroize()\n"));
+
+/* balcode */
+	if (GetField_CString(hRequest,"balcode",&csPtr)) {
+DEBUGLOG((" balcode = [%s]\n",csPtr));
+		PutField_CString(hContext,"balcode",csPtr);	
+        } else {
+DEBUGLOG((" balcode is missing\n"));
+ERRLOG("TxnBalOnUsCOM::Authorize() balcode is missing\n");			
+                iRet =  INT_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* txnid */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hRequest,"txnid",&csPtr)) {
+DEBUGLOG((" txnid = [%s]\n",csPtr));
+                        PutField_CString(hContext,"txnid",csPtr);   
+                }
+        }
+
+/* txncode */
+        if (iRet == PD_OK) {
+                if (GetField_CString(hRequest,"txncode",&csPtr)) {
+DEBUGLOG((" txncode = [%s]\n",csPtr));
+                        PutField_CString(hContext,"txncode",csPtr);
+                }
+        }
+
+/* country */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hRequest,"country",&csPtr)) {
+DEBUGLOG((" country = [%s]\n",csPtr));
+                        PutField_CString(hContext,"country",csPtr);
+                }
+        }
+
+/* mid */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest,"mid",&csMid)) {
+DEBUGLOG((" mid = [%s]\n",csMid));
+         	       	DBObjPtr = CreateObj(DBPtr,"DBMerchDetail","GetMerchant");
+         	       	if ((*DBObjPtr)(csMid, rRecordSet) == PD_OK) {
+				PutField_CString(hContext,"mid",csMid);
+			} else {
+DEBUGLOG((" mid not found\n"));
+ERRLOG("TxnBalOnUsCOM::Authorize() mid not found\n");
+         	               	iRet = INT_MERCHANT_ID_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+	}
+
+/* ccy */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest,"ccy",&csCcy)) {
+DEBUGLOG((" ccy = [%s]\n",csCcy));
+			DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+                  	if ((unsigned long)(DBObjPtr)(csCcy) == FOUND) {
+                            	PutField_CString(hContext,"ccy",csCcy);
+                      	} else {
+DEBUGLOG((" ccy invalid\n"));
+ERRLOG("TxnBalOnUsCOM::Authorize() ccy invalid\n");
+                             	iRet = INT_INVALID_CURRENCY_CODE;
+				PutField_Int(hContext,"internal_error",iRet);
+                  	}
+                }
+	}
+
+/* service_code */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hRequest,"service_code",&csPtr)) {
+DEBUGLOG((" service_code = [%s]\n",csPtr));
+			PutField_CString(hContext,"service_code",csPtr);
+                }
+	}
+
+/* open_bal */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "open_bal");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+			if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+	}
+
+/* bal */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "bal");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+			if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+	}
+
+/* float */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "float");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* holdback */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "holdback");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* hold */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "hold");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* open_bal_sett */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "open_bal_sett");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* bal_sett */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "bal_sett");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* float_sett */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "float_sett");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* hold_sett */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "hold_sett");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* fundin_po */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "fundin_po");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* resv_po */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "resv_po");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+                        iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* afpo_float */
+	if (iRet == PD_OK) {
+		sprintf(csTag, "afpo_float");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+			iRet = CheckAmount(csCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* psp_id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest,"psp_id",&csPspId)) {
+DEBUGLOG((" psp_id = [%s]\n",csPspId));
+
+			RecordSet_Destroy(rRecordSet);
+			recordset_init(rRecordSet,0);
+
+                        DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetPspDetail");
+                        if ((*DBObjPtr)(csPspId, rRecordSet) == PD_OK) {
+                                PutField_CString(hContext,"psp_id",csPspId);
+                        } else {
+DEBUGLOG((" psp_id not found\n"));
+ERRLOG("TxnBalOnUsCOM::Authorize() psp_id not found\n");
+                                iRet = INT_PSP_ID_NOT_FOUND;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+                }
+        }	
+
+/* psp_ccy */
+	 if (iRet == PD_OK) {
+                if (GetField_CString(hRequest,"psp_ccy",&csPspCcy)) {
+DEBUGLOG((" psp_ccy = [%s]\n",csPspCcy));
+                        DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+                        if ((unsigned long)(DBObjPtr)(csPspCcy) == FOUND) {
+                                PutField_CString(hContext,"psp_ccy",csPspCcy);
+                        } else {
+DEBUGLOG((" psp_ccy invalid\n"));
+ERRLOG("TxnBalOnUsCOM::Authorize() psp_ccy invalid\n");
+                                iRet = INT_INVALID_CURRENCY_CODE;
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+                }
+        }	
+
+/* psp_bal */
+        if (iRet == PD_OK) {
+		sprintf(csTag, "psp_bal");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+			iRet = CheckAmount(csPspCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* psp_float */
+        if (iRet == PD_OK) {
+		sprintf(csTag, "psp_float");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+			iRet = CheckAmount(csPspCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+/* psp_hold */
+        if (iRet == PD_OK) {
+		sprintf(csTag, "psp_hold");
+                if (GetField_CString(hRequest, csTag, &csPtr)) {
+			iRet = CheckAmount(csPspCcy, csTag, csPtr);
+                        if (iRet == PD_OK) {
+				dPtr = newround(string2double((const unsigned char *)csPtr), PD_DECIMAL_LEN);
+				PutField_Double(hContext, csTag, dPtr);
+DEBUGLOG((" %s = [%lf]\n", csTag, dPtr));
+			}
+                }
+        }
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("Authroize() iRet = [%d]\n",iRet));	
+	return iRet;
+}
+
+int     CheckAmount(const char* csCcy, const char* csType, const char* csAmt)
+{
+        int     iRet = PD_OK;
+
+        double  dValue = 0.0;
+
+        char    *csValue;
+        char    *csPtr;
+	
+        csValue = (char*) malloc (PD_TMP_BUF_LEN + 1);
+
+        memset(csValue, 0, sizeof(csValue));
+
+	if (csAmt[0] == '-') {
+		strcpy(csValue, &csAmt[1]);
+	} else {
+		strcpy(csValue, csAmt);
+	}
+
+	csPtr = mystrtok(csValue, ".");
+        if (csPtr == NULL) {
+                iRet = INT_ERR;
+        } else {
+                if (is_numeric(csPtr) != PD_TRUE || strlen(csPtr) > PD_DIGIT_LEN) {
+                        iRet = INT_INVALID_PAY_AMOUNT;
+DEBUGLOG((" [%s] Invalid [%s]\n", csType, csValue));
+                } else {
+                        csPtr = mystrtok(NULL, ".");
+                        if (csPtr == NULL) {
+                                iRet = INT_ERR;
+                        } else if (is_numeric(csPtr) != PD_TRUE || strlen(csPtr) != PD_DECIMAL_LEN) {
+                                iRet = INT_INVALID_PAY_AMOUNT;
+DEBUGLOG((" [%s] Invalid [%s]\n", csType, csValue));
+                        }
+
+                        while( (csPtr = mystrtok(NULL, ".")) != NULL) {
+                                iRet = INT_ERR;
+                                break;
+                        }
+                }
+        }
+
+	if (iRet == PD_OK) {
+
+                dValue = newround(string2double((const unsigned char *)csValue), PD_DECIMAL_LEN);
+
+		if ((!strcmp(csType, "txn_amt"))
+		   || (!strcmp(csType, "net_amt"))
+		)
+		{
+			if (dValue <= 0.0) {
+DEBUGLOG((" [%s][%lf] <= 0.0, invalid\n", csType, dValue));
+				iRet =  INT_INVALID_PAY_AMOUNT;
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+
+		if (csCcy != NULL) {
+                
+                	DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindCurrency");
+                	if ((unsigned long)(DBObjPtr)(csCcy) == FOUND) {
+
+                        	DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsSupportDecimal");
+                        	if ((unsigned long)((DBObjPtr)(csCcy)) != PD_TRUE) {
+
+					long lTmp;
+                                	lTmp = (long) dValue;
+                                	if (dValue > lTmp) {
+                                        	iRet = INT_INVALID_PAY_AMOUNT;
+DEBUGLOG((" currency[%s] does not support decimal\n", csCcy));
+                                	}
+                        	}
+                	} else {
+DEBUGLOG((" currency[%s] not found\n", csCcy));
+				iRet = INT_INVALID_CURRENCY_CODE;
+                	}
+        	}
+	}
+
+        FREE_ME(csValue);
+
+        return iRet;
+}
+
+
+int	SendToQueue(hash_t *hMsg)
+{
+	int	iRet = PD_OK;
+	hex_t   *h_msg;
+	struct  msg_t *msg;
+	int     iSendLen;
+	long    lKey;
+	char	*csPtr = NULL;
+	char	*csTxnSeq = NULL;
+
+DEBUGLOG(("SendToQueue() Start\n"));
+
+
+/* balcode */
+	if(GetField_CString(hMsg, "balcode", &csPtr)){
+DEBUGLOG((" balcode = [%s]\n", csPtr));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG((" balcode is missing!!\n"));
+ERRLOG("TxnBalOnUsCOM::SendToQueue() balcode is missing!!\n");
+	}
+
+/* txn_seq */
+	if(GetField_CString(hMsg, "org_txn_seq", &csTxnSeq)){
+DEBUGLOG((" org_txn_seq = [%s]\n", csTxnSeq));
+	}
+	else if(GetField_CString(hMsg, "txn_seq", &csTxnSeq)){
+DEBUGLOG((" txn_seq = [%s]\n", csTxnSeq));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG((" txn_seq is missing!!\n"));
+ERRLOG("TxnBalOnUsCOM::SendToQueue() txn_seq is missing!!\n");
+	}
+
+
+/* Format Queue message */
+	if(iRet == PD_OK){
+DEBUGLOG(("Call BalMsg::FormatMsg()\n"));
+		MsgObjPtr = CreateObj(MsgPtr, "BalMsg", "FormatMsg");
+		h_msg = (hex_t*) malloc (sizeof(hex_t));
+		if ((*MsgObjPtr)(hMsg, h_msg->msg, &h_msg->len) == PD_OK) {
+
+/* send to Queue*/
+			lKey = GetMQKey((const unsigned char *)"BALREQQ");
+
+			msg = (struct msg_t*)malloc(sizeof(struct msg_t) + MAX_MSG_SIZE);
+			msg->mtype  = ctol((const unsigned char *)csTxnSeq, strlen(csTxnSeq));
+			memset(msg->mtext, 0, sizeof(msg->mtext));
+			MQ_build_header((unsigned char*)msg->mtext,
+					MQ_REQ,
+					PD_CHANNEL_BAL,
+					0,
+					NULL,
+					0);
+			memcpy(&msg->mtext[MQ_HEADER_LEN], h_msg->msg, h_msg->len);
+			msg->mtext[MQ_HEADER_LEN + h_msg->len] = '\0';
+			iSendLen = MQ_HEADER_LEN + h_msg->len;
+DEBUGLOG(("send msg = [%s] send len = [%d]\n", msg->mtext, iSendLen));
+DEBUGLOG(("key = [%ld][%ld]\n", lKey, msg->mtype));
+
+			if (MQSend(lKey, msg, iSendLen) != MQ_OK ) {
+				iRet = INT_ERR;
+DEBUGLOG(("MQSend failed!!\n"));
+ERRLOG("TxnBalOnUsCOM::SendToQueue() MQSend failed!!\n");
+			}
+
+			FREE_ME(msg);
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("FormatMsg failed\n"));
+		}
+
+		FREE_ME(h_msg);
+	}
+
+DEBUGLOG(("SendToQueue() iRet = [%d]\n",iRet));	
+	return iRet;
+}
+
+
+int	DoLogging(hash_t *hIn)
+{
+	int	iRet = PD_OK;
+	int	iFileLogging = PD_TRUE;
+	int	iDBLogging = PD_TRUE;
+	char	*csTxnSeq = NULL;	
+	char	*csAprvDate = NULL;	
+	char	*csTxnCode = NULL;	
+	char	*csMerchantId = NULL;	
+	char	*csServiceCode = NULL;	
+	char	*csCountry = NULL;	
+	char	*csCcy = NULL;	
+	char	*csPspId = NULL;	
+	char	*csPspCcy = NULL;	
+	double	dOpenBal = 0.0;
+	double	dCurrBal = 0.0;
+	double	dFloat = 0.0;
+	double	dHoldBack = 0.0;
+	double	dHold = 0.0;
+	double	dFundInPo = 0.0;
+	double	dResvPo = 0.0;
+	double	dAFPO = 0.0;
+	double	dOpenBalSett = 0.0;
+	double	dCurrBalSett = 0.0;
+	double	dFloatSett = 0.0;
+	double	dHoldSett = 0.0;
+	double	dPspBal = 0.0;
+	double	dPspFloat = 0.0;
+	double	dPspHold = 0.0;
+
+
+DEBUGLOG(("DoLogging() Start\n"));
+
+	GetField_Int(hIn, "do_file_log", &iFileLogging);
+	GetField_Int(hIn, "do_db_log", &iDBLogging);
+DEBUGLOG(("Do file log [%d], Do DB log [%d]\n", iFileLogging, iDBLogging));
+
+
+	if( !GetField_CString(hIn, "org_txn_seq", &csTxnSeq)
+	 || !GetField_CString(hIn, "approval_date", &csAprvDate)
+	 || !GetField_CString(hIn, "txn_code", &csTxnCode)
+	 || !GetField_CString(hIn, "org_merchant_id", &csMerchantId)
+	 || !GetField_CString(hIn, "org_service_code", &csServiceCode)
+	 || !GetField_CString(hIn, "org_txn_country", &csCountry)
+	 || !GetField_CString(hIn, "org_txn_ccy", &csCcy)
+	 || !GetField_Double(hIn, "open_bal", &dOpenBal)
+	 || !GetField_Double(hIn, "current_bal", &dCurrBal)
+	 || !GetField_Double(hIn, "total_float", &dFloat)
+	 || !GetField_Double(hIn, "total_reserved_amount", &dHoldBack)
+	 || !GetField_Double(hIn, "total_hold", &dHold)
+	 || !GetField_Double(hIn, "fundin_payout", &dFundInPo)
+	 || !GetField_Double(hIn, "reserved_payout", &dResvPo)
+	 || !GetField_Double(hIn, "total_float_after_payout", &dAFPO)
+	 || !GetField_Double(hIn, "open_bal_settlement", &dOpenBalSett)
+	 || !GetField_Double(hIn, "current_bal_settlement", &dCurrBalSett)
+	 || !GetField_Double(hIn, "total_float_settlement", &dFloatSett)
+	 || !GetField_Double(hIn, "total_hold_settlement", &dHoldSett)
+	 || !GetField_CString(hIn, "org_psp_id", &csPspId)
+	 || !GetField_CString(hIn, "org_dst_txn_ccy", &csPspCcy)
+	 || !GetField_Double(hIn, "psp_balance", &dPspBal)
+	 || !GetField_Double(hIn, "psp_total_float", &dPspFloat)
+	 || !GetField_Double(hIn, "psp_total_hold", &dPspHold)){
+		iRet = INT_ERR;
+DEBUGLOG((" missing parameter(s)!!\n"));
+	}
+
+/* write file log */
+	if(iRet == PD_OK && iFileLogging){
+		
+		FILE	*fLog;
+		char	csLogFile[PD_TMP_BUF_LEN];
+
+		sprintf(csLogFile, "%s/%s.%s.log", getenv("LOGPATH"), "txn_balance_detail", csAprvDate);
+
+DEBUGLOG((" write file log [%s] for [%s]\n", csLogFile, csTxnSeq));
+		fLog = fopen(csLogFile, "a");
+		if (fLog == NULL) {
+			iRet = INT_ERR;
+DEBUGLOG((" write file log failed!!\n"));
+		}
+		else{
+			fprintf(fLog, "%s,%s,%s,%s,%s,%s,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%s,%s,%.2f,%.2f,%.2f\n",
+					csTxnSeq, csAprvDate, csTxnCode, csMerchantId, csServiceCode, csCountry, csCcy, 
+					dOpenBal, dCurrBal, dFloat, dHoldBack, dHold, dFundInPo, dResvPo, dAFPO,
+					dOpenBalSett, dCurrBalSett, dFloatSett, dHoldSett, csPspId, csPspCcy, dPspBal, dPspFloat, dPspHold);      
+		}
+
+		fsync(fileno(fLog));
+		fflush(fLog);
+		fclose(fLog);
+	}
+
+
+/* insert record to txn_balance_detail*/
+	if(iRet == PD_OK && iDBLogging){
+		hash_t *hLog;
+		hLog = (hash_t*)  malloc (sizeof(hash_t));
+		hash_init(hLog,0);
+
+		PutField_CString(hLog, "txn_id", csTxnSeq);
+		PutField_CString(hLog, "txn_aprv_date", csAprvDate);
+		PutField_Char(hLog, "upd_status", PD_PROCESSING);
+		PutField_CString(hLog, "txn_code", csTxnCode);
+		PutField_CString(hLog, "merchant_id", csMerchantId);
+		PutField_CString(hLog, "service_code", csServiceCode);
+		PutField_CString(hLog, "country_id", csCountry);
+		PutField_CString(hLog, "net_ccy", csCcy);
+		PutField_Double(hLog, "open_bal", dOpenBal);
+		PutField_Double(hLog, "current_bal", dCurrBal);
+		PutField_Double(hLog, "total_float", dFloat);
+		PutField_Double(hLog, "total_reserved_amt", dHoldBack);
+		PutField_Double(hLog, "total_hold", dHold);
+		PutField_Double(hLog, "fundin_payout", dFundInPo);
+		PutField_Double(hLog, "reserved_payout", dResvPo);
+		PutField_Double(hLog, "total_float_after_payout", dAFPO);
+		PutField_Double(hLog, "open_bal_settlement", dOpenBalSett);
+		PutField_Double(hLog, "current_bal_settlement", dCurrBalSett);
+		PutField_Double(hLog, "total_float_settlement", dFloatSett);
+		PutField_Double(hLog, "total_hold_settlement", dHoldSett);
+		PutField_CString(hLog, "psp_id", csPspId);
+		PutField_CString(hLog, "psp_ccy", csPspCcy);
+		PutField_Double(hLog, "psp_bal", dPspBal);
+		PutField_Double(hLog, "psp_total_float", dPspFloat);
+		PutField_Double(hLog, "psp_hold", dPspHold);
+		PutField_CString(hLog, "create_user", PD_UPDATE_USER);
+
+DEBUGLOG(("Call DBTxnBalanceDetail::AddBalDetail()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBTxnBalanceDetail", "AddBalDetail");
+		if ((unsigned long)(*DBObjPtr)(hLog) != PD_OK) {
+			iRet = INT_ERR;
+DEBUGLOG(("AddBalDetail failed!!\n"));
+		}
+
+		hash_destroy(hLog);
+		FREE_ME(hLog);
+	}
+
+
+DEBUGLOG(("DoLogging() iRet = [%d]\n",iRet));	
+	return iRet;
+}

@@ -1,0 +1,493 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   2016/06/20              Dirk Wong
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	'|'
+
+OBJPTR(BO);
+
+char	cs_table[PD_CODE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+char    cs_mode[PD_CODE_LEN + 1];
+
+char    cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+int process_clients(FILE *fp);
+int process_mi_entity_rsp(FILE *fp);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 4) {
+        printf("usage:  -t Table -d Date -m Mode\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;;
+        char    cs_file1[PD_MAX_FILE_LEN + 1];
+        char    cs_file2[PD_MAX_FILE_LEN + 1];
+        FILE    *fp1, *fp2;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+        	printf("usage:  -t Table -d Date -m Mode\n");
+                return (iRet);
+        }
+
+DEBUGLOG(("Table prefix [%s]\n",cs_table));
+DEBUGLOG(("Start Date [%s]\n",cs_date));
+
+        char    cs_yyyy[PD_YYYY_LEN+1];
+        char    cs_yyyymm[PD_YYYY_LEN+PD_MM_LEN+1];
+	memset(cs_yyyy,0,sizeof(cs_yyyy));
+	memset(cs_yyyymm,0,sizeof(cs_yyyymm));
+        strncpy(cs_yyyy,cs_date,4);
+        strncpy(cs_yyyymm,cs_date,6);
+
+	if ( (!strcmp(cs_mode, PD_MODE_FULL)) || (!strcmp(cs_mode, PD_MODE_DELTA)) ) {
+DEBUGLOG(("Mode [%s]\n",cs_mode));
+	} else {
+DEBUGLOG(("Mode ERROR, not support [%s]\n", cs_mode));
+		return FAILURE;
+	}
+
+
+//CLIENTS
+	if ( (!strcmp(cs_table, PD_TBL_CLIENTS)) || (!strcmp(cs_table, PD_TBL_ALL)) ) {
+DEBUGLOG(("----- Start CLIENTS -----\n"));
+
+		if (!strcmp(cs_mode, PD_MODE_FULL)) 
+			sprintf(cs_file1, "%s/%s/%s/%s/full_clients_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+		else
+			sprintf(cs_file1, "%s/%s/%s/%s/clients_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+
+		fp1 = fopen(cs_file1,"w");
+	        if (fp1 == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_file1));
+	                return FAILURE;
+	        }
+	        iRet = process_clients(fp1);
+	        fclose(fp1);
+	}
+
+
+//MI_ENTITY_RSP
+	if ( (!strcmp(cs_table, PD_TBL_MIRSP)) || (!strcmp(cs_table, PD_TBL_ALL)) ) {
+DEBUGLOG(("----- Start MI_ENTITY_RSP -----\n"));
+
+		if (!strcmp(cs_mode, PD_MODE_FULL))
+			sprintf(cs_file2, "%s/%s/%s/%s/full_mi_entity_rsp_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+		else
+			sprintf(cs_file2, "%s/%s/%s/%s/mi_entity_rsp_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+
+		fp2 = fopen(cs_file2,"w");
+	        if (fp2 == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_file2));
+	                return FAILURE;
+	        }
+	        iRet = process_mi_entity_rsp(fp2);
+	        fclose(fp2);
+	}
+
+
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int process_clients(FILE *fp)
+{               
+        int     iRet = SUCCESS;
+	char	csTmp[PD_TMP_BUF_LEN+1];
+
+	EXEC SQL WHENEVER SQLERROR GOTO error_clients;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_start_date[PD_DATE_LEN];
+		varchar	hv_end_date[PD_DATE_LEN];
+
+		varchar	v_client_id[PD_CLIENT_ID_LEN];
+		varchar	v_create_ts[PD_DATETIME_LEN+1];
+		varchar	v_update_ts[PD_DATETIME_LEN+1];
+		varchar	v_create_user[PD_USER_LEN+1];
+		varchar	v_update_user[PD_USER_LEN+1];
+		varchar	v_client_name[PD_CLIENT_NAME_LEN+1];
+		varchar	v_status[2+1];
+		char	v_business_type;
+		varchar	v_company_name[PD_COMPANY_NAME_LEN+1];
+		varchar	v_company_addr[PD_COMPANY_ADDR_LEN+1];
+
+		short	ind_client_id = -1;
+		short	ind_create_ts = -1;
+		short	ind_update_ts = -1;
+		short	ind_create_user = -1;
+		short	ind_update_user = -1;
+		short	ind_client_name = -1;
+		short	ind_status = -1;
+		short	ind_business_type = -1;
+		short	ind_company_name = -1;
+		short	ind_company_addr = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_start_date.len = strlen((char*)cs_date);
+	memcpy(hv_start_date.arr,cs_date,hv_start_date.len);
+
+	hv_end_date.len = strlen((char*)cs_date);
+	memcpy(hv_end_date.arr,cs_date,hv_end_date.len);
+
+	if (!strcmp(cs_mode, PD_MODE_FULL)) {
+		memcpy(hv_start_date.arr,"19900101",hv_start_date.len);
+	};
+
+	EXEC SQL DECLARE c_cursor_clients CURSOR FOR
+		SELECT	CLIENT_ID,
+			to_char(CREATE_TIMESTAMP,'yyyymmddhh24miss'),
+			to_char(UPDATE_TIMESTAMP,'yyyymmddhh24miss'),
+			CREATE_USER,
+			UPDATE_USER,
+			CLIENT_NAME,
+			STATUS,
+			BUSINESS_TYPE,
+			COMPANY_NAME,
+			COMPANY_ADDR
+		  FROM	CLIENTS
+		 WHERE	update_timestamp >= to_date(:hv_start_date,'YYYYMMDD')
+		   AND	update_timestamp < to_date(:hv_end_date,'YYYYMMDD')+1;
+
+	EXEC SQL OPEN c_cursor_clients;
+	do {
+		EXEC SQL FETCH c_cursor_clients
+		INTO	:v_client_id:ind_client_id,
+			:v_create_ts:ind_create_ts,
+			:v_update_ts:ind_update_ts,
+			:v_create_user:ind_create_user,
+			:v_update_user:ind_update_user,
+			:v_client_name:ind_client_name,
+			:v_status:ind_status,
+			:v_business_type:ind_business_type,
+			:v_company_name:ind_company_name,
+			:v_company_addr:ind_company_addr;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 client_id */
+		if (ind_client_id >= 0) {
+			sprintf(csTmp,"%.*s",v_client_id.len,v_client_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #1 create_ts */
+		if (ind_create_ts >= 0) {
+			sprintf(csTmp,"%.*s",v_create_ts.len,v_create_ts.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #2 update_ts */
+		if (ind_update_ts >= 0) {
+			sprintf(csTmp,"%.*s",v_update_ts.len,v_update_ts.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #3 create_user */
+		if (ind_create_user >= 0) {
+			sprintf(csTmp,"%.*s",v_create_user.len,v_create_user.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #4 update_user */
+		if (ind_update_user >= 0) {
+			sprintf(csTmp,"%.*s",v_update_user.len,v_update_user.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #5 client_name */
+		if (ind_client_name >= 0) {
+			sprintf(csTmp,"%.*s",v_client_name.len,v_client_name.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #6 status */
+		if (ind_status >= 0) {
+			sprintf(csTmp,"%.*s",v_status.len,v_status.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #7 business_type */
+		if (ind_business_type >= 0) {
+			fprintf(fp,"%c%c",v_business_type,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #8 company_name */
+		if (ind_company_name >= 0) {
+			sprintf(csTmp,"%.*s",v_company_name.len,v_company_name.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #9 company_addr */
+		if (ind_company_addr>= 0) {
+			sprintf(csTmp,"%.*s",v_company_addr.len,v_company_addr.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* new line */
+		fprintf(fp,"\n");
+
+ 	} while (PD_TRUE);
+	EXEC SQL CLOSE c_cursor_clients;
+
+        return iRet;
+
+error_clients:
+DEBUGLOG(("clients error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_clients;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int process_mi_entity_rsp(FILE *fp)
+{               
+        int     iRet = SUCCESS;
+	char	csTmp[PD_TMP_BUF_LEN+1];
+
+	EXEC SQL WHENEVER SQLERROR GOTO error_mientityrsp;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	hv_start_date[PD_DATE_LEN];
+		varchar	hv_end_date[PD_DATE_LEN];
+
+		varchar	v_entity_id[10+1];
+		varchar	v_rsp_id[10+1];
+		varchar	v_rsp_name[50+1];
+		varchar	v_rsp_node_id[5+1];
+		varchar	v_rsp_status[2+1];
+		varchar	v_create_ts[PD_DATETIME_LEN+1];
+		varchar	v_update_ts[PD_DATETIME_LEN+1];
+		varchar	v_create_user[PD_USER_LEN+1];
+		varchar	v_update_user[PD_USER_LEN+1];
+
+		short	ind_entity_id = -1;
+		short	ind_rsp_id = -1;
+		short	ind_rsp_name = -1;
+		short	ind_rsp_node_id = -1;
+		short	ind_rsp_status = -1;
+		short	ind_create_ts = -1;
+		short	ind_update_ts = -1;
+		short	ind_create_user = -1;
+		short	ind_update_user = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_start_date.len = strlen((char*)cs_date);
+	memcpy(hv_start_date.arr,cs_date,hv_start_date.len);
+
+	hv_end_date.len = strlen((char*)cs_date);
+	memcpy(hv_end_date.arr,cs_date,hv_end_date.len);
+
+	if (!strcmp(cs_mode, PD_MODE_FULL)) {
+		memcpy(hv_start_date.arr,"19900101",hv_start_date.len);
+	}
+
+DEBUGLOG((">>Start [%s]\n",hv_start_date.arr));
+DEBUGLOG((">>End [%s]\n",hv_end_date.arr));
+
+	EXEC SQL DECLARE c_cursor_mientityrsp CURSOR FOR
+		SELECT	ER_ENTITY_ID,
+			ER_RSP_ID,
+			ER_RSP_NAME,
+			ER_RSP_NODE_ID,
+			ER_RSP_STATUS,
+			to_char(ER_CREATE_TIMESTAMP,'yyyymmddhh24miss'),
+			to_char(ER_UPDATE_TIMESTAMP,'yyyymmddhh24miss'),
+			ER_CREATE_USER,
+			ER_UPDATE_USER
+		  FROM	MI_ENTITY_RSP
+		 WHERE	ER_UPDATE_TIMESTAMP >= to_date(:hv_start_date,'YYYYMMDD')
+		   AND	ER_UPDATE_TIMESTAMP < to_date(:hv_end_date,'YYYYMMDD')+1;
+
+	EXEC SQL OPEN c_cursor_mientityrsp;
+	do {
+		EXEC SQL FETCH c_cursor_mientityrsp
+		INTO	:v_entity_id:ind_entity_id,
+			:v_rsp_id:ind_rsp_id,
+			:v_rsp_name:ind_rsp_name,
+			:v_rsp_node_id:ind_rsp_node_id,
+			:v_rsp_status:ind_rsp_status,
+			:v_create_ts:ind_create_ts,
+			:v_update_ts:ind_update_ts,
+			:v_create_user:ind_create_user,
+			:v_update_user:ind_update_user;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Field #0 entity_id */
+		if (ind_entity_id >= 0) {
+			sprintf(csTmp,"%.*s",v_entity_id.len,v_entity_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #1 rsp_id */
+		if (ind_rsp_id >= 0) {
+			sprintf(csTmp,"%.*s",v_rsp_id.len,v_rsp_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #2 rsp_name */
+		if (ind_rsp_name >= 0) {
+			sprintf(csTmp,"%.*s",v_rsp_name.len,v_rsp_name.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #3 rsp_node_id */
+		if (ind_rsp_node_id >= 0) {
+			sprintf(csTmp,"%.*s",v_rsp_node_id.len,v_rsp_node_id.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #4 rsp_status */
+		if (ind_rsp_status >= 0) {
+			sprintf(csTmp,"%.*s",v_rsp_status.len,v_rsp_status.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #5 create_ts */
+		if (ind_create_ts >= 0) {
+			sprintf(csTmp,"%.*s",v_create_ts.len,v_create_ts.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #6 update_ts */
+		if (ind_update_ts >= 0) {
+			sprintf(csTmp,"%.*s",v_update_ts.len,v_update_ts.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #7 create_user */
+		if (ind_create_user>= 0) {
+			sprintf(csTmp,"%.*s",v_create_user.len,v_create_user.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* Field #8 update_user */
+		if (ind_update_user>= 0) {
+			sprintf(csTmp,"%.*s",v_update_user.len,v_update_user.arr);
+			fprintf(fp,"%s%c",csTmp,PD_MY_DELIMITOR);
+		} else
+			fprintf(fp,"%c",PD_MY_DELIMITOR);
+
+/* new line */
+		fprintf(fp,"\n");
+
+ 	} while (PD_TRUE);
+	EXEC SQL CLOSE c_cursor_mientityrsp;
+
+        return iRet;
+
+error_mientityrsp:
+DEBUGLOG(("mi_entity_rsp error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_mientityrsp;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"t:d:m:")) != EOF) {
+                switch (c) {
+                        case 't':
+                                strcpy(cs_table, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        case 'm':
+                                strcpy(cs_mode, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if ( (!strcmp(cs_table,"")) || (!strcmp(cs_date,"")) || (!strcmp(cs_mode,"")) )
+                return FAILURE;
+
+        return SUCCESS;
+}
+

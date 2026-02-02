@@ -1,0 +1,58 @@
+CREATE OR REPLACE FUNCTION PHUSER.sp_oaubd_update_disabled(
+	in_int_bank_code		OL_AUTO_UPLOAD_BANK_DETAIL.OAUBD_INT_BANK_CODE%type,
+	in_bank_acct_num		OL_AUTO_UPLOAD_BANK_DETAIL.OAUBD_BANK_ACCT_NUM%type,
+	in_acct_type			OL_AUTO_UPLOAD_BANK_DETAIL.OAUBD_ACCT_TYPE%type,
+	in_disabled			OL_AUTO_UPLOAD_BANK_DETAIL.OAUBD_DISABLED%type,
+	in_update_user			OL_AUTO_UPLOAD_BANK_DETAIL.OAUBD_UPDATE_USER%type
+)
+RETURN NUMBER IS
+
+BEGIN
+
+	UPDATE	OL_AUTO_UPLOAD_BANK_DETAIL
+	SET	OAUBD_DISABLED = in_disabled,
+		OAUBD_UPDATE_TIMESTAMP = SYSDATE,
+		OAUBD_UPDATE_USER = in_update_user
+	WHERE	OAUBD_INT_BANK_CODE = in_int_bank_code
+		AND OAUBD_BANK_ACCT_NUM = in_bank_acct_num
+		AND OAUBD_ACCT_TYPE = in_acct_type;
+
+	IF SQL%ROWCOUNT = 0 THEN
+
+		INSERT INTO OL_AUTO_UPLOAD_BANK_DETAIL(
+			OAUBD_INT_BANK_CODE,
+			OAUBD_BANK_ACCT_NUM,
+			OAUBD_ACCT_TYPE,
+			OAUBD_DISABLED,
+			OAUBD_CREATE_TIMESTAMP,
+			OAUBD_CREATE_USER,
+			OAUBD_UPDATE_TIMESTAMP,
+			OAUBD_UPDATE_USER
+		)
+		VALUES(
+			in_int_bank_code,
+			in_bank_acct_num,
+			in_acct_type,
+			in_disabled,
+			SYSDATE,
+			in_update_user,
+			SYSDATE,
+			in_update_user
+		);
+
+		IF SQL%ROWCOUNT = 0 THEN
+			RETURN 1;
+		ELSE
+			RETURN 0;
+		END IF;
+
+  	ELSE
+     		return 0;
+  	END IF;
+
+EXCEPTION
+	WHEN OTHERS THEN
+     		RETURN 9;
+
+END sp_oaubd_update_disabled;
+/

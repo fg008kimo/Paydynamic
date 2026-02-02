@@ -1,0 +1,225 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/15              LokMan Chow
+Add void PBU					   2011/12/16		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsVOT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnMgtByUsVOT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csTxnSeq;
+	char	*csTxnCode;
+	char	*csProcessCode;
+	char	*csProcessType;
+	char	*csTmp;
+	char	cTmp;
+	int	iTmp;
+	int	iCheck;
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("Authorize\n"));
+
+
+	if(GetField_CString(hRequest,"org_txn_seq",&csTxnSeq)){
+		PutField_CString(hContext,"org_txn_seq",csTxnSeq);
+DEBUGLOG(("Authorize::org_txn_seq= [%s]\n",csTxnSeq));
+	}
+	else{
+DEBUGLOG(("Authorize::txnid not found!!\n"));
+ERRLOG("TxnMgtByUsVOT:Authorize::txnid not found!!\n");
+		iRet=INT_INVALID_TXN;
+	}
+
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hContext,"update_user",csTmp);
+DEBUGLOG(("Authorize::update_user= [%s]\n",csTmp));
+	}
+
+	//PutField_CString(hContext,"process_code","000000");
+	//PutField_CString(hContext,"process_type","0000");
+
+	iCheck = is_numeric(csTxnSeq);
+//DEBUGLOG(("Authorize::is_numeric= [%d]/[%d]\n",iCheck,PD_TRUE));
+
+	if((iRet==PD_OK) && (iCheck==PD_TRUE)){
+DEBUGLOG(("Authorize::Call DBTransaction:GetTxnHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnHeader::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"txn_code",&csTxnCode)) {
+DEBUGLOG(("GetTxnHeader::txn_code = [%s]\n",csTxnCode));
+				}
+				if (GetField_CString(hRec,"process_code",&csProcessCode)) {
+DEBUGLOG(("GetTxnHeader::process_code = [%s]\n",csProcessCode));
+				}
+				if (GetField_CString(hRec,"process_type",&csProcessType)) {
+DEBUGLOG(("GetTxnHeader::process_type = [%s]\n",csProcessType));
+				}
+				if (GetField_CString(hRec,"merchant_id",&csTmp)) {
+                                        PutField_CString(hRequest,"merchant_id",csTmp);
+DEBUGLOG(("GetTxnHeader::merchant_id = [%s]\n",csTmp));
+                                }
+                                if (GetField_CString(hRec,"service_code",&csTmp)) {
+                                        PutField_CString(hRequest,"service_code",csTmp);
+DEBUGLOG(("GetTxnHeader::service_code= [%s]\n",csTmp));
+                                }
+				if (GetField_Char(hRec,"status",&cTmp)) {
+DEBUGLOG(("GetTxnHeader::status = [%c]\n",cTmp));
+					if(cTmp!=PD_COMPLETE){
+						iRet=INT_INVALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid status[%c]\n",cTmp));
+ERRLOG("TxnMgtByUsVOT:GetTxnHeader::Invalid status!!\n");
+					}
+					else{
+						if (GetField_Char(hRec,"ar_ind",&cTmp)) {
+DEBUGLOG(("GetTxnHeader::ar_ind = [%c]\n",cTmp));
+							if(cTmp!=PD_ACCEPT){
+								iRet=INT_INVALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid ar_ind[%c]\n",cTmp));
+ERRLOG("TxnMgtByUsVOT:Authorize::GetTxnHeader::Invalid ar_ind!!\n");
+							}
+						}
+					}
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetTxnHeader:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnMgtByUsVOT:Authorize::GetTxnHeader::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+
+	//}
+	//RecordSet_Destroy(rRecordSet);
+
+
+		if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBTxnCode:IsVoidable\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTxnCode","IsVoidable");
+			if ((unsigned long)(*DBObjPtr)(csTxnCode,csProcessType,csProcessCode) != PD_TRUE) {
+				iRet = INT_INVALID_TXN;
+DEBUGLOG(("IsVoidable:: un-voidable for [%s][%s][%s]\n",csTxnCode,csProcessCode,csProcessType));
+ERRLOG("TxnMgtByUsVOT:Authorize::un-voidable txn!!\n");
+			}
+		}
+
+
+		if(iRet==PD_OK){
+			if(!strcmp(csTxnCode,PD_PSP_BAL_TRANSFER)){
+DEBUGLOG(("Authorize::Call TxnMgtByUsPBR:Authorize\n"));
+				TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsPBR","Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+				if(iRet==PD_OK)
+					iRet=PD_SKIP_OK;
+			}
+		}
+
+		if(iRet==PD_OK){
+//////get merchant_client_id
+DEBUGLOG(("Authorize::Call BOMerchant:GetMerchantDetail\n"));
+                	BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+                	if((unsigned long)(*BOObjPtr)(hContext,hRequest)!=PD_OK)
+                	        iRet = INT_ERR;
+        	}
+
+		if(iRet==PD_OK){
+			if(!strcmp(csTxnCode,PD_DEPOSIT_TXN_CODE)||
+			   !strcmp(csTxnCode,PD_INITIAL_TXN_CODE)){
+DEBUGLOG(("Authorize::Call TxnMgtByUsVDS:Authorize\n"));
+				PutField_CString(hContext,"new_txn_code",PD_DEPOSIT_VOID);
+				TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsVDS","Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+			}
+			else if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)){
+DEBUGLOG(("Authorize::Call TxnMgtByUsVST:Authorize\n"));
+				PutField_CString(hContext,"new_txn_code",PD_SETTLEMENT_VOID);
+				TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsVST","Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+			}
+
+		}
+		RecordSet_Destroy(rRecordSet);
+
+	}
+
+
+	else if((iRet==PD_OK) && (iCheck != PD_TRUE)){
+		if(csTxnSeq[0] != PD_WITHDRAW_BATCH_PREFIX){
+			iRet = INT_ERR;
+		}
+		else{
+DEBUGLOG(("Authorize::Call DBMerchantUploadFileDetail:GetDetailByTxnId\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","GetDetailByTxnId");
+			if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if (GetField_Int(hRec,"status",&iTmp)) {
+DEBUGLOG(("status = [%d]\n",iTmp));
+						if(!((iTmp==PAYOUT_MASTER_TRANSACTION_ACCEPT)||
+						   (iTmp==PAYOUT_MASTER_TRANSACTION_GENERATED))){
+							iRet = INT_ERR;
+DEBUGLOG(("Authorize::Invalid Status. Txn cannot be voided\n"));
+						}
+					}
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+
+			if(iRet == PD_OK){
+DEBUGLOG(("Authorize::Call TxnMgtByUsVPO:Authorize\n"));
+				PutField_CString(hContext,"new_txn_code",PD_PAYOUT_VOID);
+				TxnObjPtr = CreateObj(TxnPtr,"TxnMgtByUsVPO","Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+			}
+		}
+	}
+
+	if(iRet==PD_SKIP_OK)
+		iRet=PD_OK;
+
+	if(iRet!=PD_OK){
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	FREE_ME(rRecordSet);
+DEBUGLOG(("TxnMgtByUsVOT Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

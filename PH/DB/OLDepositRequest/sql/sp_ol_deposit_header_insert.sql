@@ -1,0 +1,57 @@
+CREATE OR REPLACE FUNCTION sp_ol_deposit_header_insert(
+	in_file_id		ol_deposit_request_header.oldh_file_id%type,
+	in_filename		ol_deposit_request_header.oldh_filename%type,
+	in_merchant_id		ol_deposit_request_header.oldh_merchant_id%type,
+	in_accept_count		ol_deposit_request_header.oldh_accept_count%type,
+	in_accept_amount	ol_deposit_request_header.oldh_accept_amount%type,
+	in_total_count		ol_deposit_request_header.oldh_total_count%type,
+	in_status		ol_deposit_request_header.oldh_status%type,
+	in_party		ol_deposit_request_header.oldh_party%type,
+	in_org_filename		ol_deposit_request_header.oldh_org_filename%type,
+	in_create_user		ol_deposit_request_header.oldh_create_user%type)
+  RETURN NUMBER IS
+BEGIN
+
+	INSERT INTO ol_deposit_request_header (
+		oldh_file_id,
+		oldh_filename,
+		oldh_merchant_id,
+		oldh_accept_count,
+		oldh_accept_amount,
+		oldh_total_count,
+		oldh_status,
+		oldh_party,
+		oldh_org_filename,
+		oldh_create_timestamp,
+		oldh_create_user,
+		oldh_update_timestamp,
+		oldh_update_user
+		)
+	VALUES (	
+		in_file_id,
+		in_filename,
+		in_merchant_id,
+		in_accept_count,
+		in_accept_amount,
+		in_total_count,
+		in_status,
+		in_party,
+		in_org_filename,
+		sysdate,
+		in_create_user,
+		sysdate,
+		in_create_user
+		);
+
+	IF SQL%ROWCOUNT = 0 THEN
+		RETURN 1;
+	ELSE
+		RETURN 0;
+	END IF;
+
+EXCEPTION
+	WHEN OTHERS THEN	
+		RETURN 9;
+
+END sp_ol_deposit_header_insert;
+/

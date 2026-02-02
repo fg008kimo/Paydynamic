@@ -1,0 +1,13 @@
+OBJHOME = $(HOME)/obj
+COMPHOME = $(HOME)/src/Msg/TtpMsg
+COMPLIBHOME = $(HOME)/lib/Msg
+CPPFLAGS += -I$(COMPHOME) 
+COMPOBJHOME = $(COMPHOME)/obj
+COMPSO = libTtpMsg.so
+SOOBJS = TtpMsg.o 
+
+include $(HOME)/config/Make.rules
+
+LDLIBS += -lmyhash  -lz -ljson-c
+
+all	: $(COMPSO)

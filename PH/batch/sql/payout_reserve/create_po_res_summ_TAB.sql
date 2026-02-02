@@ -1,0 +1,2 @@
+CREATE OR REPLACE type PO_RES_SUMM_TAB is table of PO_RES_SUMM_OBJ
+/

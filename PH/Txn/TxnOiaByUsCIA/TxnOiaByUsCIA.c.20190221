@@ -1,0 +1,490 @@
+/*
+PDProTech (c)2018. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/11/26              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOiaByUsCIA.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Msg);
+OBJPTR(Channel);
+
+
+int     FormOmtMessage(hash_t *hContext, const hash_t *hRequest);
+int     ProcessOmtTxn(hash_t *hContext, const hash_t *hRequest, hash_t *hResponse);
+
+
+void 	TxnOiaByUsCIA(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	int     iInternalErr = 0;
+	int     iDoLog = PD_NO_LOG;
+        double  dTxnAmt = 0.0;
+	char    *csChannelCode = NULL;
+        char    *csTxnCode  = NULL;
+	char	*csOmtTxnSeq = NULL;
+	char	*csBaid = NULL;
+        char    *csTmp = NULL;
+	char    *csTxnCountry=strdup("");
+        char    *csData = (char*) malloc (64);
+
+	hash_t  *hOmtContext;
+	hOmtContext = (hash_t*) malloc(sizeof(hash_t));
+        hash_init(hOmtContext, 0);
+	
+        hash_t  *hFrBAIDDetails = NULL;
+        hFrBAIDDetails = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hFrBAIDDetails,0);
+
+        hash_t  *hToBAIDDetails = NULL;
+        hToBAIDDetails = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hToBAIDDetails,0);
+
+DEBUGLOG(("TxnOiaByUsCIA::Authorize\n"));
+
+/* channel_code */
+        if (GetField_CString(hContext, "channel_code", &csTmp)) {
+DEBUGLOG(("Authorize::channel_code [%s] \n", csTmp));
+        } else {
+DEBUGLOG(("Authorize::channel_code not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::channel_code not found!!\n");
+                iRet=INT_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* txn_code */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext, "txn_code", &csTmp)) {
+DEBUGLOG(("Authorize::(OIA) txn_code [%s] \n", csTmp));
+        	} else {
+DEBUGLOG(("Authorize::txn_code not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::txn_code not found!!\n");
+                	iRet=INT_TXN_CODE_NOT_FOUND;
+                	PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* txn_seq */
+        if (iRet == PD_OK) {
+                if (GetField_CString(hContext, "txn_seq", &csTmp)) {
+DEBUGLOG(("Authorize::(OIA) txn_seq [%s] \n", csTmp));
+			PutField_CString(hContext, "txn_seq", csTmp);
+                } else {
+DEBUGLOG(("Authorize::txn_seq not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::txn_seq not found!!\n");
+                        iRet=INT_ERR;
+                        PutField_Int(hContext,"internal_error",iRet);
+                }
+        } 
+
+/* req_id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRequest,"req_ref",&csTmp)) {
+DEBUGLOG(("Authorize::req_id = [%s]\n",csTmp));
+			//PutField_CString(hOmtContext, "txn_id", csTmp);
+			PutField_CString(hResponse, "req_id", csTmp);
+			PutField_CString(hResponse, "req_ref", csTmp);
+        	} else {
+DEBUGLOG(("Authorize::req_id not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::req_id not found!!\n");
+                	iRet=INT_INVALID_MERCHANT_REF;
+                	PutField_Int(hContext,"internal_error",iRet);
+        	}
+	}
+
+/* baid */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest, "baid", &csBaid)) {
+DEBUGLOG(("Authorize::baid [%s]\n", csBaid));
+                	PutField_CString(hFrBAIDDetails, "baid", csBaid);
+                	PutField_CString(hToBAIDDetails, "baid", csBaid);
+			PutField_CString(hOmtContext, "fr_baid", csBaid);
+                	PutField_CString(hResponse, "baid", csBaid);
+        	} else {
+DEBUGLOG(("Authorize::baid not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::baid not found!!\n");
+                	iRet=INT_BANK_ACCT_ID_NOT_FOUND;
+               	 	PutField_Int(hContext,"internal_error",iRet);
+        	}
+	}
+
+/* to_baid */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest, "to_baid", &csTmp)) {
+DEBUGLOG(("Authorize::to_baid [%s]\n", csTmp));
+                	PutField_CString(hToBAIDDetails, "to_baid", csTmp);
+			PutField_CString(hOmtContext, "to_baid", csTmp);
+                	PutField_CString(hResponse, "to_baid", csTmp);
+        	} else {
+DEBUGLOG(("Authorize::to_baid not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::to_baid not found!!\n");
+                	iRet=INT_BANK_ACCT_ID_NOT_FOUND;
+                	PutField_Int(hContext,"internal_error",iRet);
+        	}
+	}
+
+/* txn_country */
+	if (iRet == PD_OK) {
+	        if (GetField_CString(hRequest,"txn_country",&csTxnCountry)){
+DEBUGLOG(("Authorize::txn_country [%s]\n",csTxnCountry));
+       	         	PutField_CString(hOmtContext,"txn_country",csTxnCountry);
+        	} else {
+                	DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+                	if ((unsigned long)(*DBObjPtr)(csBaid, csTxnCountry) == FOUND) {
+DEBUGLOG(("Authorize::Call DBOLBankAcctId::GetBankAcctIdCountry, txn_country = [%s]\n", csTxnCountry));
+                	        PutField_CString(hOmtContext, "txn_country", csTxnCountry);
+                	} else {
+DEBUGLOG(("Authorize::Call DBOLBankAcctId::GetBankAcctIdCountry not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::Call DBOLBankAcctId::GetBankAcctIdCountry not found!!\n");
+                	        //iRet = INT_COUNTRY_PSP_NOT_AVABILE;
+                	        iRet = INT_ERR;
+                	        PutField_Int(hContext, "internal_error", iRet);
+                	}
+        	}
+	}
+
+/* txn_ccy */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest,"txn_ccy",&csTmp)) {
+DEBUGLOG(("Authorize::txn_ccy = [%s]\n",csTmp));
+                	PutField_CString(hFrBAIDDetails,"limit_ccy",csTmp);
+                	PutField_CString(hToBAIDDetails,"currency_id",csTmp);
+                	PutField_CString(hOmtContext,"txn_ccy",csTmp);
+        	} else {
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::ccy not found!!\n");
+                	iRet=INT_CURRENCY_CODE_NOT_FOUND;
+                	PutField_Int(hContext,"internal_error",iRet);
+        	}
+	}
+
+/* txn_amt */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest,"txn_amt",&csTmp)) {
+			dTxnAmt = string2double((const unsigned char *)csTmp);
+DEBUGLOG(("Authorize::txn_amt = [%lf]\n",dTxnAmt));
+                	PutField_Double(hFrBAIDDetails,"txn_amt",dTxnAmt);
+                	PutField_Double(hOmtContext,"txn_amt",dTxnAmt);
+        	} else {
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::txn_amt not found!!\n");
+                	iRet=INT_PAY_AMOUNT_NOT_FOUND;
+                	PutField_Int(hContext,"internal_error",iRet);
+		}
+        }	
+
+/* gen_unique_amt */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest,"gen_unique_amt",&csTmp)) {
+			PutField_CString(hOmtContext,"gen_unique_amt",csTmp);
+DEBUGLOG(("Authorize::gen_unique_amt = [%s]\n",csTmp));
+        	} else {
+                	sprintf(csData, "%d", PD_FALSE);
+               	 	PutField_CString(hContext, "gen_unique_amt", csData);
+			PutField_CString(hOmtContext,"gen_unique_amt",csData);
+DEBUGLOG(("Authorize::gen_unique_amt = [%s]\n",csData));
+        	}
+	}
+
+/* report_date */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest,"report_date",&csTmp)) {
+DEBUGLOG(("Authorize::report_date = [%s]\n",  csTmp));
+			PutField_CString(hOmtContext,"report_date",csTmp);
+		}
+	}
+
+/* PHDATE */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("Authorize::PHDATE = [%s]\n", csTmp));
+              		PutField_CString(hOmtContext,"PHDATE",csTmp);
+		}
+	}
+
+/* transmission_datetime */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hContext,"transmission_datetime",&csTmp)) {
+DEBUGLOG(("Authorize::transmission_datetime = [%s]\n",csTmp));
+                        PutField_CString(hOmtContext,"transmission_datetime",csTmp);
+                }
+	}
+
+/* local_tm_date */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hContext,"local_tm_date",&csTmp)) {
+DEBUGLOG(("Authorize::local_tm_date = [%s]\n",csTmp));
+                        PutField_CString(hOmtContext,"local_tm_date",csTmp);
+                }	
+	}
+
+/* local_tm_time */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hContext,"local_tm_time",&csTmp)) {
+DEBUGLOG(("Authorize::local_tm_time = [%s]\n",csTmp));
+                        PutField_CString(hOmtContext,"local_tm_time",csTmp);
+		}
+	}
+
+/* client_ip */
+	if (iRet == PD_OK) {
+                if (GetField_CString(hRequest,"ip_addr",&csTmp)) {
+DEBUGLOG(("Authorize::client_ip = [%s]\n",csTmp));
+                       	PutField_CString(hOmtContext,"ip_addr",csTmp);
+                }
+	}
+
+/* add_user */
+	if (iRet == PD_OK) {
+        	if (GetField_CString(hRequest,"add_user",&csTmp)) {
+DEBUGLOG(("Authorize::add_user = [%s]\n",csTmp));
+			PutField_CString(hOmtContext,"add_user",csTmp);
+			PutField_CString(hOmtContext,"update_user",csData);
+        	} else {
+                	sprintf(csData, "%s", PD_UPDATE_USER);
+                	PutField_CString(hContext, "add_user", csData);
+			PutField_CString(hOmtContext,"add_user",csData);
+			PutField_CString(hOmtContext,"update_user",csData);
+DEBUGLOG(("Authorize::add_user= [%s]\n",csData));
+        	}
+	}
+
+	// Form OMT Message
+        if (iRet == PD_OK) {
+                iRet = FormOmtMessage(hOmtContext, hOmtContext);
+		
+/* txn_seq */
+		if (GetField_CString(hOmtContext,"txn_seq",&csOmtTxnSeq)) {
+//DEBUGLOG(("Authorize::txn_seq = [%s]\n", csOmtTxnSeq));
+			PutField_CString(hContext, "t1_txn_id", csOmtTxnSeq);
+                       	PutField_CString(hResponse, "txn_id", csOmtTxnSeq);	
+                } else {
+DEBUGLOG(("Authorize::txn_seq not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::txn_seq not found!!\n");
+                        iRet = INT_ERR;
+                        PutField_Int(hContext,"internal_error",iRet);
+                }
+        }
+
+	// Do Logging (Channel Code: OMT, Txn Code: PBF)
+        if (iRet == PD_OK) {
+
+                PutField_CString(hOmtContext, "channel_code", PD_CHANNEL_OMT);
+                PutField_CString(hOmtContext, "txn_code", "PBF");
+                PutField_CString(hOmtContext, "reply_txn_code", "PBF");
+
+                PutField_CString(hOmtContext, "process_type", PD_PROCESS_TYPE_DEF);
+                PutField_CString(hOmtContext, "process_code", PD_PROCESS_CODE_DEF);
+
+                if ((GetField_CString(hOmtContext, "channel_code", &csChannelCode)) &&
+                    (GetField_CString(hOmtContext, "txn_code", &csTxnCode))) {
+
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnSupported","IsDoLogging");
+                        iDoLog = (unsigned long)(*DBObjPtr)(csChannelCode,csTxnCode);
+
+DEBUGLOG(("Authorize::channel_code [%s] txn_code [%s] DoLog [%d]!!\n", csChannelCode, csTxnCode, iDoLog));
+                        PutField_Int(hOmtContext, "do_logging", iDoLog);
+
+                } else {
+DEBUGLOG(("Authorize::channel_code or txn_code not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::channel_code or txn_code not found!!\n");
+                        iRet = INT_ERR;
+                        PutField_Int(hContext,"internal_error",iRet);
+        	}
+	} 
+
+	// Add Txn Log (Channel Code: OMT)
+        if (iRet == PD_OK) {
+                ChannelObjPtr = CreateObj(ChannelPtr, "OflComChannel", "AddTxnLog");
+                iRet = (unsigned long)(*ChannelObjPtr)(hOmtContext, hOmtContext, hOmtContext);
+                if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::Call OflComChannel::AddTxnLog Failure!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::Call OflComChannel::AddTxnLog Failure!!\n");
+                        iRet = INT_ERR;
+                }
+        }
+
+	// Check fr_baid Details
+	if (iRet == PD_OK) {
+
+                // Call BOOLBaid(CheckIntraFrBAIDDetails)
+                BOObjPtr = CreateObj(BOPtr,"BOOLBaid","CheckIntraFrBAIDDetails");
+                iRet = (unsigned long)(BOObjPtr)(hFrBAIDDetails);
+                if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call BOOLBaid::GetIntraFrBAIDDetails Success!!\n"));
+                } else {
+DEBUGLOG(("Authorize::Call BOOLBaid::GetIntraFrBAIDDetails Failure!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::Call BOOLBaid::GetIntraFrBAIDDetails Failure!!\n");
+	                PutField_Int(hContext,"internal_error",iRet);
+        		iRet = INT_ERR;
+                }
+        }	
+
+	// Check to_baid Details
+	if (iRet == PD_OK) {
+
+                // Call BOOLBaid(CheckIntraToBAIDDetails)
+                BOObjPtr = CreateObj(BOPtr,"BOOLBaid","CheckIntraToBAIDDetails");
+                iRet = (unsigned long)(BOObjPtr)(hToBAIDDetails);
+                if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call BOOLBaid::GetIntraToBAIDDetails Success!!\n"));
+                } else {
+DEBUGLOG(("Authorize::Call BOOLBaid::GetIntraToBAIDDetails Failure!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::Call BOOLBaid::GetIntraToBAIDDetails Failure!!\n");
+                        PutField_Int(hContext,"internal_error",iRet);
+			iRet = INT_ERR;
+                }
+        }	
+
+	// Process OMT Txn (TxnOmtByUsCOM and TxnOmtByUsPBF)
+        if (iRet == PD_OK) {
+		iRet = ProcessOmtTxn(hOmtContext, hOmtContext, hOmtContext);
+	}
+
+	// Update t2_txn_id (Channel Code: OIA)
+        if (iRet == PD_OK) {
+                if (GetField_CString(hOmtContext, "txn_seq_tt", &csTmp)) {
+DEBUGLOG(("Authorize::t2_txn_id = [%s]\n", csTmp));
+                        PutField_CString(hContext, "t2_txn_id", csTmp);
+                        PutField_CString(hResponse, "to_txn_id", csTmp);
+                } else {
+DEBUGLOG(("Authorize::t2_txn_id not found!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::t2_txn_id not found!!\n");
+                        iRet=INT_ERR;
+                }
+        }	
+
+	// Update Txn Log (Channel Code: OMT)
+	if ((iRet == PD_OK) 
+	    || (GetField_Int(hContext,"internal_error",&iInternalErr))
+	) {
+
+		// response_code
+                sprintf(csData,"%d",iInternalErr);
+                PutField_CString(hOmtContext,"response_code",csData);
+
+		// status
+                PutField_Char(hOmtContext,"status",PD_COMPLETE);
+
+		// internal_code
+		if (iInternalErr != 0 ) {
+
+			// ar_ind
+                     	PutField_Char(hOmtContext,"ar_ind",PD_REJECT);
+                } else {
+			
+                        iInternalErr = INT_NO_ERR;
+			
+			// ar_ind
+			PutField_Char(hOmtContext,"ar_ind",PD_ACCEPT);
+                }
+                PutField_Int(hOmtContext,"internal_code",iInternalErr);
+
+		// sub_status
+		PutField_CString(hOmtContext, "sub_status", PD_APPROVED);
+
+		// recon_status
+                PutField_Char(hOmtContext, "recon_status", PD_UNRECONCILED);
+
+		// Update Txn Log
+		ChannelObjPtr = CreateObj(ChannelPtr, "OflComChannel", "UpdateTxnLog");
+                if ((unsigned long)(*ChannelObjPtr)(hOmtContext, hOmtContext, hOmtContext) != PD_OK) {
+DEBUGLOG(("Authorize::Call OflComChannel::UpdateTxnLog Failure!!\n"));
+ERRLOG("TxnOiaByUsCIA::Authorize::Call OflComChannel::UpdateTxnLog Failure!!\n");
+                        iRet = INT_ERR;
+                }
+	}
+
+	FREE_ME(csTxnCountry);
+
+	FREE_ME(csData);
+
+	hash_destroy(hOmtContext);
+        FREE_ME(hOmtContext);
+
+        hash_destroy(hFrBAIDDetails);
+        FREE_ME(hFrBAIDDetails);
+
+        hash_destroy(hToBAIDDetails);
+        FREE_ME(hToBAIDDetails);
+
+DEBUGLOG(("TxnOiaByUsCIA Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int     FormOmtMessage(hash_t *hContext, const hash_t *hRequest)
+{
+        int     iRet = PD_OK;
+
+        char    *csTxnSeq;
+
+//DEBUGLOG(("FormOmtMesage::Start\n"));
+
+        // Get OmtTxnSeq
+        DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextOmtTxnSeq");
+        csTxnSeq = (DBObjPtr)();
+DEBUGLOG(("FormOmtMessage::txn_seq = [%s]\n",csTxnSeq));
+        PutField_CString(hContext, "txn_seq",csTxnSeq);
+
+//DEBUGLOG(("FormOmtMessage Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+int     ProcessOmtTxn(hash_t *hContext, const hash_t *hRequest, hash_t *hResponse)
+{
+	int     iRet = PD_OK;
+
+//DEBUGLOG(("ProcessOmtTxn::Start\n"));
+	TxnObjPtr = CreateObj(TxnPtr,"TxnOmtByUsCOM","Authorize");
+      	iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+       	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessOmtTxn::Call TxnOmtByUsCOM::Authorize Success!!\n"));
+
+             	TxnObjPtr = CreateObj(TxnPtr,"TxnOmtByUsPBF","Authorize");
+              	iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+             	if (iRet == PD_OK) {
+DEBUGLOG(("ProcessOmtTxn::Call TxnOmtByUsPBF::Authorize Success!!\n"));
+		} else {
+DEBUGLOG(("ProcessOmtTxn::Call TxnOmtByUsPBF::Authorize Failure!!\n"));
+ERRLOG("TxnOiaByUsCIA::ProcessOmtTxn::Call TxnOmtByUsPBF::Authorize Failure!!\n");
+                     	iRet = INT_ERR;
+             	}
+
+      	} else {
+DEBUGLOG(("ProcessOmtTxn::Call TxnOmtByUsCOM::Authorize Failure!!\n"));
+ERRLOG("TxnOiaByUsCIA::ProcessOmtTxn::Call TxnOmtByUsCOM::Authorize Failure!!\n");
+              	iRet = INT_ERR;
+       	}
+
+//DEBUGLOG(("ProcessOmtTxn Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;	
+}
+

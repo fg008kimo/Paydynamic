@@ -1,0 +1,2477 @@
+#ifndef	_COMMON_H
+#define	_COMMON_H
+
+
+#define PD_MAX_FILE_LEN         1024
+#define PD_MAX_BUFFER 		8196 * 2 
+#define PD_OK		0
+#define	PD_SKIP_OK	-999
+#define PD_ERR		-1
+#define	PD_FOUND	1
+#define PD_NOT_FOUND    -2
+#define	PD_YES		'Y'
+#define	PD_NO		'N'
+
+#define PD_INTERNAL_ERR -3
+#define PD_OTHER_ERR    -4
+#define PD_EXT_MESSAGE_CODE_LEN	20
+
+#define PD_UNAME_LEN    20
+#define PD_PASSWD_LEN   40
+
+#define	PD_TMP_BUF_LEN		256
+#define	PD_TMP_MSG_BUF_LEN	2048
+
+#define PD_CLEARTEXT_LEN	16
+#define PD_CRYPTEDTEXT_LEN	32
+
+#define SUCCESS                 0
+#define FAILURE                 1
+
+#define FOUND			1
+#define NOT_FOUND		0
+#define SQL_NOT_FOUND           1403
+
+
+#define PD_TRUE         	1
+#define PD_FALSE        	0
+
+#define SP_OK           	0
+#define SP_ERR          	1
+#define SP_NOT_FOUND        	2
+#define SP_OVERFLOW         	3
+#define SP_OTHER_ERR        	9
+#define	SP_EOD_DATE_SAME	10
+
+#define PD_TXN_SEQ_LEN		16
+//#define PD_PROCESS_CODE_LEN	6
+#define	PD_VERSION_NO_LEN	2
+
+
+/* Merchant */
+#define	PD_ORDER_NO_LEN		50
+#define	PD_ADDRESS_LEN		25
+#define	PD_POSTAL_CODE_LEN	10
+#define	PD_CONTACT_NAME_LEN	480
+#define	PD_PHONE_NO_LEN		30
+#define	PD_FAX_NO_LEN		30
+#define	PD_EMAIL_LEN		120
+#define	PD_AC_BANK_LEN		25
+#define	PD_AC_BANK_NAME_LEN     150
+#define	PD_AC_BRANCH_LEN 	50	
+#define	PD_AC_NO_LEN	        25	
+#define	PD_AC_NAME_LEN	        100
+#define PD_MERCH_SHORT_NAME_LEN	20
+
+#define PD_DESTZONE		"TZ=Asia/Hong_Kong"
+#define PD_DESTZONE_JP		"TZ=Asia/Tokyo"
+#define PD_DESTZONE_IN		"TZ=Asia/Kolkata"
+#define PD_DATE_LEN		8
+#define PD_TIME_LEN		6
+#define PD_DATETIME_LEN		PD_DATE_LEN + PD_TIME_LEN
+#define PD_TIMESTAMP_LEN	20
+#define PD_YY_LEN              	2
+#define PD_YYYY_LEN		4
+#define PD_YYMMDD_LEN          	6
+#define PD_YYYYMM_LEN		6
+#define PD_YYYYMMDD_LEN        	8
+#define PD_MM_LEN               2
+#define PD_MMDD_LEN            	4
+#define PD_DD_LEN               2
+#define PD_DATE_SINCE		1900
+#define PD_DATETIME_SINCE	2002
+#define	PD_DATE_FORMAT		"YYYYMMDD"
+#define	PD_EXPIRY_DATE_FORMAT	"YYMM"
+#define PD_YYYYMMDDHHMM_LEN	12
+
+#define	PD_UPDATE_USER		"SYSTEM"
+#define	PD_USER_LEN		20
+#define	PD_KEY_ID_LEN		32
+#define	PD_KEY_UID_LEN		20	
+#define	PD_PRIVATEPEM_LEN	20
+#define	PD_PUBLICCERT_LEN	20
+#define	PD_PASSPHRASE_LEN	100
+#define	PD_KEY_LEN		16
+#define PD_KEY_NAME_LEN		3
+#define	PD_KEY_DESC_LEN		80
+#define PD_MD5_KEY_LEN		500
+#define	PD_MD5_SUM_LEN		32
+#define	PD_SHA256_SUM_LEN	64
+#define	PD_SHA1_SUM_LEN		40
+#define PD_SHA_KEY_LEN		32
+//#define	PD_EN_TXN_SEQ_LEN	64
+#define	PD_EN_TXN_SEQ_LEN	32
+
+#define	PD_PTK_KEY_NAME		"PTK"
+#define	PD_DES_KEY_NAME		"DES"
+#define	PD_SHA1_KEY_NAME	"STK"
+#define	PD_3DES_KEY_NAME	"3TK"
+#define	PD_POK_KEY_NAME		"POK"
+#define	PD_AES_KEY_NAME		"AES"
+#define	PD_RSA_KEY_NAME		"RSA"
+#define	PD_PUK_KEY_NAME		"PUK"
+
+#define PD_MOK_KEY_NAME		"MOK"
+
+
+/* Core */
+#define	PD_CHANNEL_CODE_LEN	3
+#define	PD_TXN_CODE_LEN		3
+
+/* System Control */
+#define	PD_CODE_LEN		10
+#define	PD_DESC_LEN		50
+#define	PD_VALUE_LEN		50
+#define	PD_LOGON		"Y"
+#define	PD_LOGOFF		"N"
+
+#define	PD_CLIENT_ID_LEN       	10
+#define	PD_CLIENT_NAME_LEN  	50
+#define	PD_CUSTOMER_ID_LEN	10
+#define	PD_CUSTOMER_GROUP_CODE_LEN	10
+
+
+/* System Parameter */
+#define	PD_SP_CODE_LEN		50
+#define	PD_SP_VALUE_LEN		50
+#define	PD_SP_LONG_VALUE_LEN	1024
+#define	PD_DELTA_AMT_LOW	"DELTA_AMT_L"
+#define	PD_DELTA_AMT_UP		"DELTA_AMT_U"
+#define	PD_AVFXRATE_ALLOW_DIFF	"AVFXRATE_ALLOW_DIFF"
+#define	PD_AVFX_OANDA_RATE_ALLOW_DIFF	"AVFX_OANDA_RATE_ALLOW_DIFF"
+#define PD_USE_MOBILE_SIMULATOR	"USE_MOBILE_SIMULATOR"
+#define PD_VMOB_SEGMENT_PHASE   "VMOB_SEGMENT_PHASE"
+
+/* Txn Supp Info */
+#define PD_INFO_TYPE_LEN	64
+#define PD_INFO_VALUE_LEN	2048
+#define PD_PSP_REDIRECT_URL	"PSP_REDIRECT_URL"
+
+/* SYS MQ */
+#define	PD_QUEUE_LEN		15
+#define PD_ADDR_LEN		35
+#define	PD_LINE_NO_LEN		4
+#define PD_RESOURCE_TYPE_LEN	10
+#define	PD_MQ_RECV_TIMEOUT	10 //10 seconds
+
+
+/* Batch */
+#define	PD_BATCH_TYPE_LEN	3
+#define	PD_BATCH_LEN		20
+#define	PD_CARD_RANGE_FROM_LEN	7
+
+
+#define PD_RESPONSE_CODE_LEN	10
+#define PD_ACCEPT		'A'
+#define PD_REJECT		'R'
+
+#define PD_PATH_LEN             100
+#define PD_PREGEN_RPT_INIT      'I' 
+#define PD_PREGEN_RPT_COMPLETED 'C'
+#define PD_PREGEN_RPT_PROCESSING 'P'
+#define PD_PREGEN_RPT_FAILURE   'F'
+
+#define	PD_INIT			'I'
+#define	PD_COMPLETE		'C'
+#define	PD_PROCESSING		'P'
+#define	PD_TO_PSP		'W'
+#define	PD_MMS_PENDING		'W'
+#define	PD_MMS_ISD_IND_INIT	'I'
+#define	PD_MMC_PENDING		'W'
+#define PD_REVERSED		'R'
+#define PD_REVERSING		'r'
+#define PD_EXPIRED              'E'
+#define PD_SETT_IN_PROGRESS	'W'
+
+#define PD_MMS_SYS_REV_SUCC     'S'
+#define PD_MMS_SYS_REV_PENDING  's'
+
+
+#define	PD_ONLINE		'O'
+#define PD_OFFLINE		'F'
+#define PD_BATCH		'B'
+
+#define	PD_OFFLINE_MODE		'N'
+#define	PD_ONLINE_MODE		'Y'
+
+
+#define PD_SETTLEMEPD_DOM	"DOM"
+#define	PD_SETTLEMEPD_DOW	"DOW"
+#define	PD_SETTLEMEPD_NOD	"NOD"
+
+#define PD_SUPPORTED		'Y'
+#define	PD_DOPD_CONVERT		'Y'
+
+
+#define PD_XML_ENCODING         "UTF-8"
+#define PD_MAX_TAG             	1024
+#define PD_ROUND_UP_DEC		5
+
+/*Exchange Rate*/
+#define	PD_CCY_ID_LEN		3
+#define	PD_EFFECT_DATE_LEN	8
+
+
+/*PSP*/
+#define	PD_DEFAULT_PSP		"000"
+#define	PD_PSP_ID_LEN		10
+#define	PD_PSP_NAME_LEN		50
+#define	PD_PSP_MID_LEN		50
+#define PD_URL_LEN		255
+#define	PD_FUNCTION_URL_LEN	50
+#define	PD_REMARK_LEN		255	
+#define	PD_PSP_STATUS_LEN	20
+#define	PD_PSP_TID_LEN		50
+#define	PD_PSP_SC_LEN		50
+#define	PD_BANK_BILL_NO_LEN	50
+#define PD_BANNER_LOGO_LEN	255
+#define PD_ECHO_MSG_LEN		255
+#define PD_OPT_LEN		50
+#define PD_CUSTOMER_TAG_LEN	10
+#define	PD_PSP_CHANNEL_CODE_LEN	10
+#define PD_DELTA_AMT_BOUNDARY_1       3
+#define PD_DELTA_AMT_BOUNDARY_2       12
+
+/*PSP Txn Detail */
+#define	PD_ACCOUNT_NAME_LEN	30
+#define	PD_ACCOUNT_NO_LEN	30
+/*#define	PD_OWNER_ID_LEN		10*/ 
+#define PD_SC_LEN		50
+
+/*Deposit Request & Response*/
+#define	PD_PROCESS_TYPE_NETWORK	"0600"
+#define PD_PROCESS_CODE_LEN	6
+#define PD_PROCESS_TYPE_LEN	4
+#define PD_PROCESS_TYPE_RESP_CODE	'8'
+#define PD_REFERENCE_LEN	50
+#define PD_MERCHANT_ID_LEN	15
+#define PD_MERCHANT_REF_LEN	50
+#define	PD_NAME_LEN		50
+#define PD_COUNTRY_LEN		2
+#define PD_BANK_CODE_LEN	10
+#define PD_EXT_BANK_CODE_LEN	50
+#define PD_LANGUAGE_LEN		2
+#define PD_TXN_STATUS_ID_LEN	10
+#define PD_TXN_ID_LEN		20
+#define	PD_PAY_METHOD_LEN	4	
+#define	PD_SELECTED_PAY_METHOD_LEN	4
+#define	PD_PAY_METHOD_LIST_LEN	50
+#define	PD_PROCESS_CODE_SYN	"001001"
+#define	PD_PROCESS_CODE_DEF	"000000"
+#define	PD_PROCESS_TYPE_DEF	"0000"
+#define	PD_PROCESS_CODE_DSP	"200002"
+#define	PD_PROCESS_TYPE_DSP	"0200"
+#define	PD_PROCESS_CODE_ACK	"200003"
+#define	PD_PROCESS_TYPE_ACK	"0208"
+#define	PD_PROCESS_CODE_VP_ACK	"210003"
+#define PD_PROCESS_CODE_ODD     "200202"
+#define PD_PROCESS_CODE_ODD_ACK "200203"
+#define PD_PROCESS_CODE_ODI     "200102"
+#define PD_PROCESS_CODE_ODI_ACK "200103"
+#define	PD_PROCESS_CODE_MMX_STT	"001001"
+#define	PD_PROCESS_TYPE_FIN	"0200"
+
+#define PD_PROCESS_CODE_OPI	"200006"
+
+/* TXN Code */
+#define	PD_DEPOSIT_TXN_CODE		"DSP"
+#define	PD_WITHDRAW_TXN_CODE		"WTD"
+#define	PD_INQ_TXN_CODE			"INQ"
+#define	PD_WITHDRAW_BATCH_TXN_CODE	"WTB"
+#define PD_DEPOSIT_XPAY_CODE		"XPAY"
+#define	PD_MOBILE_DSP_CODE		"MSI"
+#define PD_INITIAL_TXN_CODE		"DSI"
+#define PD_INITIAL_REQ_TXN_CODE		"DSR"
+#define PD_WITHDRAW_VOID_TXN_CODE	"WTV"
+#define	PD_POLL_TXN_CODE		"POL"
+#define	PD_BATCH_JL_POST_TXN_CODE	"BJP"
+#define PD_OFFSYS_DEPOSIT_TXN_CODE	"ODP"
+#define PD_OFFSYS_PAYOUT_TXN_CODE	"OPO"
+#define PD_OFFSYS_PAYOUT_GEN_TXN_CODE	"OPG"
+#define PD_OFFSYS_SETTLEMENT_TXN_CODE	"OMS"
+#define PD_OFFSYS_PAYOUT_REJ_TXN_CODE	"OPV"
+#define PD_VOID_TXN_CODE		"VOT"
+#define PD_DEPOSIT_VOID			"VDS"
+#define PD_DEPOSIT_VOID_WITH_FEE	"VDR"
+#define PD_DEPOSIT_REFUND_M		"RDM"
+#define	PD_MERCHANT_BAL_TFF		"TFF"
+#define	PD_MERCHANT_BAL_TFT		"TFT"
+#define PD_MERCHANT_BAL_TFT_VOID	"VTT"
+#define PD_MERCHANT_BAL_TFF_VOID	"VTF"
+#define	PD_PSP_SETTLEMENT		"PST"
+#define	PD_PSP_SETTLEMENT_VOID		"VPS"
+#define	PD_GET_RESERVED_AMT		"RAG"
+#define	PD_UPDATE_RESERVED_AMT		"RAU"
+#define	PD_PSP_BAL_TRANSFER		"PBU"
+#define	PD_PRE_PAYOUT_UPLOAD		"PPU"
+#define	PD_PAYOUT_UPLOAD		"POU"
+#define	PD_PAYOUT_CONFIRM		"POC"
+#define	PD_PAYOUT_APPROVE		"POA"
+#define	PD_PAYOUT_PRE_SEND		"POR"
+#define	PD_PAYOUT_SEND			"POS"
+#define	PD_PAYOUT_PRE_GEN		"POP"
+#define	PD_PAYOUT_GENERATE		"POG"
+#define	PD_PAYOUT_CANCEL		"PON"
+#define	PD_PAYOUT_CANCEL_BEFORE_APPROVED "PBA"
+#define	PD_PAYOUT_CANCEL_APPROVED	"PCA"
+#define	PD_PAYOUT_CANCEL_GENERATED	"PCG"
+#define	PD_ONLINE_WITHDRAW_BATCH	"OWB"
+#define PD_ONLINE_PAYOUT_VOID           "VWB"
+#define	PD_PAYOUT_INDV_CANCEL		"VPG"
+#define	PD_OL_PAYOUT_APPROVE		"OPA"
+#define	PD_OL_PAYOUT_GENERATE		"OPG"
+#define	PD_JL_CREATE_TXN_CODE	"JLC"
+#define	PD_JL_UPDATE_TXN_CODE	"JLU"
+#define	PD_JL_DELETE_TXN_CODE	"JLD"
+#define	PD_JL_APPROVE_TXN_CODE	"JLA"
+#define	PD_JL_RELEASE_TXN_CODE	"JLR"
+#define	PD_JL_POST_TXN_CODE	"JLP"
+#define	PD_PSP_COST_DIFF	"PCD"
+#define	PD_HOLD_BALANCE		"HOD"
+#define	PD_UNHOLD_BALANCE	"UOD"
+#define	PD_OL_HOLD_BALANCE	"OHD"
+#define	PD_OL_UNHOLD_BALANCE	"UHD"
+#define	PD_MERCH_BAL_TRF_OTH_SYS		"MTO"
+#define	PD_OTH_SYS_2_MERCH_BAL_TRF		"OTM"
+#define	PD_PSP_BAL_TRF_OTH_SYS			"PTO"
+#define	PD_MERCH_REFUND_BAL_TRF_OTH_SYS   	"VMT"
+#define	PD_MERCH_VOID_BAL_TRF_OTH_SYS   	"VTO"
+#define	PD_PSP_VOID_BAL_TRF_OTH_SYS     	"VPT"
+#define	PD_OFL_OTH_SYS_2_MERCH_BAL_TRF		"OMI"
+#define	PD_OFL_OTH_SYS_2_MERCH_BAL_TRF_VOID	"VMI"
+#define	PD_OFL_MERCHANT_BAL_TFF			"OTF"
+#define	PD_OFL_MERCHANT_BAL_TFT			"OTT"
+#define PD_OFL_VOID_MERCHANT_BAL_TFF            "OVU"
+#define PD_OFL_VOID_MERCHANT_BAL_TFT            "OVN"
+#define PD_TIER_DEPOSIT_COST_TXN		"TDC"
+
+#define PD_HOLD_BALANCE_PSP     "HDP"
+#define PD_UNHOLD_BALANCE_PSP   "UDP"
+#define PD_OL_HOLD_BALANCE_PSP     "OHP"
+#define PD_OL_UNHOLD_BALANCE_PSP   "OUP"
+
+#define  PD_FUND_IN_PAYOUT_MERCHANT      	"FPM"
+#define  PD_FUND_IN_PAYOUT_MERCHANT_VOID 	"VPM"
+#define  PD_FUND_IN_PAYOUT_PSP           	"FPP"
+#define  PD_FUND_IN_PAYOUT_PSP_VOID      	"VPP"
+#define  PD_OFL_FUND_IN_PAYOUT_MERCHANT  	"FIM"
+#define  PD_OFL_FUND_IN_PAYOUT_MERCHANT_VOID  	"VIM"
+#define	 PD_OFL_AMEND_FUND_IN_PAYOUT	 	"OAF"
+
+#define	PD_AVA_PAYOUT_REQ_TF_FROM	"RTF"
+#define	PD_AVA_PAYOUT_REQ_TF_TO		"RTT"
+#define PD_VOID_AVA_PAYOUT_REQ_TF_FROM	"VBF"
+#define PD_VOID_AVA_PAYOUT_REQ_TF_TO	"VBT"
+#define	PD_AVA_PAYOUT_APPROVE_TF_FROM	"ATF"
+#define	PD_AVA_PAYOUT_APPROVE_TF_TO  	"ATT"
+
+#define PD_AVA_PAYOUT_TF_CANCEL         "CTF"
+
+#define	PD_OFL_AVA_PAYOUT_REQ_TF_FROM	"ORF"
+#define	PD_OFL_AVA_PAYOUT_REQ_TF_TO	"ORT"
+#define PD_OFL_VOID_AVA_PAYOUT_REQ_TF_FROM	"OVO"
+#define PD_OFL_VOID_AVA_PAYOUT_REQ_TF_TO	"OVI"
+
+#define	PD_OFL_AVA_PAYOUT_TRF_IN	"OMP"
+#define	PD_OFL_VOID_AVA_PAYOUT_TRF_IN	"VMP"
+
+#define	PD_MERCHANT_ADJUSTMENT  	"MAD"
+#define	PD_PSP_ADJUSTMENT  		"PAD"
+#define PD_REVERS_MONEY_MOVEMENT        "VOM"
+#define	PD_RELEASE_REVERSE		"RLR"
+#define	PD_RELEASE_FLOAT		"RLS"
+#define	PD_RELEASE_FLOAT_2_AFTER_FLOAT	"RLA"
+#define	PD_RELEASE_FLOAT_2_SETT_FLOAT	"RSF"
+#define	PD_RELEASE_SETT_FLOAT		"R2A"
+#define	PD_OFL_RELEASE_2_SETT_FLOAT	"OLF"
+#define	PD_OFL_RELEASE_SETT_FLOAT	"OLS"
+
+#define	PD_PSP_DELIVER_FROM		"PSF"
+#define	PD_PSP_DELIVER_TO		"PSD"
+#define	PD_OFFLINE_SETTLE_FROM		"OST"
+#define	PD_OFFLINE_SETTLE_TO		"OSD"
+
+#define	PD_CUSTOMER_INFO_ADD		"CIU"
+#define	PD_CUSTOMER_INFO_DEL		"CID"
+#define	PD_CUSTOMER_GRP_ENABLE		"EGP"
+#define	PD_CUSTOMER_GRP_DISABLE		"DGP"
+
+#define PD_FIXED_AMT_HB			"HBR"
+#define PD_RELEASE_FIXED_AMT_HB		"VHB"
+
+#define	PD_UPDATE_WEEKLY_RESERVED_AMT	"WRA"
+
+#define PD_DEPOSIT_CHARGEBACK           "VCH"
+#define PD_DEPOSIT_CHARGEBACK_WITH_FEE  "VCF"
+
+#define PD_PSP_OFFSET_FROZEN_PROCESSOR_BAL    	"OFP"
+#define PD_PSP_BAD_DEBT     	     		"BDP"
+
+/* offline */
+#define PD_INITIAL_OLN_TXN_CODE		"ODI"
+#define PD_INITIAL_OLN_TXN_M2_CODE	"ODD"
+#define PD_INITIAL_REQ_OLN_TXN_CODE	"ODR"
+
+#define PD_MANUAL_EXPIRED_TXN_CODE	"OME"
+#define PD_AUTO_EXPIRED_TXN_CODE	"OAE"
+
+#define PD_BANK_DEPOSIT_TXN_CODE        "OBD"
+
+#define PD_OFFLINE_RELEASE_RESERVED     "ORR"
+
+#define PD_TXN_UPDATE_CUST_REF          "USD"
+
+#define PD_OFFLINE_PROV_CHARGE          	"CGP"
+#define PD_OFFLINE_RTN_PROV_CHARGE      	"RCR"
+#define PD_OFFLINE_PROV_CHARGE_OFST     	"SGR"
+#define PD_OFFLINE_RTN_PROV_CHARGE_OFST 	"RSR"
+#define PD_OFL_PROV_CHARGE_OUTSTANDING		"CPO"
+#define PD_OFL_PROV_CHARGE_OUTSTANDING_OFST	"SPO"
+#define	PD_OFL_PROV_CHARGE_DISCOUNT		"CPD"
+#define	PD_OFL_PROV_CHARGE_DISCOUNT_OFST	"SPD"
+#define PD_OFL_RTN_PROV_CHARGE_DISCOUNT_OFST	"RPD"
+#define PD_OFL_OVERPAID_PROV_CHARGE             "PPC"
+
+#define	PD_OFFLINE_PSP_DELIVER_FROM	"PDO"
+#define	PD_OFFLINE_PSP_DELIVER_TO	"PDI"
+
+#define PD_PSP_SETTLEMENT_TXN_CODE     	"OPT"
+#define PD_PSP_SETTLEMENT_OUTSTANDING   "PPT"
+
+#define PD_OFFLINE_PAYOUT_TXN_CODE      "OBP"
+
+#define PD_OFFLINE_SWEEP_IN_TO_POA      "IXP"
+#define PD_OFFLINE_SWEEP_IN_TO_ITM      "IXE"
+#define PD_OFFLINE_SWEEP_IN_TO_PDF      "IXF"
+
+#define PD_REFUND_DEPOSIT_CHARGEBACK_BY_BANK     	"RRD"
+
+#define PD_DEPOSIT_CHARGEBACK_REVERSAL_BY_BANK       	"DCR"
+#define PD_DEPOSIT_CHARGEBACK_REVERSAL_BY_BANK_VOID 	"VCR"
+
+#define PD_NEW_BAID_INIT_BAL_POS	"NBP"
+#define PD_NEW_BAID_INIT_BAL_NEG	"NBN"
+
+#define PD_OFL_ERROR_ADJUSTMENT_CR		"ECC"
+#define PD_OFL_ERROR_ADJUSTMENT_DR		"ECD"
+#define PD_OFL_ERROR_ADJUSTMENT_CR_PSP		"EBC"
+#define PD_OFL_ERROR_ADJUSTMENT_DR_PSP		"EBD"
+
+#define PD_PAYOUT_API_VOID                  	"VPI"
+
+#define PD_REQ_OPL_TXN_CODE			"OPI"
+#define PD_RETURN_POL_TXN_CODE			"ORI"
+#define PD_OL_PAYOUT_API_APPROVE		"OPE"
+#define PD_OL_PAYOUT_API_CANCEL			"OPX"
+#define PD_OL_PAYOUT_API_PRE_GEN		"PAP"
+#define PD_OL_PAYOUT_API_GEN			"PAG"
+
+#define	PD_OL_PSP_BAID_BAL_TRF_INTER		"OOP"
+#define	PD_OL_PSP_BAID_BAL_TRF_INTRA		"PBF"
+
+#define PD_DEFAULT_TXN_CODE     	"XXX" 
+
+/* end of offline */
+
+#define	PD_DISPABLED		1
+/* customer type */
+#define	PD_TYPE_PSP		'P'
+#define	PD_TYPE_MERCHANT	'M'
+#define PD_TYPE_CLIENT		'C'
+#define	PD_TYPE_GLOBAL		'G'
+#define	PD_TYPE_CUSTOMER	'R'
+#define	PD_TYPE_ADMIN		'A'
+#define	PD_TYPE_SYSTEM		'S'
+
+
+/* system parameter */
+/*
+#define	PD_PSP_TWV		"TWV"
+#define	PD_PSP_ESKY		"ESKY"
+#define	PD_PSP_HPAY		"HPAY"
+#define	PD_PSP_LKPAY		"LKPAY"
+*/
+#define	PD_BASED_CCY		"SYS_CCY"
+#define	PD_LIMIT_CCY		"LIMIT_CCY"
+#define	PD_DISABLED		1
+#define PD_MMSMODE              "MMSMODE"
+#define PD_MMCID                "MMCID"
+#define PD_ENABLE_MMSMODE       "Y"
+#define PD_DISABLE_MMSMODE      "N"
+#define PD_MMC_IPY_MAX_RTN	"MMC_IPY_MAX_RTN"
+#define PD_MMC_ITD_MAX_RTN	"MMC_ITD_MAX_RTN"
+#define PD_MMC_REFRESH_INTERVAL	"MMC_REFRESH_INTERVAL"
+#define PD_SERVICE_PAY_METHOD	"SP121MAP"
+#define PD_OFFLINE_SETTLE	"OFF_SETT"
+
+
+/* CHANNEL */
+#define	PD_CHANNEL_XPAY		"XPY"
+#define	PD_CHANNEL_WEB		"WEB"
+#define	PD_CHANNEL_TWV		"TWV"
+#define	PD_CHANNEL_HPAY		"HPY"
+#define	PD_CHANNEL_HAIPAY	"HAI"
+#define	PD_CHANNEL_HPAY_CNP	"HCP"
+#define	PD_CHANNEL_LKPAY	"LKP"
+#define	PD_CHANNEL_ESKY		"ESKY"
+#define	PD_CHANNEL_HHPAY	"HHP"
+#define	PD_CHANNEL_PGEN		"PGN"
+#define	PD_CHANNEL_EEP		"EEP" /* Eskey YeePay */
+#define	PD_CHANNEL_YEEPAY	"YPY" /*YeePay */
+#define	PD_CHANNEL_51EPAY	"FEP" 
+#define	PD_CHANNEL_ALLINPAY	"ALP" 
+#define	PD_CHANNEL_SHENGPAY	"SPY" 
+#define	PD_CHANNEL_IPAY		"IPY" 
+#define	PD_CHANNEL_GOPAY	"GPY" 
+#define	PD_CHANNEL_ECPSS	"ECP" 
+#define	PD_CHANNEL_PFTTOM	"PFT"
+#define	PD_CHANNEL_EPLUTUS	"EPT"
+#define	PD_CHANNEL_UNIPAY	"UNI"
+#define	PD_CHANNEL_HNAPAY	"HNA"
+#define	PD_CHANNEL_BAOFOO	"BFO"
+#define	PD_CHANNEL_TENPAY	"TPY"
+#define	PD_CHANNEL_TENMOBPAY	"TPM"
+#define	PD_CHANNEL_REAPAY	"RPY"
+#define	PD_CHANNEL_EASYPAY	"ESY"
+#define	PD_CHANNEL_YEEPAYMOBILE	"YPM" /*YeePay Mobile*/
+#define	PD_CHANNEL_YSEPAY	"YSE" /*YsePay*/
+#define	PD_CHANNEL_HEEPAY	"HEE"
+#define PD_CHANNEL_ECPSSMOBILE	"ECM" /*ECPSS Mobile*/
+#define PD_CHANNEL_WECHATPAY	"WCP"
+#define PD_CHANNEL_XJP		"XJP"
+#define PD_CHANNEL_NOW2PAY	"NTP"
+#define PD_CHANNEL_OPENEPAY	"OPP"
+#define PD_CHANNEL_AIPWECHAT	"AWC"
+#define PD_CHANNEL_N2P_AIPWECHAT "NTW"
+//#define PD_CHANNEL_XJ_EHKWECHAT	"XJW"
+#define PD_CHANNEL_XJ_CHWECHAT  "XJW"
+#define PD_CHANNEL_XJ_MOBILE	"XJM"
+#define PD_CHANNEL_UNIPAY_WECHAT "UNW"
+#define PD_CHANNEL_XJ_JINHAI_QR	"XJQ"
+#define PD_CHANNEL_DINPAY	"DPY"
+#define PD_CHANNEL_DINPAY_QR	"DPQ"
+#define PD_CHANNEL_CLOUD123PAY	"COP"
+#define PD_CHANNEL_C123PAY_QR	"COQ"
+#define PD_CHANNEL_WFPAY_QR	"WFQ"
+#define PD_CHANNEL_XJE		"XJE"
+#define PD_CHANNEL_STAR_KKPAY_EC "SKE"
+#define PD_CHANNEL_RFPAY_EC	"RFE"
+#define PD_CHANNEL_COALAPAY_EC	"CPE"
+#define PD_CHANNEL_STAR_KKPAY_QR "SKQ"
+#define PD_CHANNEL_STAR_KKPAY_VNET "SKV"
+#define PD_CHANNEL_SHANFU_EC	"SFE"
+#define PD_CHANNEL_HXPAY_VNET	"HXV"
+#define PD_CHANNEL_HXPAY_QR	"HXQ"
+#define PD_CHANNEL_PAYESCAPE_VNET "PSV"
+#define PD_CHANNEL_SAMOPAY_EC	"SME"
+#define PD_CHANNEL_RFPAY_QR	"RFQ"
+#define PD_CHANNEL_SHANFU_QR	"SFQ"
+#define PD_CHANNEL_RFPAY_VNET	"RFV"
+#define PD_CHANNEL_GOLDENPAY_VNET "GPV"
+#define PD_CHANNEL_BFBAO_VNET	"BFV"
+#define PD_CHANNEL_BFBAO_QR	"BFQ"
+#define PD_CHANNEL_OUP_EC	"OUP"
+#define PD_CHANNEL_GOLDENPAY_EC	"GPE"
+#define PD_CHANNEL_ZPAY_EC	"ZPE"
+#define PD_CHANNEL_ESKY_QR	"ESQ"
+#define PD_CHANNEL_NOW3PAY	"NEP"
+#define PD_CHANNEL_TTPAY	"TTP"
+#define PD_CHANNEL_TTPAY_QR	"TTQ"
+#define PD_CHANNEL_ZPAY_QR	"ZPQ"
+#define PD_CHANNEL_WELLPAY	"WPY"
+#define PD_CHANNEL_XJ_DBAO	"XDB"
+#define PD_CHANNEL_SWIFTPAY_QR	"SPQ"
+#define PD_CHANNEL_XPAY_VNET	"XPV"
+#define PD_CHANNEL_TRUSTPAY_EC	"TPE"
+#define PD_CHANNEL_OUP_OPENEPAY_EC "OOE"
+#define PD_CHANNEL_DF_QR	"DFQ"
+#define PD_CHANNEL_XJ_DBAO_QR	"XDQ"
+#define PD_CHANNEL_XJ_CH	"XJC"
+#define PD_CHANNEL_XJ_CH_QR	"XJR"
+#define PD_CHANNEL_NOW3PAY_QR	"NEQ"
+#define PD_CHANNEL_XPAY_QR	"XPQ"
+#define PD_CHANNEL_UNIPAY_QR	"UNQ"
+#define PD_CHANNEL_TRUSTPAY_QR	"TPQ"
+#define PD_CHANNEL_ZXPAY_EC	"XYE"
+#define PD_CHANNEL_ZXPAY_QR	"XYQ"
+#define PD_CHANNEL_HANDPAY_VNET	"HDV"
+#define PD_CHANNEL_OUP_QR	"OUQ"
+#define PD_CHANNEL_ALIPAY_VNET	"APV"
+#define PD_CHANNEL_WPAY_EC	"WPE"
+#define PD_CHANNEL_WPAY_QR	"WPQ"
+#define	PD_CHANNEL_BATCH	"EOD"
+#define	PD_CHANNEL_MGT		"MGT"
+#define	PD_CHANNEL_MMC		"MMC"
+#define	PD_CHANNEL_MMS		"MMS"
+
+#define	PD_CHANNEL_OMT		"OMT"
+#define	PD_CHANNEL_OLN		"OLN"
+#define	PD_CHANNEL_SMS		"SMS"
+
+#define	PD_CHANNEL_OPL		"OPL"
+
+#define PD_CHANNEL_OIA          "OIA"
+
+#define PD_REPLACE_PSP_KEY	"REPLACE_PSP_KEY"
+
+#define	PD_DIGIT_LEN		12
+#define	PD_DECIMAL_LEN		2
+
+
+/*Payout Record*/
+#define PD_SEQ_NUM_LEN		6
+#define PD_ACC_NAME_LEN		100
+#define PD_IDENTITY_ID_LEN	25
+#define PD_MOBILE_NO_LEN	25
+#define PD_BANK_NAME_LEN	150
+#define PD_BANK_BRANCH_LEN	150
+#define PD_PROVINCE_LEN		100
+#define PD_CITY_LEN		100
+#define PD_CHECKSUM_LEN		16
+#define	PD_AMOUNT_LEN		12
+#define PD_TW_ACCOUNT_NUM_LEN   14
+#define PD_TW_IDENTITY_ID_LEN   10
+#define PD_TW_MALE              1
+#define PD_TW_FEMALE            2
+#define PD_INIT_STATE          'I'
+#define	PD_SENT		       'W'
+#define PD_REJECTED            'R'
+#define	PD_ACCEPTED	       'A'
+#define PD_FILENAME_LEN		50
+#define PD_FILENAME_PREFIX_LEN	12
+#define PD_OPERATOR_TYPE_LEN	2
+#define PD_PID_LEN		50
+#define PD_REASON_LEN		255
+
+#define PD_PAYOUTFILE_SUCCESS           0
+#define PD_PAYOUTFILE_GENERATED         1
+#define PD_PAYOUTFILE_REVERSED          2
+#define PD_PAYOUTFILE_UPD_FAIL          3
+#define PD_PAYOUTFILE_UPLOADED          4
+#define PD_PAYOUTFILE_DECLINED          5
+#define PD_PAYOUTFILE_APPROVED          6
+#define PD_PAYOUTFILE_PARTIAL_GENERATED 7
+#define PD_PAYOUTFILE_PRE_GENERATED	8
+#define PD_PAYOUTFILE_PRE_SEND		9
+#define PD_PAYOUTFILE_SENT		10
+#define PD_PAYOUTFILE_APPROVE_BY_PSP	13
+#define PD_PAYOUTFILE_PARTIAL_CONFIRM	96
+#define PD_PAYOUTFILE_APPROVE_PROCESSING        97
+#define PD_PAYOUTFILE_CONFIRM_FAIL	98
+#define PD_PAYOUTFILE_PROCESSING        99
+#define PD_PAYOUTFILE_WAITING_GENERATE		11
+#define PD_PAYOUTFILE_PROCESSING_GENERATE	12
+#define PD_PAYOUTFILE_ONLINE_PREGENERATE	14
+
+#define PAYOUT_MASTER_TRANSACTION_REVERSED      66
+#define PAYOUT_MASTER_TRANSACTION_CANCELLED     67
+#define PAYOUT_MASTER_TRANSACTION_DECLINED	68
+#define PAYOUT_MASTER_TRANSACTION_CONFIRMED     69
+#define PAYOUT_MASTER_TRANSACTION_GENERATED     70
+#define PAYOUT_MASTER_TRANSACTION_APPROVED      65
+#define PAYOUT_MASTER_TRANSACTION_PRE_APPROVED      64
+#define PAYOUT_MASTER_TRANSACTION_PRE_SEND	71
+#define PAYOUT_MASTER_TRANSACTION_ACCEPT	72
+#define PAYOUT_MASTER_TRANSACTION_REJECT	73
+#define PAYOUT_MASTER_TRANSACTION_PRE_GENERATED	74
+#define PAYOUT_MASTER_TRANSACTION_UPLOADED	75
+#define PAYOUT_MASTER_TRANSACTION_REV_FOR_REGEN 76
+#define PAYOUT_MASTER_TRANSACTION_REV_AND_REGEN 77
+#define PAYOUT_MASTER_TRANSACTION_SENT		78
+#define PAYOUT_MASTER_TRANSACTION_SENDING	79
+
+#define PAYOUT_MASTER_TRANSACTION_REJECTED	80
+
+
+#define PD_PAYOUT_VOID			"VPO"
+#define PD_PAYOUT_VOID_MERCHANT		"VOA"
+#define PD_PAYOUT_VOID_MERCHANT_WITH_FEE "VRA"
+#define PD_PAYOUT_VOID_PSP		"VOG"
+#define PD_PAYOUT_CANCEL_PSP		"COG"
+#define PD_OL_PAYOUT_VOID_MERCHANT	"OVA"
+#define PD_OL_PAYOUT_VOID_MERCHANT_WITH_FEE "OVR"
+#define PD_OL_PAYOUT_VOID_PSP		"OVG"
+#define PD_OL_PAYOUT_CANCEL_PSP		"OCG"
+
+#define PD_MODE_PREVIEW			'P'
+#define PD_MODE_NORMAL			'N'
+#define PD_MODE_APPROVE			'A'
+
+#define PD_WITHDRAW_BATCH_PREFIX	'B'
+#define PD_MGT_CHANNEL_TXN_PREFIX	'G'
+
+#define	PD_NO_RULE		"NO"
+#define	PD_LESS_THAN		"LT"
+#define PD_GREATER_THAN		"GT"
+#define	PD_DAILY_LIMIT		"DL"
+#define	PD_OPER_LEN		2
+
+#define PD_WEB_HEADER_LEN_LEN	3
+
+/* TWV */
+#define PD_TWV_ACCEPT		"1"
+#define PD_TWV_DSP_NOTICE_ACCEPT	"3"
+#define PD_TWV_WTD_NOTICE_ACCEPT	"4"
+#define PD_TWV_WTD_NOTICE_REJECT	"5"
+#define	PD_ERROR_CODE_LEN	6
+
+
+/* URL Related */
+#define	PD_FE_TXN		"FE"
+#define	PD_BE_TXN		"BE"
+
+/* lang code */
+#define PD_HOST_CODE             "utf-8"
+#define PD_BIG5_CODE             "big5"
+#define	PD_JAP_CODE		 "SHIFT_JIS"
+#define	PD_GB2312_CODE		"gb2312"
+#define	PD_LANG_TW		"ZH"
+#define	PD_ASCII_CODE		"ascii"
+
+#define	PD_TAG_LEN		25
+
+#define PD_ENCRYPT_LEN		4
+
+#define	PD_CCY_JPY		"300"
+#define	PD_CCY_TWD		"200"
+#define	PD_CCY_RMB		"100"
+#define	PD_CCY_RMB_HPAY		"100"
+#define	PD_CCY_RMB_HCP		"100"
+#define	PD_CCY_ISO_CNY		"CNY"
+#define	PD_CCY_ISO_RMB		"RMB"
+#define	PD_CCY_ISO_TWD		"TWD"
+#define	PD_CCY_ISO_JPY		"JPY"
+#define	PD_CCY_ISO_HKD		"HKD"
+#define PD_CCY_ISO_GBP		"GBP"
+#define	PD_CCY_UNKNOWN		"000"
+
+#define	PD_CHINA		"CN"
+#define	PD_TAIWAN		"TW"
+#define	PD_JAPAN		"JP"
+#define	PD_INDIA		"IN"
+#define PD_SERVICE_CODE_LEN	3
+#define PD_PRODUCT_CODE_LEN	3
+#define PD_DEFAULT_SERVICE	"DEF"
+#define PD_CHINA_MOBILE_SERVICE	"CMP"
+#define PD_METHOD_LEN		3
+
+#define PD_DEFAULT_COUNTRY	"XX"
+
+
+#define PD_IP_LEN		25
+#define PD_URL_METHOD_LEN	10
+
+/* balance */
+#define PD_BUCKET_TYPE_LEN	2
+#define	PD_BUCKET_TYPE_FLOAT	"FT"
+#define	PD_BUCKET_TYPE_RESERVED	"RS"
+#define	PD_BUCKET_TYPE_AFTER_PAYOUT_FLOAT	"AF"
+#define	PD_BUCKET_TYPE_SETTLEMENT_FLOAT		"SF"
+
+#define PD_PSP_FLOAT		'F'
+#define PD_PSP_BAL		'B'
+
+
+/*txn counter*/
+#define PD_COUNTER_CODE_LEN	3
+#define PD_CATEGORY_LEN		3
+
+/*txn cal type*/
+#define	PD_PRECENTAGE		'P'
+#define	PD_FIXED_AMOUNT		'F'
+#define	PD_PRECENT_WITH_FIX	'V'
+
+/* rounding type */
+#define PD_TRUNC		'T'
+#define	PD_ROUNDING		'R'
+#define	PD_CELING		'C'
+
+/* encrypt type */
+#define	PD_ENC_TYPE_MD5		"1"
+#define	PD_ENC_TYPE_SHA1	"2"
+
+
+/*counter type*/
+#define PD_DAILY		'D'
+#define PD_WEEKLY		'W'
+#define PD_MONTHLY		'M'
+#define PD_YEARLY		'Y'
+
+
+#define	PD_TXN_CHG_TYPE_LEN	2
+#define	PD_TXN_CHG_TYPE_RESERVE	"RS"
+#define	PD_TXN_CHG_TYPE_MARKUP	"MU"
+#define	PD_TXN_CHG_TYPE_FEE	"FE"
+#define	PD_TXN_CHG_TYPE_XU	"XU"
+
+#define	PD_TYPE_MERCHANT	'M'
+#define	PD_TYPE_PSP		'P'
+
+#define	PD_VALUE_TYPE_CNT	"CNT"
+#define	PD_VALUE_TYPE_AMT	"AMT"
+#define	PD_VALUE_TYPE_REQ_CNT	"RNT"
+#define	PD_VALUE_TYPE_REQ_AMT	"RMT"
+
+#define PD_HOLD			'H'
+#define PD_UNHOLD		'U'
+
+#define	PD_P2I		'I'
+#define	PD_I2P		'P'
+#define	PD_S2I		'I'
+#define	PD_I2S		'S'
+
+#define	PD_BAL2PINT		"B2PI"
+#define	PD_PINT2BAL		"PI2B"
+#define	PD_BAL2SINT		"B2SI"
+#define	PD_SINT2BAL		"SI2B"
+
+/* response from psp */
+#define	PD_TWV_SUCCESS		"3"
+#define	PD_ESKY_SUCCESS		"1"
+#define	PD_CN_PSP_SUCCESS	"Y"
+#define	PD_PGEN_SUCCESS		"0"
+#define	PD_PGEN_PENDING		"1"
+
+/* charge type */
+#define	PD_CHG_BOTH		'B'
+#define	PD_CHG_MAX		'X'
+#define	PD_CHG_MIN		'I'
+#define	PD_CHG_NORMAL		'N'
+#define PD_CHG_POST_SRC		'P'
+
+/* charge party type */
+#define	PD_CHG_PARTY_SRC	'S'
+#define	PD_CHG_PARTY_DST	'D'
+
+#define	PD_SYS_PARTY_ID		"000000000000000"
+
+/* exchange rate party */
+#define PD_INT_EX		'I'
+#define	PD_EXT_EX		'E'
+#define PD_MANUAL_EX		'M'
+
+#define PD_DEFAULT_METHOD	"POST"
+#define PD_GET_METHOD		"GET"
+
+#define PD_HOLD_TYPE_LEN	2
+
+/* CRR_JNL_HEADER */
+#define PD_JNL_ID_LEN		16
+#define PD_DESCRIPTION_LEN	100
+#define PD_TXN_DATE_LEN	8
+#define PD_ACC_YEAR_LEN	4
+#define PD_ACC_MONTH_LEN	2		
+#define PD_BANK_UPDATE_DATE_LEN	8
+#define PD_REF_NO_LEN	100
+#define PD_COUNTRY_CODE_LEN	2	
+#define PD_PRODUCT_CODE_LEN	3	
+#define PD_REMARKS_LEN	300
+#define PD_STATUS_LEN	1
+#define PD_CREATE_USER_LEN	20
+#define PD_UPDATE_USER_LEN	20
+#define PD_APPROVE_USER_LEN	20
+#define PD_POST_DATE_LEN	8
+#define PD_POST_USER_LEN	20
+
+/* CRR_JNL_DETAIL */
+#define PD_CURRENCY_ID_LEN	3
+#define PD_CR_IND_LEN	1
+
+#define PD_JNL_PENDING		'P'
+#define PD_JNL_APPROVED		'A'
+#define PD_JNL_POSTED		'B'
+#define PD_JNL_DELETED		'D'
+
+#define PD_JNL_ADD		'A'
+#define PD_JNL_UPDATE		'U'
+
+#define	PD_JNL_ENTRY_TYPE_LEN	20
+#define	PD_IND_CREDIT		'C'
+#define	PD_IND_DEBIT		'D'
+#define	PD_IND_OVERWRITE	'W'
+
+/* CRR_JNL_CHANGE_LOG */
+#define PD_OLD_VALUE_LEN	4000
+#define PD_NEW_VALUE_LEN	4000
+#define PD_CHANGE_ACTION_LEN	10
+#define PD_CHANGE_USER_LEN	20
+
+/* CRR_GL_CODE */
+#define PD_GL_CODE_LEN	20
+#define PD_SL_CODE_LEN	50
+
+/* CRR JNL TYPE */
+#define PD_JNL_TYPE_PREFIX_LEN	5
+#define PD_JNL_TYPE_POST_TYPE_LEN	1
+
+#define PD_JLT_PX_ALL	"ALL"
+
+#define PD_JLT_PX_ONDA	"ONDA"
+#define PD_JLT_PX_ONDF	"ONDF"
+#define PD_JLT_PX_ONDAV	"ONDAV"
+#define PD_JLT_PX_AJDC	"AJDC"
+#define PD_JLT_PX_ONP	"ONP"
+#define PD_JLT_PX_ONPA	"ONPA"
+#define PD_JLT_PX_ONPV	"ONPV"
+#define PD_JLT_PX_ONMS	"ONMS"
+#define PD_JLT_PX_ONMSV	"ONMSV"
+#define PD_JLT_PX_ONMSD	"ONMSD"
+#define PD_JLT_PX_ONMTF	"ONMTF"
+#define PD_JLT_PX_OMBTF	"OMBTF"
+#define PD_JLT_PX_ONPTR	"ONPTR"
+#define PD_JLT_PX_OPTFP	"OPTFP"
+#define PD_JLT_PX_INTPM	"INTPM"
+#define PD_JLT_PX_VMBTF	"VMBTF"
+
+#define PD_JLT_PX_ONPAV	"ONPAV"
+#define PD_JLT_PX_ONDV	"ONDV"
+#define PD_JLT_PX_FPTOP	"FPTOP"
+#define PD_JLT_PX_FMBTO	"FMBTO"
+#define PD_JLT_PX_VOMS	"VOMS"
+#define	PD_JLT_PX_VMBT	"VMBT"
+
+#define PD_JLT_POST_INPUT 'I'
+#define PD_JLT_POST_MANUAL 'M'
+#define PD_JLT_POST_ONLINE 'A'
+#define PD_JLT_POST_OFFLINE 'F'
+
+/*Hold Type*/
+#define PD_HOLD_SETTLEMENT	"ST"
+#define PD_HOLD_PAYOUT		"PO"
+#define PD_HOLD_TRANSFER	"TF"
+#define PD_PROCESS_HOLD		'H'
+#define PD_PROCESS_UNHOLD	'U'
+
+
+#define         PD_TYPE_PSP_AMT "PSP_AMT"
+#define         PD_TYPE_PSP_FEE "PSP_COST"
+#define         PD_TYPE_TXN_AMT "TXN_AMT"
+#define         PD_TYPE_NET_AMT "NET_AMT"
+#define         PD_TYPE_RES_AMT "RES_AMT"
+#define         PD_TYPE_M_MARKUP        "M_MU_FEE"
+#define         PD_TYPE_C_MARKUP        "C_MU_FEE"
+#define         PD_TYPE_M_FEE   "M_FEE"
+#define         PD_TYPE_C_FEE   "C_FEE"
+#define         PD_TYPE_M_XU    "M_FXMU_FEE"
+#define         PD_TYPE_C_XU    "C_FXMU_FEE"
+#define         PD_TYPE_DELI_AMT    "DELI_AMT"
+
+#define PD_DEF_LANGUAGE		"EN"
+
+/*settlemant stage*/
+#define	PD_SETTLEMENT_REQUEST	"STR"
+#define	PD_SETTLEMENT_PROCESS	"STP"
+#define	PD_SETTLEMENT_APPROVAL	"STA"
+#define	PD_SETTLEMENT_DELIVERY	"STD"
+#define	PD_SETTLEMENT_CANCEL	"STC"
+#define	PD_SETTLEMENT_VOID	"VST"
+#define	PD_ENQUIRE_FX		"EFX"
+#define	PD_OL_SETTLEMENT_REQUEST "OSR"
+#define	PD_OL_SETTLEMENT_VOID	"OSV"
+
+#define PD_SETTLEMENT_RETURN    "RST"
+#define PD_OL_SETTLEMENT_RETURN "ROS"
+
+
+/* paymethod */
+#define	PD_ALL_METHOD		"000"
+#define	PD_BANKCARD		"001"
+#define	PD_WEB_ATM		"002"
+#define	PD_MOBILE_PAYMENT	"009"
+#define	PD_NET_BANKING		"010"
+#define	PD_CONVENIENCE_STORE	"020"
+#define	PD_ATM_PAYMENT		"030"
+#define PD_CHINA_PAYOUT		"004"
+
+#define	PD_CONVENIENCE_STORE_LEN	10
+#define	PD_CONVENIENCE_STORE_TYPE_LEN	2
+#define	PD_PAY_CENTER_NUMBER_LEN	10
+#define	PD_CUSTOMER_NUMBER_LEN		20
+#define	PD_CONF_NUMBER_LEN		6
+#define	PD_RECEIPT_NUMBER_LEN		32
+#define	PD_STORE_ID_LEN			128
+
+/* CRR External Merchant Detail */
+#define PD_CRR_MERCH_ID_LEN	15
+#define PD_CRR_EXT_MERCH_ID_LEN 100	
+
+/* CRR External PSP Detail */
+#define PD_CRR_PSP_ID_LEN 15
+#define PD_CRR_EXT_PSP_ID_LEN	50	
+
+/*account status*/
+#define	PD_ACCOUNT_STATUS_LEN	2
+#define	PD_ACC_OPEN		"O"
+#define	PD_ACC_CLOSE_GENERAL	"CG"
+#define	PD_ACC_CLOSE_PERMANENT	"CP"
+
+/*TxnSupport*/
+#define	PD_ADD_LOG		1
+#define	PD_UPDATE_LOG_ONLY	2
+#define	PD_NO_LOG		0
+
+#define PD_NOT_TO_MMS           0
+#define PD_TO_MMS               1
+
+/*MMS Money Movement System */ 
+#define PD_MMS_NODE_ID_LEN      5
+#define	PD_MMS_NODE_REF_LEN	16
+#define PD_MMS_KEY_LEN          32
+#define PD_MMS_SERVER           'S' 
+#define PD_MMS_CLIENT           'C' 
+#define PD_MMS_TYPE_LEN		5
+
+#define	PD_MMS_PROCESS_TYPE	"0200"
+#define	PD_MMS_PSP_SETT_CODE	"201002"
+#define	PD_MMS_MERCH_SETT_CODE	"201003"
+#define PD_MMS_TRANSFER_FR_MERCH "203001"
+#define PD_MMS_TRANSFER_TO_MERCH "203002"
+#define PD_MMS_TRANSFER_FR_PSP  "203003"
+#define PD_MMS_TRANSFER_TO_PSP  "203004"
+#define PD_MMS_PROCESS_INQ      "0100"
+#define PD_MMS_INQ_PSP_ID       "205002"
+#define PD_MMS_INQ_MERCH_ID     "205001"
+#define PD_MMS_PROCESS_REV      "0400"
+#define PD_MMS_REV_MONEY_MOVEMENT "201200"
+
+#define PD_SOURCE		'S'
+#define PD_DESTINATION		'D'
+#define PD_ROUTE_TYPE_LEN	2
+#define PD_BANK_ID_LEN		15
+#define PD_MB_ID_LEN		15
+
+#define PD_MMS_PARTY_PSP	"PSP"
+#define PD_MMS_PARTY_MERCH	"MECT"
+#define PD_MMS_PARTY_MB		"MB"
+#define PD_MMS_PARTY_BANK	"BANK"
+#define PD_MMS_PARTY_STL_BK     "STLBK"
+
+#define PD_TXN_IPY_MAX_RECORD   10  
+#define PD_REFRESH_INTERVAL     10  
+#define PD_MMS_SINGLE_QUERY     'S' 
+#define PD_MMS_MULTI_QUERY      'M' 
+#define PD_MMS_SP_NULL_VALUE    "<NULL>"
+#define PD_MMS_FETCH_END	1
+#define PD_MMS_FETCH_PENDING	0
+
+
+#define PD_MMS_PARTY_TYPE_LEN   5
+#define PD_MMS_PARTY_ID_LEN     15
+#define PD_MMS_PARTY_NAME_LEN   50
+#define PD_MMS_MMC_ID_LEN       5
+#define PD_MMS_DC_TYPE_LEN      2
+
+
+#define PD_MMS_TXN_SEQ_LEN	38
+#define PD_MMS_FILING_NO_LEN    50
+
+#define	PD_TRAN_TO_PSP		"TTP"
+#define	PD_TRAN_FROM_PSP	"TFP"
+#define	PD_TRAN_TO_MERCH	"TTC"
+#define	PD_TRAN_FROM_MERCH	"TFC"
+#define PD_MONEY_MOVE_AUTO_REV  "VMS"
+#define PD_REV_TRAN_TO_PSP      "VTP"
+#define PD_REV_TRAN_FROM_PSP    "VFP"
+#define PD_REV_TRAN_TO_MERCH    "VTC"
+#define PD_REV_TRAN_FROM_MERCH  "VFC"
+
+#define PD_MMS_VOID_PREFIX      'V'
+#define PD_MMS_AUTO_REV		2500
+
+/*Get Reserved Amt */
+#define PD_RES_AMT_OPTION_DAY  "D"
+#define PD_RES_AMT_OPTION_WEEK "W"
+#define PD_TOT_DAY_PER_WEEK    7
+
+#define PD_RES_AMT_DAILY_CAP    'D'
+#define PD_RES_AMT_RESERVED_AMT 'R'
+
+#define PD_RES_AMT_STATUS_PENDING 'P'
+#define PD_RES_AMT_STATUS_APPROVE 'A'
+
+#define	PD_CUSTOM_TAG_LEN	20
+#define	PD_CUSTOM_VALUE_LEN	50
+
+/* Adjustment Type */
+#define PD_ADJ_TYPE_CODE_LEN		3
+#define PD_ADJ_TYPE_DESC_LEN    	50
+#define PD_ADJ_TYPE_DEBIT		'D'
+#define PD_ADJ_TYPE_CREDIT		'C'
+#define PD_ADJ_TYPE_DEF_CODE		"00"
+/*#define PD_ADJ_TYPE_ACTION_ADD          'A'*/
+/*#define PD_ADJ_TYPE_ACTION_UPDATE       'U'*/
+/*#define PD_ADJ_TYPE_ACTION_DELETE       'D'*/
+#define PD_ADJ_TYPE_MAX_CODE		99
+
+#define PD_ADJ_VOID_PSP_PREFIX          'x'
+#define PD_ADJ_VOID_MERCH_PREFIX        'y'
+#define PD_ADJ_DESC_PREFIX              "Adjustment - "
+#define PD_ADJ_VOID_DESC_PREFIX         "Void "
+
+/* schduler */
+#define	PD_SCHEDULER_RECURR		'R'
+#define	PD_SCHEDULER_ONCE		'O'
+#define	PD_SCHEDULER_MIX		'M'
+
+#define PD_ACTION_ADD   		'A'
+#define PD_ACTION_UPDATE       		'U'
+#define PD_ACTION_DELETE       		'D'
+
+#define PD_NOTE_LEN            		2000
+#define	PD_AMT_TYPE_LEN			2
+#define	PD_TXN_ELEMENT_TYPE_LEN		4
+
+/* txn element seq */
+#define	PD_ELEMENT_SEQ_TAMT		1
+#define	PD_ELEMENT_SEQ_MAMT		2
+#define	PD_ELEMENT_SEQ_TFEE		3	
+#define	PD_ELEMENT_SEQ_RAMT		4
+
+#define	PD_ELEMENT_TXN_AMT		"TAMT"
+#define	PD_ELEMENT_TXN_FEE		"TFEE"
+#define	PD_ELEMENT_RES_AMT		"RAMT"
+#define	PD_ELEMENT_MARKUP_AMT		"MAMT"
+#define	PD_ELEMENT_FLOAT_AMT		"FAMT"
+#define	PD_ELEMENT_HOLD_AMT		"HAMT"
+#define	PD_ELEMENT_UNHOLD_AMT		"UAMT"
+#define	PD_ELEMENT_TRF_AMT		"TRNF"
+#define PD_ELEMENT_MAPO_AMT		"MAPO"
+#define PD_ELEMENT_MAPO_FEE		"MAPF"
+#define	PD_ELEMENT_SETTLEMENT_FLOAT	"SAMT"
+#define PD_ELEMENT_MFIN_AMT             "MFIN"
+#define PD_ELEMENT_MPOR_AMT             "MPOR"
+#define PD_ELEMENT_MFLT_AMT             "MFLT"
+#define	PD_ELEMENT_HOLD_PO_AMT		"HOPO"
+#define	PD_ELEMENT_UNHOLD_PO_AMT	"UOPO"
+#define PD_ELEMENT_IN_TRANSIT           "INTR"
+#define	PD_ELEMENT_COST			"COST"
+#define	PD_ELEMENT_OVERPAID		"OVRP"
+#define	PD_ELEMENT_PERPAID		"PERP"
+#define	PD_ELEMENT_INTRANSIT_COST	"INCT"
+
+
+#define	PD_DR				"DR"
+#define	PD_CR				"CR"
+#define PD_DR_FULL			"Debit"
+#define PD_CR_FULL			"Credit"
+
+/* eml */
+#define	PD_EML_SENDER_LEN		25
+#define	PD_EML_TAG_LEN			50
+#define	PD_EML_BODY_LEN			500
+
+#define	PD_EML_STATUS_NEW		'N'
+
+/* Txn Status Map */
+#define PD_STATUS_MAP_TYPE_ADMIN	'A'
+#define PD_STATUS_MAP_TYPE_MERCH	'M'
+#define PD_STATUS_MAP_DESC_ACCEPT       "Approved"
+#define PD_STATUS_MAP_DESC_DECLINED     "Declined"
+
+
+/*Sub Status*/
+#define	PD_SUB_STATUS_LEN		3
+#define PD_HAND_SHAKEN                  "100"
+#define PD_INITIATED                    "101"
+#define PD_SENT_TO_PSP                  "102"
+#define PD_PSP_CONFIRMED                "103"
+#define PD_ACK_TO_MERCHANT              "104"
+#define PD_PENDING_ACK_RETRY            "105"
+#define PD_PSP_REJECT                   "106"
+#define PD_UPLOADED                     "107"
+#define PD_UPLOAD_CONFIRMED             "108"
+#define PD_UPLOAD_FAILED                "109"
+#define PD_MERCHANT_CANCELLED           "110"
+#define PD_ADMIN_CANCELLED              "111"
+#define PD_APPROVED_FOR_GENERATED       "112"
+#define PD_APPROVED_AND_GENERATED       "113"
+#define PD_REFUND_APPROVED              "114"
+#define PD_REQUESTED                    "115"
+#define PD_IN_PROCESS                   "116"
+#define PD_DELIVERED                    "117"
+#define PD_APPROVED                     "118"
+#define PD_VOID                         "119"
+#define PD_DECLINED                     "120"
+#define	PD_RESERVE_RELEASED		"121"
+#define	PD_APPROVED_VOID		"122"
+#define	PD_GENERATED_VOID		"123"
+#define	PD_ADMIN_REQUESTED		"124"
+#define	PD_MERCHANT_REQUESTED		"125"
+#define	PD_SYSTEM_REQUESTED		"126"
+#define	PD_APPROVED_AND_SENDING		"127"
+#define	PD_APPROVED_AND_SENT		"128"
+#define	PD_DELIVERING			"129"
+#define	PD_UNDO				"130"
+#define	PD_SYSTEM_CANCELLED		"132"
+#define	PD_AUTO_APPROVED		"134"
+#define	PD_ADMIN_APPROVED		"135"
+#define	PD_MERCHANT_APPROVED		"136"
+#define	PD_AUTO_EXPIRED			"137"
+#define	PD_MANUAL_ACCEPTED		"138"
+#define	PD_UNALLOCATED			"139"
+#define PD_ACK_TO_BE_SENT		"140"
+#define PD_CALLBACK_DISABLED            "141"
+#define	PD_CANCELLED			"142"
+#define	PD_RETURNED                     "143"
+#define	PD_COMPLETED			"144"
+#define	PD_PENDING			"145"
+#define	PD_IN_PROGRESS                  "146"
+#define PD_MANUAL_DELIVERED		"147"
+#define PD_APPROVED_CHARGEBACK          "148"
+
+#define PD_SYSTEM_CONFIRMED		"149"
+#define PD_SYSTEM_REJECTED		"150"
+
+
+/* direction */
+#define	PD_TXN_REQUEST			'r'
+#define	PD_TXN_RESPONSE			'R'
+
+/* INIT_PARTY_ID */
+#define PD_INIT_MID			"4000000000"
+
+/*txn type*/
+#define PD_TYPE_DEPOSIT			'D'
+#define PD_TYPE_PAYOUT			'P'
+#define PD_TYPE_SETTLEMENT		'S'
+#define PD_TYPE_ALL			'A'
+
+/* update type in create merch */
+#define PD_UPDATE_KEY			'K'
+#define PD_UPDATE_MERCH_INFO            'M'
+#define PD_UPDATE_ALL                   'A'
+#define PD_SESSION_ID                   "sessionid"
+
+/* Payout detail select mode */
+#define	PD_BY_BANK			'N'
+#define	PD_BY_BATCH			'B'
+#define	PD_BY_TXN			'T'
+#define	PD_BY_TOTAL_AMT			'A'
+#define	PD_BY_TXN_AMT			'R'
+#define	PD_BY_FILE			'F'
+#define	PD_SPECIAL_CASE			'Z'
+#define	PD_BY_GEN_TXN			'G'
+#define	PD_BY_SELECTED_TXN		'S'
+
+/* Deposit Reserved */
+#define  PD_DEF_RELEASE_PERIOD          180
+
+/* Release Period Type */
+#define  PD_RLS_TYPE_AVAPO		"AVAPO"
+#define  PD_RLS_TYPE_SETTFT		"SETTFT"
+#define	 PD_RLS_TYPE_LEN		10
+
+/* Release Settlment Preview */
+#define	 PD_RLS_SETT_MODE_PREVIEW	"PV"
+#define	 PD_RLS_SETT_MODE_CUTOFF	"CF"
+
+/* system ex rules */
+#define	PD_EX_CODE_LEN			6
+#define	PD_EX_RULE_PLUS			'+'
+#define	PD_EX_RULE_MINUS		'-'
+
+/* txn_detail Customer information */
+#define PD_CUSTOMER_NAME_LEN		100
+#define PD_CUSTOMER_FAMILY_NAME_LEN	100
+#define PD_CUSTOMER_TEL_LEN		20
+#define PD_CUSTOMER_EMAIL_LEN		100
+
+/* psp delivery */
+#define	PD_DELIVER_FROM			"FR"
+#define	PD_DELIVER_TO			"TO"
+
+/*encrypt / decrypt */
+#define	PD_ENCRYPT			0
+#define	PD_DECRYPT			1
+
+/*Auto Settlement Rule*/
+#define	PD_FIXED_AMT_RULE		'A'
+#define	PD_EVERY_X_DAY_RULE		'D'
+#define	PD_EVERY_WEEKDAY_RULE		'W'
+#define	PD_MONTHLY_RULE			'M'
+#define	PD_SETT_VALUE_LEN		20
+
+/* Email Notify Function */
+#define PD_EML_FUNCT_AUTO_SETT          "AUTO_SETT"
+#define PD_EML_FUNCT_MNL_SETT_ADMIN     "MNL_SETT_A"
+#define PD_EML_FUNCT_MNL_SETT_MERCH     "MNL_SETT_M"
+
+#define PD_EML_FUNCT_OFL_SETT_ADMIN     "OFL_SETT_A"
+
+#define PD_EMA_FUNCT_REQ_RTF            "REQ_RTF"
+#define PD_EMA_FUNCT_REQ_PO_RA          "REQ_PO_RA"
+
+#define PD_EML_FUNCT_LEN		15
+#define PD_EML_PARTY_ID_LEN             15
+#define PD_EML_R_TYPE_LEN		5
+#define PD_EML_EMAIL_LEN		256
+
+#define PD_EML_TAGNAME_LEN		50
+#define PD_EML_TYPE_LEN			20
+#define PD_EML_OPERATOR_LEN		2
+#define PD_EML_VALUE_LEN		50
+
+#define PD_EML_FROM_LEN			50
+#define PD_EML_SUBJECT_LEN		100 
+#define PD_EML_TEMPLATE_LEN		1024
+
+#define PD_EML_FIELD_LEN		50
+
+#define PD_EML_SOURCE_MGT		"MGT"
+#define PD_EML_SOURCE_BATCH		"BATCH"
+#define PD_EML_SOURCE_CHANNEL		"CHANNEL"
+
+#define PD_EML_FUNCT_CHECK_PSP_TXN     	"CHECK_PSP_TXN"
+
+#define PD_EML_FUNCT_SETT_ADMIN_MGT     "SETT_ADMIN_MGT"
+#define PD_EML_FUNCT_SETT_FAIL_MGT      "SETT_FAIL_MGT"
+#define PD_EML_FUNCT_SETT_SUCCESS_MGT   "SETT_SUCC_MGT"
+#define PD_EML_FUNCT_SETT_AUTO          "SETT_AUTO"
+#define PD_EML_FUNCT_SETT_ADMIN         "SETT_ADMIN"
+#define PD_EML_FUNCT_SETT_MERCH         "SETT_MERCH"
+#define PD_EML_FUNCT_SETT_FAIL          "SETT_FAIL"
+#define PD_EML_FUNCT_SETT_SUCCESS       "SETT_SUCCESS"
+#define PD_EML_FUNCT_OL_SETT_ADMIN      "OL_SETT_ADMIN"
+#define PD_EML_FUNCT_OL_SETT_MERCH      "OL_SETT_MERCH"
+#define PD_EML_FUNCT_OL_SETT_FAIL       "OL_SETT_FAIL"
+#define PD_EML_FUNCT_OL_SETT_SUCCESS    "OL_SETT_SUCCESS"
+#define PD_EML_FUNCT_SEND_ERROR         "SEND_ERROR"
+#define PD_EML_FUNCT_FROZEN_TXN_ONLINE	"FROZEN_TXN_ON"
+#define PD_EML_FUNCT_FROZEN_TXN_OFFLINE	"FROZEN_TXN_OFF"
+#define	PD_EML_FUNCT_CHK_AUTO_UPL_ERR	"CHK_AUTOUPL_ERR"
+#define PD_EML_FUNCT_CHK_AUTO_UPL_POA   "CHK_AUTOUPL_POA"
+#define PD_EML_FUNCT_CHK_AUTO_UPL_ITM   "CHK_AUTOUPL_ITM"
+#define	PD_EML_FUNCT_CHK_MISS_STMT	"CHK_MISS_STMT"
+
+#define PD_EML_OPERATOR_EQ1             "=="
+#define PD_EML_OPERATOR_EQ2             "="
+#define PD_EML_OPERATOR_NE1             "!="
+#define PD_EML_OPERATOR_NE2             "^="
+#define PD_EML_OPERATOR_NE3             "<>"
+#define PD_EML_OPERATOR_GE              ">="
+#define PD_EML_OPERATOR_LE              "<="
+#define PD_EML_OPERATOR_GT              ">"
+#define PD_EML_OPERATOR_LT              "<"
+
+#define PD_EML_OPERATOR_EQUAL           "=="
+
+#define PD_EML_PARTY_TYPE_SETT_FAIL_MGT         'G'
+#define PD_EML_PARTY_TYPE_SETT_SUCCESS_MGT      'G'
+#define PD_EML_PARTY_TYPE_SETT_FAIL             'G'
+#define PD_EML_PARTY_TYPE_SETT_SUCCESS          'G'
+#define PD_EML_PARTY_TYPE_OL_SETT_FAIL          'G'
+#define PD_EML_PARTY_TYPE_OL_SETT_SUCCESS       'G'
+#define PD_EML_PARTY_TYPE_SEND_ERROR            'G'
+
+#define	PD_EML_PARTY_ID_BATCH			"000"
+#define PD_EML_PARTY_ID_SETT_FAIL_MGT           "000"
+#define PD_EML_PARTY_ID_SETT_SUCCESS_MGT        "000"
+#define PD_EML_PARTY_ID_SETT_FAIL               "000"
+#define PD_EML_PARTY_ID_SETT_SUCCESS            "000"
+#define PD_EML_PARTY_ID_OL_SETT_FAIL            "000"
+#define PD_EML_PARTY_ID_OL_SETT_SUCCESS         "000"
+#define PD_EML_PARTY_ID_SEND_ERROR              "000"
+
+#define PD_EML_EMAIL_STATIC_TEMPLATE_PATH	"STATIC_TEMPLATE"
+
+#define PD_EML_SEND_EMAIL                       1
+#define PD_EML_SEND_EMAIL_ALERT_FAIL            2
+#define PD_EML_SEND_EMAIL_ALERT_SUCCESS         3
+#define PD_EML_SEND_EMAIL_ERROR                 4
+
+#define PD_EMAIL_ADDR_DELIMIT_SYMBOL            ";"
+#define PD_EMAIL_ADDR_DELIMIT_SYMBOL_CHECK      ';'
+
+#define	PD_RESEND_TO_PSP		302
+
+#define PD_ALLOW_RESEND_PERIOD		"ALLOW_RESEND_PERIOD"
+
+
+/**** OFFLINE*/
+#define	PD_BANK_ACCT_NUM_LEN		50
+#define	PD_BANK_ACCT_NAME_LEN		50
+#define	PD_BANK_DESC_LEN		150
+#define	PD_BANK_REF_LEN			150
+#define	PD_BAID_LEN			20
+#define	PD_BAID_NAME_LEN		150
+
+#define PD_BANK_ACCT_SHORT_NAME_LEN     20
+#define PD_BRANCH_CODE_LEN              50
+#define PD_OWNER_ID_LEN                 20
+#define PD_OWNER_NAME_LEN              	50
+#define PD_SWIFT_CODE_LEN               20
+
+#define PD_BANK_ACCT_STATUS_NEW		"N"
+#define PD_BANK_ACCT_STATUS_ACTIVE      "A"
+#define PD_BANK_ACCT_STATUS_FROZEN      "F"
+#define PD_BANK_ACCT_STATUS_DISPOSED	"D"
+#define PD_BANK_ACCT_STATUS_SPARE	"S"
+#define PD_BANK_ACCT_STATUS_BACKUP	"B"
+#define PD_BANK_ACCT_STATUS_HOLD	"H"
+#define PD_BANK_ACCT_STATUS_SUSPEND	"SP"
+#define PD_BANK_ACCT_STATUS_SUNSET	"SS"
+#define PD_BANK_ACCT_STATUS_NOT_YET_SUNSET	"NS"
+#define PD_BANK_ACCT_STATUS_NOT_YET_FROZEN	"NF"
+
+#define PD_PSP_MASTER_MODE_LEN          3
+#define PD_PSP_MASTER_MODE_ONLINE       "ONL"
+#define PD_PSP_MASTER_MODE_OFFLINE      "OFL"
+#define PD_PSP_MASTER_MODE_ALL		"ALL"
+
+#define PD_BAID_STATUS_NEW              "N"
+#define PD_BAID_STATUS_OPEN             "O"
+#define PD_BAID_STATUS_CLOSE            "C"
+
+#define PD_BAID_PREFIX                  "BAID"
+#define PD_BAID_MAX_VALUE               999999
+
+#define PD_SIM_CARDS_REMARKS_LEN        100 
+#define PD_SIM_CARD_LINK_BANK_ACCT	'L'
+
+/* Non Straight Thru */
+#define PD_MAGIC_NUM_LEN		20
+#define PD_MAGIC_WORD_LEN		150
+#define PD_MAGIC_CUST_ID_LEN		50
+#define	PD_VP_PARAMETER			"VP_PARAMETER"
+#define	PD_AUTO_SWITCH			"AUTO_SWITCH"
+#define	PD_PRIMARY_SERVICE		"PRIMARY_SERVICE"
+#define	PD_VP_ENABLE			"_ENABLE"
+#define	PD_VP_NETWORK_MSG_URL		"NETWORK_MSG_URL"
+#define	PD_VP_STATUS			"_STATUS"
+#define	PD_VP_SWITCH_TO			"_SWITCH_TO"
+#define	PD_VP_OPEN			'O'
+#define	PD_VP_CLOSE			'C'
+#define	PD_VP_GROUP_ID_LEN		10
+
+
+/* Offline Deposit Request */
+#define	PD_AUX_BANK_STATEMENT		"AUX_STMT"
+#define	PD_BANK_STATEMENT		"BNK_STMT"
+#define	PD_SMS_STATEMENT		"SMS_STMT"
+#define PD_DEPOSIT_REQUEST_FILE		"DSI_REQT"
+
+#define PD_RENAMED_FILENAME_LEN		150
+#define PD_UPLOAD_FILENAME_LEN		100
+#define	PD_UPLOAD_LINE_LEN		511
+#define	PD_DEPOSIT_MERCH_REF_LEN	25
+#define	PD_DEPOSITOR_PROV_REF_LEN	150
+#define	PD_OTHER_BANK_CODE		"000000"
+#define	PD_OTHER_BANK_ORDER		999999
+#define PD_OFL_PAYPAGE_OTHER_BANK       "OFL_PAYPAGE_OTHER_BANK"
+
+#define	PD_DEPOSIT_FILE_UPLOAD		'U'
+#define	PD_DEPOSIT_FILE_PENDING		'W'
+#define	PD_DEPOSIT_FILE_CANCEL		'C'
+#define	PD_DEPOSIT_FILE_DECLINED	'R'
+#define	PD_DEPOSIT_FILE_APPROVE		'A'
+#define	PD_DEPOSIT_FILE_APPROVED	'A'
+
+#define	PD_DEPOSIT_FILE_PENDING_DESC	"Pending"
+#define	PD_DEPOSIT_FILE_CANCEL_DESC	"Cancelled"
+#define	PD_DEPOSIT_FILE_DECLINED_DESC	"Declined"
+
+#define PD_DEPOSIT_FLOW_TYPE_1          '1'
+#define PD_DEPOSIT_FLOW_TYPE_2          '2'
+
+#define PD_BANK_ACCT_NUM_GLOBAL		"000"
+
+/* Offline Stmt */
+#define PD_INPUT_CHANNEL_LEN		10
+#define	PD_TFR_BANK_NAME_LEN		200
+#define	PD_TFR_BANK_ACCT_NUM_LEN	200
+#define	PD_TFR_TYPE_LEN			200
+#define	PD_TFR_TYPE_LONG_LEN		640
+#define	PD_TFR_CHANNEL_LEN		200
+#define	PD_TFR_CHANNEL_LONG_LEN		640
+#define	PD_TFR_TEXT_LEN			200
+#define	PD_TFR_CUSTOMER_TEXT_LEN	200
+#define PD_TFR_CUSTOMER_TEXT_LONG_LEN   640
+#define	PD_SENDER_NAME_LEN		200
+#define	PD_TXN_REF_NUM_LEN		200
+#define PD_KEYWORDS_MAPPING_LEN		401
+#define PD_STMT_TMP_LEN			512
+#define	PD_ACCT_TYPE_LEN                3
+#define	PD_STMT_REF_LEN			16
+#define	PD_STATEMENT_TYPE_LEN		3
+#define PD_STMT_RAW_DATE		50
+#define PD_STMT_RAW_TIME		50
+#define PD_TXN_LOCATION_LEN		640
+#define PD_TXN_TYPE_LEN			640
+#define PD_TXN_REFERENCE_LEN		640
+
+#define PD_STMT_PREVIEW			'P'
+#define PD_STMT_REUPLOAD		'U'
+#define PD_STMT_CANCEL			'C'
+#define PD_STMT_PENDING			'W'
+#define PD_STMT_APPROVED		'A'
+#define PD_STMT_DECLINED		'R'
+#define PD_STMT_CANCELLED		'C'
+
+#define PD_HOLD_TYPE			'H'
+#define PD_UNHOLD_TYPE			'U'
+
+#define PD_TXN_CODE_UNKNOWN_CREDIT	"UBC"
+#define PD_TXN_CODE_UNKNOWN_DEBIT	"UBD"
+#define PD_TXN_CODE_UNKNOWN_SWEEP_IN    "USI"
+#define PD_TXN_CODE_UNKNOWN_SWEEP_OUT   "USO"
+#define PD_TXN_CODE_VOID_UNKNOWN_CREDIT	"UVC"
+#define PD_TXN_CODE_VOID_UNKNOWN_DEBIT	"UVD"
+#define PD_TXN_CODE_BANK_CHARGE		"CGB"
+#define PD_TXN_CODE_RETURNED_DEPOSIT	"VOD"
+#define PD_TXN_CODE_SWEEP_OUT           "SUD"
+#define PD_TXN_CODE_RETURNED_SWEEP_OUT  "VUD"
+
+#define	PD_SCRIPT_NAME_LEN		50
+#define	PD_IN_FILE_ENCODING_LEN		10
+#define PD_IN_FILE_PREFIX_LEN		10
+#define PD_IN_FILE_COUNTRY_LEN		10
+#define	PD_FORMAT_ID_LEN		20
+#define	PD_FORMAT_TYPE_LEN		20
+#define	PD_FORMAT_VALUE_LEN		10
+#define	PD_FORMAT_DESC_LEN		50
+#define	PD_CONT_DESC_LEN		50
+#define	PD_CONT_TEMPLATE_LEN		50
+#define	PD_FORMAT_TEMPLATE_LEN		500
+#define	PD_COL_NAME_LEN			50
+#define PD_FORMAT_DELIMITER_LEN		500
+#define PD_FORMAT_DELIMITER_DESC_LEN	50
+
+/* Offline SMS */
+#define PD_SMS_SENDER_LEN		20
+#define PD_SMS_TEXT_LEN			1600
+#define PD_SMS_SCTS_LEN			20
+#define PD_SMS_TAG_LEN			20
+#define PD_SMS_HAS_MISSING_PARTS_LEN	5
+#define PD_SMS_SMSC_LEN			20
+#define PD_SMS_REF_NUM_LEN		50
+#define PD_SMS_SENDER_NUM_TYPE_LEN	10
+#define PD_SMS_SEQ_NUM_LEN		5
+#define PD_SMS_TOTAL_LEN		5
+#define PD_SMS_REQ_BANK_TIME_LEN	10
+#define PD_SMS_REQ_PAYEE_LEN		50
+#define PD_SMS_REQ_PAYER_LEN		50
+#define PD_SMS_REQ_BANK_NAME_LEN	20
+#define PD_SMS_REQ_BANK_CHANNEL_LEN	100
+#define PD_SMS_REQ_STATUS_LEN		20
+#define PD_SMS_BAL_LEN			15
+#define PD_SMS_STMT_UPL			"OFL_SMS_STMT_UPL"
+#define PD_SMS_DEDUP_RANGE		"OFL_SMS_DEDUP_RANGE"
+
+#define PD_MOBILE_CARRIERS_LEN		3
+
+/*Channel Txn Map*/
+#define	PD_APPLY_FEE			"APPLY_FEE"
+#define	PD_APPLY_RESERVE		"APPLY_RESERVE"
+#define	PD_APPLY_LIMIT			"APPLY_LIMIT"
+#define	PD_APPLY_MARKUP			"APPLY_MARKUP"
+
+
+/*Offline Unique Amt*/
+#define	PD_OPR_DIR_PLUS			'+'
+#define	PD_OPR_DIR_MINUS		'-'
+#define	PD_OPR_DIR_BOTH			'B'
+
+/* Offline System Parameter */
+#define PD_OFL_MERCH_ADJ_CODE_PREFIX    "OFL_MERCH_ADJ_CODE_PREFIX"
+#define PD_OFL_PROVIDER_ADJ_CODE_PREFIX "OFL_PROVIDER_ADJ_CODE_PREFIX"
+#define PD_OFL_STMT_DATE_RANGE          "OFL_STMT_DATE_RANGE"
+#define PD_OFL_STMT_DATE_RANGE_DAILY    "OFL_STMT_DATE_RANGE_DAILY"
+#define PD_OFL_BANK_STMT_AUTO           "OFL_BANK_STMT_AUTO"
+#define PD_OFL_PO_TEMP_BAID_BAL_UPDATE  "OFL_PAYOUT_TEMP_BAID_BAL_UPDATE"
+
+/*Offline Auto Match Criteria*/
+#define PD_MATCH_RULE_TYPE_LEN		10
+#define PD_TAG_NAME_LEN			25
+
+/*Offline Match Time Interval*/
+#define PD_DAY_TYPE_LEN			20
+
+#define	PD_TRANSFER_IN			"TRF_IN"
+#define	PD_TRANSFER_OUT			"TRF_OUT"
+
+/*Offline Payout*/
+#define	PD_DEFAULT_PAYOUT_FORMAT	0
+#define	PD_YPY_PAYOUT_FORMAT		1
+#define	PD_TWV_PAYOUT_FORMAT		2
+#define PD_PAYOUT_BANK_STM		"OFL_PAYOUT_STATEMENT"
+#define	PD_UPLOAD_RETURN_PAYOUT		'U'
+#define	PD_CONFIRM_RETURN_PAYOUT	'C'
+#define	PD_APPROVE_RETURN_PAYOUT	'A'
+
+/*Offline Txn Header ODI Upload Channel*/
+#define PD_OLN_UPLOAD                   0
+#define PD_FILE_UPLOAD                  1
+
+/*Offline Txn Header OBD Upload Channel*/
+#define PD_SMS_UPLOAD                   0
+#define PD_STMT_UPLOAD                  1
+
+/*Offline Payout Upload Channel*/
+#define PD_PAYOUT_FILE_UPLOAD           0
+#define PD_PAYOUT_OPL_UPLOAD            1
+
+
+
+/*Offline Bank Acct Status */
+#define PD_ACCT_ACTION_LEN              20
+#define PD_ACCT_STATUS_GROUP_LEN        20
+
+/*Bank/Acct Level Flag for AUS*/
+#define PD_FLAG_BANK_LEVEL		'B'
+#define PD_FLAG_ACCT_LEVEL		'A'
+
+#define PD_BANKACCT_GROUP_NEW           "NEW"
+#define PD_BANKACCT_GROUP_ACTIVE        "ACTIVE"
+#define PD_BANKACCT_GROUP_SPARE         "SPARE"
+#define PD_BANKACCT_GROUP_BACKUP        "BACKUP"
+#define PD_BANKACCT_GROUP_FROZEN        "FROZEN"
+#define PD_BANKACCT_GROUP_DISPOSED      "DISPOSED"
+
+#define PD_AC_ACTION_BANK_STMT_ULD         "BK_STMT_ULD"        /* Bank Statement Upload */
+#define PD_AC_ACTION_SMS_POST              "SMS_POST"           /* SMS Posting */
+#define PD_AC_ACTION_DEPOSIT_API_REQ       "DEPOSIT_API_REQ"    /* Deposit API Request */
+#define PD_AC_ACTION_DEPOSIT_FILE_REQ      "DEPOSIT_FILE_REQ"   /* Deposit Request File Upload */
+#define PD_AC_ACTION_AUTO_MATCH            "AUTO_MATCH"         /* Auto Match */
+#define PD_AC_ACTION_ADM_MAN_MATCH         "ADM_MAN_MATCH"      /* Admin Manual Match */
+#define PD_AC_ACTION_MERCH_MAN_MATCH       "MERCH_MAN_MATCH"    /* Merchant Manual Match */
+#define PD_AC_ACTION_SHOW_MERCH_MAN        "SHOW_MERCH_MAN"     /* Show Merchant Manual Match Record */
+#define PD_AC_ACTION_SHOW_UNALLOC_STMT     "SHOW_UNALLOC_STMT"  /* Show Unallocated Bank Record */
+
+#define PD_Q_QUOTE_VALUE			"q'^%s^'"
+#define PD_Q_ADD_QUOTE_LEN                      5
+
+
+/*Offline Party Type*/
+#define PD_OFL_PARTY_GLOBAL		"GLOBAL"
+#define PD_OFL_PARTY_CLIENT		"CLIENT"
+#define PD_OFL_PARTY_MERCHANT		"MERCH"
+#define PD_OFL_PARTY_PROVIDER		"PROV"
+#define PD_OFL_PARTY_PID		"PID"
+#define PD_OFL_PARTY_BAID		"BAID"
+#define PD_OFL_PARTY_LEN		6
+
+/* data type for MGT */
+#define	PD_STRING_TYPE			"STR"
+#define	PD_INT_TYPE			"INT"
+#define	PD_UINT_TYPE			"UINT"
+#define	PD_DOUBLE_TYPE			"DOU"
+
+
+/* value type for MGT */
+#define	PD_NORMAL_VALUE			"N"
+#define	PD_DYN_VALUE			"@@"
+
+/* parties type */
+#define PD_PARTY_TYPE_R			"R"
+#define PD_PARTY_TYPE_M			"M"
+#define PD_PARTY_TYPE_P			"P"
+#define PD_PARTY_TYPE_C			"C"
+#define PD_PARTY_TYPE_G			"G"
+
+/* system alert module (MsgMGT Use)*/
+#define PD_TPL_SECTION_TYPE		"SEC"
+#define PD_TPL_GLOBAL_TYPE		"GLO"
+
+/* system alert module */
+#define	PD_TPL_NAME_LEN			50
+#define PD_TPL_INPUT_CHANNEL_LEN	10
+#define PD_TPL_SCRIPT_LEN		50
+#define PD_TPL_PARTIES_LEN		1
+#define PD_TPL_SUBJECT_LEN		100
+#define PD_TPL_EMAIL_NAME_LEN		50
+#define PD_TPL_EMAIL_FROM_LEN		50
+#define PD_TPL_EMAIL_TO_LEN		1024
+#define PD_TPL_EMAIL_CC_LEN		1024
+#define PD_TPL_EMAIL_BCC_LEN		1024
+
+#define PD_TPL_TAG_NAME_LEN		50
+#define PD_TPL_SECTION_NAME_LEN		50
+#define PD_DATATYPE_LEN			3
+
+#define PD_TPL_TAG_NAME_DELIMIT_SYMBOL  "-"
+
+#define PD_HTML_HEADER_FILENAME         "html_header"
+#define PD_HTML_START_FILENAME		"html_start"
+#define PD_HTML_CLOSE_FILENAME		"html_close"
+#define PD_HTML_CONTENT_FILENAME	"html_content.html"
+
+#define PD_SEND_ALERT_EMAIL_SCRIPT	"send_system_alert_email.sh"
+
+#define PD_BAID_CATEGORY_TYPE_LEN	10
+#define PD_BAID_CATEGORY_DEFAULT	"ITL_GEN"
+#define PD_BAID_CAT_NAME_LEN		10
+
+#define PD_ACCT_NAME_LEN              	100
+
+#define PD_COMPANY_NAME_LEN		100
+#define PD_COMPANY_ADDR_LEN		200
+
+/* Client */
+#define PD_BENEFICIARY_BANK_AC_NAME_LEN	100
+#define PD_BENEFICIARY_BANK_AC_NUM_LEN	50
+#define PD_BENEFICIARY_BANK_NAME_LEN	100
+#define PD_COMPANY_SWIFT_CODE_LEN      	80
+#define PD_COMPANY_IBAN_LEN		80
+
+/* Bank Statement */
+#define PD_BANK_STATEMENT_DATA_DELIMIT_SYMBOL		"|"
+#define PD_BANK_STATEMENT_DATA_DELIMIT_SYMBOL_CHECK	'|'
+#define PD_BANK_STATEMENT_KEY_DELIMIT_SYMBOL		"_"
+#define PD_BANK_STATEMENT_KEY_DELIMIT_SYMBOL_CHECK	'_'
+
+/* TxnHeader */
+#define PD_ACK_STATUS_LEN		3
+#define	PD_ACK_MAX_RETRY		5
+
+
+/* Engine */
+#define PD_ENGINE_ACTION_LEN            50
+#define PD_ENGINE_TXN_FIELD_LEN		50
+#define	PD_ENGINE_COMPARE_OPERATOR_LEN	20
+#define	PD_ENGINE_TRIGGER_TYPE_LEN	10    /* manual or system */
+#define	PD_ENGINE_TYPE_LEN		10    /* Stmt engine or PSP Txn engine */
+#define	PD_ENGINE_RESULT_LEN		50
+#define	PD_ENGINE_PARTY_LEN		10
+#define	PD_ENGINE_AMT_TYPE_LEN		20
+#define	PD_ENGINE_VALUE_LEN		100
+#define PD_ENGINE_STMT_TYPE_LEN		20
+#define PD_ENGINE_VALUE_TYPE_LEN	20
+#define PD_ENGINE_FUNCT_LEN		50
+#define PD_ENGINE_RECON_TYPE_LEN	10
+#define PD_TRIGGER_SYSTEM		"system"
+#define PD_TRIGGER_MANUAL		"manual"
+#define PD_NATURE_INTERMEDIATE		"ITM"
+#define PD_NATURE_PAYOUT		"POA"
+#define PD_NATURE_DEPOSIT		"DSI"
+#define PD_NATURE_PENDING_FUND		"PDF"
+
+/* Nature full name */
+#define PD_NATURE_INTERMEDIATE_NAME	"Intermediate"
+#define PD_NATURE_PAYOUT_NAME		"Payout"
+#define PD_NATURE_DEPOSIT_NAME		"Deposit"
+
+/* Auto Upload Nature Path */
+#define	PD_AUTO_UPLOAD_NATURE_DSI	"Deposit_Statement"
+#define	PD_AUTO_UPLOAD_NATURE_POA	"Payout_Statement"
+#define	PD_AUTO_UPLOAD_NATURE_ITM	"Intermediate_Statement"
+
+/* Auto Upload Job Status */
+#define PD_AUTO_UPL_JOB_STATUS_INITIAL          'I'
+#define PD_AUTO_UPL_JOB_STATUS_PENDING          'P'
+#define PD_AUTO_UPL_JOB_STATUS_COMPLETE         'C'
+#define PD_AUTO_UPL_JOB_STATUS_ALERT_SENT       'S'
+
+/* Stmt Engine */
+#define	PD_STMT_MATCH_FILTER_LEN	20
+#define	PD_STMT_MATCH_VALUE_LEN		50
+#define PD_BOTH_PARTY			"both"
+#define PD_PSP_TXN_PARTY		"psp_txn"
+#define PD_BAID_TXN_PARTY		"baid_txn"
+#define PD_RECON_STATUS			"reconciled"
+#define PD_TXN_CODE			"txn_code"
+#define PD_SYSDATE_DIFF			"sysdate_diff"
+#define PD_PREV_STMT_DATE_DIFF		"prev_stmt_date_diff"
+#define PD_NEXT_STMT_DATE_DIFF		"next_stmt_date_diff"
+#define PD_PROVIDER			"provider"
+#define PD_BANK_CODE			"bank_code"
+#define PD_BANK_ACCT			"bank_acct"
+#define PD_BANK_ACCT_NATURE		"bank_acct_nature"
+#define PD_TXN_AMT			"txn_amt"
+#define PD_STMT_ENGINE_TYPE		"stmt"
+#define PD_NO_ACTION_TYPE               "no_action_type"
+#define PD_SYS_BANK_CODE		"086000"
+#define PD_SYS_BANK_ACCT_NUM		"0860000000"
+#define PD_TW_SYS_BANK_CODE		"886000"
+#define PD_TW_SYS_BANK_ACCT_NUM		"8860000000"
+
+#define PD_OFL_BAID_TXN_DATE_RANGE	"OFL_BAID_TXN_DATE_RANGE"
+#define PD_OFL_BAID_TXN_AUTO		"OFL_BAID_TXN_AUTO"
+
+/* Psp Txn Engine */
+#define	PD_TXN_HEADER_LEVEL		"psp_txn"
+#define	PD_POST_TXN_HEADER_LEVEL	"post_p_txn"
+#define	PD_BAID_TXN_LEVEL		"baid_txn"
+#define	PD_POST_BAID_TXN_LEVEL		"post_b_txn"
+#define	PD_SINGLE_TO_MULTIPLE		"S2M"
+#define	PD_MULTIPLE_TO_SINGLE		"M2S"
+#define	PD_ENGINE_ACTION_NA		0
+#define	PD_ENGINE_ACTION_POST_TXN	1
+#define	PD_ENGINE_ACTION_UPDATE_TXN	2
+#define	PD_DEFAULT_STATUS		'0'
+#define	PD_DEFAULT_SUB_STATUS		"000"
+#define	PD_BALANCE_TYPE_LEN		10
+#define	PD_ACCT_BAL_POOL		"ACCT_BAL"
+#define	PD_PREPAID_POOL			"PREPAID"
+#define	PD_INTRANSIT_POOL		"INTRANSIT"
+#define	PD_LIEN_POOL			"LIEN"
+
+#define	PD_RECONCILED			'R'
+#define	PD_UNRECONCILED			'U'
+#define	PD_PARTIAL_RECON		'P'
+#define	PD_RECON_NOT_REQ		'N'
+
+#define PD_CLASSIFIED                   'C'
+#define PD_UNCLASSIFIED                 'U'
+
+#define	PD_TXN_GRP_LEN			50
+
+#define PD_OPERATOR_EQ1             "=="
+#define PD_OPERATOR_EQ2             "="
+#define PD_OPERATOR_NE1             "!="
+#define PD_OPERATOR_NE2             "^="
+#define PD_OPERATOR_NE3             "<>"
+#define PD_OPERATOR_GE              ">="
+#define PD_OPERATOR_LE              "<="
+#define PD_OPERATOR_GT              ">"
+#define PD_OPERATOR_LT              "<"
+
+
+#define PD_COST_GROUPING_BATCH		'B'
+#define PD_COST_GROUPING_PER_TXN	'T'
+#define PD_COST_PERIOD_DAILY		'D'
+#define PD_COST_PERIOD_IMMEDIATE	'I'
+#define	PD_COST_PERIOD_MANUAL		'M'
+
+#define PD_BAID_CAT_INTERNAL            "ITL_GEN"
+#define PD_BAID_CAT_TEMP                "TEMP"
+#define PD_BAID_CAT_IQ                  "IQ"
+#define PD_BAID_CAT_INTERNAL_PENDFUND   "ITL_PEND" 
+#define PD_BAID_CAT_BIT   		"BIT" 
+
+#define PD_BAID_CAT_OTHER               "OTHER"
+#define PD_NATURE_UNKNOWN               "UKN"
+
+#define PD_BAL_TRF_TYPE_PLATF_LEN          10
+#define PD_BAL_TRF_TYPE_CROSS_PLATF        "INTER"
+#define PD_BAL_TRF_TYPE_SAME_PLATF         "INTRA"
+
+#define PD_BAL_TRF_TC_TYPE_LEN                20
+#define PD_BAL_TRF_TC_TYPE_SWEEP_OUT          "SWP_O"
+#define PD_BAL_TRF_TC_TYPE_SWEEP_IN           "SWP_I"
+#define PD_BAL_TRF_TC_TYPE_OFST_SWEEP_OUT     "OFST_SWP_O"
+#define PD_BAL_TRF_TC_TYPE_OFST_SWEEP_IN      "OFST_SWP_I"
+#define PD_BAL_TRF_TC_TYPE_RTN_SWEEP_OUT      "RTN_SWP_O"
+#define PD_BAL_TRF_TC_TYPE_OFST_RTN_SWEEP_OUT "OFST_RTN_SWP_O"
+#define PD_BAL_TRF_TC_TYPE_CX_SWEEP_OUT       "CX_SWP_O"
+#define PD_BAL_TRF_TC_TYPE_CX_SWEEP_IN        "CX_SWP_I"
+
+/*option type*/
+#define	PD_MANDATORY			'M'
+#define	PD_OPTIONAL			'O'
+#define	PD_NOT_REQUIRED			'N'
+
+
+/*action batch type*/
+#define	PD_GENERAL			'G'
+#define	PD_COMBINE			'C'
+
+/*action batch sub type*/
+#define PD_GENERAL_RECON                'R'
+#define PD_GENERAL_UNDO_RECON           'V'
+#define PD_GENERAL_BAL_TRF              'B'
+#define PD_GENERAL_UNDO_BAL_TRF         'X'
+#define PD_COMBINE_RECON                'C'
+#define PD_COMBINE_UNDO_RECON           'U'
+
+/*txn level*/
+#define	PD_TXN_LEVEL			'T'
+#define	PD_STMT_LEVEL			'S'
+
+/*relation type*/
+#define	PD_REL_LINKAGE			'L'
+#define	PD_REL_VOID			'V'
+#define	PD_REL_BAL_TRF			'B'
+#define	PD_REL_REGEN			'R'
+
+/* Engine Recon type*/
+#define	PD_ENGINE_RECON_RETURN_DSP	"RETURN_DSP"
+#define	PD_ENGINE_RECON_RETURN		"RETURN"
+#define	PD_ENGINE_RECON_SAME		"SAME"
+#define	PD_ENGINE_RECON_CROSS		"CROSS"
+
+/*Engine bank stmt type*/
+#define	PD_RETURN_DEPOSIT		"RETURN_DEPOSIT"
+#define	PD_RETURN_MATCHED_DEPOSIT	"RETURN_MATCHED_DEPOSIT"
+#define PD_CHARGEBACK_REVERSAL          "DEPOSIT_CHARGEBACK_REVERSAL_BY_BANK"
+
+
+// OL Batch Txn void/cancel
+#define	PD_BATCH_ACTION_VOID		1
+#define	PD_BATCH_ACTION_CANCEL		2
+
+#define PD_OL_ACTION_VOID		'V'
+
+// OL Batch Id Valid/Invalid/Finding	
+#define PD_BATCH_ID_FINDING		0
+#define PD_BATCH_ID_INVALID		1
+#define PD_BATCH_ID_VALID		2
+
+
+#define PD_BANK_ACCT_SOURCE_LEN		50
+
+#define PD_MOBILE_STATUS_NEW		'N'
+
+//Customer Segment for mobile
+#define	PD_SEGMENT_WAP			"GRP_W"
+#define	PD_SEGMENT_TPM			"GRP_T"
+#define	PD_MOBILE_SERVICE		"MPG"	
+
+#define PD_CLIENT_COUNTRY_SUBDIVISION_LEN       100
+#define PD_CLIENT_COUNTRY_LEN                   50
+
+// MMS
+#define PD_MMS_ENTITY_TYPE_LEN                  3
+#define PD_MMS_ENTITY_ID_LEN                    20
+#define PD_MMS_RSP_ID_LEN                       20
+#define PD_MMS_OPB_ID_LEN                       20
+#define PD_MMS_ENTITY_BAL_ACCT_STATUS_LEN       2
+#define PD_MMS_ENTITY_BALANCE_NATURE_LEN        4
+#define	PD_NATURE_ID_LEN			20
+#define	PD_NATURE_GROUP_LEN			5
+#define	PD_NATURE_GROUP_DESC_LEN		100
+#define	PD_NATURE_GROUP_VAL_LEN			20
+#define PD_MMS_RELATE_GRP_LEN			20
+#define PD_MMS_ADJ_ENTITY_TYPE_LEN		3
+#define PD_MMS_ADJ_BAL_TYPE			1
+#define PD_MMS_ACR_TYPE_LEN			10
+#define PD_MMS_ENTITY_ACCT_NAME_LEN             50
+
+// MMS entity Type
+#define	PD_MMS_ENTITY_PSP			"PSP"
+#define	PD_MMS_ENTITY_RSP			"RSP"
+#define	PD_MMS_ENTITY_OP_BANK			"OPB"
+#define	PD_MMS_SF_COMPLETED			'C'
+#define	PD_MMS_SF_RETRY				'R'
+#define	PD_MMS_SF_PROCESSING			'P'
+#define	PD_MMS_HOST				'H'
+#define	PD_MMS_CLIENT				'C'
+#define	PD_MMS_DEFAULT_BAID			"00000000000000000000"
+#define	PD_MMS_HOST_NODE_ID			"00000"
+#define	PD_MMS_SELECT_BAL			'B'
+#define	PD_MMS_SELECT_TXN			'T'
+
+//MMM Action
+#define	PD_MMS_ACTION_LIEN_CREATE		'L'
+#define	PD_MMS_ACTION_LIEN_RELEASE		'R'
+
+// MMS Nature Group Tag
+#define	PD_NATURE_COUNT_TAG			"nat_cnt"
+#define	PD_NATURE_TAG				"nat"
+#define	PD_NATURE_GROUP_TAG			"grp"
+#define	PD_NATURE_VALUE_TAG			"val"
+#define	PD_NATURE_CONCAT_TAG			"."
+
+// MMS Adjustment
+#define PD_MMS_ADJ_TXN_CODE_PREFIX         	's'
+#define PD_MMS_VOID_ADJ_TXN_CODE_PREFIX         'v'
+
+// MMS Credit Limit Type
+#define PD_MMS_CREDIT_LIMIT_TYPE_POSITIVE       'P'
+#define PD_MMS_CREDIT_LIMIT_TYPE_NEGATIVE       'N'
+
+
+//Pending Fund Init Txn File
+#define	PD_ACTION_UPLOAD		'U'
+#define	PD_ACTION_CANCEL		'C'
+#define	PD_ACTION_APPROVE		'A'
+
+//Cost Type
+#define PD_DEPOSIT_COST			'D'
+#define PD_PAYOUT_COST			'P'
+#define PD_SETTLEMENT_COST		'S'
+#define PD_TIER_DEPOSIT_COST		'T'
+
+//PSP Cost Charging Method
+#define PD_COST_CAL_METHOD_ADDITIONAL	'A'
+#define PD_COST_CAL_METHOD_NET		'N'
+
+//IMITATE PID
+#define	PD_MMS_IMITATE_PID_LEN		20
+
+//Manual Recon
+#define PD_TXN_ENGING_ACTIVITIY_RECON	"RECON"
+
+//txn code 
+#define	PD_TXN_CODE_MMS_BALACE_ACCOUNT	"EBA"
+#define	PD_TXN_CODE_MMS_DEFAULT_NID	"EPA"
+#define	PD_TXN_CODE_MMS_REMIT		"CFM"
+#define	PD_TXN_CODE_MMS_RECV_INTRANSIT	"CFI"
+#define	PD_TXN_CODE_MMS_RECV		"RFM"
+#define	PD_TXN_CODE_MMS_ADJUSTMENT_TYPE	"CEA"
+#define	PD_TXN_CODE_MMS_ADJUSTMENT_TXN	"CAT"
+#define	PD_TXN_CODE_MMS_PREPAID		"PPY"
+#define	PD_TXN_CODE_MMS_OVERPAID	"OPY"
+#define	PD_TXN_CODE_MMS_OVERSETT	"OVS"
+#define	PD_TXN_CODE_MMS_REVENUE		"REV"
+#define PD_TXN_CODE_MMS_NATURE_BAL_IN_CR	"NIC"
+#define PD_TXN_CODE_MMS_NATURE_BAL_IN_DR	"NID"
+#define PD_TXN_CODE_MMS_NATURE_BAL_OUT_CR	"NOC"
+#define PD_TXN_CODE_MMS_NATURE_BAL_OUT_DR	"NOD"
+
+//recv mode
+#define	PD_PARTIAL_RECEIVE		'P'
+#define	PD_FULL_RECEIVE			'A'
+
+//Amount Handle Type
+#define	PD_AMOUNT_HANDLE_AMOUNT		'A'
+#define	PD_AMOUNT_HANDLE_PREPAID	'P'
+
+// MMS Bal Type
+#define PD_MMS_BAL_TYPE_ACCT_BAL	'A'
+#define PD_MMS_BAL_TYPE_INTRANSIT	'I'
+#define PD_MMS_BAL_TYPE_LIEN		'L'
+#define PD_MMS_BAL_TYPE_PREPAID		'P'
+
+//MMS Cost calculation  method
+#define	PD_MMS_COST_CAL_NET		'N'
+#define	PD_MMS_COST_CAL_ADD		'A'
+
+//MMS Funds Direction
+#define	PD_FUNDS_IN			'I'
+#define	PD_FUNDS_OUT			'O'
+
+//MMS Resolve Type
+#define	PD_MMS_RESOLVE_OVER_SETTLEMENT	'O'
+#define	PD_MMS_RESOLVE_REVENUE		'R'
+
+//BSE
+#define PD_BSE_BATCH_ID_LEN		16
+#define PD_BSE_TAG_NAME_LEN		20
+#define PD_BSE_TAG_VALUE_LEN		4000
+#define PD_BSE_DETAIL			"detail"
+#define PD_BSE_CNT			"cnt"
+#define PD_BSE_ORDER			"order"
+
+//MMM ACR TYPE
+#define	PD_TYPE_ENTITY_FX		"ENTITY_FX"
+#define	PD_TYPE_ACR			"ACR"
+
+//MMS FX
+#define	PD_MMS_REMIT_FX_MODE		'S'
+#define	PD_MMS_RECV_FX_MODE		'R'
+
+//MMS Node Id
+#define PD_MMS_NODE_ID_ONLINE           "00001"
+#define PD_MMS_NODE_ID_OFFLINE          "00002"
+
+//Offline Manual Hold/Unhold Recon
+#define PD_MANUAL_UNHOLD_RECON_DEFAULT	0
+#define PD_MANUAL_HOLD_RECON		1
+#define PD_MANUAL_UNHOLD_RECON		9
+
+//Business Type
+#define PD_BUSINESS_TYPE_NON_GAMING     'N'
+#define PD_BUSINESS_TYPE_GAMING         'G'
+
+//Mini MMM
+#define	PD_MINI_MMM_ENABLE		"MINI_MMM_ENABLE"
+#define	PD_MI_ENTITY_POOL_INTRANSIT	'I'
+#define	PD_MI_ENTITY_POOL_ACCT_BAL	'A'
+#define	PD_MI_ENTITY_POOL_AR_BAL	'D'
+#define PD_MI_ENTITY_POOL_LIEN		'L'
+#define	PD_MI_ENTITY_PSP		"PSP"
+#define	PD_MI_ENTITY_RSP		"RSP"
+#define	PD_MI_ENTITY_PSP_INTR		"PIT"
+#define	PD_MI_ENTITY_OPBANK		"OPB"
+#define	PD_MI_PARTY_RSP			'S'
+#define	PD_MI_PARTY_PSP_INTR		'I'
+#define	PD_MI_PARTY_OPBANK		'B'
+#define	PD_MI_ELEMENT_OVERPAID		"OVPA"
+#define	PD_MI_ELEMENT_UNDERPAID		"UDPA"
+#define PD_MI_BATCH_STATUS_NORMAL       'N'
+#define PD_MI_BATCH_STATUS_INOPERATIVE  'I'
+#define PD_MI_BATCH_TXN_OPER_INSERT     'I'
+#define PD_MI_BATCH_TXN_OPER_UPDATE     'U'
+#define PD_MI_BATCH_RELATION_TYPE_LINKAGE       'L'
+#define PD_MI_BATCH_RELATION_TYPE_VOID          'V'
+#define PD_MI_ENTITY_BAL_ACCT_STATUS_OPEN      	"O"
+#define PD_MI_ENTITY_BAL_ACCT_STATUS_CLOSE     	"C"
+
+#define PD_MI_PIT_ID_LEN                10
+#define PD_MI_BATCH_ID_LEN             	16
+#define PD_MI_AR_CODE_LEN               10
+#define PD_MI_AR_DESC_LEN               50
+#define PD_MI_PROCESS_TYPE_LEN		20
+
+#define PD_MI_RSP_ADJ_CODE_PREFIX	"MI_RSP_ADJ_CODE_PREFIX"
+#define PD_MI_OPB_ADJ_CODE_PREFIX	"MI_OPB_ADJ_CODE_PREFIX"
+#define PD_MI_PIT_ADJ_CODE_PREFIX	"MI_PIT_ADJ_CODE_PREFIX"
+#define PD_MI_OL_RSP_ADJ_CODE_PREFIX	"MI_OL_RSP_ADJ_CODE_PREFIX"
+
+#define PD_MI_TXN_TYPE_ADJUST           "ADJUST"
+#define PD_MI_TXN_TYPE_PSP_SETTLE      	"PSP_SETTLE"
+#define PD_MI_TXN_TYPE_BALTRF_OUT       "BALTRF_OUT"
+#define PD_MI_TXN_TYPE_DELIV_OUT        "DELIV_OUT"
+#define PD_MI_TXN_TYPE_DELIV_IN        	"DELIV_IN"
+#define PD_MI_TXN_TYPE_SWEEP_IN         "SWEEP_IN"
+#define PD_MI_TXN_TYPE_BANK_BALTFR	"BANK_BALTRF"
+#define PD_MI_TXN_TYPE_VOID_DELIV_IN	"V_DELIV_IN"
+#define PD_MI_TXN_TYPE_VOID_DELIV_OUT	"V_DELIV_OUT"
+#define PD_MI_TXN_TYPE_VOID_BANK_BALTFR	"V_BANK_BALTRF"
+#define PD_MI_TXN_TYPE_VOID_BALTRF_OUT  "V_BALTRF_OUT"
+#define PD_MI_TXN_TYPE_PSP_FUNDIN	"PSP_FUNDIN"
+#define PD_MI_TXN_TYPE_MERCH_FUNDIN	"MERCH_FUNDIN"
+#define PD_MI_TXN_TYPE_MERCH_SETTLEMENT	"MERCH_SETTLE"
+#define PD_MI_TXN_TYPE_VOID_PSP_FUNDIN	"V_PSP_FUNDIN"
+#define PD_MI_TXN_TYPE_RSP_HOLD		"RSP_HOLD"
+#define PD_MI_TXN_TYPE_RSP_UNHOLD	"RSP_UNHOLD"
+
+#define PD_MI_TXN_CODE_RSP_IN_TRANSIT			"RIT"
+#define PD_MI_TXN_CODE_RSP_DELIVERY_IN	 		"DLO"
+#define PD_MI_TXN_CODE_RSP_DELIVERY_OUT			"DLI"
+#define PD_MI_TXN_CODE_RSP_DELIVERY_OUT_UNDERPAID       "DIU"
+#define PD_MI_TXN_CODE_RSP_DELIVERY_OUT_OVERPAID        "DIO"
+#define PD_MI_TXN_CODE_BANK_RECEIVE_FROM_RSP		"BRR"
+#define PD_MI_TXN_CODE_PSP_BAL_TRF_OUT_IN_TRAN 		"TOI"
+#define PD_MI_TXN_CODE_BAID_BAL_TRF_IN_IN_TRAN          "WTI"
+#define PD_MI_TXN_CODE_BANK_INTRA_TRF_OUT		"BAT"
+#define PD_MI_TXN_CODE_BANK_INTRA_TRF_IN		"BAN"
+
+#define PD_MI_TXN_CODE_VOID_RSP_IN_TRANSIT		"VRT"
+#define PD_MI_TXN_CODE_VOID_RSP_DELIVERY_IN 		"VRO"
+#define PD_MI_TXN_CODE_VOID_RSP_DELIVERY_OUT 		"VRI"
+#define PD_MI_TXN_CODE_VOID_RSP_DELIVERY_OUT_UNDERPAID	"VIU"
+#define PD_MI_TXN_CODE_VOID_RSP_DELIVERY_OUT_OVERPAID	"VIO"
+#define PD_MI_TXN_CODE_VOID_BANK_RECEIVE_FROM_RSP	"VBR"
+#define PD_MI_TXN_CODE_VOID_PSP_BAL_TRF_OUT_IN_TRAN	"VTI"
+#define PD_MI_TXN_CODE_VOID_BANK_INTRA_TRF_OUT		"VAT"
+#define PD_MI_TXN_CODE_VOID_BANK_INTRA_TRF_IN		"VAN"
+#define PD_MI_TXN_CODE_VOID_TIER_DEPOSIT_COST		"VDC"
+
+#define PD_MI_AR_CODE_OVERPAID          "OVERPAID"
+#define PD_MI_AR_CODE_UNDERPAID         "UNDERPAID"
+
+/*balance type*/
+#define	PD_PSP_AVAILABLE_POOL	'A'
+#define	PD_MERCH_AVA_PO_POOL	'P'
+#define	PD_MERCH_AVA_SETT_POOL	'S'
+
+/* Offset Txn Type */
+#define PD_OFFSET_TXN_TYPE_PSP_BALANCE          'B'
+#define PD_OFFSET_TXN_TYPE_PSP_FLOAT            'F'
+
+
+/* Sync Historical data tables */
+#define	PD_TBL_ALL		"ALL"
+#define	PD_TBL_HOFS		"HOFS"
+#define	PD_TBL_HOBIS		"HOBIS"
+#define	PD_TBL_HOCS		"HOCS"
+#define	PD_TBL_HOMB		"HOMB"
+#define	PD_TBL_OHB		"OHB"
+#define	PD_TBL_HBB		"HBB"
+#define	PD_TBL_CLIENTS		"CLIENTS"
+#define	PD_TBL_MIRSP		"MIRSP"
+
+/* DefVoidTxnConfig */
+#define PD_VOT_VOID_TXN_ELEMENT "VOT_VOID_TXN_ELEMENT"
+
+/* for syscall */
+#define PD_FORK_FAIL		-1
+#define PD_CHILD_FAIL		-2
+#define PD_CHILD_TIMEOUT	-3
+
+
+/* ITTools Use */
+#define	PD_ITT_LOG_PREFIX		"ITT_LOG"
+#define	PD_ITT_LOG_INSERT		'I'
+#define	PD_ITT_LOG_UPDATE		'U'
+#define	PD_ITT_LOG_DELETE		'D'
+#define	PD_ITT_LOG_FUNCTION		'F'
+#define	PD_ITT_INIT_RET_CODE		-1
+//#1 Create Provider
+#define	PD_ITT_API_CREATE_PROVIDER	"TCP"
+#define	PD_ITT_ACTION_CREATE_PROVIDER	"CREATE_PROVIDER"
+#define	PD_OFL_CLIENT_ID_PREFIX		"OFL_CLIENT_ID"
+#define	PD_OFL_PSP_ID_PREFIX		"OFL_PSP_ID"
+#define	PD_CLIENT_ID_MAX_VALUE		999999
+#define	PD_PID_MAX_VALUE		999999
+#define PD_ITT_DEF_PID_LEN		8
+//#2 Update Merchant Keys
+#define	PD_ITT_API_GEN_MERCH_KEY	"TMK"
+#define	PD_ITT_ACTION_UPDATE_MD5_KEY	"UPDATE_PTK_KEY"
+#define	PD_ITT_ACTION_INSERT_SHA1_KEY	"INSERT_STK_KEY"
+#define	PD_ITT_ACTION_INSERT_MOK_KEY	"INSERT_MOK_KEY"
+#define	PD_ITT_ACTION_INSERT_POK_KEY	"INSERT_POK_KEY"
+#define	PD_ITT_ACTION_INSERT_CHECK_HAND_SHAKE	"INSERT_CHK_HANDSHAKE"
+#define	PD_ITT_MD5_KEN_LEN		128
+//#3 Update Txn Remarks
+#define PD_ITT_API_TXN_REMARK_AMEND	"TAR"
+#define	PD_ITT_ACTION_UPDATE_TXN_REMARK	"UPDATE_TXN_REMARK"
+//#4 Consumer URL
+#define	PD_ITT_API_CONSUMER_URL		"TCU"
+#define	PD_ITT_ACTION_ENABLE_URL	"ENABLE_URL"
+#define	PD_ITT_ACTION_DISABLE_URL	"DISABLE_URL"
+//#5 BAID Removal
+#define	PD_ITT_API_BAID_REMOVAL		"TBR"
+#define	PD_ITT_ACTION_REMOVE_BAID	"REMOVE_BAID"
+//#6 BAID AC init provider
+#define	PD_ITT_API_UDP_BANK_AC_PROV	"TIP"
+#define	PD_ITT_ACTION_UDP_BANK_AC_PROV	"UDPATE_INIT_PROV"
+//#7 Update TxnDate/SettlementDate
+#define	PD_ITT_API_TXN_RPT_DATE_AMEND	"TAD"
+#define	PD_ITT_ACTION_UPD_RPT_DATE	"UPD_RPT_DATE"
+#define	PD_ITT_ACTION_UPD_SETTLE_DATE	"UPD_SETTLE_DATE"
+//#8 Hand-shake/Initiated Threshold
+#define PD_ITT_API_UPDATE_CHECK_HAND_SHAKE	"TMT"
+#define PD_ITT_ACTION_UPDATE_CHECK_HAND_SHAKE	"UPDATE_CHK_HANDSHAKE"
+
+
+/* PSP Performace */
+#define PD_PSP_REPORT_TYPE_LEN          50
+#define PD_PSP_REPORT_CODE_LEN          50
+#define PD_PSP_REPORT_CODE_DESC_LEN     240  
+#define PD_PSP_REPORT_VALUE_LEN         1024
+
+#define PD_PSP_REPORT_CODE_SHOW                 "SHOW"
+#define PD_PSP_REPORT_CODE_EXACT_CNT_VALUE      "EXACT_CNT_VALUE"
+#define PD_PSP_REPORT_VAL_ON                    "1"
+#define PD_PSP_REPORT_VAL_OFF                   "0"
+
+#define	PD_MERCH_LOGIN_POLICY_R01	"R01"
+#define	PD_MERCH_LOGIN_POLICY_R02	"R02"
+
+#define PD_MERCH_PSP_BATCH_TYPE		'E'
+
+#define PD_EC_BANK_CODE			"086098"
+
+/* Deposit Credit Card Type */
+#define PD_DEPOSIT_CARD_TYPE_CREDIT		'C'
+#define PD_DEPOSIT_CARD_TYPE_DEBIT		'D'
+
+/* PSP Payout File Format */
+#define PD_PSP_PO_FILE_FMT_CODE_LEN                     50
+
+#define PD_PSP_PO_FILE_FMT_CODE_ECPSS                   "ECPSS"
+#define PD_PSP_PO_FILE_FMT_CODE_YEEPAY                  "YEEPAY"
+#define PD_PSP_PO_FILE_FMT_CODE_EPLUTUS           	"EPLUTUS"
+#define PD_PSP_PO_FILE_FMT_CODE_UNIPAYGO                "UNIPAYGO"
+#define PD_PSP_PO_FILE_FMT_CODE_UNIPAYGO_NH             "UNIPAYGO_NH"
+#define PD_PSP_PO_FILE_FMT_CODE_TENPAY                  "TENPAY"
+#define PD_PSP_PO_FILE_FMT_CODE_TWV                     "TWV"
+#define PD_PSP_PO_FILE_FMT_CODE_DEFAULT                 "DEFAULT"
+#define PD_PSP_PO_FILE_FMT_CODE_NTP                     "NTP"
+#define PD_PSP_PO_FILE_FMT_CODE_CPE                     "CPE"
+
+
+#define PD_MODE_SARIP			"SARIP"
+#define PD_MODE_SEGMENT_MERCH		"MerchNCcyNGrp"
+#define PD_MODE_OTHER_MERCH		"OtherMerch"
+#define PD_MODE_MOBILE_SEGMENT_NEW      "MobGrpNew"
+
+#define EML_CHK_GRP_LEN		10
+#define EML_CHK_GRP_VNCINC	"VNC_INC"
+#define EML_CHK_GRP_MPGINC	"MPG_INC"
+
+	
+
+/* Payout API */
+#define PD_OFL_PAYOUT_GROUP_A			"A"
+#define PD_OFL_PAYOUT_GROUP_B			"B"
+#define PD_OFL_PAYOUT_GROUP_C			"C"
+#define PD_OFL_PAYOUT_GROUP_D			"D"
+#define PD_OFL_PAYOUT_GROUP_M			"M"
+#define PD_OFL_PAYOUT_GROUP_LEN                 2
+
+#define PD_PROCESS_TYPE_OPI_RESP		"0210"
+
+#define PD_OL_PO_API_PENDING            'W'
+#define PD_OL_PO_API_PREVIEW            'V'
+#define PD_OL_PO_API_PROCESSING         'P'
+#define PD_OL_PO_API_COMPLETE           'C'
+#define	PD_TW_BANK_CODE_LEN		25
+#define	PD_OPI_BANK_AC_NAME_LEN		30
+#define PD_OPI_BANK_AC_NAME_ASCII_LEN	60
+#define	PD_OPI_BANK_NAME_LEN		50
+#define	PD_OPI_BRANCH_LEN		50
+#define	PD_OPI_PROV_LEN			15
+#define	PD_OPI_CITY_LEN			20
+
+
+#define	PD_TLG_URL_LEN	100
+
+
+#define	PD_DEF_TXN_EXPIRE_TIME	60
+
+#define PD_NBXA_PID_GROUP_CODE_LEN      20
+
+/* NBXA Bankcard Gateway */
+#define PD_NBXA_BANKCARD_GATEWAY        "NBG"
+
+/* NBXA Device Type */
+#define PD_NBXA_DEVICE_TYPE_DESKTOP     'D'
+#define PD_NBXA_DEVICE_TYPE_MOBILE      'M'
+
+#define PD_PSBC_BANK_CODE                 "086403"
+#define PD_ABC_BANK_CODE		"086103"
+
+#define	PD_ENGINE_CONFIG_CODE_LEN		50
+
+#define PD_DEFAULT_ACR_CAL_VERSION	1
+#define PD_DEFAULT_ACR_CAL_PERIOD	14
+
+#define PD_REASONEDIT_LEN 		30
+
+//NEW Code
+#define PD_HANDLER_LEN          30
+#define PD_ENC_TYPE_AES_CMAC    "01"
+
+#define PD_OL_ENC_TYPE_LEN	2
+#define PD_OL_KEY_VER_LEN	5
+
+// Offline Bulk Update Status Type
+#define PD_BULK_STATUS_INIT		'I'
+#define PD_BULK_STATUS_PROCESS		'P'
+#define PD_BULK_STATUS_REJECT		'R'
+#define PD_BULK_STATUS_COMPLETE		'C'
+
+
+/*Pregen Balance Summary Report*/
+#define PD_BAL_SUMM_REPORT_CODE		"BSR"
+#define PD_REPORT_CODE_LEN		3
+#define PD_DRT_DESC_LEN			50
+#define PD_DRT_TYPE_LEN			3
+
+/*Pregen Client Txn History Report*/
+#define PD_CLIENT_TXN_HIST_REPORT_CODE         "CTH"
+#define PD_SERVICE_DESC_LEN			50
+#define PD_TXN_DESC_LEN				50
+#define PD_STATUS_DESC_LEN			50
+#define PD_EC_CHANNEL_LEN			150
+#define PD_COUNTRY_NAME_LEN			50
+#define PD_ACK_STATUS_NAME_LEN                  50
+#define PD_CTH_PREGEN_RPT_PARAM_CD		"CTH_CLIENT_ID"
+
+
+/* Offline Pregen Balance Summary Report */
+//#define PD_REPORT_CODE_LEN              	3
+#define PD_REPORT_TYPE_LEN              	3
+#define PD_REPORT_DESC_LEN              	50
+#define PD_OL_BAL_SUMM_REPORT_CODE      	"OBS"
+#define PD_OL_DEPOSIT_CHG_LOG_REPORT_CODE	"DCL"
+
+
+/* Offline Pregen Deposit Transaction Detail Report */
+#define PD_MASK_BANK_ACCT_NUM_LEN               6
+#define PD_REQ_CHANNEL_LEN                      50
+#define PD_OL_DEPOSIT_TXN_DETAIL_REPORT_CODE    "DTD"
+
+
+/* Offline Pregen Payout Transaction Detail Report */
+#define PD_OL_PAYOUT_TXN_DETAIL_REPORT_CODE	"PTD"
+
+
+/* BAL Channel */
+#define	PD_CHANNEL_BAL		"BAL"
+#define	PD_CODE_UPDATEBAL	"UPDBAL"
+
+/* Account Creation */
+#define PD_CONTENT_LEN		1024
+
+#define	PD_PROVINCE_LENGTH		50
+#define PD_CITY_LENGTH			50
+#define PD_INIT_BAL_LEN			10
+#define	PD_SMS_STMT_LEN			3
+#define PD_APL_DEP_COST_LEN		3
+#define	PD_MIN_ACCT_NUM_LEN		5
+#define	PD_OPTL_FIELD_NUM		5
+#define	PD_REC_DATETIME_LEN		14
+#define PD_ACCT_FILE_STATUS_INIT	'I'
+#define PD_ACCT_FILE_STATUS_PROCESS	'P'
+#define PD_ACCT_FILE_STATUS_DECLINED	'R'
+#define PD_ACCT_FILE_STATUS_APPROVED	'C'
+#define PD_ACCT_FILE_RAW		"raw"
+#define PD_ACCT_FILE_CONVERTED		"converted"
+#define PD_FIELD_NO			"No"
+#define PD_FIELD_YES			"Yes"
+#define PD_FIELD_ENABLE			"1"
+#define PD_FIELD_DISABLE		"0"
+
+#define PD_OFFL_SUPPORT_ENABLE		1
+#define PD_SYS_SUPPORT_ENABLE		1
+#define PD_SMS_STMT_ENABLE		"1"
+#define PD_SMS_STMT_DISABLE		"0"
+#define PD_REC_TIME			"000000"
+#define PD_SERVICE_LOCAL_BANK_PAY	"LBP"
+#define PD_TXN_TYPE_DEPOSIT_ONLY	"D"
+
+
+/* Offline BAID Intra Log Gen Status Type */
+#define PD_BAID_INTRA_LOG_GEN_STATUS_APPROVED		'A'
+#define PD_BAID_INTRA_LOG_GEN_STATUS_CANCELLED		'C'
+#define PD_BAID_INTRA_LOG_GEN_STATUS_PROCESSING		'P'
+#define PD_BAID_INTRA_LOG_GEN_STATUS_REJECTED		'R'
+
+
+/* Psp Amount Difference Range Sign */
+#define PD_AMT_DIFF_SIGN_UPPER_RANGE			'U'
+#define PD_AMT_DIFF_SIGN_LOWER_RANGE			'L'
+#define PD_AMT_DIFF_SIGN_UPPER_AND_LOWER_RANGE		'B'
+
+/* BAID Balance Transfer Intra File */
+#define PD_BAID_BAL_TRF_FILE_STATUS_INIT		'I'
+#define PD_BAID_BAL_TRF_FILE_STATUS_PROCESS		'P'
+#define PD_BAID_BAL_TRF_FILE_STATUS_DECLINED		'R'
+#define PD_BAID_BAL_TRF_FILE_STATUS_APPROVED		'C'
+#define PD_BAID_BAL_TRF_FILE_RAW			"raw"
+#define PD_BAID_BAL_TRF_FILE_CONVERTED			"converted"
+
+#define PD_SWEEP_OUT_AMT_LEN                             13
+#define PD_UNCHECKED                                     0
+#define PD_CHECKED                                       1
+#define PD_BANK_ACCT_RECIPIENT                           "BANK_ACCT_RT"
+#define PD_BANK_ACCT_SENDER                              "BANK_ACCT_SR"
+#define PD_TXN_LIMIT_CODE_BAID_INTRA                     "BAID_INTRA"
+#define PD_TXN_LIMIT_PARTY_GLOBAL                        "000"
+#define PD_FR_TO_REMARK                                  "File Upload"
+#define PD_SYS_BANK_NAME				 "-所有銀行-"
+
+#define PD_TRIGGER_STATUS_INIT				'I'
+#define PD_TRIGGER_STATUS_PROCESS			'P'
+#define PD_TRIGGER_STATUS_COMPLETED			'C'
+
+/* Hold / Unhold RSP In-Transit Balance */
+#define PD_HOLD_BALANCE_RSP	"HDR"
+#define PD_UNHOLD_BALANCE_RSP	"UDR"
+
+/*Create and Update AUBS function for Offline Provider*/
+#define PD_NATURE_PATH_DEPOSIT	             "Deposit_Statement"
+#define PD_NATURE_PATH_PAYOUT	             "Payout_Statement"
+#define PD_NATURE_PATH_INTERMEDIATE	     "Intermediate_Statement"
+#define PD_SERVER_ID_CORE00	             "00"
+#define PD_PROCESS_BANK_CODE_ALL_BANK        "000"
+#define PD_OL_AUTO_UPLOAD_STMT_SETTING       "OL_AUTO_UPLOAD_STMT_SETTING"
+
+
+
+	
+#define PD_PROV_PATHNAME_LEN                  50
+#define PD_NATURE_LEN                         10
+#define PD_NATURE_PATH_LEN	              50
+#define PD_SERVER_ID_LEN                      3
+#define PD_PROCESS_BANK_CODE_LEN              10
+#define PD_JOB_ID_LEN                         50
+
+/*Create Psp Account*/
+#define PD_PSP_ID_PREFIX_LEN                  2
+#define PD_GROUP_LEN                          50
+#define PD_PROCESSOR_NAME_LEN                 50
+#define PD_OVERRIDED_BANK_CODE_CHANNEL_LEN    50
+
+
+#define PD_PSP_ACCOUNT_NAME                   "PSP_ACCOUNT_NAME"
+#define PD_PSP_MERCHANT_ID                    "PSP_MERCHANT_ID"
+#define PD_PSP_KEY                            "PSP_KEY"
+#define PD_PSP_URL                            "PD_PSP_URL"
+#define PD_PSP_REQUEST_URL                 "PD_PSP_REQUEST_URL"
+#define PD_SERVICE_PSP_URL                    "PD_SERVICE_PSP_URL"
+
+/* Update PSP Account */
+#define PD_PSP_URL_LEN		100
+#define PD_SERVICE_PSP_URL_LEN	50
+
+
+#endif
+
+
+
+

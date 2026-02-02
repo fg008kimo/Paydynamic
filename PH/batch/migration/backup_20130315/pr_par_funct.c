@@ -1,0 +1,6144 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[16];
+};
+static struct sqlcxp sqlfpn =
+{
+    15,
+    "pr_par_funct.pc"
+};
+
+
+static unsigned int sqlctx = 2687339;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[19];
+   unsigned long  sqhstl[19];
+            int   sqhsts[19];
+            short *sqindv[19];
+            int   sqinds[19];
+   unsigned long  sqharm[19];
+   unsigned long  *sqharc[19];
+   unsigned short  sqadto[19];
+   unsigned short  sqtdso[19];
+} sqlstm = {12,19};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+ static char *sq0001 = 
+"select sc_txn_country  from def_service_code where sc_code=:b0           ";
+
+ static char *sq0002 = 
+"select sp_pay_method  from service_pay_method where (sp_service_code=:b0 an\
+d sp_disabled='0')           ";
+
+ static char *sq0004 = 
+"select pc_category ,pc_txn_code ,pc_reversal_txn_code  from par_category wh\
+ere pc_sequence_type_name=:b0           ";
+
+ static char *sq0005 = 
+"select mn_service_code ,merchant_id ,client_id ,mn_country  from merch_deta\
+il ,par_def_merch_nmb_map where (mn_merchant_acct_nmb=:b0 and mn_merchant_id=\
+merchant_id)           ";
+
+ static char *sq0009 = 
+"select psp_detail.psp_id ,psp_country.country ,psp_channel_code  from psp_c\
+ountry ,psp_detail ,par_client_psp_map where ((cp_psp_type_code=:b0 and cp_pr\
+eset_ph_pid=psp_detail.psp_id) and psp_detail.psp_id=psp_country.psp_id)     \
+      ";
+
+ static char *sq0010 = 
+"select bc_int_bank_code  from par_int_bank_code_map where bc_bank_name=:b0 \
+          ";
+
+ static char *sq0011 = 
+"select at_dc_ind ,at_desc ,at_disabled  from adjustment_type where (at_part\
+y_type=:b0 and at_code=:b1)           ";
+
+ static char *sq0013 = 
+"select pu_batch_id  from par_payout_upload where pu_file_id=:b0           ";
+
+ static char *sq0014 = 
+"select pu_batch_id  from merchant_upload_file_detail ,par_payout_upload whe\
+re ((pu_file_id=:b0 and ud_batch_id=pu_batch_id) and ud_seq_num=:b1)         \
+  ";
+
+ static char *sq0015 = 
+"select ud_batch_id ,ud_seq_num ,ud_txn_id ,ud_aux_txn_id ,ud_merchant_ref ,\
+ud_country ,ud_request_amount ,ud_request_currency ,ud_payout_currency ,ud_me\
+rchant_fee_ccy ,ud_merchant_fee ,ud_markup_ccy ,ud_markup_amt ,ud_exchange_ra\
+te ,ud_bank_name ,ud_bank_code ,ud_branch ,ud_account_num ,ud_account_name  f\
+rom merchant_upload_file_detail where ud_vnc_ref_num=:b0 order by ud_batch_id\
+,ud_seq_num            ";
+
+ static char *sq0016 = 
+"select ud_batch_id ,ud_seq_num ,ud_txn_id ,ud_merchant_ref ,ud_country ,ud_\
+request_amount ,ud_request_currency ,ud_payout_currency ,ud_merchant_fee_ccy \
+,ud_merchant_fee ,ud_markup_ccy ,ud_markup_amt ,ud_exchange_rate ,ud_status  \
+from merchant_upload_file_detail where ud_aux_txn_id=:b0 order by ud_batch_id\
+,ud_seq_num            ";
+
+ static char *sq0017 = 
+"select psp_name ,psp_merchant_id ,psp_channel_code ,client_id ,txn_type ,cu\
+rrency_id ,status ,payout_split_limit  from psp_detail where (psp_id=:b0 and \
+disabled=:b1)           ";
+
+ static char *sq0021 = 
+"select pr_voa_txn_code  from par_po_rev_txn_seq_map where pr_vnc_ref_num=:b\
+0           ";
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+5,0,0,1,73,0,9,62,0,0,1,1,0,1,0,1,9,0,0,
+24,0,0,1,0,0,13,64,0,0,1,0,0,1,0,2,9,0,0,
+43,0,0,1,0,0,15,82,0,0,0,0,0,1,0,
+58,0,0,1,0,0,15,91,0,0,0,0,0,1,0,
+73,0,0,2,104,0,9,125,0,0,1,1,0,1,0,1,9,0,0,
+92,0,0,2,0,0,13,127,0,0,1,0,0,1,0,2,9,0,0,
+111,0,0,2,0,0,15,147,0,0,0,0,0,1,0,
+126,0,0,2,0,0,15,156,0,0,0,0,0,1,0,
+141,0,0,3,66,0,4,182,0,0,2,1,0,1,0,2,9,0,0,1,9,0,0,
+164,0,0,4,115,0,9,241,0,0,1,1,0,1,0,1,9,0,0,
+183,0,0,4,0,0,13,243,0,0,3,0,0,1,0,2,9,0,0,2,9,0,0,2,9,0,0,
+210,0,0,4,0,0,15,278,0,0,0,0,0,1,0,
+225,0,0,4,0,0,15,293,0,0,0,0,0,1,0,
+240,0,0,5,175,0,9,337,0,0,1,1,0,1,0,1,9,0,0,
+259,0,0,5,0,0,13,339,0,0,4,0,0,1,0,2,9,0,0,2,9,0,0,2,9,0,0,2,9,0,0,
+290,0,0,5,0,0,15,387,0,0,0,0,0,1,0,
+305,0,0,5,0,0,15,399,0,0,0,0,0,1,0,
+320,0,0,6,84,0,4,426,0,0,2,1,0,1,0,2,3,0,0,1,9,0,0,
+343,0,0,7,0,0,17,524,0,0,1,1,0,1,0,1,9,0,0,
+362,0,0,7,0,0,21,525,0,0,0,0,0,1,0,
+377,0,0,7,0,0,17,573,0,0,1,1,0,1,0,1,9,0,0,
+396,0,0,7,0,0,21,574,0,0,0,0,0,1,0,
+411,0,0,8,341,0,4,666,0,0,6,1,0,1,0,2,9,0,0,2,1,0,0,2,1,0,0,2,9,0,0,2,9,0,0,1,
+9,0,0,
+450,0,0,7,0,0,17,768,0,0,1,1,0,1,0,1,9,0,0,
+469,0,0,7,0,0,21,769,0,0,0,0,0,1,0,
+484,0,0,9,235,0,9,832,0,0,1,1,0,1,0,1,9,0,0,
+503,0,0,9,0,0,13,834,0,0,3,0,0,1,0,2,9,0,0,2,9,0,0,2,9,0,0,
+530,0,0,9,0,0,15,865,0,0,0,0,0,1,0,
+545,0,0,9,0,0,15,874,0,0,0,0,0,1,0,
+560,0,0,10,85,0,9,908,0,0,1,1,0,1,0,1,9,0,0,
+579,0,0,10,0,0,13,910,0,0,1,0,0,1,0,2,9,0,0,
+598,0,0,10,0,0,15,926,0,0,0,0,0,1,0,
+613,0,0,10,0,0,15,935,0,0,0,0,0,1,0,
+628,0,0,11,113,0,9,986,0,0,2,2,0,1,0,1,1,0,0,1,9,0,0,
+651,0,0,11,0,0,13,988,0,0,3,0,0,1,0,2,1,0,0,2,9,0,0,2,3,0,0,
+678,0,0,11,0,0,15,1028,0,0,0,0,0,1,0,
+693,0,0,11,0,0,15,1043,0,0,0,0,0,1,0,
+708,0,0,12,151,0,6,1096,0,0,4,4,0,1,0,2,3,0,0,1,9,0,0,1,9,0,0,1,9,0,0,
+739,0,0,13,74,0,9,1169,0,0,1,1,0,1,0,1,9,0,0,
+758,0,0,13,0,0,13,1171,0,0,1,0,0,1,0,2,9,0,0,
+777,0,0,13,0,0,15,1194,0,0,0,0,0,1,0,
+792,0,0,13,0,0,15,1205,0,0,0,0,0,1,0,
+807,0,0,14,154,0,9,1266,0,0,2,2,0,1,0,1,9,0,0,1,3,0,0,
+830,0,0,14,0,0,13,1268,0,0,1,0,0,1,0,2,9,0,0,
+849,0,0,14,0,0,15,1290,0,0,0,0,0,1,0,
+864,0,0,14,0,0,15,1301,0,0,0,0,0,1,0,
+879,0,0,15,406,0,9,1391,0,0,1,1,0,1,0,1,9,0,0,
+898,0,0,15,0,0,13,1393,0,0,19,0,0,1,0,2,68,0,0,2,3,0,0,2,9,0,0,2,9,0,0,2,9,0,0,
+2,9,0,0,2,4,0,0,2,9,0,0,2,9,0,0,2,9,0,0,2,4,0,0,2,9,0,0,2,4,0,0,2,4,0,0,2,9,0,
+0,2,9,0,0,2,9,0,0,2,9,0,0,2,9,0,0,
+989,0,0,15,0,0,15,1556,0,0,0,0,0,1,0,
+1004,0,0,15,0,0,15,1566,0,0,0,0,0,1,0,
+1019,0,0,16,329,0,9,1641,0,0,1,1,0,1,0,1,9,0,0,
+1038,0,0,16,0,0,13,1643,0,0,14,0,0,1,0,2,68,0,0,2,3,0,0,2,9,0,0,2,9,0,0,2,9,0,
+0,2,4,0,0,2,9,0,0,2,9,0,0,2,9,0,0,2,4,0,0,2,9,0,0,2,4,0,0,2,4,0,0,2,3,0,0,
+1109,0,0,16,0,0,15,1765,0,0,0,0,0,1,0,
+1124,0,0,16,0,0,15,1775,0,0,0,0,0,1,0,
+1139,0,0,7,0,0,17,2687,0,0,1,1,0,1,0,1,9,0,0,
+1158,0,0,7,0,0,21,2688,0,0,0,0,0,1,0,
+1173,0,0,17,176,0,9,2753,0,0,2,2,0,1,0,1,9,0,0,1,3,0,0,
+1196,0,0,17,0,0,13,2755,0,0,8,0,0,1,0,2,9,0,0,2,9,0,0,2,9,0,0,2,9,0,0,2,1,0,0,
+2,9,0,0,2,9,0,0,2,4,0,0,
+1243,0,0,17,0,0,15,2831,0,0,0,0,0,1,0,
+1258,0,0,17,0,0,15,2842,0,0,0,0,0,1,0,
+1273,0,0,18,159,0,6,2892,0,0,4,4,0,1,0,2,3,0,0,1,9,0,0,1,9,0,0,1,9,0,0,
+1304,0,0,19,86,0,4,2950,0,0,2,1,0,1,0,2,3,0,0,1,9,0,0,
+1327,0,0,20,167,0,6,3023,0,0,4,4,0,1,0,2,3,0,0,1,9,0,0,1,9,0,0,1,9,0,0,
+1358,0,0,21,87,0,9,3086,0,0,1,1,0,1,0,1,9,0,0,
+1377,0,0,21,0,0,13,3088,0,0,1,0,0,1,0,2,9,0,0,
+1396,0,0,21,0,0,15,3105,0,0,0,0,0,1,0,
+1411,0,0,21,0,0,15,3113,0,0,0,0,0,1,0,
+};
+
+
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/07/06              Virginia Yun
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sqlca.h>
+#include <sqlcpr.h>
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "../batchcommon.h"
+#include "pr_par_funct.h"
+#include "pr_bo_funct.h"
+#include "ObjPtr.h"
+
+char	cDebug;
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+
+///////////////////////////////////////////////
+//////////////////Service//////////////////////
+int Service_FindCountryByService(const unsigned char* ServiceCode, char* TxnCountry)
+{
+
+        int iRet = NOT_FOUND;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO find_country_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar hv_service_code[PD_SERVICE_CODE_LEN]; */ 
+struct { unsigned short len; unsigned char arr[3]; } hv_service_code;
+
+                int     hv_disabled;
+
+                /* varchar v_country[PD_COUNTRY_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[3]; } v_country;
+
+
+                short   ind_country=-1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_service_code.len = strlen((const char*)ServiceCode);
+        memcpy(hv_service_code.arr,ServiceCode,hv_service_code.len);
+DEBUGLOG(("FindCountryByService: ServiceCode = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+
+        hv_disabled=0;
+
+        /* EXEC SQL DECLARE c_cursor_find_country CURSOR FOR
+                select sc_txn_country
+                 from def_service_code
+                where sc_code = :hv_service_code; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_find_country; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 1;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0001;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )5;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_service_code;
+        sqlstm.sqhstl[0] = (unsigned long )5;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto find_country_error;
+}
+
+
+        do{
+                /* EXEC SQL FETCH c_cursor_find_country
+                INTO
+                        :v_country:ind_country; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 1;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )24;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_country;
+                sqlstm.sqhstl[0] = (unsigned long )5;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_country;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto find_country_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if(ind_country>=0){
+                        v_country.arr[v_country.len]='\0';
+                        strcpy(TxnCountry, (const char*)v_country.arr);
+DEBUGLOG(("FindCountryByService: country = [%s]\n",TxnCountry));
+
+                        iRet = FOUND;
+                }
+
+        }while(PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_find_country; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 1;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )43;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto find_country_error;
+}
+
+
+
+DEBUGLOG(("FindCountryByService iRet = [%d]\n",iRet));
+        return iRet;
+
+find_country_error:
+DEBUGLOG(("find_country_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+    /* EXEC SQL CLOSE c_cursor_find_country; */ 
+
+{
+    struct sqlexd sqlstm;
+    sqlstm.sqlvsn = 12;
+    sqlstm.arrsiz = 1;
+    sqlstm.sqladtp = &sqladt;
+    sqlstm.sqltdsp = &sqltds;
+    sqlstm.iters = (unsigned int  )1;
+    sqlstm.offset = (unsigned int  )58;
+    sqlstm.cud = sqlcud0;
+    sqlstm.sqlest = (unsigned char  *)&sqlca;
+    sqlstm.sqlety = (unsigned short)4352;
+    sqlstm.occurs = (unsigned int  )0;
+    sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+    return NOT_FOUND;
+}
+
+
+/////////////////////////////////////////////////////
+//////////////////ServicePayMethod///////////////////
+int ServicePayMethod_FindPayMethod(const char* csServiceCode,
+                  recordset_t* myRec)
+{
+        hash_t *myHash;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO find_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar hv_service_code[PD_SERVICE_CODE_LEN]; */ 
+struct { unsigned short len; unsigned char arr[3]; } hv_service_code;
+
+
+                /* varchar v_pay_method[PD_PAY_METHOD_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[5]; } v_pay_method;
+
+
+                short   ind_pay_method = -1;
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+//DEBUGLOG(("FindPayMethod: START!!!\n"));
+        hv_service_code.len = strlen(csServiceCode);
+        memcpy(hv_service_code.arr,csServiceCode,hv_service_code.len);
+//DEBUGLOG(("FindPayMethod: service_code = [%.*s][%d]\n",hv_service_code.len,hv_service_code.arr,hv_service_code.len));
+
+        /* EXEC SQL DECLARE c_cursor_find CURSOR FOR
+                select  sp_pay_method
+                from    service_pay_method
+                Where   sp_service_code = :hv_service_code
+                and     sp_disabled = '0'; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_find; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 1;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0002;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )73;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_service_code;
+        sqlstm.sqhstl[0] = (unsigned long )5;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto find_error;
+}
+
+
+        do {
+                /* EXEC SQL FETCH c_cursor_find
+                INTO
+                        :v_pay_method:ind_pay_method; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 1;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )92;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_pay_method;
+                sqlstm.sqhstl[0] = (unsigned long )7;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_pay_method;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto find_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+                if (ind_pay_method >= 0) {
+                        v_pay_method.arr[v_pay_method.len] ='\0';
+                        PutField_CString(myHash,"pay_method",(const char*)v_pay_method.arr);
+//DEBUGLOG(("FindPayMethod: pay_method = [%s]\n",v_pay_method.arr));
+                }
+                RecordSet_Add(myRec,myHash);
+
+        }while(PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_find; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 1;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )111;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto find_error;
+}
+
+
+
+//DEBUGLOG(("FindPayMethod Normal Exit\n"));
+        return PD_OK;
+
+find_error:
+DEBUGLOG(("find_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+    /* EXEC SQL CLOSE c_cursor_find; */ 
+
+{
+    struct sqlexd sqlstm;
+    sqlstm.sqlvsn = 12;
+    sqlstm.arrsiz = 1;
+    sqlstm.sqladtp = &sqladt;
+    sqlstm.sqltdsp = &sqltds;
+    sqlstm.iters = (unsigned int  )1;
+    sqlstm.offset = (unsigned int  )126;
+    sqlstm.cud = sqlcud0;
+    sqlstm.sqlest = (unsigned char  *)&sqlca;
+    sqlstm.sqlety = (unsigned short)4352;
+    sqlstm.occurs = (unsigned int  )0;
+    sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+    return PD_ERR;
+}
+
+
+
+///////////////////////////////////////////////
+//////////////////ParDefMisc///////////////////
+int ParDefMisc_GetValue(const char *csCode,
+      		          char *csValue)
+{
+        /* EXEC SQL WHENEVER SQLERROR GOTO find_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar hv_code[PD_SP_CODE_LEN]; */ 
+struct { unsigned short len; unsigned char arr[50]; } hv_code;
+
+
+                /* varchar v_value[PD_SP_VALUE_LEN +1 ]; */ 
+struct { unsigned short len; unsigned char arr[51]; } v_value;
+
+                short   ind_value = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_code.len = strlen((const char*)csCode);
+        memcpy(hv_code.arr, csCode, hv_code.len);
+//DEBUGLOG(("GetValue: code = [%.*s]\n",hv_code.len,hv_code.arr));
+
+        /* EXEC SQL SELECT pdm_value
+                   INTO :v_value:ind_value
+                FROM par_def_misc
+                WHERE pdm_code = :hv_code; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 2;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "select pdm_value into :b0:b1  from par_def_misc wher\
+e pdm_code=:b2";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )141;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&v_value;
+        sqlstm.sqhstl[0] = (unsigned long )53;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)&ind_value;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_code;
+        sqlstm.sqhstl[1] = (unsigned long )52;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)0;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto find_error;
+}
+
+
+
+        if (ind_value >= 0) {
+//DEBUGLOG(("Get Value OK \n"));
+                v_value.arr[v_value.len] = '\0';
+                strcpy((char*)csValue,(const char*)v_value.arr);
+//DEBUGLOG(("value = [%s]\n",csValue));
+                return FOUND;
+        }
+//DEBUGLOG(("Value NOT FOUND\n"));
+        return NOT_FOUND;
+
+find_error:
+DEBUGLOG(("find_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+    return NOT_FOUND;
+}
+
+
+////////////////////////////////////////////////
+//////////////////ParCategory///////////////////
+int ParCategory_GetCategory(const char* csSeqTypeName,
+                hash_t * hRec)
+{
+        int iCnt = 0;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO getcategory_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_sequence_type_name[PAR_PD_SEQUENCE_TYPE_NAME]; */ 
+struct { unsigned short len; unsigned char arr[50]; } hv_sequence_type_name;
+
+
+                /* varchar         v_category[PAR_PD_CATEGORY + 1]; */ 
+struct { unsigned short len; unsigned char arr[21]; } v_category;
+
+                /* varchar         v_txn_code[PD_TXN_CODE_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_txn_code;
+
+                /* varchar         v_reversal_txn_code[PD_TXN_CODE_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_reversal_txn_code;
+
+
+                short           ind_category = -1;
+                short           ind_txn_code = -1;
+                short           ind_reversal_txn_code = -1;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+//DEBUGLOG(("GetCategory: Begin [%s]\n", csSeqTypeName));
+
+        hv_sequence_type_name.len = strlen(csSeqTypeName);
+        memcpy(hv_sequence_type_name.arr, csSeqTypeName, hv_sequence_type_name.len);
+//DEBUGLOG(("GetCategory: sequence_type_name = [%.*s]\n",hv_sequence_type_name.len,hv_sequence_type_name.arr));
+
+
+        /* EXEC SQL DECLARE c_cursor_getcategory CURSOR FOR
+                SELECT pc_category, pc_txn_code, pc_reversal_txn_code
+                  FROM par_category
+                 WHERE pc_sequence_type_name = :hv_sequence_type_name; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_getcategory; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 2;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0004;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )164;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_sequence_type_name;
+        sqlstm.sqhstl[0] = (unsigned long )52;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getcategory_error;
+}
+
+
+        do {
+                /* EXEC SQL FETCH c_cursor_getcategory
+                INTO :v_category:ind_category,
+                     :v_txn_code:ind_txn_code,
+                     :v_reversal_txn_code:ind_reversal_txn_code; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 3;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )183;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_category;
+                sqlstm.sqhstl[0] = (unsigned long )23;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_category;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_txn_code;
+                sqlstm.sqhstl[1] = (unsigned long )6;
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_txn_code;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_reversal_txn_code;
+                sqlstm.sqhstl[2] = (unsigned long )6;
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_reversal_txn_code;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto getcategory_error;
+}
+
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                iCnt++;
+
+// category
+                if (ind_category >= 0) {
+                        v_category.arr[v_category.len] = '\0';
+                        PutField_CString(hRec, "category", (const char*)v_category.arr);
+//DEBUGLOG(("GetCategory category = [%s]\n",v_category.arr));
+                }
+
+// txn_code
+                if (ind_txn_code >= 0) {
+                        v_txn_code.arr[v_txn_code.len] = '\0';
+                        PutField_CString(hRec, "txn_code", (const char*)v_txn_code.arr);
+//DEBUGLOG(("GetCategory txn_code = [%s]\n",v_txn_code.arr));
+                }
+
+// reversal_txn_code
+                if (ind_reversal_txn_code >= 0) {
+                        v_reversal_txn_code.arr[v_reversal_txn_code.len] = '\0';
+                        PutField_CString(hRec, "reversal_txn_code", (const char*)v_reversal_txn_code.arr);
+//DEBUGLOG(("GetCategory reversal_txn_code = [%s]\n",v_reversal_txn_code.arr));
+                }
+
+
+        }
+        while (PD_TRUE);
+        /* EXEC SQL CLOSE c_cursor_getcategory; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 3;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )210;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getcategory_error;
+}
+
+
+
+
+        if (iCnt > 0) {
+//DEBUGLOG(("GetCategory Normal Exit\n"));
+                return PD_OK;
+        } else {
+                return PD_ERR;
+        }
+
+
+getcategory_error:
+DEBUGLOG(("getcategory_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_getcategory; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 3;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )225;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+}
+
+////////////////////////////////////////////////////
+//////////////////ParMerchProfile///////////////////
+int ParMerchProfile_GetMerchant(const char* csMerchAccNmb,
+                recordset_t* myRec)
+{
+        int iRet = PD_OK;
+
+        hash_t *myHash;
+        /* EXEC SQL WHENEVER SQLERROR GOTO getmerchant_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_merch_account_nmb[PAR_PD_MERCH_ACCOUNT_NMB_LEN]; */ 
+struct { unsigned short len; unsigned char arr[50]; } hv_merch_account_nmb;
+
+
+                /* varchar         v_service[PD_SERVICE_CODE_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_service;
+
+                /* varchar         v_ph_merch_id[PD_MERCHANT_ID_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[16]; } v_ph_merch_id;
+
+                /* varchar         v_client_id[PD_CLIENT_ID_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_client_id;
+
+		/* varchar		v_country[PD_COUNTRY_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[3]; } v_country;
+
+
+                short           ind_service = -1;
+                short           ind_ph_merch_id = -1;
+                short           ind_client_id = -1;
+		short		ind_country = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_merch_account_nmb.len = strlen(csMerchAccNmb);
+        memcpy(hv_merch_account_nmb.arr,csMerchAccNmb,hv_merch_account_nmb.len);
+//DEBUGLOG(("GetMerchant merch_account_nmb = [%.*s]\n",hv_merch_account_nmb.len,hv_merch_account_nmb.arr));
+
+        /* EXEC SQL DECLARE c_cursor_getmerchant CURSOR FOR
+                select  mn_service_code,
+                        merchant_id,
+                        client_id,
+			mn_country
+                  from merch_detail, par_def_merch_nmb_map
+                 where mn_merchant_acct_nmb = :hv_merch_account_nmb
+                   and mn_merchant_id = merchant_id; */ 
+
+
+
+        /* EXEC SQL OPEN c_cursor_getmerchant; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 3;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0005;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )240;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_merch_account_nmb;
+        sqlstm.sqhstl[0] = (unsigned long )52;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getmerchant_error;
+}
+
+
+        do {
+                /* EXEC SQL FETCH c_cursor_getmerchant
+                INTO
+                        :v_service:ind_service,
+                        :v_ph_merch_id:ind_ph_merch_id,
+                        :v_client_id:ind_client_id,
+			:v_country:ind_country; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 4;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )259;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_service;
+                sqlstm.sqhstl[0] = (unsigned long )6;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_service;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_ph_merch_id;
+                sqlstm.sqhstl[1] = (unsigned long )18;
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_ph_merch_id;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_client_id;
+                sqlstm.sqhstl[2] = (unsigned long )13;
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_client_id;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqhstv[3] = (unsigned char  *)&v_country;
+                sqlstm.sqhstl[3] = (unsigned long )5;
+                sqlstm.sqhsts[3] = (         int  )0;
+                sqlstm.sqindv[3] = (         short *)&ind_country;
+                sqlstm.sqinds[3] = (         int  )0;
+                sqlstm.sqharm[3] = (unsigned long )0;
+                sqlstm.sqadto[3] = (unsigned short )0;
+                sqlstm.sqtdso[3] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto getmerchant_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        iRet = SQL_NOT_FOUND;
+                        break;
+                }
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+// service
+                if (ind_service >= 0) {
+                        v_service.arr[v_service.len] = '\0';
+                        PutField_CString(myHash,"service",(const char*)v_service.arr);
+//DEBUGLOG(("GetMerchant service = [%s]\n",v_service.arr));
+                }
+
+// merchant_id
+                if (ind_ph_merch_id >= 0) {
+                        v_ph_merch_id.arr[v_ph_merch_id.len] = '\0';
+                        PutField_CString(myHash,"merchant_id",(const char*)v_ph_merch_id.arr);
+//DEBUGLOG(("GetMerchant ph_merch_id = [%s]\n",v_ph_merch_id.arr));
+                }
+
+// client_id
+                if (ind_client_id >= 0) {
+                        v_client_id.arr[v_client_id.len] = '\0';
+                        PutField_CString(myHash,"client_id",(const char*)v_client_id.arr);
+//DEBUGLOG(("GetMerchant client_id = [%s]\n",v_client_id.arr));
+                }
+
+// country	
+		if (ind_country >= 0) {
+			v_country.arr[v_country.len] = '\0';
+			PutField_CString(myHash, "country", (const char *)v_country.arr);
+//DEBUGLOG(("GetMerchant country = [%s]\n",v_country.arr));
+                }
+
+                RecordSet_Add(myRec,myHash);
+                break; //**************** only one now
+        }
+        while(PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_getmerchant; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )290;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getmerchant_error;
+}
+
+
+
+
+
+//DEBUGLOG(("GetMerchant Normal Exit\n"));
+        if(iRet==0) return  PD_OK;
+        else    return iRet;
+
+getmerchant_error:
+DEBUGLOG(("getmerchant_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_getmerchant; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )305;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+}
+
+
+////////////////////////////////////////////////////
+//////////////////ParTxnData////////////////////////
+int     ParTxnData_ChkExist(const char *csVNCRefNum)
+{
+        int     iRet = PD_NOT_FOUND;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO chkexist_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_vnc_ref_num[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_vnc_ref_num;
+
+
+                int             v_no_of_record;
+                short           ind_no_of_record = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_vnc_ref_num.len = strlen(csVNCRefNum);
+        memcpy(hv_vnc_ref_num.arr, csVNCRefNum, hv_vnc_ref_num.len);
+//DEBUGLOG(("ChkExist vnc_ref_num = [%.*s]\n",hv_vnc_ref_num.len,hv_vnc_ref_num.arr));
+
+
+        /* EXEC SQL
+                SELECT count(1)
+                   INTO :v_no_of_record:ind_no_of_record
+                   FROM txn_header
+                  WHERE th_vnc_ref_num = :hv_vnc_ref_num
+                    and rownum = 1; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "select count(1) into :b0:b1  from txn_header where (\
+th_vnc_ref_num=:b2 and rownum=1)";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )320;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&v_no_of_record;
+        sqlstm.sqhstl[0] = (unsigned long )sizeof(int);
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)&ind_no_of_record;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_vnc_ref_num;
+        sqlstm.sqhstl[1] = (unsigned long )18;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)0;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto chkexist_error;
+}
+
+
+
+        if (ind_no_of_record >= 0) {
+                if (v_no_of_record > 0) {
+//DEBUGLOG(("ChkExist FOUND\n"));
+                        iRet = PD_FOUND;
+                }
+        }
+
+        if (iRet!= PD_FOUND) {
+//DEBUGLOG(("ChkExist NOT FOUND\n"));
+        }
+
+        return iRet;
+
+chkexist_error:
+DEBUGLOG(("ChkExist_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        return PD_ERR;
+
+}
+
+
+int UpdateProcessResult(hash_t *hMyHash, const char *csStatus)
+{
+        int     iRet = SUCCESS;
+        int     iTmp;
+
+        if (GetField_Int(hMyHash, "sort_txn_seq", &iTmp)) {
+//DEBUGLOG(("UpdateProcessTxnResult sort_txn_seq [%d]\n", iTmp));
+        }
+
+//DEBUGLOG(("UpdateProcessTxnResult status [%s]\n", csStatus));
+        PutField_CString(hMyHash, "proc_status", csStatus);
+
+        if (UpdateTxnDataStatus(hMyHash) == PD_OK) {
+//DEBUGLOG(("UpdateProcessTxnResult : txn_data.seq [%d] status [%s]\n", iTmp, csStatus));
+        }
+        else {
+                iRet = FAILURE;
+        }
+
+        return iRet;
+}
+
+int UpdateTxnDataStatus(const hash_t *hRls)
+{
+        char    *csTmp;
+        char*   csBuf;
+
+
+        int     iSortTxnSeq;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO updatestatus_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+        /* varchar         hv_dynstmt[1024]; */ 
+struct { unsigned short len; unsigned char arr[1024]; } hv_dynstmt;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+//DEBUGLOG(("UpdateStatus: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update par_txn_data set ptd_update_timestamp  = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        GetField_Int(hRls,"sort_txn_seq",&iSortTxnSeq);
+DEBUGLOG(("UpdateStatus:sort_txn_id = [%d]\n",iSortTxnSeq));
+
+        if (GetField_CString(hRls, "proc_status", &csTmp)) {
+DEBUGLOG(("UpdateStatus:proc_status= [%s]\n",csTmp));
+
+                strcat((char*)hv_dynstmt.arr, ",ptd_proc_status = '");
+                strcat((char*)hv_dynstmt.arr, csTmp);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+		/* status timestamp */
+		strcat((char*)hv_dynstmt.arr, ", ptd_status_timestamp = systimestamp");
+		hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        }
+
+        sprintf(csBuf, "%d", iSortTxnSeq);
+
+        strcat((char *)hv_dynstmt.arr, " WHERE ptd_txn_seq = ");
+        strcat((char *)hv_dynstmt.arr, csBuf);
+        //strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+DEBUGLOG(("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+        /* EXEC SQL PREPARE PS FROM :hv_dynstmt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )343;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_dynstmt;
+        sqlstm.sqhstl[0] = (unsigned long )1026;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto updatestatus_error;
+}
+
+
+        /* EXEC SQL EXECUTE PS; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )362;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto updatestatus_error;
+}
+
+
+
+        FREE_ME(csBuf);
+DEBUGLOG(("Update Status Normal Exit\n"));
+        return PD_OK;
+
+updatestatus_error:
+DEBUGLOG(("updatestatus_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+ERRLOG("Transaction_Update: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("Update: SP_INTERNAL_ERR TxnAbort\n"));
+        return PD_INTERNAL_ERR;
+}
+
+int UpdateApprovalTimestamp(const hash_t *hRls)
+{
+        //char    *csTmp;
+        char*   csBuf;
+        char*   csTxnId;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO update_approvetime_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+        /* varchar         hv_dynstmt[1024]; */ 
+struct { unsigned short len; unsigned char arr[1024]; } hv_dynstmt;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("UpdateApprovalTimestamp: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update txn_header set th_update_timestamp  = sysdate, ");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        GetField_CString(hRls,"txn_seq",&csTxnId);
+DEBUGLOG(("UpdateApprovalTimestamp:txn_id = [%s]\n",csTxnId));
+
+        strcat((char *)hv_dynstmt.arr, "th_approval_timestamp = to_timestamp(th_approval_date || to_char(th_approval_timestamp, 'HH24MISSFF6') , 'YYYYMMDDHH24MISSFF')");
+        hv_dynstmt.len=strlen((const char*) hv_dynstmt.arr);
+
+
+        strcat((char *)hv_dynstmt.arr, " WHERE th_txn_id = '");
+        strcat((char *)hv_dynstmt.arr, csTxnId);
+        strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+DEBUGLOG(("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+        /* EXEC SQL PREPARE PS FROM :hv_dynstmt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )377;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_dynstmt;
+        sqlstm.sqhstl[0] = (unsigned long )1026;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto update_approvetime_error;
+}
+
+
+        /* EXEC SQL EXECUTE PS; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 4;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )396;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto update_approvetime_error;
+}
+
+
+
+        FREE_ME(csBuf);
+// update txn sub status
+//        AddTxnStatusLog(hRls);
+
+DEBUGLOG(("Update Normal Exit\n"));
+        return PD_OK;
+
+update_approvetime_error:
+DEBUGLOG(("update_approvetime_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+ERRLOG("Transaction_Update_approvetime: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("Update: SP_INTERNAL_ERR TxnAbort\n"));
+//        TxnAbort();
+        return PD_INTERNAL_ERR;
+}
+
+
+
+
+int  GetOrgTxnID(hash_t * hMyHash, hash_t *hTxnHeader)
+{
+        int     iRet = SUCCESS;
+
+        char    *csVNCRefNum;
+
+        char    cTmp;
+        char    *csTmp;
+
+        if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+DEBUGLOG(("GetOrgTxnID vnc_ref_num [%s]\n", csVNCRefNum));
+        }
+
+        if (GetTxnHeaderByVNCRefNum(csVNCRefNum, hTxnHeader) == PD_OK) {
+                if (GetField_CString(hTxnHeader, "txn_id", &csTmp)) {
+DEBUGLOG(("GetOrgTxnID: ParTxnData:GetTxnHeaderByVNCRefNum txn_id [%s]\n", csTmp));
+                }
+
+                if (GetField_Char(hTxnHeader, "status", &cTmp)) {
+//DEBUGLOG(("GetOrgTxnID: ParTxnData:GetTxnHeaderByVNCRefNum status [%c]\n", cTmp));
+                }
+
+                if (GetField_Char(hTxnHeader, "ar_ind", &cTmp)) {
+//DEBUGLOG(("GetOrgTxnID: ParTxnData:GetTxnHeaderByVNCRefNum ar_ind [%c]\n", cTmp));
+                }
+
+                if (GetField_CString(hTxnHeader, "sub_status", &csTmp)) {
+//DEBUGLOG(("GetOrgTxnID: ParTxnData:GetTxnHeaderByVNCRefNum sub_status[%s]\n", csTmp));
+                }
+
+                if (GetField_CString(hTxnHeader, "txn_code", &csTmp)) {
+//DEBUGLOG(("GetOrgTxnID: ParTxnData:GetTxnHeaderByVNCRefNum txn_code [%s]\n", csTmp));
+                }
+        }
+        else {
+DEBUGLOG(("GetOrgTxnID: : ParTxnData:GetTxnHeaderByVNCRefNum FAIL!\n"));
+                iRet = FAILURE;
+        }
+
+        return iRet;
+}
+
+int GetTxnHeaderByVNCRefNum(const char*csVNCRefNum, hash_t *hRec)
+{
+        int     iRet = PD_OK;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO getheader_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar hv_vnc_ref_num[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_vnc_ref_num;
+
+
+                /* varchar v_txn_id[PD_TXN_SEQ_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[17]; } v_txn_id;
+
+                char    v_status;
+                char    v_ar_ind;
+                /* varchar v_sub_status[PD_SUB_STATUS_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_sub_status;
+
+                /* varchar v_txn_code[PD_TXN_CODE_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_txn_code;
+
+
+                short   ind_txn_id = -1;
+                short   ind_status = -1;
+                short   ind_ar_ind = -1;
+                short   ind_sub_status = -1;
+                short   ind_txn_code = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_vnc_ref_num.len = strlen(csVNCRefNum);
+        memcpy(hv_vnc_ref_num.arr, csVNCRefNum, hv_vnc_ref_num.len);
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum vnc_ref_num = [%.*s]\n",hv_vnc_ref_num.len,hv_vnc_ref_num.arr));
+
+        /* EXEC SQL SELECT th_txn_id,
+                        th_status,
+                        th_ar_ind,
+                        th_sub_status,
+                        th_txn_code
+                   INTO :v_txn_id:ind_txn_id,
+                        :v_status:ind_status,
+                        :v_ar_ind:ind_ar_ind,
+                        :v_sub_status:ind_sub_status,
+                        :v_txn_code:ind_txn_code
+                   from (select th_txn_id,
+                                th_status,
+                                th_ar_ind,
+                                th_sub_status,
+                                th_txn_code
+                         FROM txn_header
+                         WHERE th_vnc_ref_num = :hv_vnc_ref_num
+                         order by decode(th_txn_code, 'VDS', 1, 'VST', 1, 'VMT', 1, 'VTM', 1, decode(substr(th_txn_code, 1, 1), 'y', 1, 2))
+                        )
+                   where rownum = 1; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "select th_txn_id ,th_status ,th_ar_ind ,th_sub_statu\
+s ,th_txn_code into :b0:b1,:b2:b3,:b4:b5,:b6:b7,:b8:b9  from (select th_txn_i\
+d ,th_status ,th_ar_ind ,th_sub_status ,th_txn_code  from txn_header where th\
+_vnc_ref_num=:b10 order by decode(th_txn_code,'VDS',1,'VST',1,'VMT',1,'VTM',1\
+,decode(substr(th_txn_code,1,1),'y',1,2)) ) where rownum=1";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )411;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&v_txn_id;
+        sqlstm.sqhstl[0] = (unsigned long )19;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)&ind_txn_id;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&v_status;
+        sqlstm.sqhstl[1] = (unsigned long )1;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)&ind_status;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqhstv[2] = (unsigned char  *)&v_ar_ind;
+        sqlstm.sqhstl[2] = (unsigned long )1;
+        sqlstm.sqhsts[2] = (         int  )0;
+        sqlstm.sqindv[2] = (         short *)&ind_ar_ind;
+        sqlstm.sqinds[2] = (         int  )0;
+        sqlstm.sqharm[2] = (unsigned long )0;
+        sqlstm.sqadto[2] = (unsigned short )0;
+        sqlstm.sqtdso[2] = (unsigned short )0;
+        sqlstm.sqhstv[3] = (unsigned char  *)&v_sub_status;
+        sqlstm.sqhstl[3] = (unsigned long )6;
+        sqlstm.sqhsts[3] = (         int  )0;
+        sqlstm.sqindv[3] = (         short *)&ind_sub_status;
+        sqlstm.sqinds[3] = (         int  )0;
+        sqlstm.sqharm[3] = (unsigned long )0;
+        sqlstm.sqadto[3] = (unsigned short )0;
+        sqlstm.sqtdso[3] = (unsigned short )0;
+        sqlstm.sqhstv[4] = (unsigned char  *)&v_txn_code;
+        sqlstm.sqhstl[4] = (unsigned long )6;
+        sqlstm.sqhsts[4] = (         int  )0;
+        sqlstm.sqindv[4] = (         short *)&ind_txn_code;
+        sqlstm.sqinds[4] = (         int  )0;
+        sqlstm.sqharm[4] = (unsigned long )0;
+        sqlstm.sqadto[4] = (unsigned short )0;
+        sqlstm.sqtdso[4] = (unsigned short )0;
+        sqlstm.sqhstv[5] = (unsigned char  *)&hv_vnc_ref_num;
+        sqlstm.sqhstl[5] = (unsigned long )18;
+        sqlstm.sqhsts[5] = (         int  )0;
+        sqlstm.sqindv[5] = (         short *)0;
+        sqlstm.sqinds[5] = (         int  )0;
+        sqlstm.sqharm[5] = (unsigned long )0;
+        sqlstm.sqadto[5] = (unsigned short )0;
+        sqlstm.sqtdso[5] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getheader_error;
+}
+
+
+
+        if (SQLCODE == SQL_NOT_FOUND) {
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum SQL_NOT_FOUND!\n"));
+                iRet = NOT_FOUND;
+        }
+        if (ind_txn_id >= 0) {
+                iRet = PD_OK;
+
+                v_txn_id.arr[v_txn_id.len] = '\0';
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum txn_id [%.*s]\n", v_txn_id.len, v_txn_id.arr));
+                PutField_CString(hRec, "txn_id", (const char*)v_txn_id.arr);
+        }
+
+        if (ind_status >= 0) {
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum status [%c]\n", v_status));
+                PutField_Char(hRec, "status", v_status);
+        }
+
+        if (ind_ar_ind >= 0) {
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum ar_ind [%.*s]\n", v_ar_ind));
+                PutField_Char(hRec, "ar_ind", v_ar_ind);
+        }
+
+        if (ind_sub_status >= 0) {
+                v_sub_status.arr[v_sub_status.len] = '\0';
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum sub_status [%.*s]\n", v_sub_status.len, v_sub_status.arr));
+                PutField_CString(hRec, "sub_status", (const char*)v_sub_status.arr);
+        }
+
+        if (ind_txn_code >= 0) {
+                v_txn_code.arr[v_txn_code.len] = '\0';
+DEBUGLOG(("GetDepositTxnHeaderByVNCRefNum txn_code [%.*s]\n", v_txn_code.len, v_txn_code.arr));
+                PutField_CString(hRec, "txn_code", (const char*)v_txn_code.arr);
+
+        }
+
+        return iRet;
+
+getheader_error:
+DEBUGLOG(("getheader_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+    return NOT_FOUND;
+}
+
+
+int UpdateHeaderVNCRef(const hash_t *hRls)
+{
+        char    *csTmp;
+        char*   csBuf;
+        char*   csTxnId;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO update_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+        /* varchar         hv_dynstmt[1024]; */ 
+struct { unsigned short len; unsigned char arr[1024]; } hv_dynstmt;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("Update: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update txn_header set th_update_timestamp  = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        GetField_CString(hRls,"txn_seq",&csTxnId);
+DEBUGLOG(("Update:txn_id = [%s]\n",csTxnId));
+
+        if (GetField_CString(hRls, "vnc_ref_num", &csTmp)) {
+//DEBUGLOG(("Update:vnc_ref_num = [%s]\n",csTmp));
+                strcat((char*)hv_dynstmt.arr, ",th_vnc_ref_num = '");
+                strcat((char*)hv_dynstmt.arr, csTmp);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+        strcat((char *)hv_dynstmt.arr, " WHERE th_txn_id = '");
+        strcat((char *)hv_dynstmt.arr, csTxnId);
+        strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+DEBUGLOG(("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+        /* EXEC SQL PREPARE PS FROM :hv_dynstmt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )450;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_dynstmt;
+        sqlstm.sqhstl[0] = (unsigned long )1026;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto update_error;
+}
+
+
+        /* EXEC SQL EXECUTE PS; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )469;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto update_error;
+}
+
+
+
+        FREE_ME(csBuf);
+
+// update txn sub status
+//        AddTxnStatusLog(hRls);
+
+DEBUGLOG(("Update Normal Exit\n"));
+        return PD_OK;
+
+update_error:
+DEBUGLOG(("update_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+ERRLOG("Transaction_Update: SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("Update: SP_INTERNAL_ERR TxnAbort\n"));
+        return PD_INTERNAL_ERR;
+}
+
+
+
+
+
+
+
+
+////////////////////////
+
+int ParPspClientMap_GetPspID(hash_t *hRec)
+{
+        int iRet = NOT_FOUND;
+        char    *csTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO get_psp_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar hv_psp_type_cd[PAR_PD_PSP_TYPE_CD]; */ 
+struct { unsigned short len; unsigned char arr[50]; } hv_psp_type_cd;
+
+
+                /* varchar v_psp_id [PD_PSP_ID_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_psp_id;
+
+                /* varchar v_psp_country[PD_COUNTRY_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[3]; } v_psp_country;
+
+		/* varchar v_psp_channel_code[PD_PSP_ID_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_psp_channel_code;
+
+
+                short   ind_psp_id = -1;
+                short   ind_psp_country = -1; 
+		short	ind_psp_channel_code = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        if (GetField_CString(hRec, "psp_type_code", &csTmp)) {
+                hv_psp_type_cd.len = strlen(csTmp);
+                memcpy(hv_psp_type_cd.arr, csTmp, hv_psp_type_cd.len);
+DEBUGLOG(("GetPspID: psp_type_code [%.*s]\n", hv_psp_type_cd.len, hv_psp_type_cd.arr));
+        }
+
+
+        /* EXEC SQL DECLARE c_cursor_get_pid CURSOR FOR
+                select psp_detail.psp_id, psp_country.country, psp_channel_code
+                  from psp_country, psp_detail, par_client_psp_map
+                 where cp_psp_type_code = :hv_psp_type_cd
+                   and cp_preset_ph_pid = psp_detail.psp_id
+                   and psp_detail.psp_id = psp_country.psp_id; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_get_pid; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0009;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )484;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_psp_type_cd;
+        sqlstm.sqhstl[0] = (unsigned long )52;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto get_psp_error;
+}
+
+
+        do {
+                /* EXEc SQL FETCH c_cursor_get_pid
+                INTO    :v_psp_id:ind_psp_id,
+                        :v_psp_country:ind_psp_country,
+			:v_psp_channel_code:ind_psp_channel_code; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 6;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )503;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_psp_id;
+                sqlstm.sqhstl[0] = (unsigned long )13;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_psp_id;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_psp_country;
+                sqlstm.sqhstl[1] = (unsigned long )5;
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_psp_country;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_psp_channel_code;
+                sqlstm.sqhstl[2] = (unsigned long )13;
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_psp_channel_code;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto get_psp_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if (ind_psp_id >= 0) {
+                        v_psp_id.arr[v_psp_id.len]='\0';
+                        PutField_CString(hRec, "psp_id", (const char *)v_psp_id.arr);
+DEBUGLOG(("GetPspID: psp_id= [%s]\n", v_psp_id.arr));
+
+                        iRet = FOUND;
+                }
+
+                if (ind_psp_country >= 0) {
+                        v_psp_country.arr[v_psp_country.len]='\0';
+                        PutField_CString(hRec, "psp_country", (const char *)v_psp_country.arr);
+//DEBUGLOG(("GetPspID: psp_country= [%s]\n", v_psp_country.arr));
+                }
+
+		if (ind_psp_channel_code >=0) {
+			v_psp_channel_code.arr[v_psp_channel_code.len] = '\0';
+                        PutField_CString(hRec, "psp_channel_code", (const char *)v_psp_channel_code.arr);
+
+		}
+
+        }while (PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_get_pid; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )530;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto get_psp_error;
+}
+
+
+
+DEBUGLOG(("GetPspID iRet = [%d]\n",iRet));
+        return iRet;
+
+get_psp_error:
+DEBUGLOG(("get_psp_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+    /* EXEC SQL CLOSE c_cursor_get_pid; */ 
+
+{
+    struct sqlexd sqlstm;
+    sqlstm.sqlvsn = 12;
+    sqlstm.arrsiz = 6;
+    sqlstm.sqladtp = &sqladt;
+    sqlstm.sqltdsp = &sqltds;
+    sqlstm.iters = (unsigned int  )1;
+    sqlstm.offset = (unsigned int  )545;
+    sqlstm.cud = sqlcud0;
+    sqlstm.sqlest = (unsigned char  *)&sqlca;
+    sqlstm.sqlety = (unsigned short)4352;
+    sqlstm.occurs = (unsigned int  )0;
+    sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+    return NOT_FOUND;
+
+}
+
+int ParPspClientMap_GetBankCode(hash_t *hRec)
+{
+        int iRet = NOT_FOUND;
+        char    *csTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO get_bankcode_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                //varchar hv_psp_type_cd[PAR_PD_PSP_TYPE_CD];
+                /* varchar hv_ext_bank_code[PD_EXT_BANK_CODE_LEN]; */ 
+struct { unsigned short len; unsigned char arr[20]; } hv_ext_bank_code;
+
+
+                /* varchar v_int_bank_code[PD_BANK_CODE_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_int_bank_code;
+
+                short   ind_int_bank_code = -1;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        if (GetField_CString(hRec, "gate_id", &csTmp)) {
+                hv_ext_bank_code.len = strlen(csTmp);
+                memcpy(hv_ext_bank_code.arr, csTmp, hv_ext_bank_code.len);
+DEBUGLOG(("GetBankCode: ext_bank_code [%.*s]\n", hv_ext_bank_code.len, hv_ext_bank_code.arr));
+        }
+
+        /* EXEC SQL DECLARE c_cursor_get_bank_code CURSOR FOR
+                select bc_int_bank_code
+                  from par_int_bank_code_map
+                 where bc_bank_name = :hv_ext_bank_code; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_get_bank_code; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0010;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )560;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_ext_bank_code;
+        sqlstm.sqhstl[0] = (unsigned long )22;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto get_bankcode_error;
+}
+
+
+        do {
+                /* EXEc SQL FETCH c_cursor_get_bank_code
+                INTO    :v_int_bank_code:ind_int_bank_code; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 6;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )579;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_int_bank_code;
+                sqlstm.sqhstl[0] = (unsigned long )13;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_int_bank_code;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto get_bankcode_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                if (ind_int_bank_code >= 0) {
+                        v_int_bank_code.arr[v_int_bank_code.len]='\0';
+                        PutField_CString(hRec, "int_bank_code", (const char *)v_int_bank_code.arr);
+DEBUGLOG(("GetBankCode: int_bank_code = [%s]\n", v_int_bank_code.arr));
+
+                        iRet = FOUND;
+                }
+        }while (PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_get_bank_code; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )598;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto get_bankcode_error;
+}
+
+
+
+DEBUGLOG(("GetBankCode iRet = [%d]\n",iRet));
+        return iRet;
+
+get_bankcode_error:
+DEBUGLOG(("get_bankcode_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+    /* EXEC SQL CLOSE c_cursor_get_bank_code; */ 
+
+{
+    struct sqlexd sqlstm;
+    sqlstm.sqlvsn = 12;
+    sqlstm.arrsiz = 6;
+    sqlstm.sqladtp = &sqladt;
+    sqlstm.sqltdsp = &sqltds;
+    sqlstm.iters = (unsigned int  )1;
+    sqlstm.offset = (unsigned int  )613;
+    sqlstm.cud = sqlcud0;
+    sqlstm.sqlest = (unsigned char  *)&sqlca;
+    sqlstm.sqlety = (unsigned short)4352;
+    sqlstm.occurs = (unsigned int  )0;
+    sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+    return NOT_FOUND;
+
+}
+
+int     GetAdjustmentTypeRec(const char cPartyType,
+                                const char *csCode ,
+                                recordset_t *myRec)
+{
+        int     iCnt = 0;
+        hash_t *myHash;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO getadjustmenttype_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                char            hv_party_type;
+                /* varchar         hv_code[PD_ADJ_TYPE_CODE_LEN]; */ 
+struct { unsigned short len; unsigned char arr[3]; } hv_code;
+
+                /*int           hv_disabled;*/
+
+                char            v_dc_ind;
+                /* varchar         v_desc[PD_ADJ_TYPE_DESC_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[51]; } v_desc;
+
+                int             v_disabled;
+
+                short           ind_dc_ind = -1;
+                short           ind_desc = -1;
+                short           ind_disabled = -1;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+        
+
+	hv_party_type = cPartyType;
+DEBUGLOG(("GetAdjustmentTypeRec party_type = [%.c]\n", hv_party_type));
+
+        hv_code.len = strlen(csCode);
+        memcpy(hv_code.arr,csCode,hv_code.len);
+DEBUGLOG(("GetAdjustmentTypeRec code = [%.*s]\n",hv_code.len,hv_code.arr));
+
+
+        /*hv_disabled = 0;*/
+
+
+        /* EXEC SQL DECLARE c_cursor_getadjtype CURSOR FOR
+                select at_dc_ind,
+                       at_desc,
+                       at_disabled
+                  from adjustment_type
+                 where at_party_type = :hv_party_type
+                   and at_code = :hv_code; */ 
+
+                   /*and at_disabled = :hv_disabled;*/
+
+        /* EXEC SQL OPEN c_cursor_getadjtype; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0011;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )628;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_party_type;
+        sqlstm.sqhstl[0] = (unsigned long )1;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_code;
+        sqlstm.sqhstl[1] = (unsigned long )5;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)0;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getadjustmenttype_error;
+}
+
+
+        do {
+                /* EXEC SQL FETCH c_cursor_getadjtype
+                INTO    :v_dc_ind:ind_dc_ind,
+                        :v_desc:ind_desc,
+                        :v_disabled:ind_disabled; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 6;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )651;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_dc_ind;
+                sqlstm.sqhstl[0] = (unsigned long )1;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_dc_ind;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_desc;
+                sqlstm.sqhstl[1] = (unsigned long )53;
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_desc;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_disabled;
+                sqlstm.sqhstl[2] = (unsigned long )sizeof(int);
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_disabled;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto getadjustmenttype_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }      
+
+
+                iCnt++;
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+/* dc_ind */
+                if (ind_dc_ind >= 0) {
+                        PutField_Char(myHash, "dc_ind", v_dc_ind);
+DEBUGLOG(("GetAdjustmentTypeRec dc_ind = [%c]\n",v_dc_ind));
+                }
+
+/* desc */     
+                if (ind_desc >= 0) {
+                        v_desc.arr[v_desc.len] = '\0';
+                        PutField_CString(myHash, "desc", (const char *)v_desc.arr);
+DEBUGLOG(("GetAdjustmentTypeRec desc = [%s]\n",v_desc.arr));
+
+                }
+
+/* disabled */
+                if (ind_disabled >= 0) {
+                        PutField_Int(myHash, "disabled", v_disabled);
+DEBUGLOG(("GetAdjustmentTypeRec disabled = [%d]\n", v_disabled));
+
+                }
+
+
+                RecordSet_Add(myRec, myHash);
+        }
+        while (PD_TRUE);
+        /* EXEC SQL CLOSE c_cursor_getadjtype; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )678;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getadjustmenttype_error;
+}
+
+
+
+        if (iCnt > 0 ) {
+DEBUGLOG(("GetAdjustmentTypeRec Normal Exit\n"));
+                return  PD_OK;
+        }
+        else {
+DEBUGLOG(("GetAdjustmentTypeRec Normal Exit, Not Found\n"));
+                return PD_ERR;
+        }
+
+getadjustmenttype_error:
+DEBUGLOG(("getadjustmenttype_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_getadjtype; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )693;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+
+}
+
+
+////////// Payout /////////////////////
+int     AddParPayoutUploadHD(const hash_t *hRls)
+{
+	char	*csTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO add_par_payout_upload_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+		/* varchar		hv_file_id[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_file_id;
+
+		/* varchar         hv_batch_id[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_batch_id;
+
+		/* varchar		hv_create_user[PD_CREATE_USER_LEN]; */ 
+struct { unsigned short len; unsigned char arr[20]; } hv_create_user;
+
+
+		short		ind_file_id;
+		short		ind_batch_id;
+		short		ind_create_user;
+
+		short		hv_return_value;
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("AddParPayoutUpload: Begin\n"));
+
+/* batch_id */
+        if(GetField_CString(hRls,"batch_id",&csTmp)){
+                hv_batch_id.len = strlen(csTmp);
+                memcpy(hv_batch_id.arr, csTmp, hv_batch_id.len);
+                ind_batch_id= 0;
+DEBUGLOG(("AddParPayoutUpload:batch_id= [%.*s]\n",hv_batch_id.len,hv_batch_id.arr));
+        }
+
+/* file_id */
+	if (GetField_CString(hRls, "file_id", &csTmp)) {
+                hv_file_id.len = strlen(csTmp);
+                memcpy(hv_file_id.arr, csTmp, hv_file_id.len);
+                ind_file_id= 0;
+DEBUGLOG(("AddParPayoutUpload:file_id= [%.*s]\n",hv_file_id.len,hv_file_id.arr));
+	}
+
+/* create_user */
+	if (GetField_CString(hRls, "create_user", &csTmp)) {
+                hv_create_user.len = strlen(csTmp);
+                memcpy(hv_create_user.arr, csTmp, hv_create_user.len);
+                ind_create_user = 0;
+DEBUGLOG(("AddParPayoutUpload: create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+	}
+
+	/* EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_par_payout_upload_insert(
+						:hv_file_id:ind_file_id,
+						:hv_batch_id:ind_batch_id,
+						:hv_create_user:ind_create_user);
+		END;
+	END-EXEC; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 6;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.stmt = "begin :hv_return_value := sp_par_payout_upload_insert ( :hv\
+_file_id:ind_file_id , :hv_batch_id:ind_batch_id , :hv_create_user:ind_create\
+_user ) ; END ;";
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )708;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlstm.sqhstv[0] = (unsigned char  *)&hv_return_value;
+ sqlstm.sqhstl[0] = (unsigned long )sizeof(short);
+ sqlstm.sqhsts[0] = (         int  )0;
+ sqlstm.sqindv[0] = (         short *)0;
+ sqlstm.sqinds[0] = (         int  )0;
+ sqlstm.sqharm[0] = (unsigned long )0;
+ sqlstm.sqadto[0] = (unsigned short )0;
+ sqlstm.sqtdso[0] = (unsigned short )0;
+ sqlstm.sqhstv[1] = (unsigned char  *)&hv_file_id;
+ sqlstm.sqhstl[1] = (unsigned long )18;
+ sqlstm.sqhsts[1] = (         int  )0;
+ sqlstm.sqindv[1] = (         short *)&ind_file_id;
+ sqlstm.sqinds[1] = (         int  )0;
+ sqlstm.sqharm[1] = (unsigned long )0;
+ sqlstm.sqadto[1] = (unsigned short )0;
+ sqlstm.sqtdso[1] = (unsigned short )0;
+ sqlstm.sqhstv[2] = (unsigned char  *)&hv_batch_id;
+ sqlstm.sqhstl[2] = (unsigned long )18;
+ sqlstm.sqhsts[2] = (         int  )0;
+ sqlstm.sqindv[2] = (         short *)&ind_batch_id;
+ sqlstm.sqinds[2] = (         int  )0;
+ sqlstm.sqharm[2] = (unsigned long )0;
+ sqlstm.sqadto[2] = (unsigned short )0;
+ sqlstm.sqtdso[2] = (unsigned short )0;
+ sqlstm.sqhstv[3] = (unsigned char  *)&hv_create_user;
+ sqlstm.sqhstl[3] = (unsigned long )22;
+ sqlstm.sqhsts[3] = (         int  )0;
+ sqlstm.sqindv[3] = (         short *)&ind_create_user;
+ sqlstm.sqinds[3] = (         int  )0;
+ sqlstm.sqharm[3] = (unsigned long )0;
+ sqlstm.sqadto[3] = (unsigned short )0;
+ sqlstm.sqtdso[3] = (unsigned short )0;
+ sqlstm.sqphsv = sqlstm.sqhstv;
+ sqlstm.sqphsl = sqlstm.sqhstl;
+ sqlstm.sqphss = sqlstm.sqhsts;
+ sqlstm.sqpind = sqlstm.sqindv;
+ sqlstm.sqpins = sqlstm.sqinds;
+ sqlstm.sqparm = sqlstm.sqharm;
+ sqlstm.sqparc = sqlstm.sqharc;
+ sqlstm.sqpadto = sqlstm.sqadto;
+ sqlstm.sqptdso = sqlstm.sqtdso;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+ if (sqlca.sqlcode < 0) goto add_par_payout_upload_error;
+}
+
+
+
+DEBUGLOG(("AddParPayoutUpload:Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("AddParPayoutUpload:Normal Exit\n"));
+                return PD_OK;
+        }
+
+        if (hv_return_value == SP_OTHER_ERR)  {
+ERRLOG("AddParPayoutUpload : SP_OTHER_ERR \n");
+DEBUGLOG(("AddParPayoutUpload: SP_OTHER_ERR \n"));
+                return PD_OTHER_ERR;
+        }
+
+        if (hv_return_value == SP_ERR)  {
+ERRLOG("AddParPayoutUpload : SP_ERR \n");
+DEBUGLOG(("AddParPayoutUpload : SP_ERR \n"));
+                return PD_ERR;
+        }
+
+add_par_payout_upload_error:
+DEBUGLOG(("add_par_payout_upload_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("AddParPayoutUpload: SP_INTERNAL_ERR \n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        return PD_ERR;
+
+}
+
+
+
+int     PayoutUpload_Header_ChkExist(hash_t *hRls) {
+
+	int     iRet = PD_NOT_FOUND;
+	char	*csTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO payout_hd_chkexist_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+		/* varchar		hv_file_id[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_file_id;
+
+		short		ind_file_id;
+
+		/* varchar         v_batch_id[PD_TXN_SEQ_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[17]; } v_batch_id;
+
+		short		ind_batch_id;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("PayoutUpload_Header_ChkExist BEGIN\n"));
+
+/* file_id */
+        if (GetField_CString(hRls, "file_id", &csTmp)) {
+                hv_file_id.len = strlen(csTmp);
+                memcpy(hv_file_id.arr, csTmp, hv_file_id.len);
+                ind_file_id= 0;
+DEBUGLOG(("Payout_hd_chkexist:file_id= [%.*s]\n",hv_file_id.len,hv_file_id.arr));
+        }
+
+	/* EXEC SQL DECLARE c_cursor_get_batch_id CURSOR FOR
+		SELECT	pu_batch_id
+		FROM	par_payout_upload
+		WHERE	pu_file_id = :hv_file_id; */ 
+
+
+	/* EXEC SQL OPEN c_cursor_get_batch_id; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 6;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.stmt = sq0013;
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )739;
+ sqlstm.selerr = (unsigned short)1;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlstm.sqcmod = (unsigned int )0;
+ sqlstm.sqhstv[0] = (unsigned char  *)&hv_file_id;
+ sqlstm.sqhstl[0] = (unsigned long )18;
+ sqlstm.sqhsts[0] = (         int  )0;
+ sqlstm.sqindv[0] = (         short *)0;
+ sqlstm.sqinds[0] = (         int  )0;
+ sqlstm.sqharm[0] = (unsigned long )0;
+ sqlstm.sqadto[0] = (unsigned short )0;
+ sqlstm.sqtdso[0] = (unsigned short )0;
+ sqlstm.sqphsv = sqlstm.sqhstv;
+ sqlstm.sqphsl = sqlstm.sqhstl;
+ sqlstm.sqphss = sqlstm.sqhsts;
+ sqlstm.sqpind = sqlstm.sqindv;
+ sqlstm.sqpins = sqlstm.sqinds;
+ sqlstm.sqparm = sqlstm.sqharm;
+ sqlstm.sqparc = sqlstm.sqharc;
+ sqlstm.sqpadto = sqlstm.sqadto;
+ sqlstm.sqptdso = sqlstm.sqtdso;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+ if (sqlca.sqlcode < 0) goto payout_hd_chkexist_error;
+}
+
+
+	do {
+		/* EXEC SQL FETCH c_cursor_get_batch_id
+		INTO	
+			:v_batch_id:ind_batch_id; */ 
+
+{
+  struct sqlexd sqlstm;
+  sqlstm.sqlvsn = 12;
+  sqlstm.arrsiz = 6;
+  sqlstm.sqladtp = &sqladt;
+  sqlstm.sqltdsp = &sqltds;
+  sqlstm.iters = (unsigned int  )1;
+  sqlstm.offset = (unsigned int  )758;
+  sqlstm.selerr = (unsigned short)1;
+  sqlstm.cud = sqlcud0;
+  sqlstm.sqlest = (unsigned char  *)&sqlca;
+  sqlstm.sqlety = (unsigned short)4352;
+  sqlstm.occurs = (unsigned int  )0;
+  sqlstm.sqfoff = (         int )0;
+  sqlstm.sqfmod = (unsigned int )2;
+  sqlstm.sqhstv[0] = (unsigned char  *)&v_batch_id;
+  sqlstm.sqhstl[0] = (unsigned long )19;
+  sqlstm.sqhsts[0] = (         int  )0;
+  sqlstm.sqindv[0] = (         short *)&ind_batch_id;
+  sqlstm.sqinds[0] = (         int  )0;
+  sqlstm.sqharm[0] = (unsigned long )0;
+  sqlstm.sqadto[0] = (unsigned short )0;
+  sqlstm.sqtdso[0] = (unsigned short )0;
+  sqlstm.sqphsv = sqlstm.sqhstv;
+  sqlstm.sqphsl = sqlstm.sqhstl;
+  sqlstm.sqphss = sqlstm.sqhsts;
+  sqlstm.sqpind = sqlstm.sqindv;
+  sqlstm.sqpins = sqlstm.sqinds;
+  sqlstm.sqparm = sqlstm.sqharm;
+  sqlstm.sqparc = sqlstm.sqharc;
+  sqlstm.sqpadto = sqlstm.sqadto;
+  sqlstm.sqptdso = sqlstm.sqtdso;
+  sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+  if (sqlca.sqlcode < 0) goto payout_hd_chkexist_error;
+}
+
+
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+DEBUGLOG(("Payout_hd_chkexist: record not found!\n"));
+			break;
+		}
+DEBUGLOG(("Payout_hd_chkexist: found record!\n"));
+
+/* batch_id */
+		if (ind_batch_id >= 0) {
+                        v_batch_id.arr[v_batch_id.len] = '\0';
+                        PutField_CString(hRls,"hd_batch_id",(const char*)v_batch_id.arr);
+DEBUGLOG(("Payout_hd_chkexist: batch_id = [%s]\n",v_batch_id.arr));
+		}
+
+		iRet = PD_FOUND;
+
+		break; // expect only 1 record!
+
+	} while (PD_TRUE);
+	
+	/* EXEC SQL CLOSE c_cursor_get_batch_id; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 6;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )777;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+ if (sqlca.sqlcode < 0) goto payout_hd_chkexist_error;
+}
+
+
+
+DEBUGLOG(("Payout_hd_chkexist Normal Exit\n"));
+	return iRet;
+
+payout_hd_chkexist_error:
+
+DEBUGLOG(("payout_hd_chkexist_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("Payout_hd_chkexist: SP_INTERNAL_ERR TxnAbort\n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_get_batch_id; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )792;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+
+}
+
+int     PayoutUpload_Detail_ChkExist(hash_t *hRls) 
+{
+        int     iRet = PD_NOT_FOUND;
+
+	char	*csTmp;
+	int	iTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO payout_dtl_chkexist_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+                /* varchar         hv_file_id[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_file_id;
+
+		int		hv_seq_num;
+
+                short           ind_file_id;
+		short		ind_seq_num;
+
+                /* varchar         v_batch_id[PD_TXN_SEQ_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[17]; } v_batch_id;
+
+                short           ind_batch_id;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("PayoutUpload_Detail_ChkExist BEGIN\n"));
+
+/* file_id */
+        if (GetField_CString(hRls, "file_id", &csTmp)) {
+                hv_file_id.len = strlen(csTmp);
+                memcpy(hv_file_id.arr, csTmp, hv_file_id.len);
+                ind_file_id= 0;
+DEBUGLOG(("Payout_dtl_chkexist:file_id= [%.*s]\n",hv_file_id.len,hv_file_id.arr));
+        }
+
+/* seq_num */
+	if(GetField_Int(hRls,"seq_num",&iTmp)){
+		hv_seq_num = iTmp;
+                ind_seq_num = 0;
+DEBUGLOG(("Payout_dtl_chkexist:seq_num = [%d]\n",hv_seq_num));
+	}
+
+/*
+        EXEC SQL DECLARE c_cursor_get_batch_id_dt CURSOR FOR
+		select pu_batch_id
+		from par_payout_upload_dtl
+		where pu_file_id = :hv_file_id
+		and pu_seq_num = :hv_seq_num;
+*/
+
+        /* EXEC SQL DECLARE c_cursor_get_batch_id_dt CURSOR FOR
+		select pu_batch_id
+		from   merchant_upload_file_detail, par_payout_upload
+		where pu_file_id = :hv_file_id
+		and   ud_batch_id = pu_batch_id
+		and   ud_seq_num = :hv_seq_num; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_get_batch_id_dt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0014;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )807;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_file_id;
+        sqlstm.sqhstl[0] = (unsigned long )18;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_seq_num;
+        sqlstm.sqhstl[1] = (unsigned long )sizeof(int);
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)0;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto payout_dtl_chkexist_error;
+}
+
+
+        do {
+                /* EXEC SQL FETCH c_cursor_get_batch_id_dt
+                INTO
+                        :v_batch_id:ind_batch_id; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 6;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )830;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_batch_id;
+                sqlstm.sqhstl[0] = (unsigned long )19;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_batch_id;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto payout_dtl_chkexist_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+DEBUGLOG(("Payout_dtl_chkexist: found record!\n"));
+
+/* batch_id */
+                if (ind_batch_id >= 0) {
+                        v_batch_id.arr[v_batch_id.len] = '\0';
+                        PutField_CString(hRls,"dt_batch_id",(const char*)v_batch_id.arr);
+DEBUGLOG(("Payout_dtl_chkexist: batch_id = [%s]\n",v_batch_id.arr));
+                }
+
+                iRet = PD_FOUND;
+
+                break; // expect only 1 record!
+
+        } while (PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_get_batch_id_dt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )849;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto payout_dtl_chkexist_error;
+}
+
+
+
+DEBUGLOG(("Payout_dtl_chkexist Normal Exit\n"));
+        return iRet;
+
+payout_dtl_chkexist_error:
+
+DEBUGLOG(("payout_dtl_chkexist_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("Payout_dtl_chkexist: SP_INTERNAL_ERR TxnAbort\n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_get_batch_id_dt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )864;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+
+}
+
+
+
+int GetPayoutDetailByVncRefNum(const char *csVNCRefNum,recordset_t* myRec)
+{
+        hash_t *myHash;
+        char    csBatchId[PD_TXN_SEQ_LEN+1];
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO getdetail_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_vnc_ref_num[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_vnc_ref_num;
+
+
+                unsigned long   v_batch_id;
+                int             v_seq_num;
+                /* varchar         v_txn_id[PD_TXN_SEQ_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[17]; } v_txn_id;
+
+                /* varchar         v_aux_txn_seq[PD_TXN_SEQ_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[17]; } v_aux_txn_seq;
+
+                /* varchar         v_merchant_ref[PD_MERCHANT_REF_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[51]; } v_merchant_ref;
+
+                /* varchar         v_country[PD_COUNTRY_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[3]; } v_country;
+
+                /* varchar         v_request_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_request_ccy;
+
+                /* varchar         v_payout_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_payout_ccy;
+
+                /* varchar         v_merchant_fee_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_merchant_fee_ccy;
+
+                /* varchar         v_markup_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_markup_ccy;
+
+                double          v_request_amount;
+                double          v_merchant_fee;
+                double          v_markup_amt;
+                double          v_ex_rate;
+		/* varchar		v_bank_name[PD_BANK_NAME_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[51]; } v_bank_name;
+
+		/* varchar		v_bank_code[PD_BANK_CODE_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_bank_code;
+
+		/* varchar		v_branch[PD_BANK_BRANCH_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[101]; } v_branch;
+
+		/* varchar		v_account_id[PD_AC_NO_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[26]; } v_account_id;
+
+		/* varchar		v_account_name[PD_ACC_NAME_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[101]; } v_account_name;
+
+
+
+                short           ind_batch_id = -1;
+                short           ind_seq_num = -1;
+                short           ind_txn_id = -1;
+                short           ind_aux_txn_seq = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_country = -1;
+                short           ind_request_ccy = -1;
+                short           ind_payout_ccy = -1;
+                short           ind_merchant_fee_ccy = -1;
+                short           ind_markup_ccy = -1;
+                short           ind_request_amount = -1;
+                short           ind_merchant_fee = -1;
+                short           ind_markup_amt = -1;
+                short           ind_ex_rate = -1;
+		short		ind_bank_name = -1;
+		short		ind_bank_code = -1;
+		short		ind_branch = -1;
+		short		ind_account_id = -1;
+		short		ind_account_name = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+
+        hv_vnc_ref_num.len = strlen(csVNCRefNum);
+        memcpy(hv_vnc_ref_num.arr,csVNCRefNum,hv_vnc_ref_num.len);
+DEBUGLOG(("GetPayoutDetailByVncRefNum vnc_ref_num = [%.*s]\n",hv_vnc_ref_num.len,hv_vnc_ref_num.arr));
+
+        /* EXEC SQL DECLARE c_cursor_getdetail CURSOR FOR
+                select  ud_batch_id,
+                        ud_seq_num,
+                        ud_txn_id,
+                        ud_aux_txn_id,
+                        ud_merchant_ref,
+                        ud_country,
+                        ud_request_amount,
+                        ud_request_currency,
+                        ud_payout_currency,
+                        ud_merchant_fee_ccy,
+                        ud_merchant_fee,
+                        ud_markup_ccy,
+                        ud_markup_amt,
+                        ud_exchange_rate,
+			ud_bank_name,
+			ud_bank_code,
+			ud_branch,
+			ud_account_num,
+			ud_account_name
+                from    merchant_upload_file_detail
+                where   ud_vnc_ref_num=:hv_vnc_ref_num
+                order by ud_batch_id, ud_seq_num; */ 
+
+
+        /* EXEC SQL OPEN  c_cursor_getdetail; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 6;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0015;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )879;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_vnc_ref_num;
+        sqlstm.sqhstl[0] = (unsigned long )18;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getdetail_error;
+}
+
+
+        do{
+                /* EXEC SQL FETCH c_cursor_getdetail
+                INTO
+                        :v_batch_id:ind_batch_id,
+                        :v_seq_num:ind_seq_num,
+                        :v_txn_id:ind_txn_id,
+                        :v_aux_txn_seq:ind_aux_txn_seq,
+                        :v_merchant_ref:ind_merchant_ref,
+                        :v_country:ind_country,
+                        :v_request_amount:ind_request_amount,
+                        :v_request_ccy:ind_request_ccy,
+                        :v_payout_ccy:ind_payout_ccy,
+                        :v_merchant_fee_ccy:ind_merchant_fee_ccy,
+                        :v_merchant_fee:ind_merchant_fee,
+                        :v_markup_ccy:ind_markup_ccy,
+                        :v_markup_amt:ind_markup_amt,
+                        :v_ex_rate:ind_ex_rate,
+			:v_bank_name:ind_bank_name,
+			:v_bank_code:ind_bank_code,
+			:v_branch:ind_branch,
+			:v_account_id:ind_account_id,
+			:v_account_name:ind_account_name; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 19;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )898;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_batch_id;
+                sqlstm.sqhstl[0] = (unsigned long )sizeof(long);
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_batch_id;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_seq_num;
+                sqlstm.sqhstl[1] = (unsigned long )sizeof(int);
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_seq_num;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_txn_id;
+                sqlstm.sqhstl[2] = (unsigned long )19;
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_txn_id;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqhstv[3] = (unsigned char  *)&v_aux_txn_seq;
+                sqlstm.sqhstl[3] = (unsigned long )19;
+                sqlstm.sqhsts[3] = (         int  )0;
+                sqlstm.sqindv[3] = (         short *)&ind_aux_txn_seq;
+                sqlstm.sqinds[3] = (         int  )0;
+                sqlstm.sqharm[3] = (unsigned long )0;
+                sqlstm.sqadto[3] = (unsigned short )0;
+                sqlstm.sqtdso[3] = (unsigned short )0;
+                sqlstm.sqhstv[4] = (unsigned char  *)&v_merchant_ref;
+                sqlstm.sqhstl[4] = (unsigned long )53;
+                sqlstm.sqhsts[4] = (         int  )0;
+                sqlstm.sqindv[4] = (         short *)&ind_merchant_ref;
+                sqlstm.sqinds[4] = (         int  )0;
+                sqlstm.sqharm[4] = (unsigned long )0;
+                sqlstm.sqadto[4] = (unsigned short )0;
+                sqlstm.sqtdso[4] = (unsigned short )0;
+                sqlstm.sqhstv[5] = (unsigned char  *)&v_country;
+                sqlstm.sqhstl[5] = (unsigned long )5;
+                sqlstm.sqhsts[5] = (         int  )0;
+                sqlstm.sqindv[5] = (         short *)&ind_country;
+                sqlstm.sqinds[5] = (         int  )0;
+                sqlstm.sqharm[5] = (unsigned long )0;
+                sqlstm.sqadto[5] = (unsigned short )0;
+                sqlstm.sqtdso[5] = (unsigned short )0;
+                sqlstm.sqhstv[6] = (unsigned char  *)&v_request_amount;
+                sqlstm.sqhstl[6] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[6] = (         int  )0;
+                sqlstm.sqindv[6] = (         short *)&ind_request_amount;
+                sqlstm.sqinds[6] = (         int  )0;
+                sqlstm.sqharm[6] = (unsigned long )0;
+                sqlstm.sqadto[6] = (unsigned short )0;
+                sqlstm.sqtdso[6] = (unsigned short )0;
+                sqlstm.sqhstv[7] = (unsigned char  *)&v_request_ccy;
+                sqlstm.sqhstl[7] = (unsigned long )6;
+                sqlstm.sqhsts[7] = (         int  )0;
+                sqlstm.sqindv[7] = (         short *)&ind_request_ccy;
+                sqlstm.sqinds[7] = (         int  )0;
+                sqlstm.sqharm[7] = (unsigned long )0;
+                sqlstm.sqadto[7] = (unsigned short )0;
+                sqlstm.sqtdso[7] = (unsigned short )0;
+                sqlstm.sqhstv[8] = (unsigned char  *)&v_payout_ccy;
+                sqlstm.sqhstl[8] = (unsigned long )6;
+                sqlstm.sqhsts[8] = (         int  )0;
+                sqlstm.sqindv[8] = (         short *)&ind_payout_ccy;
+                sqlstm.sqinds[8] = (         int  )0;
+                sqlstm.sqharm[8] = (unsigned long )0;
+                sqlstm.sqadto[8] = (unsigned short )0;
+                sqlstm.sqtdso[8] = (unsigned short )0;
+                sqlstm.sqhstv[9] = (unsigned char  *)&v_merchant_fee_ccy;
+                sqlstm.sqhstl[9] = (unsigned long )6;
+                sqlstm.sqhsts[9] = (         int  )0;
+                sqlstm.sqindv[9] = (         short *)&ind_merchant_fee_ccy;
+                sqlstm.sqinds[9] = (         int  )0;
+                sqlstm.sqharm[9] = (unsigned long )0;
+                sqlstm.sqadto[9] = (unsigned short )0;
+                sqlstm.sqtdso[9] = (unsigned short )0;
+                sqlstm.sqhstv[10] = (unsigned char  *)&v_merchant_fee;
+                sqlstm.sqhstl[10] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[10] = (         int  )0;
+                sqlstm.sqindv[10] = (         short *)&ind_merchant_fee;
+                sqlstm.sqinds[10] = (         int  )0;
+                sqlstm.sqharm[10] = (unsigned long )0;
+                sqlstm.sqadto[10] = (unsigned short )0;
+                sqlstm.sqtdso[10] = (unsigned short )0;
+                sqlstm.sqhstv[11] = (unsigned char  *)&v_markup_ccy;
+                sqlstm.sqhstl[11] = (unsigned long )6;
+                sqlstm.sqhsts[11] = (         int  )0;
+                sqlstm.sqindv[11] = (         short *)&ind_markup_ccy;
+                sqlstm.sqinds[11] = (         int  )0;
+                sqlstm.sqharm[11] = (unsigned long )0;
+                sqlstm.sqadto[11] = (unsigned short )0;
+                sqlstm.sqtdso[11] = (unsigned short )0;
+                sqlstm.sqhstv[12] = (unsigned char  *)&v_markup_amt;
+                sqlstm.sqhstl[12] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[12] = (         int  )0;
+                sqlstm.sqindv[12] = (         short *)&ind_markup_amt;
+                sqlstm.sqinds[12] = (         int  )0;
+                sqlstm.sqharm[12] = (unsigned long )0;
+                sqlstm.sqadto[12] = (unsigned short )0;
+                sqlstm.sqtdso[12] = (unsigned short )0;
+                sqlstm.sqhstv[13] = (unsigned char  *)&v_ex_rate;
+                sqlstm.sqhstl[13] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[13] = (         int  )0;
+                sqlstm.sqindv[13] = (         short *)&ind_ex_rate;
+                sqlstm.sqinds[13] = (         int  )0;
+                sqlstm.sqharm[13] = (unsigned long )0;
+                sqlstm.sqadto[13] = (unsigned short )0;
+                sqlstm.sqtdso[13] = (unsigned short )0;
+                sqlstm.sqhstv[14] = (unsigned char  *)&v_bank_name;
+                sqlstm.sqhstl[14] = (unsigned long )53;
+                sqlstm.sqhsts[14] = (         int  )0;
+                sqlstm.sqindv[14] = (         short *)&ind_bank_name;
+                sqlstm.sqinds[14] = (         int  )0;
+                sqlstm.sqharm[14] = (unsigned long )0;
+                sqlstm.sqadto[14] = (unsigned short )0;
+                sqlstm.sqtdso[14] = (unsigned short )0;
+                sqlstm.sqhstv[15] = (unsigned char  *)&v_bank_code;
+                sqlstm.sqhstl[15] = (unsigned long )13;
+                sqlstm.sqhsts[15] = (         int  )0;
+                sqlstm.sqindv[15] = (         short *)&ind_bank_code;
+                sqlstm.sqinds[15] = (         int  )0;
+                sqlstm.sqharm[15] = (unsigned long )0;
+                sqlstm.sqadto[15] = (unsigned short )0;
+                sqlstm.sqtdso[15] = (unsigned short )0;
+                sqlstm.sqhstv[16] = (unsigned char  *)&v_branch;
+                sqlstm.sqhstl[16] = (unsigned long )103;
+                sqlstm.sqhsts[16] = (         int  )0;
+                sqlstm.sqindv[16] = (         short *)&ind_branch;
+                sqlstm.sqinds[16] = (         int  )0;
+                sqlstm.sqharm[16] = (unsigned long )0;
+                sqlstm.sqadto[16] = (unsigned short )0;
+                sqlstm.sqtdso[16] = (unsigned short )0;
+                sqlstm.sqhstv[17] = (unsigned char  *)&v_account_id;
+                sqlstm.sqhstl[17] = (unsigned long )28;
+                sqlstm.sqhsts[17] = (         int  )0;
+                sqlstm.sqindv[17] = (         short *)&ind_account_id;
+                sqlstm.sqinds[17] = (         int  )0;
+                sqlstm.sqharm[17] = (unsigned long )0;
+                sqlstm.sqadto[17] = (unsigned short )0;
+                sqlstm.sqtdso[17] = (unsigned short )0;
+                sqlstm.sqhstv[18] = (unsigned char  *)&v_account_name;
+                sqlstm.sqhstl[18] = (unsigned long )103;
+                sqlstm.sqhsts[18] = (         int  )0;
+                sqlstm.sqindv[18] = (         short *)&ind_account_name;
+                sqlstm.sqinds[18] = (         int  )0;
+                sqlstm.sqharm[18] = (unsigned long )0;
+                sqlstm.sqadto[18] = (unsigned short )0;
+                sqlstm.sqtdso[18] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto getdetail_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+/*batch_id*/
+                if(ind_batch_id>=0){
+                        sprintf(csBatchId,"%ld",v_batch_id);
+DEBUGLOG(("GetPayoutDetailByVncRefNum batch_id=[%ld]\n",v_batch_id));
+                        PutField_CString(myHash,"batch_id",csBatchId);
+                }
+
+/*seq_num*/
+                if(ind_seq_num>=0){
+                        PutField_Int(myHash,"seq_num",v_seq_num);
+DEBUGLOG(("GetPayoutDetailByVncRefNum seq_num=[%d]\n",v_seq_num));
+                }
+
+/* txn_id */
+		if (ind_txn_id>=0) {
+			v_txn_id.arr[v_txn_id.len]='\0';
+			PutField_CString(myHash, "merchant_upload_txn_seq", (const char*)v_txn_id.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum txn_id =[%s]\n",v_txn_id.arr));
+		}
+
+/*aux_txn_seq*/
+                if(ind_aux_txn_seq>=0){
+                        v_aux_txn_seq.arr[v_aux_txn_seq.len]='\0';
+                        PutField_CString(myHash,"aux_txn_seq",(const char*)v_aux_txn_seq.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum aux_txn_seq=[%s]\n",v_aux_txn_seq.arr));
+                }
+
+
+/*merchant_ref*/
+                if(ind_merchant_ref>=0){
+                        v_merchant_ref.arr[v_merchant_ref.len]='\0';
+                        PutField_CString(myHash,"merchant_ref",(const char*)v_merchant_ref.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum merchant_ref= [%s]\n",v_merchant_ref.arr));
+                }
+
+/*country*/
+                if(ind_country>=0){
+                        v_country.arr[v_country.len]='\0';
+                        PutField_CString(myHash,"country",(const char*)v_country.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum country= [%s]\n",v_country.arr));
+                }
+
+/*payout_currency*/
+                if(ind_payout_ccy>=0){
+                        v_payout_ccy.arr[v_payout_ccy.len]='\0';
+                        PutField_CString(myHash,"payout_ccy",(const char*)v_payout_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum payout_ccy= [%s]\n",v_payout_ccy.arr));
+                }
+
+/*request_currency*/
+                if(ind_request_ccy>=0){
+                        v_request_ccy.arr[v_request_ccy.len]='\0';
+                        PutField_CString(myHash,"request_ccy",(const char*)v_request_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum request_ccy= [%s]\n",v_request_ccy.arr));
+                }
+/*request_amount*/
+                if(ind_request_amount>=0){
+                        PutField_Double(myHash,"request_amount",v_request_amount);
+DEBUGLOG(("GetPayoutDetailByVncRefNum request_amount = [%lf]\n",v_request_amount));
+        }
+
+/*merchant_fee_ccy*/
+                if(ind_merchant_fee_ccy>=0){
+                        v_merchant_fee_ccy.arr[v_merchant_fee_ccy.len]='\0';
+                        PutField_CString(myHash,"merchant_fee_ccy",(const char*)v_merchant_fee_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum merchant_fee_ccy= [%s]\n",v_merchant_fee_ccy.arr));
+                }
+
+/*merchant_fee*/
+                if(ind_merchant_fee>=0){
+                        PutField_Double(myHash,"merchant_fee",v_merchant_fee);
+DEBUGLOG(("GetPayoutDetailByVncRefNum merchant_fee = [%lf]\n",v_merchant_fee));
+                }
+
+/*markup_ccy*/
+                if(ind_markup_ccy>=0){
+                        v_markup_ccy.arr[v_markup_ccy.len]='\0';
+                        PutField_CString(myHash,"markup_ccy",(const char*)v_markup_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum markup_ccy= [%s]\n",v_markup_ccy.arr));
+                }
+
+/*markup_amt*/
+                if(ind_markup_amt>=0){
+                        PutField_Double(myHash,"markup_amt",v_markup_amt);
+DEBUGLOG(("GetPayoutDetailByVncRefNum markup_amt = [%lf]\n",v_markup_amt));
+                }
+
+/*ex_rate*/
+                if(ind_ex_rate>=0){
+                        PutField_Double(myHash,"ex_rate",v_ex_rate);
+DEBUGLOG(("GetPayoutDetailByVncRefNum ex_rate = [%lf]\n",v_ex_rate));
+                }
+
+
+/* bank_name */
+		if (ind_bank_name >= 0) {
+			v_bank_name.arr[v_bank_name.len]='\0';
+                        PutField_CString(myHash,"stl_txn_bank_name",(const char*)v_bank_name.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum bank_name = [%s]\n",v_bank_name.arr));
+		}
+
+/* bank_code */
+		if (ind_bank_code >= 0) {
+			v_bank_code.arr[v_bank_code.len]='\0';
+                        PutField_CString(myHash,"stl_txn_bank_code",(const char*)v_bank_code.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum bank_code = [%s]\n",v_bank_code.arr));
+		}
+
+/* branch */
+		if (ind_branch >= 0) {
+			v_branch.arr[v_branch.len]='\0';
+                        PutField_CString(myHash,"stl_txn_branch",(const char*)v_branch.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum branch= [%s]\n",v_branch.arr));
+		}
+
+
+/* account_id */
+		if (ind_account_id >= 0) {
+			v_account_id.arr[v_account_id.len]='\0';
+                        PutField_CString(myHash,"stl_txn_account_id",(const char*)v_account_id.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum account_id = [%s]\n",v_account_id.arr));
+		}
+
+/* account_name */
+		if (ind_account_name >= 0) {
+			v_account_name.arr[v_account_name.len]='\0';
+                        PutField_CString(myHash,"stl_txn_account_name",(const char*)v_account_name.arr);
+DEBUGLOG(("GetPayoutDetailByVncRefNum account_name = [%s]\n",v_account_name.arr));
+		}
+
+                RecordSet_Add(myRec,myHash);
+
+        }while(PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_getdetail; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )989;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getdetail_error;
+}
+
+
+
+DEBUGLOG(("GetPayoutDetailByVncRefNum Normal Exit\n"));
+        return  PD_OK;
+
+getdetail_error:
+DEBUGLOG(("getdetail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("GetPayoutDetailByVncRefNum: SP_ERR\n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_getdetail; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1004;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+
+}
+
+int GetPayoutDetailByAuxVncRefNum(const char *csVNCRefNum,recordset_t* myRec)
+{
+        hash_t *myHash;
+        char    csBatchId[PD_TXN_SEQ_LEN+1];
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO getdetaila_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_vnc_ref_num[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_vnc_ref_num;
+
+
+                unsigned long   v_batch_id;
+                int             v_seq_num;
+                /* varchar         v_txn_id[PD_TXN_SEQ_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[17]; } v_txn_id;
+
+                //varchar         v_aux_txn_seq[PD_TXN_SEQ_LEN+1];
+                /* varchar         v_merchant_ref[PD_MERCHANT_REF_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[51]; } v_merchant_ref;
+
+                /* varchar         v_country[PD_COUNTRY_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[3]; } v_country;
+
+                /* varchar         v_request_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_request_ccy;
+
+                /* varchar         v_payout_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_payout_ccy;
+
+                /* varchar         v_merchant_fee_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_merchant_fee_ccy;
+
+                /* varchar         v_markup_ccy[PD_CCY_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_markup_ccy;
+
+                double          v_request_amount;
+                double          v_merchant_fee;
+                double          v_markup_amt;
+                double          v_ex_rate;
+                int		v_status;
+
+                short           ind_batch_id = -1;
+                short           ind_seq_num = -1;
+                short           ind_txn_id = -1;
+                //short           ind_aux_txn_seq = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_country = -1;
+                short           ind_request_ccy = -1;
+                short           ind_payout_ccy = -1;
+                short           ind_merchant_fee_ccy = -1;
+                short           ind_markup_ccy = -1;
+                short           ind_request_amount = -1;
+                short           ind_merchant_fee = -1;
+                short           ind_markup_amt = -1;
+                short           ind_ex_rate = -1;
+                short           ind_status = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+
+        hv_vnc_ref_num.len = strlen(csVNCRefNum);
+        memcpy(hv_vnc_ref_num.arr,csVNCRefNum,hv_vnc_ref_num.len);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum vnc_ref_num = [%.*s]\n",hv_vnc_ref_num.len,hv_vnc_ref_num.arr));
+
+        /* EXEC SQL DECLARE c_cursor_getdetaila CURSOR FOR
+                select  ud_batch_id,
+                        ud_seq_num,
+                        ud_txn_id,
+                        //ud_aux_txn_id,
+                        ud_merchant_ref,
+                        ud_country,
+                        ud_request_amount,
+                        ud_request_currency,
+                        ud_payout_currency,
+                        ud_merchant_fee_ccy,
+                        ud_merchant_fee,
+                        ud_markup_ccy,
+                        ud_markup_amt,
+                        ud_exchange_rate,
+			ud_status
+                from    merchant_upload_file_detail
+                where   ud_aux_txn_id=:hv_vnc_ref_num
+                order by ud_batch_id, ud_seq_num; */ 
+
+
+        /* EXEC SQL OPEN  c_cursor_getdetaila; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0016;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1019;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_vnc_ref_num;
+        sqlstm.sqhstl[0] = (unsigned long )18;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getdetaila_error;
+}
+
+
+        do{
+                /* EXEC SQL FETCH c_cursor_getdetaila
+                INTO
+                        :v_batch_id:ind_batch_id,
+                        :v_seq_num:ind_seq_num,
+                        :v_txn_id:ind_txn_id,
+                        //:v_aux_txn_seq:ind_aux_txn_seq,
+                        :v_merchant_ref:ind_merchant_ref,
+                        :v_country:ind_country,
+                        :v_request_amount:ind_request_amount,
+                        :v_request_ccy:ind_request_ccy,
+                        :v_payout_ccy:ind_payout_ccy,
+                        :v_merchant_fee_ccy:ind_merchant_fee_ccy,
+                        :v_merchant_fee:ind_merchant_fee,
+                        :v_markup_ccy:ind_markup_ccy,
+                        :v_markup_amt:ind_markup_amt,
+                        :v_ex_rate:ind_ex_rate,
+                        :v_status:ind_status; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 19;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )1038;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_batch_id;
+                sqlstm.sqhstl[0] = (unsigned long )sizeof(long);
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_batch_id;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_seq_num;
+                sqlstm.sqhstl[1] = (unsigned long )sizeof(int);
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_seq_num;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_txn_id;
+                sqlstm.sqhstl[2] = (unsigned long )19;
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_txn_id;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqhstv[3] = (unsigned char  *)&v_merchant_ref;
+                sqlstm.sqhstl[3] = (unsigned long )53;
+                sqlstm.sqhsts[3] = (         int  )0;
+                sqlstm.sqindv[3] = (         short *)&ind_merchant_ref;
+                sqlstm.sqinds[3] = (         int  )0;
+                sqlstm.sqharm[3] = (unsigned long )0;
+                sqlstm.sqadto[3] = (unsigned short )0;
+                sqlstm.sqtdso[3] = (unsigned short )0;
+                sqlstm.sqhstv[4] = (unsigned char  *)&v_country;
+                sqlstm.sqhstl[4] = (unsigned long )5;
+                sqlstm.sqhsts[4] = (         int  )0;
+                sqlstm.sqindv[4] = (         short *)&ind_country;
+                sqlstm.sqinds[4] = (         int  )0;
+                sqlstm.sqharm[4] = (unsigned long )0;
+                sqlstm.sqadto[4] = (unsigned short )0;
+                sqlstm.sqtdso[4] = (unsigned short )0;
+                sqlstm.sqhstv[5] = (unsigned char  *)&v_request_amount;
+                sqlstm.sqhstl[5] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[5] = (         int  )0;
+                sqlstm.sqindv[5] = (         short *)&ind_request_amount;
+                sqlstm.sqinds[5] = (         int  )0;
+                sqlstm.sqharm[5] = (unsigned long )0;
+                sqlstm.sqadto[5] = (unsigned short )0;
+                sqlstm.sqtdso[5] = (unsigned short )0;
+                sqlstm.sqhstv[6] = (unsigned char  *)&v_request_ccy;
+                sqlstm.sqhstl[6] = (unsigned long )6;
+                sqlstm.sqhsts[6] = (         int  )0;
+                sqlstm.sqindv[6] = (         short *)&ind_request_ccy;
+                sqlstm.sqinds[6] = (         int  )0;
+                sqlstm.sqharm[6] = (unsigned long )0;
+                sqlstm.sqadto[6] = (unsigned short )0;
+                sqlstm.sqtdso[6] = (unsigned short )0;
+                sqlstm.sqhstv[7] = (unsigned char  *)&v_payout_ccy;
+                sqlstm.sqhstl[7] = (unsigned long )6;
+                sqlstm.sqhsts[7] = (         int  )0;
+                sqlstm.sqindv[7] = (         short *)&ind_payout_ccy;
+                sqlstm.sqinds[7] = (         int  )0;
+                sqlstm.sqharm[7] = (unsigned long )0;
+                sqlstm.sqadto[7] = (unsigned short )0;
+                sqlstm.sqtdso[7] = (unsigned short )0;
+                sqlstm.sqhstv[8] = (unsigned char  *)&v_merchant_fee_ccy;
+                sqlstm.sqhstl[8] = (unsigned long )6;
+                sqlstm.sqhsts[8] = (         int  )0;
+                sqlstm.sqindv[8] = (         short *)&ind_merchant_fee_ccy;
+                sqlstm.sqinds[8] = (         int  )0;
+                sqlstm.sqharm[8] = (unsigned long )0;
+                sqlstm.sqadto[8] = (unsigned short )0;
+                sqlstm.sqtdso[8] = (unsigned short )0;
+                sqlstm.sqhstv[9] = (unsigned char  *)&v_merchant_fee;
+                sqlstm.sqhstl[9] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[9] = (         int  )0;
+                sqlstm.sqindv[9] = (         short *)&ind_merchant_fee;
+                sqlstm.sqinds[9] = (         int  )0;
+                sqlstm.sqharm[9] = (unsigned long )0;
+                sqlstm.sqadto[9] = (unsigned short )0;
+                sqlstm.sqtdso[9] = (unsigned short )0;
+                sqlstm.sqhstv[10] = (unsigned char  *)&v_markup_ccy;
+                sqlstm.sqhstl[10] = (unsigned long )6;
+                sqlstm.sqhsts[10] = (         int  )0;
+                sqlstm.sqindv[10] = (         short *)&ind_markup_ccy;
+                sqlstm.sqinds[10] = (         int  )0;
+                sqlstm.sqharm[10] = (unsigned long )0;
+                sqlstm.sqadto[10] = (unsigned short )0;
+                sqlstm.sqtdso[10] = (unsigned short )0;
+                sqlstm.sqhstv[11] = (unsigned char  *)&v_markup_amt;
+                sqlstm.sqhstl[11] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[11] = (         int  )0;
+                sqlstm.sqindv[11] = (         short *)&ind_markup_amt;
+                sqlstm.sqinds[11] = (         int  )0;
+                sqlstm.sqharm[11] = (unsigned long )0;
+                sqlstm.sqadto[11] = (unsigned short )0;
+                sqlstm.sqtdso[11] = (unsigned short )0;
+                sqlstm.sqhstv[12] = (unsigned char  *)&v_ex_rate;
+                sqlstm.sqhstl[12] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[12] = (         int  )0;
+                sqlstm.sqindv[12] = (         short *)&ind_ex_rate;
+                sqlstm.sqinds[12] = (         int  )0;
+                sqlstm.sqharm[12] = (unsigned long )0;
+                sqlstm.sqadto[12] = (unsigned short )0;
+                sqlstm.sqtdso[12] = (unsigned short )0;
+                sqlstm.sqhstv[13] = (unsigned char  *)&v_status;
+                sqlstm.sqhstl[13] = (unsigned long )sizeof(int);
+                sqlstm.sqhsts[13] = (         int  )0;
+                sqlstm.sqindv[13] = (         short *)&ind_status;
+                sqlstm.sqinds[13] = (         int  )0;
+                sqlstm.sqharm[13] = (unsigned long )0;
+                sqlstm.sqadto[13] = (unsigned short )0;
+                sqlstm.sqtdso[13] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto getdetaila_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+/*batch_id*/
+                if(ind_batch_id>=0){
+                        sprintf(csBatchId,"%ld",v_batch_id);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum batch_id=[%ld]\n",v_batch_id));
+                        PutField_CString(myHash,"batch_id",csBatchId);
+                }
+
+/*seq_num*/
+                if(ind_seq_num>=0){
+                        PutField_Int(myHash,"seq_num",v_seq_num);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum seq_num=[%d]\n",v_seq_num));
+                }
+
+/*txn_id*/
+                if(ind_txn_id>=0){
+                        v_txn_id.arr[v_txn_id.len]='\0';
+                        PutField_CString(myHash,"txn_id",(const char*)v_txn_id.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum txn_id=[%s]\n",v_txn_id.arr));
+                }
+
+
+/*merchant_ref*/
+                if(ind_merchant_ref>=0){
+                        v_merchant_ref.arr[v_merchant_ref.len]='\0';
+                        PutField_CString(myHash,"merchant_ref",(const char*)v_merchant_ref.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum merchant_ref= [%s]\n",v_merchant_ref.arr));
+                }
+
+/*country*/
+                if(ind_country>=0){
+                        v_country.arr[v_country.len]='\0';
+                        PutField_CString(myHash,"country",(const char*)v_country.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum country= [%s]\n",v_country.arr));
+                }
+
+/*payout_currency*/
+                if(ind_payout_ccy>=0){
+                        v_payout_ccy.arr[v_payout_ccy.len]='\0';
+                        PutField_CString(myHash,"payout_ccy",(const char*)v_payout_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum payout_ccy= [%s]\n",v_payout_ccy.arr));
+                }
+
+/*request_currency*/
+                if(ind_request_ccy>=0){
+                        v_request_ccy.arr[v_request_ccy.len]='\0';
+                        PutField_CString(myHash,"request_ccy",(const char*)v_request_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum request_ccy= [%s]\n",v_request_ccy.arr));
+                }
+/*request_amount*/
+                if(ind_request_amount>=0){
+                        PutField_Double(myHash,"request_amount",v_request_amount);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum request_amount = [%lf]\n",v_request_amount));
+        }
+
+/*merchant_fee_ccy*/
+                if(ind_merchant_fee_ccy>=0){
+                        v_merchant_fee_ccy.arr[v_merchant_fee_ccy.len]='\0';
+                        PutField_CString(myHash,"merchant_fee_ccy",(const char*)v_merchant_fee_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum merchant_fee_ccy= [%s]\n",v_merchant_fee_ccy.arr));
+                }
+
+/*merchant_fee*/
+                if(ind_merchant_fee>=0){
+                        PutField_Double(myHash,"merchant_fee",v_merchant_fee);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum merchant_fee = [%lf]\n",v_merchant_fee));
+                }
+
+/*markup_ccy*/
+                if(ind_markup_ccy>=0){
+                        v_markup_ccy.arr[v_markup_ccy.len]='\0';
+                        PutField_CString(myHash,"markup_ccy",(const char*)v_markup_ccy.arr);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum markup_ccy= [%s]\n",v_markup_ccy.arr));
+                }
+
+/*markup_amt*/
+                if(ind_markup_amt>=0){
+                        PutField_Double(myHash,"markup_amt",v_markup_amt);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum markup_amt = [%lf]\n",v_markup_amt));
+                }
+
+/*ex_rate*/
+                if(ind_ex_rate>=0){
+                        PutField_Double(myHash,"ex_rate",v_ex_rate);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum ex_rate = [%lf]\n",v_ex_rate));
+                }
+
+/*status*/
+                if(ind_status>=0){
+                        PutField_Int(myHash,"status",v_status);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum status = [%d]\n",v_status));
+                }
+
+                RecordSet_Add(myRec,myHash);
+		break;/////should be one record only
+
+        }while(PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_getdetaila; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1109;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getdetaila_error;
+}
+
+
+
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum Normal Exit\n"));
+        return  PD_OK;
+
+getdetaila_error:
+DEBUGLOG(("getdetaila_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("GetPayoutDetailByAuxVncRefNum: SP_ERR\n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_getdetaila; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1124;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+
+}
+
+int format_data(hash_t *hMyHash, hash_t *hTxnHeader, hash_t *hContext, hash_t *hRequest)
+{
+        int     iRet = SUCCESS;
+        char*   csTmp;
+
+        char    *csTxnDateTime;
+        char    csDate[PD_DATE_LEN + 1];
+        char    csTime[PD_TIME_LEN + 1];
+        double  dTxnAmount = 0.0;
+        double  dTmp = 0.0;
+        double  dFee = 0.0;
+        double  dNetAmount = 0.0;
+        int     iTmp;
+
+        if (GetField_CString(hTxnHeader, "txn_id", &csTmp)) {
+DEBUGLOG(("format_data txn_id [%s]\n", csTmp));
+                PutField_CString(hContext, "txn_seq", csTmp);
+        }
+
+        if (GetField_CString(hTxnHeader, "org_txn_id", &csTmp)) {
+DEBUGLOG(("format_data org_txn_id [%s]\n", csTmp));
+                PutField_CString(hContext, "org_txn_seq", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "channel_code", &csTmp)) {
+DEBUGLOG(("format_data channel_code [%s]\n", csTmp));
+                PutField_CString(hContext, "channel_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+DEBUGLOG(("format_data txn_code [%s]\n", csTmp));
+                PutField_CString(hContext, "txn_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+DEBUGLOG(("format_data post_date [%s]\n", csTmp));
+                PutField_CString(hContext, "PHDATE", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+DEBUGLOG(("format_data local_tm_date [%s]\n", csTmp));
+                PutField_CString(hContext, "local_tm_date", csTmp);
+        }
+        if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+DEBUGLOG(("format_data local_tm_time [%s]\n", csTmp));
+                PutField_CString(hContext, "local_tm_time", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "process_type", &csTmp)) {
+DEBUGLOG(("format_data process_type [%s]\n", csTmp));
+                PutField_CString(hRequest, "process_type", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "process_code", &csTmp)) {
+DEBUGLOG(("format_data process_code [%s]\n", csTmp));
+                PutField_CString(hRequest, "process_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+DEBUGLOG(("format_data merchant_id [%s]\n", csTmp));
+                PutField_CString(hRequest, "merchant_id", csTmp);
+        }
+
+        if (GetField_Int(hMyHash, "internal_code", &iTmp)) {
+DEBUGLOG(("format_data internal_code [%d]\n", iTmp));
+                PutField_Int(hContext, "internal_code", iTmp);
+        }
+
+        if (GetField_CString(hMyHash, "response_code", &csTmp)) {
+DEBUGLOG(("format_data response_code [%s]\n", csTmp));
+                PutField_CString(hContext, "response_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "txn_date", &csTxnDateTime)) {
+DEBUGLOG(("format_data txn_date [%s]\n", csTxnDateTime));
+                PutField_CString(hRequest, "transmission_datetime", csTxnDateTime);
+
+                csDate[0] = '\0';
+                csTime[0] = '\0';
+
+                strncpy(csDate, csTxnDateTime, PD_DATE_LEN);
+                strncpy(csTime, csTxnDateTime + PD_DATE_LEN, PD_TIME_LEN);
+
+                csDate[PD_DATE_LEN] = '\0';
+                csTime[PD_TIME_LEN] = '\0';
+DEBUGLOG(("format_data tm_date [%s]\n", csDate));
+DEBUGLOG(("format_data tm_time [%s]\n", csTime));
+
+                PutField_CString(hRequest, "tm_date", csDate);
+                PutField_CString(hRequest, "tm_time", csTime);
+
+                //PutField_CString(hMyHash, "merchant_txn_date", csDate);
+                //PutField_CString(hMyHash, "merchant_txn_time", csTime);
+        }
+
+        if (GetField_Int(hMyHash, "approved", &iTmp)) {
+                if(iTmp==PD_TRUE){
+DEBUGLOG(("format_data approval_date [%s]\n", csDate));
+                        PutField_CString(hContext, "approval_date", csDate);
+                }
+        }
+
+        if (GetField_CString(hMyHash, "service", &csTmp)) {
+DEBUGLOG(("format_data service [%s]\n", csTmp));
+                PutField_CString(hRequest, "service_code", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+DEBUGLOG(("format_data client_ip [%s]\n", csTmp));
+                PutField_CString(hRequest, "ip_addr", csTmp);
+        }
+        if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+DEBUGLOG(("format_data ccy [%s]\n", csTmp));
+                PutField_CString(hRequest, "txn_ccy", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "country", &csTmp)) {
+DEBUGLOG(("format_data country [%s]\n", csTmp));
+                PutField_CString(hRequest, "txn_country", csTmp);
+        }
+/*
+        if (GetField_CString(hMyHash, "pay_method", &csTmp)) {
+DEBUGLOG(("format_data pay_method [%s]\n", csTmp));
+                PutField_CString(hRequest, "pay_method", csTmp);
+                PutField_CString(hContext, "selected_pay_method", csTmp);
+        }
+*/
+        if (GetField_CString(hMyHash, "vnc_ref_num", &csTmp)) {
+DEBUGLOG(("format_data vnc_ref_num [%s]\n", csTmp));
+                PutField_CString(hContext, "vnc_ref_num", csTmp);
+        }
+
+        if (GetField_Double(hMyHash, "amount", &dTxnAmount)) {
+DEBUGLOG(("format_data txn_amount [%lf]\n", dTxnAmount));
+                PutField_Double(hContext, "txn_amt", dTxnAmount);
+        }
+
+        if (GetField_Double(hMyHash, "ex_rate", &dTmp)) {
+DEBUGLOG(("format_data ex_rate [%lf]\n", dTmp));
+                PutField_Double(hContext, "ex_rate", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("format_data fee [%lf]\n", dFee));
+
+        }
+        if (GetField_CString(hMyHash, "markup_ccy", &csTmp)) {
+DEBUGLOG(("format_data markup_ccy [%s]\n", csTmp));
+                PutField_CString(hContext, "markup_ccy", csTmp);
+        }
+
+        if (GetField_Double(hMyHash, "markup_amt", &dTmp)) {
+DEBUGLOG(("format_data markup_amt [%lf]\n", dTmp));
+                PutField_Double(hContext, "markup_amt", dTmp);
+        }
+
+        if (dTxnAmount > 0.0) {
+                dNetAmount = dTxnAmount + dFee;
+DEBUGLOG(("format_data net_amount [%lf]\n", dNetAmount));
+                PutField_Double(hContext, "net_amt", dNetAmount);
+                PutField_Double(hMyHash, "net_amt", dNetAmount);
+        }
+
+
+        if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("format_data merchant_client_id [%s]\n", csTmp));
+                PutField_CString(hContext, "client_id", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "psp_client_id", &csTmp)) {
+DEBUGLOG(("format_data psp_client_id [%s]\n", csTmp));
+                PutField_CString(hContext, "client_id", csTmp);
+        }
+
+        if (GetField_Double(hMyHash, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("format_data merchant_open_bal [%lf]\n", dTmp));
+                PutField_Double(hContext, "merchant_open_bal", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("format_data merchant_open_bal_settlement [%lf]\n", dTmp));
+                PutField_Double(hContext, "merchant_open_bal_settlement", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "total_float", &dTmp)) {
+DEBUGLOG(("format_data total_float [%lf]\n", dTmp));
+                PutField_Double(hContext, "total_float", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "current_bal", &dTmp)) {
+DEBUGLOG(("format_data current_bal [%lf]\n", dTmp));
+                PutField_Double(hContext, "current_bal", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("format_data total_reserved_amount [%lf]\n", dTmp));
+                PutField_Double(hContext, "total_reserved_amount", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "total_hold", &dTmp)) {
+DEBUGLOG(("format_data total_hold [%lf]\n", dTmp));
+                PutField_Double(hContext, "total_hold", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("format_data total_float_after_payout [%lf]\n", dTmp));
+                PutField_Double(hContext, "total_float_after_payout", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("format_data current_bal_settlement [%lf]\n", dTmp));
+                PutField_Double(hContext, "current_bal_settlement", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("format_data total_float_settlement [%lf]\n", dTmp));
+                PutField_Double(hContext, "total_float_settlement", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("format_data total_hold_settlement [%lf]\n", dTmp));
+                PutField_Double(hContext, "total_hold_settlement", dTmp);
+        }
+        if (GetField_Double(hMyHash, "fundin_payout", &dTmp)) {
+DEBUGLOG(("format_data fundin_payout [%lf]\n", dTmp));
+                PutField_Double(hContext, "fundin_payout", dTmp);
+        }
+
+        if (GetField_Double(hMyHash, "reserved_payout", &dTmp)) {
+DEBUGLOG(("format_data reserved_payout [%lf]\n", dTmp));
+                PutField_Double(hContext, "reserved_payout", dTmp);
+        }
+
+        return iRet;
+}
+
+int     PayoutAddTxnLog(const hash_t *hContext,
+                const hash_t* hRequest)
+{
+        hash_t  *hTxn;
+        char    *csTmp;
+        char    *csTxnSeq;
+        int     iTmp;
+        int iRet = PD_OK;
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+        if (GetField_CString(hContext,"txn_seq",&csTxnSeq)) {
+DEBUGLOG(("PayoutAddTxnLog:: txn_seq = [%s]\n",csTxnSeq));
+                PutField_CString(hTxn,"txn_seq",csTxnSeq);
+
+                if (GetField_CString(hContext,"add_user",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: add_user = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"add_user",csTmp);
+                }
+                else{
+                        PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+                }
+
+                if (GetField_CString(hRequest,"process_code",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: process_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"process_code",csTmp);
+                }
+                if (GetField_CString(hRequest,"process_type",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: process_type = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"process_type",csTmp);
+                }
+                if (GetField_CString(hContext,"channel_code",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: channel_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"channel_code",csTmp);
+                }
+                if (GetField_CString(hRequest,"merchant_id",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: merchant_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"merchant_id",csTmp);
+                }
+                if (GetField_CString(hRequest,"service_code",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: service_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"service_code",csTmp);
+                }
+                if (GetField_CString(hContext,"txn_code",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: txn_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"txn_code",csTmp);
+                }
+
+                if (GetField_CString(hContext,"response_code",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: response_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"response_code",csTmp);
+                }
+
+                if (GetField_Int(hContext,"internal_code",&iTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: internal_code = [%d]\n",iTmp));
+                        PutField_Int(hTxn,"internal_code",iTmp);
+                }
+
+                if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: host_posting_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"host_posting_date",csTmp);
+                }
+                if (GetField_CString(hRequest,"transmission_datetime",&csTmp)){
+DEBUGLOG(("PayoutAddTxnLog:: transmission_datetime = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"transmission_datetime",csTmp);
+                }
+                if (GetField_CString(hRequest,"tm_date",&csTmp)){
+DEBUGLOG(("PayoutAddTxnLog:: tm_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"tm_date",csTmp);
+                }
+                if (GetField_CString(hRequest,"tm_time",&csTmp)){
+DEBUGLOG(("PayoutAddTxnLog:: tm_time = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"tm_time",csTmp);
+                }
+                if (GetField_CString(hContext,"local_tm_date",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: local_tm_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"local_tm_date",csTmp);
+                }
+                if (GetField_CString(hContext,"local_tm_time",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: local_tm_time = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"local_tm_time",csTmp);
+                }
+
+/* request */
+                /* client ip */
+                if (GetField_CString(hRequest,"ip_addr",&csTmp)) {
+DEBUGLOG(("PayoutAddTxnLog:: client_ip = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"ip_addr",csTmp);
+                }
+
+                PutField_Char(hTxn,"status",PD_PROCESSING);
+
+                PutField_Int(hTxn,"db_commit",PD_FALSE);
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+                iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+
+                char *csTxnCcy, *csTxnCountry;
+                if (GetField_CString(hRequest,"txn_ccy",&csTxnCcy) && iRet == PD_OK) {
+DEBUGLOG(("PayoutAddTxnLog:: txn_ccy = [%s]\n",csTxnCcy));
+                        hash_t* hDetail;
+                        hDetail = (hash_t*)  malloc (sizeof(hash_t));
+                        hash_init(hDetail,0);
+                        PutField_CString(hDetail,"txn_seq",csTxnSeq);
+                        PutField_CString(hDetail,"txn_ccy",csTxnCcy);
+
+                        if (GetField_CString(hTxn, "add_user", &csTmp)) {
+                                PutField_CString(hDetail,"add_user",csTmp);
+                        }
+
+                        if (GetField_CString(hRequest,"txn_country",&csTxnCountry))
+                                PutField_CString(hDetail,"txn_country",csTxnCountry);
+                        DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+                        iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+
+                        hash_destroy(hDetail);
+                        FREE_ME(hDetail);
+                }
+
+        }
+        else
+                iRet = PD_ERR;
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+        FREE_ME(csTmp);
+DEBUGLOG(("PayoutAddTxnLog RET = [%d]\n",iRet));
+        return  iRet;
+}
+
+int handle_payout_balance(hash_t *hMyHash)
+{
+        int     iRet = SUCCESS;
+
+        char    *csMID = NULL;
+        char    *csCcy = NULL;
+        char    *csCountry = NULL;
+        char    *csService = NULL;
+        char    *csTmp= NULL;
+        double  dAmount = 0.0;
+        double  dTmp = 0.0;
+        int     iDayOfWeek= 0;
+        double  dFee = 0.0;
+        double  dNetAmt = 0.0;
+
+        if (GetField_CString(hMyHash, "merchant_id", &csMID)) {
+DEBUGLOG(("handle_payout_balance: merchant_id [%s]\n", csMID));
+        }
+        else {
+DEBUGLOG(("handle_payout_balance: merchant_id missing\n"));
+                iRet = FAILURE;
+        }
+
+        if (GetField_CString(hMyHash, "ccy", &csCcy)) {
+DEBUGLOG(("handle_payout_balance: ccy [%s]\n", csCcy));
+        }
+        else {
+DEBUGLOG(("handle_payout_balance: ccy missing\n"));
+                iRet = FAILURE;
+        }
+        if (GetField_CString(hMyHash, "country", &csCountry)) {
+DEBUGLOG(("handle_payout_balance: country [%s]\n", csCountry));
+        }
+        else {
+DEBUGLOG(("handle_payout_balance: country missing\n"));
+                iRet = FAILURE;
+        }
+        if (GetField_CString(hMyHash, "service", &csService)) {
+DEBUGLOG(("handle_payout_balance: service [%s]\n", csService));
+        }
+        else {
+DEBUGLOG(("handle_payout_balance: service missing\n"));
+                iRet = FAILURE;
+        }
+
+        if (GetField_Double(hMyHash, "amount", &dAmount)) {
+DEBUGLOG(("handle_payout_balance: amount [%lf]\n", dAmount));
+                dNetAmt += dAmount;
+        }
+        else {
+DEBUGLOG(("handle_payout_balance: amount missing\n"));
+                iRet = FAILURE;
+        }
+
+        if (GetField_Double(hMyHash, "fee", &dFee)) {
+DEBUGLOG(("handle_payout_balance: fee[%lf]\n", dFee));
+                dNetAmt += dFee;
+        }
+        else {
+DEBUGLOG(("handle_payout_balance: fee missing\n"));
+                iRet = FAILURE;
+        }
+
+        if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+                iDayOfWeek = day_of_week((const unsigned char*)csTmp);
+                PutField_Int(hMyHash,"day_of_week",iDayOfWeek);
+        }
+
+        PutField_Double(hMyHash,"net_amt",dNetAmt);
+        PutField_Char(hMyHash,"party_type",PD_TYPE_MERCHANT);
+
+        if (iRet == SUCCESS) {
+                if (prbo_UpdatePayoutAmount(hMyHash) == PD_OK) {
+                        if (GetField_Double(hMyHash, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("handle_payout_balance: merchant_open_bal [%lf]\n", dTmp));
+                        }
+                        if (GetField_Double(hMyHash, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("handle_payout_balance: merchant_open_bal_settlement [%lf]\n", dTmp));
+                        }
+                        if (GetField_Double(hMyHash, "total_float", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:total_float [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "current_bal", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:current_bal [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "total_reserved_amount" , &dTmp)) {
+DEBUGLOG(("handle_payout_balance:total_reserved_amount [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "total_hold", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:total_hold [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:total_float_after_payout [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:current_bal_settlement [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:total_float_settlement [%lf]!\n", dTmp));
+                        }
+                        if (GetField_Double(hMyHash, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:total_hold_settlement [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "fundin_payout", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:fundin_payout [%lf]!\n", dTmp));
+                        }
+
+                        if (GetField_Double(hMyHash, "reserved_payout", &dTmp)) {
+DEBUGLOG(("handle_payout_balance:reserved_payout [%lf]!\n", dTmp));
+                        }
+
+                }
+                else {
+DEBUGLOG(("handle_payout_balance: UpdatePayoutAmount FAIL!\n"));
+                        iRet = FAILURE;
+                }
+
+        }
+        return iRet;
+}
+
+int     prpar_UpdateTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse)
+{
+        hash_t  *hTxn;
+        char    *csTxnSeq;
+
+        int     iRet = PD_OK;
+        int     iTmp;
+        char    cTmp;
+        double  dTmp;
+        char*   csPtr;
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+        if (GetField_CString(hContext,"txn_seq",&csTxnSeq)) {
+DEBUGLOG(("UpdateTxnLog:: txn_seq = [%s]\n",csTxnSeq));
+                PutField_CString(hTxn,"txn_seq",csTxnSeq);
+
+                if (GetField_CString(hContext,"update_user",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: add_user = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"update_user",csPtr);
+                }
+                else{
+                        PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+                }
+
+                if (GetField_CString(hContext,"org_txn_seq",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: org_txn_seq = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"org_txn_seq",csPtr);
+                }
+                if (GetField_Char(hContext,"status",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: status = [%c]\n",cTmp));
+                        PutField_Char(hTxn,"status",cTmp);
+                }
+                if (GetField_CString(hContext,"sub_status",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: sub_status = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"sub_status",csPtr);
+                }
+
+                if (GetField_Char(hContext,"ar_ind",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: ar_ind = [%c]\n",cTmp));
+                        PutField_Char(hTxn,"ar_ind",cTmp);
+                }
+
+                if (GetField_Int(hContext,"internal_code",&iTmp)) {
+DEBUGLOG(("UpdateTxnLog:: internal_code = [%d]\n",iTmp));
+                        PutField_Int(hTxn,"internal_code",iTmp);
+                }
+
+                if (GetField_CString(hResponse,"response_code",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: response_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"response_code",csPtr);
+                }
+                else if (GetField_CString(hContext,"response_code",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: response_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"response_code",csPtr);
+                }
+
+                if (GetField_CString(hContext,"client_id",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: client_id = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"client_id",csPtr);
+                }
+
+                if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"txn_amt",dTmp);
+                }
+                if (GetField_Double(hContext,"net_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: net_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"net_amt",dTmp);
+                }
+
+/* net ccy */
+                if (GetField_CString(hContext,"net_ccy",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: net_ccy = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"net_ccy",csPtr);
+                }
+
+                if (GetField_Double(hContext,"ex_rate",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: ex_rate = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"ex_rate",dTmp);
+                }
+
+                if (GetField_Char(hContext,"ex_party",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: ex_supplier = [%f]\n",cTmp));
+                        PutField_Char(hTxn,"ex_supplier",cTmp);
+                }
+
+/* markup ccy */
+                if(GetField_CString(hContext,"markup_ccy",&csPtr)){
+DEBUGLOG(("UpdateTxnLog:: markup_ccy = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"markup_ccy",csPtr);
+                }
+/* markup rate */
+                if(GetField_Double(hContext,"markup_rate",&dTmp)){
+DEBUGLOG(("UpdateTxnLog:: markup_rate = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"markup_rate",dTmp);
+                }
+/* markup amount */
+                if(GetField_Double(hContext,"markup_amt",&dTmp)){
+DEBUGLOG(("UpdateTxnLog:: markup_amount = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"markup_amt",dTmp);
+                }
+/* dst_txn_amt */
+                if(GetField_Double(hContext,"dst_txn_amt",&dTmp)){
+DEBUGLOG(("UpdateTxnLog:: dst_txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"dst_txn_amt",dTmp);
+                }
+
+/* settlement_txn_amt */
+                if(GetField_Double(hContext,"settlement_txn_amt",&dTmp)){
+DEBUGLOG(("UpdateTxnLog:: settlement_txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"settlement_txn_amt",dTmp);
+                }
+
+                if (GetField_CString(hContext,"merchant_id",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: merchant_id = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"merchant_id",csPtr);
+                }
+
+                if (GetField_CString(hContext,"merchant_ref",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: merchant_ref = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"merchant_ref",csPtr);
+                }
+
+                if (GetField_CString(hContext,"service_code",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: service_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"service_code",csPtr);
+                }
+
+                if (GetField_CString(hContext,"approval_date",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: approval_date = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"approval_date",csPtr);
+                }
+
+                if (GetField_CString(hContext,"new_txn_code",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: new_txn_code = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"txn_code",csPtr);
+                }
+/* update txn header */
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+                iRet = (unsigned long)(*DBObjPtr)(hTxn);
+        }
+        else
+                iRet = PD_ERR;
+
+        if(iRet == PD_OK){
+                if (GetField_CString(hRequest,"txn_country",&csPtr)) {
+DEBUGLOG(("UpdateTxnLog:: country = [%s]\n",csPtr));
+                        PutField_CString(hTxn,"txn_country",csPtr);
+                }
+/* open_bal */
+                if (GetField_Double(hContext,"merchant_open_bal",&dTmp)) {
+                        PutField_Double(hTxn,"open_bal",dTmp);
+DEBUGLOG(("UpdateTxnLog:: open_bal= [%f]\n",dTmp));
+                }
+
+/* open_bal_settlement */
+                if (GetField_Double(hContext,"merchant_open_bal_settlement",&dTmp)) {
+                        PutField_Double(hTxn,"open_bal_settlement",dTmp);
+DEBUGLOG(("UpdateTxnLog:: open_bal_settlement= [%f]\n",dTmp));
+                }
+
+/* current_bal */
+                if (GetField_Double(hContext,"current_bal",&dTmp)) {
+                        PutField_Double(hTxn,"current_bal",dTmp);
+DEBUGLOG(("UpdateTxnLog:: current_bal= [%f]\n",dTmp));
+                }
+
+/* total_float*/
+                if (GetField_Double(hContext,"total_float",&dTmp)) {
+                        PutField_Double(hTxn,"total_float",dTmp);
+DEBUGLOG(("UpdateTxnLog:: total_float= [%f]\n",dTmp));
+                }
+/* total_reserved_amount*/
+                if (GetField_Double(hContext,"total_reserved_amount",&dTmp)) {
+                        PutField_Double(hTxn,"total_reserved_amount",dTmp);
+DEBUGLOG(("UpdateTxnLog:: total_reserved_amount= [%f]\n",dTmp));
+                }
+
+/* total_hold*/
+                if (GetField_Double(hContext,"total_hold",&dTmp)) {
+                        PutField_Double(hTxn,"total_hold",dTmp);
+DEBUGLOG(("UpdateTxnLog:: total_hold= [%f]\n",dTmp));
+                }
+
+/* total_float_after_payout*/
+                if (GetField_Double(hContext,"total_float_after_payout",&dTmp)) {
+                        PutField_Double(hTxn,"total_float_after_payout",dTmp);
+DEBUGLOG(("UpdateTxnLog:: total_float_after_payout= [%f]\n",dTmp));
+                }
+
+/* current_bal_settlement*/
+                if (GetField_Double(hContext,"current_bal_settlement",&dTmp)) {
+                        PutField_Double(hTxn,"current_bal_settlement",dTmp);
+DEBUGLOG(("UpdateTxnLog:: current_bal_settlement= [%f]\n",dTmp));
+                }
+
+/* total_float_settlement*/
+                if (GetField_Double(hContext,"total_float_settlement",&dTmp)) {
+                        PutField_Double(hTxn,"total_float_settlement",dTmp);
+DEBUGLOG(("UpdateTxnLog:: total_float_settlement= [%f]\n",dTmp));
+                }
+
+/* total_hold_settlement*/
+                if (GetField_Double(hContext,"total_hold_settlement",&dTmp)) {
+                        PutField_Double(hTxn,"total_hold_settlement",dTmp);
+DEBUGLOG(("UpdateTxnLog:: total_hold_settlement= [%f]\n",dTmp));
+                }
+/* fundin_payout*/
+                if (GetField_Double(hContext,"fundin_payout",&dTmp)) {
+                        PutField_Double(hTxn,"fundin_payout",dTmp);
+DEBUGLOG(("UpdateTxnLog:: fundin_payout= [%f]\n",dTmp));
+                }
+
+/* reserved_payout*/
+                if (GetField_Double(hContext,"reserved_payout",&dTmp)) {
+                        PutField_Double(hTxn,"reserved_payout",dTmp);
+DEBUGLOG(("UpdateTxnLog:: reserved_payout= [%f]\n",dTmp));
+                }
+
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                iRet = (unsigned long)(*DBObjPtr)(hTxn);
+        }
+
+
+DEBUGLOG(("UpdateTxnLog iRet = [%d]\n",iRet));
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+        return  iRet;
+}
+
+int add_txn_element(hash_t *hMyHash)
+{
+        int     iRet = SUCCESS;
+        char    *csTmp;
+        char    cTmp;
+        double  dTmp;
+	int	iPayoutBalTransfer = PD_FALSE;
+	int	iPayoutVoidFlag = PD_FALSE;
+        hash_t *hTxn;
+	hash_t *hPayoutTxn;
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	double	dTxnAmt = 0.0;
+	double	dTxnFee = 0.0;
+
+        hPayoutTxn= (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hPayoutTxn,0);
+
+        if(GetField_CString(hMyHash,"txn_seq",&csTmp)){
+                PutField_CString(hTxn,"from_txn_seq",csTmp);
+        }
+        if(GetField_CString(hMyHash,"ccy",&csTmp)){
+                PutField_CString(hTxn,"org_txn_ccy",csTmp);
+                PutField_CString(hTxn,"src_txn_fee_ccy",csTmp);
+        }
+        if(GetField_Double(hMyHash,"amount",&dTmp)){
+                PutField_Double(hTxn,"org_txn_amt",dTmp);
+        }
+        if(GetField_CString(hMyHash,"amount_type",&csTmp)){
+                PutField_CString(hTxn,"amount_type",csTmp);
+        }
+        else{
+                PutField_CString(hTxn,"amount_type",PD_DR);
+        }
+	if(GetField_Char(hMyHash,"party_type",&cTmp)){
+		PutField_Char(hTxn,"party_type",cTmp);
+	}
+	else{
+		PutField_Char(hTxn,"party_type",PD_TYPE_MERCHANT);
+	}
+
+	if (GetField_Int(hMyHash, "payout_bal_transfer_flag", &iPayoutBalTransfer)) {
+		if (iPayoutBalTransfer == PD_TRUE) {
+			if(GetField_CString(hMyHash,"txn_seq",&csTmp)){
+				PutField_CString(hPayoutTxn, "from_txn_seq", csTmp);
+			}
+
+        		if(GetField_CString(hMyHash,"ccy",&csTmp)){
+		                PutField_CString(hPayoutTxn,"org_txn_ccy",csTmp);
+			}
+
+        		if(GetField_Double(hMyHash,"amount",&dTxnAmt)){
+        			if(GetField_Double(hMyHash,"fee",&dTxnFee)){
+					dTmp = dTxnAmt + dTxnFee;
+				} else {
+					dTmp = dTxnAmt;
+				}
+
+                		PutField_Double(hPayoutTxn,"org_txn_amt",dTmp);
+        		}
+			
+                	GetField_CString(hTxn,"amount_type",&csTmp);
+			if (!strcmp(csTmp, PD_CR)) {
+				PutField_CString(hPayoutTxn, "amount_type", PD_DR);
+			} else  {
+				PutField_CString(hPayoutTxn, "amount_type", PD_CR);
+			}
+
+			GetField_Char(hTxn,"party_type",&cTmp);
+			PutField_Char(hPayoutTxn,"party_type",cTmp);
+
+
+			if (GetField_Int(hMyHash, "payout_void_flag", &iPayoutVoidFlag)) {
+				if (iPayoutVoidFlag == PD_FALSE) {
+					if (prbo_AddPayoutBalTransferElement(hPayoutTxn) != PD_OK) {
+						iRet = FAILURE;
+					}
+				}
+			}
+		}
+	}
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("AddTxnAmtElement\n"));
+	        if(prbo_AddTxnAmtElement(hTxn)!=PD_OK){
+			iRet = FAILURE;
+DEBUGLOG(("AddTxnAmtElement Failed\n"));
+        	}
+	}
+
+        if(iRet==SUCCESS){
+                if(GetField_Double(hMyHash,"fee",&dTmp)){
+                        PutField_Double(hTxn,"src_txn_fee",dTmp);
+                }
+
+DEBUGLOG(("AddTxnFeeElements\n"));
+                if(prbo_AddTxnFeeElements(hTxn)!=PD_OK){
+                        iRet = FAILURE;
+DEBUGLOG(("AddTxnFeeElements Failed\n"));
+                }
+        }
+
+        if(iRet==SUCCESS){
+                if(GetField_CString(hMyHash,"markup_ccy",&csTmp)){
+                        PutField_CString(hTxn,"org_txn_ccy",csTmp);
+                }
+                if(GetField_Double(hMyHash,"markup_amt",&dTmp)){
+                        PutField_Double(hTxn,"markup_amt",dTmp);
+                }
+
+                if(dTmp>0.0){
+DEBUGLOG(("AddMarkupAmtElement\n"));
+                        if(prbo_AddMarkupAmtElement(hTxn)!=PD_OK){
+                                iRet = FAILURE;
+DEBUGLOG(("AddMarkupAmtElement Failed\n"));
+                        }
+                }
+        }
+
+	if (iRet == SUCCESS) {
+		if (iPayoutBalTransfer == PD_TRUE) {
+			if (iPayoutVoidFlag == PD_TRUE) {
+				if (prbo_AddPayoutBalTransferElement(hPayoutTxn) != PD_OK) {
+					iRet = FAILURE;
+				}
+			}
+		}
+	}
+
+
+        FREE_ME(hTxn);
+	FREE_ME(hPayoutTxn);
+
+        return iRet;
+}
+
+
+int UpdateVoidPOTxnStatus(const hash_t *hRls)
+{
+        char    *csTmp;
+        char*   csBuf;
+
+        int     iSortTxnSeq;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO update_void_po_status_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+        /* varchar         hv_dynstmt[1024]; */ 
+struct { unsigned short len; unsigned char arr[1024]; } hv_dynstmt;
+
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("UpdateVoidPOTxnStatus: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update par_txn_data set ptd_update_timestamp  = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        GetField_Int(hRls,"sort_txn_seq",&iSortTxnSeq);
+DEBUGLOG(("UpdateVoidPOTxnStatus:sort_txn_id = [%d]\n",iSortTxnSeq));
+
+
+        if (GetField_CString(hRls, "void_po_status", &csTmp)) {
+DEBUGLOG(("UpdateVoidPOTxnStatus: void_po_status = [%s]\n",csTmp));
+
+                strcat((char*)hv_dynstmt.arr, ",ptd_po_psp_status = '");
+                strcat((char*)hv_dynstmt.arr, csTmp);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }        sprintf(csBuf, "%d", iSortTxnSeq);
+
+        strcat((char *)hv_dynstmt.arr, " WHERE ptd_txn_seq = ");
+        strcat((char *)hv_dynstmt.arr, csBuf);
+        //strcat((char *)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+DEBUGLOG(("void po SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+        /* EXEC SQL PREPARE PS FROM :hv_dynstmt; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1139;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_dynstmt;
+        sqlstm.sqhstl[0] = (unsigned long )1026;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto update_void_po_status_error;
+}
+
+
+        /* EXEC SQL EXECUTE PS; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1158;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto update_void_po_status_error;
+}
+
+
+
+        FREE_ME(csBuf);
+DEBUGLOG(("UpdateVoidPOTxnStatsu Normal Exit\n"));
+        return PD_OK;
+
+update_void_po_status_error:
+DEBUGLOG(("update_void_po_status_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+ERRLOG("update_void_po_status_error : SP_INTERNAL_ERR TxnAbort\n");
+DEBUGLOG(("update_void_po_status_error : SP_INTERNAL_ERR TxnAbort\n"));
+        return PD_INTERNAL_ERR;
+}
+
+int par_GetPspDetail(const char* csPspId,
+                hash_t* hRec)
+{
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO getpspdetail_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_psp_id[PD_PSP_ID_LEN]; */ 
+struct { unsigned short len; unsigned char arr[10]; } hv_psp_id;
+
+                int             hv_disabled;
+
+                /* varchar         v_status[PD_ACCOUNT_STATUS_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[3]; } v_status;
+
+                /* varchar         v_name[PD_NAME_LEN + 1]; */ 
+struct { unsigned short len; unsigned char arr[51]; } v_name;
+
+                /* varchar         v_psp_merchant_id[PD_MERCHANT_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[16]; } v_psp_merchant_id;
+
+                /* varchar         v_psp_channel_code[PD_PSP_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_psp_channel_code;
+
+                /* varchar         v_client_id[PD_CLIENT_ID_LEN+1]; */ 
+struct { unsigned short len; unsigned char arr[11]; } v_client_id;
+
+                char            v_txn_type;
+                /* varchar         v_ccy[PD_CCY_ID_LEN +1]; */ 
+struct { unsigned short len; unsigned char arr[4]; } v_ccy;
+
+                double          v_payout_split_limit;
+
+                short           ind_status = -1;
+                short           ind_name = -1;
+                short           ind_psp_merchant_id = -1;
+                short           ind_psp_channel_code = -1;
+                short           ind_client_id = -1;
+                short           ind_txn_type = -1;
+                short           ind_ccy = -1;
+                short           ind_payout_split_limit = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_psp_id.len = strlen(csPspId);
+        memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+DEBUGLOG(("GetPspDetail psp_id = [%d][%.*s]\n",hv_psp_id.len,hv_psp_id.len,hv_psp_id.arr));
+
+        hv_disabled = 0;
+
+        /* EXEC SQL DECLARE c_cursor_getpspdetail CURSOR FOR
+                select psp_name,
+                       psp_merchant_id,
+                       psp_channel_code,
+                       client_id,
+                       txn_type,
+                       currency_id,
+                       status,
+                       payout_split_limit
+                  from psp_detail
+                 where psp_id = :hv_psp_id
+                 and   disabled = :hv_disabled; */ 
+
+
+        /* EXEC SQL OPEN c_cursor_getpspdetail; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = sq0017;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1173;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqcmod = (unsigned int )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_psp_id;
+        sqlstm.sqhstl[0] = (unsigned long )12;
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_disabled;
+        sqlstm.sqhstl[1] = (unsigned long )sizeof(int);
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)0;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getpspdetail_error;
+}
+
+
+        do {
+                /* EXEC SQL FETCH c_cursor_getpspdetail
+                INTO
+                        :v_name:ind_name,
+                        :v_psp_merchant_id:ind_psp_merchant_id,
+                        :v_psp_channel_code:ind_psp_channel_code,
+                        :v_client_id:ind_client_id,
+                        :v_txn_type:ind_txn_type,
+                        :v_ccy:ind_ccy,
+                        :v_status:ind_status,
+                        :v_payout_split_limit:ind_payout_split_limit; */ 
+
+{
+                struct sqlexd sqlstm;
+                sqlstm.sqlvsn = 12;
+                sqlstm.arrsiz = 19;
+                sqlstm.sqladtp = &sqladt;
+                sqlstm.sqltdsp = &sqltds;
+                sqlstm.iters = (unsigned int  )1;
+                sqlstm.offset = (unsigned int  )1196;
+                sqlstm.selerr = (unsigned short)1;
+                sqlstm.cud = sqlcud0;
+                sqlstm.sqlest = (unsigned char  *)&sqlca;
+                sqlstm.sqlety = (unsigned short)4352;
+                sqlstm.occurs = (unsigned int  )0;
+                sqlstm.sqfoff = (         int )0;
+                sqlstm.sqfmod = (unsigned int )2;
+                sqlstm.sqhstv[0] = (unsigned char  *)&v_name;
+                sqlstm.sqhstl[0] = (unsigned long )53;
+                sqlstm.sqhsts[0] = (         int  )0;
+                sqlstm.sqindv[0] = (         short *)&ind_name;
+                sqlstm.sqinds[0] = (         int  )0;
+                sqlstm.sqharm[0] = (unsigned long )0;
+                sqlstm.sqadto[0] = (unsigned short )0;
+                sqlstm.sqtdso[0] = (unsigned short )0;
+                sqlstm.sqhstv[1] = (unsigned char  *)&v_psp_merchant_id;
+                sqlstm.sqhstl[1] = (unsigned long )18;
+                sqlstm.sqhsts[1] = (         int  )0;
+                sqlstm.sqindv[1] = (         short *)&ind_psp_merchant_id;
+                sqlstm.sqinds[1] = (         int  )0;
+                sqlstm.sqharm[1] = (unsigned long )0;
+                sqlstm.sqadto[1] = (unsigned short )0;
+                sqlstm.sqtdso[1] = (unsigned short )0;
+                sqlstm.sqhstv[2] = (unsigned char  *)&v_psp_channel_code;
+                sqlstm.sqhstl[2] = (unsigned long )13;
+                sqlstm.sqhsts[2] = (         int  )0;
+                sqlstm.sqindv[2] = (         short *)&ind_psp_channel_code;
+                sqlstm.sqinds[2] = (         int  )0;
+                sqlstm.sqharm[2] = (unsigned long )0;
+                sqlstm.sqadto[2] = (unsigned short )0;
+                sqlstm.sqtdso[2] = (unsigned short )0;
+                sqlstm.sqhstv[3] = (unsigned char  *)&v_client_id;
+                sqlstm.sqhstl[3] = (unsigned long )13;
+                sqlstm.sqhsts[3] = (         int  )0;
+                sqlstm.sqindv[3] = (         short *)&ind_client_id;
+                sqlstm.sqinds[3] = (         int  )0;
+                sqlstm.sqharm[3] = (unsigned long )0;
+                sqlstm.sqadto[3] = (unsigned short )0;
+                sqlstm.sqtdso[3] = (unsigned short )0;
+                sqlstm.sqhstv[4] = (unsigned char  *)&v_txn_type;
+                sqlstm.sqhstl[4] = (unsigned long )1;
+                sqlstm.sqhsts[4] = (         int  )0;
+                sqlstm.sqindv[4] = (         short *)&ind_txn_type;
+                sqlstm.sqinds[4] = (         int  )0;
+                sqlstm.sqharm[4] = (unsigned long )0;
+                sqlstm.sqadto[4] = (unsigned short )0;
+                sqlstm.sqtdso[4] = (unsigned short )0;
+                sqlstm.sqhstv[5] = (unsigned char  *)&v_ccy;
+                sqlstm.sqhstl[5] = (unsigned long )6;
+                sqlstm.sqhsts[5] = (         int  )0;
+                sqlstm.sqindv[5] = (         short *)&ind_ccy;
+                sqlstm.sqinds[5] = (         int  )0;
+                sqlstm.sqharm[5] = (unsigned long )0;
+                sqlstm.sqadto[5] = (unsigned short )0;
+                sqlstm.sqtdso[5] = (unsigned short )0;
+                sqlstm.sqhstv[6] = (unsigned char  *)&v_status;
+                sqlstm.sqhstl[6] = (unsigned long )5;
+                sqlstm.sqhsts[6] = (         int  )0;
+                sqlstm.sqindv[6] = (         short *)&ind_status;
+                sqlstm.sqinds[6] = (         int  )0;
+                sqlstm.sqharm[6] = (unsigned long )0;
+                sqlstm.sqadto[6] = (unsigned short )0;
+                sqlstm.sqtdso[6] = (unsigned short )0;
+                sqlstm.sqhstv[7] = (unsigned char  *)&v_payout_split_limit;
+                sqlstm.sqhstl[7] = (unsigned long )sizeof(double);
+                sqlstm.sqhsts[7] = (         int  )0;
+                sqlstm.sqindv[7] = (         short *)&ind_payout_split_limit;
+                sqlstm.sqinds[7] = (         int  )0;
+                sqlstm.sqharm[7] = (unsigned long )0;
+                sqlstm.sqadto[7] = (unsigned short )0;
+                sqlstm.sqtdso[7] = (unsigned short )0;
+                sqlstm.sqphsv = sqlstm.sqhstv;
+                sqlstm.sqphsl = sqlstm.sqhstl;
+                sqlstm.sqphss = sqlstm.sqhsts;
+                sqlstm.sqpind = sqlstm.sqindv;
+                sqlstm.sqpins = sqlstm.sqinds;
+                sqlstm.sqparm = sqlstm.sqharm;
+                sqlstm.sqparc = sqlstm.sqharc;
+                sqlstm.sqpadto = sqlstm.sqadto;
+                sqlstm.sqptdso = sqlstm.sqtdso;
+                sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+                if (sqlca.sqlcode < 0) goto getpspdetail_error;
+}
+
+
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+DEBUGLOG(("GetPspDetail found record\n"));
+
+/* psp name */
+                if (ind_name >= 0) {
+                        v_name.arr[v_name.len] = '\0';
+                        PutField_CString(hRec,"psp_name",(const char*)v_name.arr);
+DEBUGLOG(("GetPspDetail psp_name = [%s]\n",v_name.arr));
+                }
+
+
+/* psp merchant id */
+                if (ind_psp_merchant_id >= 0) {
+                        v_psp_merchant_id.arr[v_psp_merchant_id.len] = '\0';
+                        PutField_CString(hRec,"psp_merchant_id",(const char*)v_psp_merchant_id.arr);
+DEBUGLOG(("GetPspDetail psp_merchant_id = [%s]\n",v_psp_merchant_id.arr));
+                }
+
+/* psp channel code */
+                if (ind_psp_channel_code >= 0) {
+                        v_psp_channel_code.arr[v_psp_channel_code.len] = '\0';
+                        PutField_CString(hRec,"psp_channel_code",(const char*)v_psp_channel_code.arr);
+DEBUGLOG(("GetPspDetail psp_channel_code = [%s]\n",v_psp_channel_code.arr));
+                }
+
+/* client_id*/
+                if (ind_client_id>= 0) {
+                        v_client_id.arr[v_client_id.len] = '\0';
+                        PutField_CString(hRec,"client_id",(const char*)v_client_id.arr);
+DEBUGLOG(("GetPspDetail client_id = [%s]\n",v_client_id.arr));
+                }
+
+/* txn_type */
+                if (ind_txn_type>= 0) {
+                        PutField_Char(hRec,"txn_type",v_txn_type);
+DEBUGLOG(("GetPspDetail txn_type = [%c]\n",v_txn_type));
+                }
+/* ccy*/
+                if (ind_ccy>= 0) {
+                        v_ccy.arr[v_ccy.len] = '\0';
+                        PutField_CString(hRec,"ccy",(const char*)v_ccy.arr);
+DEBUGLOG(("GetPspDetail ccy = [%s]\n",v_ccy.arr));
+                }
+
+/* status */
+                if (ind_status >= 0) {
+                        v_status.arr[v_status.len] = '\0';
+                        PutField_CString(hRec,"status",(const char*)v_status.arr);
+DEBUGLOG(("GetPspDetail status = [%s]\n",v_status.arr));
+                }
+
+/* payout_split_limit */
+                if (ind_payout_split_limit < 0)
+                        v_payout_split_limit = 0.0;
+                PutField_Double(hRec,"payout_split_limit",v_payout_split_limit);
+DEBUGLOG(("GetPspDetail payout_split_limit = [%lf]\n",v_payout_split_limit));
+
+
+        }
+        while(PD_TRUE);
+
+        /* EXEC SQL CLOSE c_cursor_getpspdetail; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1243;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto getpspdetail_error;
+}
+
+
+
+
+DEBUGLOG(("GetPspDetail Normal Exit\n"));
+        return  PD_OK;
+
+getpspdetail_error:
+DEBUGLOG(("getpspdetail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("PspDetail_Get: SP_INTERNAL_ERR TxnAbort\n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        /* EXEC SQL CLOSE c_cursor_getpspdetail; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1258;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+}
+
+
+int	AddTxnSeqMap(const hash_t *hRls)
+{
+	char	*csTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO add_txn_seq_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+                /* varchar         hv_order_id[PAR_ORDER_ID_LEN]; */ 
+struct { unsigned short len; unsigned char arr[50]; } hv_order_id;
+
+                /* varchar         hv_conv_txn_seq[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_conv_txn_seq;
+
+                /* varchar         hv_create_user[PD_CREATE_USER_LEN]; */ 
+struct { unsigned short len; unsigned char arr[20]; } hv_create_user;
+
+
+                short           ind_order_id = -1;
+                short           ind_conv_txn_seq = -1;
+                short           ind_create_user = -1;
+
+                short           hv_return_value;
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("AddTxnSeqMap: Begin\n"));
+
+/* order_id */
+        if(GetField_CString(hRls,"order_id",&csTmp)){
+                hv_order_id.len = strlen(csTmp);
+                memcpy(hv_order_id.arr, csTmp, hv_order_id.len);
+                ind_order_id = 0;
+DEBUGLOG(("AddTxnSeqMap:order_id = [%.*s]\n",hv_order_id.len,hv_order_id.arr));
+        }
+
+/* conv_txn_seq */
+        if (GetField_CString(hRls, "conv_txn_seq", &csTmp)) {
+                hv_conv_txn_seq.len = strlen(csTmp);
+                memcpy(hv_conv_txn_seq.arr, csTmp, hv_conv_txn_seq.len);
+                ind_conv_txn_seq= 0;
+DEBUGLOG(("AddTxnSeqMap:conv_txn_seq = [%.*s]\n",hv_conv_txn_seq.len,hv_conv_txn_seq.arr));
+        }
+
+/* create_user */
+        if (GetField_CString(hRls, "create_user", &csTmp)) {
+                hv_create_user.len = strlen(csTmp);
+                memcpy(hv_create_user.arr, csTmp, hv_create_user.len);
+                ind_create_user = 0;
+DEBUGLOG(("AddTxnSeqMap: create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+        }
+        /* EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_par_txn_seq_map_insert(
+                                                :hv_order_id:ind_order_id,
+                                                :hv_conv_txn_seq:ind_conv_txn_seq,
+                                                :hv_create_user:ind_create_user);
+                END;
+        END-EXEC; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "begin :hv_return_value := sp_par_txn_seq_map_insert \
+( :hv_order_id:ind_order_id , :hv_conv_txn_seq:ind_conv_txn_seq , :hv_create_\
+user:ind_create_user ) ; END ;";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1273;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_return_value;
+        sqlstm.sqhstl[0] = (unsigned long )sizeof(short);
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_order_id;
+        sqlstm.sqhstl[1] = (unsigned long )52;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)&ind_order_id;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqhstv[2] = (unsigned char  *)&hv_conv_txn_seq;
+        sqlstm.sqhstl[2] = (unsigned long )18;
+        sqlstm.sqhsts[2] = (         int  )0;
+        sqlstm.sqindv[2] = (         short *)&ind_conv_txn_seq;
+        sqlstm.sqinds[2] = (         int  )0;
+        sqlstm.sqharm[2] = (unsigned long )0;
+        sqlstm.sqadto[2] = (unsigned short )0;
+        sqlstm.sqtdso[2] = (unsigned short )0;
+        sqlstm.sqhstv[3] = (unsigned char  *)&hv_create_user;
+        sqlstm.sqhstl[3] = (unsigned long )22;
+        sqlstm.sqhsts[3] = (         int  )0;
+        sqlstm.sqindv[3] = (         short *)&ind_create_user;
+        sqlstm.sqinds[3] = (         int  )0;
+        sqlstm.sqharm[3] = (unsigned long )0;
+        sqlstm.sqadto[3] = (unsigned short )0;
+        sqlstm.sqtdso[3] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto add_txn_seq_error;
+}
+
+
+
+DEBUGLOG(("AddTxnSeqMap:Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("AddTxnSeqMap:Normal Exit\n"));
+                return PD_OK;
+        }
+
+        if (hv_return_value == SP_OTHER_ERR)  {
+ERRLOG("AddTxnSeqMap: SP_OTHER_ERR \n");
+DEBUGLOG(("AddTxnSeqMap: SP_OTHER_ERR \n"));
+                return PD_OTHER_ERR;
+        }
+
+        if (hv_return_value == SP_ERR)  {
+ERRLOG("AddTxnSeqMap: SP_ERR \n");
+DEBUGLOG(("AddTxnSeqMap: SP_ERR \n"));
+                return PD_ERR;
+        }
+
+add_txn_seq_error:
+DEBUGLOG(("add_txn_seq_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("AddTxnSeqMap: SP_INTERNAL_ERR \n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        return PD_ERR;
+
+}
+
+
+int     TxnSeqMap_Exists(const char *csOrderId)
+{
+        int     iRet = PD_NOT_FOUND;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO chk_txn_seq_exist_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_order_id[PAR_ORDER_ID_LEN]; */ 
+struct { unsigned short len; unsigned char arr[50]; } hv_order_id;
+
+
+                int             v_no_of_record;
+                short           ind_no_of_record = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_order_id.len = strlen(csOrderId);
+        memcpy(hv_order_id.arr, csOrderId, hv_order_id.len);
+DEBUGLOG(("TxnSeqMap ChkExist order_id = [%.*s]\n",hv_order_id.len,hv_order_id.arr));
+
+
+        /* EXEC SQL
+                SELECT count(1)
+                   INTO :v_no_of_record:ind_no_of_record
+                   FROM par_txn_seq_map
+                  WHERE ts_order_id = :hv_order_id
+                    and rownum = 1; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "select count(1) into :b0:b1  from par_txn_seq_map wh\
+ere (ts_order_id=:b2 and rownum=1)";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1304;
+        sqlstm.selerr = (unsigned short)1;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&v_no_of_record;
+        sqlstm.sqhstl[0] = (unsigned long )sizeof(int);
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)&ind_no_of_record;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_order_id;
+        sqlstm.sqhstl[1] = (unsigned long )52;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)0;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto chk_txn_seq_exist_error;
+}
+
+
+
+        if (ind_no_of_record >= 0) {
+                if (v_no_of_record > 0) {
+DEBUGLOG(("TxnSeqMap ChkExist FOUND\n"));
+                        iRet = PD_FOUND;
+                }
+        }
+
+        if (iRet!= PD_FOUND) {
+DEBUGLOG(("TxnSeqMap ChkExist NOT FOUND\n"));
+        }
+
+        return iRet;
+
+chk_txn_seq_exist_error:
+DEBUGLOG(("Chk_txn_seq_exist error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        return PD_ERR;
+
+}
+
+int     AddPORevTxnSeqMap(const hash_t *hRls)
+{
+        char    *csTmp;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO add_po_rev_txn_seq_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+
+                /* varchar         hv_vnc_ref_num[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_vnc_ref_num;
+
+                /* varchar         hv_voa_txn_seq[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_voa_txn_seq;
+
+                /* varchar         hv_create_user[PD_CREATE_USER_LEN]; */ 
+struct { unsigned short len; unsigned char arr[20]; } hv_create_user;
+
+
+                short           ind_vnc_ref_num;
+                short           ind_voa_txn_seq;
+                short           ind_create_user;
+
+                short           hv_return_value;
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+DEBUGLOG(("AddPORevTxnSeqMap: Begin\n"));
+
+/* vnc_ref_num */
+        if(GetField_CString(hRls,"vnc_ref_num",&csTmp)){
+                hv_vnc_ref_num.len = strlen(csTmp);
+                memcpy(hv_vnc_ref_num.arr, csTmp, hv_vnc_ref_num.len);
+                ind_vnc_ref_num= 0;
+DEBUGLOG(("AddPORevTxnSeqMap:vnc_ref_num = [%.*s]\n",hv_vnc_ref_num.len,hv_vnc_ref_num.arr));
+        }
+
+/* voa_txn_seq */
+        if (GetField_CString(hRls, "voa_txn_seq", &csTmp)) {
+                hv_voa_txn_seq.len = strlen(csTmp);
+                memcpy(hv_voa_txn_seq.arr, csTmp, hv_voa_txn_seq.len);
+                ind_voa_txn_seq= 0;
+DEBUGLOG(("AddPORevTxnSeqMap:voa_txn_seq = [%.*s]\n",hv_voa_txn_seq.len,hv_voa_txn_seq.arr));
+        }
+
+/* create_user */
+        if (GetField_CString(hRls, "add_user", &csTmp)) {
+                hv_create_user.len = strlen(csTmp);
+                memcpy(hv_create_user.arr, csTmp, hv_create_user.len);
+                ind_create_user = 0;
+DEBUGLOG(("AddPORevTxnSeqMap: create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+        }
+        /* EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_par_po_rev_txn_seq_map_ins(
+                                                :hv_vnc_ref_num:ind_vnc_ref_num,
+                                                :hv_voa_txn_seq:ind_voa_txn_seq,
+                                                :hv_create_user:ind_create_user);
+                END;
+        END-EXEC; */ 
+
+{
+        struct sqlexd sqlstm;
+        sqlstm.sqlvsn = 12;
+        sqlstm.arrsiz = 19;
+        sqlstm.sqladtp = &sqladt;
+        sqlstm.sqltdsp = &sqltds;
+        sqlstm.stmt = "begin :hv_return_value := sp_par_po_rev_txn_seq_map_\
+ins ( :hv_vnc_ref_num:ind_vnc_ref_num , :hv_voa_txn_seq:ind_voa_txn_seq , :hv\
+_create_user:ind_create_user ) ; END ;";
+        sqlstm.iters = (unsigned int  )1;
+        sqlstm.offset = (unsigned int  )1327;
+        sqlstm.cud = sqlcud0;
+        sqlstm.sqlest = (unsigned char  *)&sqlca;
+        sqlstm.sqlety = (unsigned short)4352;
+        sqlstm.occurs = (unsigned int  )0;
+        sqlstm.sqhstv[0] = (unsigned char  *)&hv_return_value;
+        sqlstm.sqhstl[0] = (unsigned long )sizeof(short);
+        sqlstm.sqhsts[0] = (         int  )0;
+        sqlstm.sqindv[0] = (         short *)0;
+        sqlstm.sqinds[0] = (         int  )0;
+        sqlstm.sqharm[0] = (unsigned long )0;
+        sqlstm.sqadto[0] = (unsigned short )0;
+        sqlstm.sqtdso[0] = (unsigned short )0;
+        sqlstm.sqhstv[1] = (unsigned char  *)&hv_vnc_ref_num;
+        sqlstm.sqhstl[1] = (unsigned long )18;
+        sqlstm.sqhsts[1] = (         int  )0;
+        sqlstm.sqindv[1] = (         short *)&ind_vnc_ref_num;
+        sqlstm.sqinds[1] = (         int  )0;
+        sqlstm.sqharm[1] = (unsigned long )0;
+        sqlstm.sqadto[1] = (unsigned short )0;
+        sqlstm.sqtdso[1] = (unsigned short )0;
+        sqlstm.sqhstv[2] = (unsigned char  *)&hv_voa_txn_seq;
+        sqlstm.sqhstl[2] = (unsigned long )18;
+        sqlstm.sqhsts[2] = (         int  )0;
+        sqlstm.sqindv[2] = (         short *)&ind_voa_txn_seq;
+        sqlstm.sqinds[2] = (         int  )0;
+        sqlstm.sqharm[2] = (unsigned long )0;
+        sqlstm.sqadto[2] = (unsigned short )0;
+        sqlstm.sqtdso[2] = (unsigned short )0;
+        sqlstm.sqhstv[3] = (unsigned char  *)&hv_create_user;
+        sqlstm.sqhstl[3] = (unsigned long )22;
+        sqlstm.sqhsts[3] = (         int  )0;
+        sqlstm.sqindv[3] = (         short *)&ind_create_user;
+        sqlstm.sqinds[3] = (         int  )0;
+        sqlstm.sqharm[3] = (unsigned long )0;
+        sqlstm.sqadto[3] = (unsigned short )0;
+        sqlstm.sqtdso[3] = (unsigned short )0;
+        sqlstm.sqphsv = sqlstm.sqhstv;
+        sqlstm.sqphsl = sqlstm.sqhstl;
+        sqlstm.sqphss = sqlstm.sqhsts;
+        sqlstm.sqpind = sqlstm.sqindv;
+        sqlstm.sqpins = sqlstm.sqinds;
+        sqlstm.sqparm = sqlstm.sqharm;
+        sqlstm.sqparc = sqlstm.sqharc;
+        sqlstm.sqpadto = sqlstm.sqadto;
+        sqlstm.sqptdso = sqlstm.sqtdso;
+        sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+        if (sqlca.sqlcode < 0) goto add_po_rev_txn_seq_error;
+}
+
+
+
+DEBUGLOG(("AddPORevTxnSeqMap:Ret = [%d]\n",hv_return_value));
+        if (hv_return_value == SP_OK)
+        {
+DEBUGLOG(("AddPORevTxnSeqMap:Normal Exit\n"));
+                return PD_OK;
+        }
+
+        if (hv_return_value == SP_OTHER_ERR)  {
+ERRLOG("AddPORevTxnSeqMap: SP_OTHER_ERR \n");
+DEBUGLOG(("AddPORevTxnSeqMap: SP_OTHER_ERR \n"));
+                return PD_OTHER_ERR;
+        }
+
+        if (hv_return_value == SP_ERR)  {
+ERRLOG("AddPORevTxnSeqMap: SP_ERR \n");
+DEBUGLOG(("AddPORevTxnSeqMap: SP_ERR \n"));
+                return PD_ERR;
+        }
+
+
+add_po_rev_txn_seq_error:
+DEBUGLOG(("add_po_rev_txn_seq_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("AddPORevTxnSeqMap: SP_INTERNAL_ERR \n");
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+        return PD_ERR;
+
+}
+
+int     GetPORevTxnSeqByVNCRefNum(const char *csVNCRefNum, char *csVOATxnSeq)
+{
+        int     iRet = PD_NOT_FOUND;
+
+        /* EXEC SQL WHENEVER SQLERROR GOTO get_porevtxnseqbyvncrefnum_error; */ 
+
+        /* EXEC SQL WHENEVER NOTFOUND CONTINUE; */ 
+
+
+        /* EXEC SQL BEGIN DECLARE SECTION; */ 
+
+                /* varchar         hv_vnc_ref_num[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } hv_vnc_ref_num;
+
+
+                /* varchar         v_voa_txn_seq[PD_TXN_SEQ_LEN]; */ 
+struct { unsigned short len; unsigned char arr[16]; } v_voa_txn_seq;
+
+                short           ind_voa_txn_seq = -1;
+
+        /* EXEC SQL END DECLARE SECTION; */ 
+
+
+        hv_vnc_ref_num.len = strlen(csVNCRefNum);
+        memcpy(hv_vnc_ref_num.arr, csVNCRefNum, hv_vnc_ref_num.len);
+DEBUGLOG(("GetPORevTxnSeqByVNCRefNum vnc_ref_num = [%.*s]\n",hv_vnc_ref_num.len,hv_vnc_ref_num.arr));
+
+	/* EXEC SQL DECLARE c_cursor_getporevtxnseq CURSOR FOR
+                SELECT pr_voa_txn_code
+                   FROM par_po_rev_txn_seq_map
+                  WHERE pr_vnc_ref_num = :hv_vnc_ref_num; */ 
+
+
+
+	/* EXEC SQL OPEN c_cursor_getporevtxnseq; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 19;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.stmt = sq0021;
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )1358;
+ sqlstm.selerr = (unsigned short)1;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlstm.sqcmod = (unsigned int )0;
+ sqlstm.sqhstv[0] = (unsigned char  *)&hv_vnc_ref_num;
+ sqlstm.sqhstl[0] = (unsigned long )18;
+ sqlstm.sqhsts[0] = (         int  )0;
+ sqlstm.sqindv[0] = (         short *)0;
+ sqlstm.sqinds[0] = (         int  )0;
+ sqlstm.sqharm[0] = (unsigned long )0;
+ sqlstm.sqadto[0] = (unsigned short )0;
+ sqlstm.sqtdso[0] = (unsigned short )0;
+ sqlstm.sqphsv = sqlstm.sqhstv;
+ sqlstm.sqphsl = sqlstm.sqhstl;
+ sqlstm.sqphss = sqlstm.sqhsts;
+ sqlstm.sqpind = sqlstm.sqindv;
+ sqlstm.sqpins = sqlstm.sqinds;
+ sqlstm.sqparm = sqlstm.sqharm;
+ sqlstm.sqparc = sqlstm.sqharc;
+ sqlstm.sqpadto = sqlstm.sqadto;
+ sqlstm.sqptdso = sqlstm.sqtdso;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+ if (sqlca.sqlcode < 0) goto get_porevtxnseqbyvncrefnum_error;
+}
+
+
+
+	/* EXEC SQL FETCH c_cursor_getporevtxnseq
+	INTO
+		:v_voa_txn_seq:ind_voa_txn_seq; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 19;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )1377;
+ sqlstm.selerr = (unsigned short)1;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlstm.sqfoff = (         int )0;
+ sqlstm.sqfmod = (unsigned int )2;
+ sqlstm.sqhstv[0] = (unsigned char  *)&v_voa_txn_seq;
+ sqlstm.sqhstl[0] = (unsigned long )18;
+ sqlstm.sqhsts[0] = (         int  )0;
+ sqlstm.sqindv[0] = (         short *)&ind_voa_txn_seq;
+ sqlstm.sqinds[0] = (         int  )0;
+ sqlstm.sqharm[0] = (unsigned long )0;
+ sqlstm.sqadto[0] = (unsigned short )0;
+ sqlstm.sqtdso[0] = (unsigned short )0;
+ sqlstm.sqphsv = sqlstm.sqhstv;
+ sqlstm.sqphsl = sqlstm.sqhstl;
+ sqlstm.sqphss = sqlstm.sqhsts;
+ sqlstm.sqpind = sqlstm.sqindv;
+ sqlstm.sqpins = sqlstm.sqinds;
+ sqlstm.sqparm = sqlstm.sqharm;
+ sqlstm.sqparc = sqlstm.sqharc;
+ sqlstm.sqpadto = sqlstm.sqadto;
+ sqlstm.sqptdso = sqlstm.sqtdso;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+ if (sqlca.sqlcode < 0) goto get_porevtxnseqbyvncrefnum_error;
+}
+
+
+
+	if (SQLCODE == SQL_NOT_FOUND) {
+DEBUGLOG(("GetPORevTxnSeqByVNCRefNum not found\n"));
+		iRet = PD_NOT_FOUND;
+	}
+
+        if (ind_voa_txn_seq >= 0) {
+		v_voa_txn_seq.arr[v_voa_txn_seq.len] = '\0';
+		strcpy(csVOATxnSeq, (const char *) v_voa_txn_seq.arr);
+DEBUGLOG(("GetPORevTxnSeqByVNCRefNum csVOATxnSeq = [%s]\n", csVOATxnSeq));
+
+		iRet = PD_OK;
+        }
+
+	/* EXEC SQL CLOSE c_cursor_getporevtxnseq; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 19;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )1396;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+ if (sqlca.sqlcode < 0) goto get_porevtxnseqbyvncrefnum_error;
+}
+
+
+
+        return iRet;
+
+get_porevtxnseqbyvncrefnum_error:
+DEBUGLOG(("get_porevtxnseqbyvncrefnum error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        /* EXEC SQL WHENEVER SQLERROR CONTINUE; */ 
+
+	/* EXEC SQL CLOSE c_cursor_getporevtxnseq; */ 
+
+{
+ struct sqlexd sqlstm;
+ sqlstm.sqlvsn = 12;
+ sqlstm.arrsiz = 19;
+ sqlstm.sqladtp = &sqladt;
+ sqlstm.sqltdsp = &sqltds;
+ sqlstm.iters = (unsigned int  )1;
+ sqlstm.offset = (unsigned int  )1411;
+ sqlstm.cud = sqlcud0;
+ sqlstm.sqlest = (unsigned char  *)&sqlca;
+ sqlstm.sqlety = (unsigned short)4352;
+ sqlstm.occurs = (unsigned int  )0;
+ sqlcxt((void **)0, &sqlctx, &sqlstm, &sqlfpn);
+}
+
+
+        return PD_ERR;
+
+}

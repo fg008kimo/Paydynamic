@@ -1,0 +1,921 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/04/18              LokMan Chow
+Change to use rule release period		   2012/08/24		   Cody Chan
+Add MAPO element				   2012/09/03		   Cody Chan
+un-relate service and country			   2013/01/14		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+//char    cs_cutoff_date[PD_DATE_LEN + 1];
+char    cDebug = 'Y';
+
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int process_main(const char* csPostingDate);
+int allow_payout(const char* csPspID);
+//int process_bucket(const char* csPostingDate,const char* csServiceCode,const char* csCountry,int iReleasePeriod,int iSettReleasePeriod);
+int process_bucket(const char* csPostingDate,const char* csServiceCode,int iReleasePeriod,int iSettReleasePeriod);
+int process_release(hash_t *myHash);
+int is_holidays(const char* csCountry, const char* csDate);
+int AddTxnLog(const hash_t* hVal);
+int GetClientId(const unsigned char* csMerchantId,
+                unsigned char* csClientId);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+	char	csPostingDate[PD_DATE_LEN +1];
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+       // 	printf("usage:  -d cutoff_date\n");
+                return (iRet);
+        }
+	GetCurrHostPostingDate((unsigned char*)csPostingDate);
+DEBUGLOG(("today is [%s]\n",csPostingDate));
+
+	//if (is_weekend(csPostingDate) != PD_TRUE) {
+        	iRet = process_main(csPostingDate);
+	//}
+	//else {
+//DEBUGLOG(("today is weekend.... skip....\n"));
+	//}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_main(const char* csPostingDate)
+{
+        int     iRet = SUCCESS;
+	int     iSettReleasePeriod = 0;
+
+DEBUGLOG(("process_main\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar	v_service_code[PD_SERVICE_CODE_LEN + 1];
+		//varchar	v_txn_country[PD_COUNTRY_LEN +1];
+		short	v_release_period;
+
+		short	ind_service_code = -1;
+		//short	ind_txn_country = -1;
+		short	ind_release_period = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+        EXEC SQL DECLARE c_cursor_get_service CURSOR FOR
+		SELECT 	sc_code,
+			//sc_txn_country,
+           		rs_release_period
+ 		  FROM  def_service_code,
+         		rule_service_release_period
+ 		 WHERE sc_code = rs_service_code
+                   AND rs_disabled = 0
+                   AND rs_release_type = 'AVAPO';
+
+        EXEC SQL OPEN c_cursor_get_service;
+        do {    
+                EXEC SQL FETCH c_cursor_get_service
+                INTO
+			v_service_code:ind_service_code,
+			//v_txn_country:ind_txn_country,
+			v_release_period:ind_release_period;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+		if (ind_service_code >= 0) {
+			v_service_code.arr[v_service_code.len] = '\0';	
+DEBUGLOG(("service code = [%s]\n",v_service_code.arr));
+		}	
+/*
+		if (ind_txn_country >= 0) {
+			v_txn_country.arr[v_txn_country.len] = '\0';	
+DEBUGLOG(("txn_country = [%s]\n",v_txn_country.arr));
+		}	
+*/
+		if (ind_release_period >= 0) {
+DEBUGLOG(("release period = [%d]\n",v_release_period));
+		}
+
+
+		if (v_release_period > 0) {
+			//if (is_holidays((const char*)v_txn_country.arr,csPostingDate) != PD_TRUE) {
+				iRet = FindServiceReleasePeriod((const char*) v_service_code.arr,PD_RLS_TYPE_SETTFT,&iSettReleasePeriod);
+DEBUGLOG(("sett release period = [%d]\n",iSettReleasePeriod));
+                       		if (iRet == PD_OK) {
+					iRet = process_bucket(csPostingDate,(const char*)v_service_code.arr,v_release_period,iSettReleasePeriod);
+				}
+			//}
+			//else {
+//DEBUGLOG(("today is holiday for %s... skip....\n",v_txn_country.arr));
+//			}
+		}
+		else {
+DEBUGLOG(("release period is zero, skip!!!!\n"));
+		}
+
+	}while(PD_TRUE);
+        EXEC SQL CLOSE c_cursor_get_service;
+
+	return	iRet;
+
+sql_error:
+    DEBUGLOG(("process_main error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_daily_float::process_main sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_service;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int allow_payout(const char* csPspID)
+{
+        int     iRet = PD_FALSE;
+
+DEBUGLOG(("allow_payout\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	hv_psp_id[PD_PSP_ID_LEN];
+
+		char	v_txn_type;
+
+		short	ind_txn_type = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_psp_id.len = strlen(csPspID);
+	memcpy(hv_psp_id.arr,csPspID,hv_psp_id.len);
+DEBUGLOG(("allow_payout psp_id = [%.*s]\n",hv_psp_id.len,hv_psp_id.arr));
+
+
+        EXEC SQL DECLARE c_cursor_get_psp CURSOR FOR
+		 select txn_type
+  		   from psp_detail
+                  where psp_id = :hv_psp_id;
+
+        EXEC SQL OPEN c_cursor_get_psp;
+        do {    
+                EXEC SQL FETCH c_cursor_get_psp
+                INTO
+			v_txn_type:ind_txn_type;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if (ind_txn_type >= 0) {
+			if (v_txn_type == PD_TYPE_ALL || v_txn_type == PD_TYPE_PAYOUT)
+				iRet = PD_TRUE;
+		}
+DEBUGLOG(("allow_payout allow_payout = [%d]\n",v_txn_type));
+
+	}while(PD_TRUE);
+
+
+        EXEC SQL CLOSE c_cursor_get_psp;
+
+DEBUGLOG(("allow_payout: return iRet = [%d]\n",iRet));
+	return	iRet;
+
+sql_error:
+    DEBUGLOG(("allow_payout error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_daily_float::allow_payout sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_psp;
+    EXEC SQL ROLLBACK RELEASE;
+    return iRet;
+}
+
+
+
+//int process_bucket(const char* csPostingDate,const char* csServiceCode,const char* csCountry,int iReleasePeriod,int iSettReleasePeriod)
+int process_bucket(const char* csPostingDate,const char* csServiceCode,int iReleasePeriod,int iSettReleasePeriod)
+{               
+        int     iRet = SUCCESS;
+	int	iRelease2AF = PD_FALSE;
+	char    csClientId[PD_CLIENT_ID_LEN+1];
+
+	hash_t*	hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+DEBUGLOG(("*****Process Bucket Start*****\n"));
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar	hv_ph_posting_date[PD_DATE_LEN];
+		varchar	hv_service_code[PD_SERVICE_CODE_LEN];
+		//varchar	hv_country[PD_COUNTRY_LEN];
+		short	hv_release_period;
+
+		varchar	v_posting_date[PD_DATE_LEN + 1];
+		varchar	v_merchant_id[PD_MERCHANT_ID_LEN + 1];
+		varchar v_country_id[PD_COUNTRY_LEN + 1];
+		varchar	v_currency_id[PD_CCY_ID_LEN + 1];
+		varchar	v_psp_id[PD_PSP_ID_LEN + 1];
+		varchar	v_bucket_type[PD_BUCKET_TYPE_LEN + 1];
+		varchar	v_service_code[PD_SERVICE_CODE_LEN + 1];
+		double	v_bal;
+
+		short	ind_posting_date = -1;
+		short	ind_merchant_id = -1;
+		short	ind_bal= -1;
+		short	ind_psp_id= -1;
+		short	ind_currency_id= -1;
+		short   ind_country_id= -1;
+		short	ind_bucket_type= -1;
+		short	ind_service_code= -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_ph_posting_date.len = strlen(csPostingDate);
+	memcpy(hv_ph_posting_date.arr,csPostingDate,hv_ph_posting_date.len);
+DEBUGLOG(("process_bucket ph posting date = [%.*s]\n",hv_ph_posting_date.len,hv_ph_posting_date.arr));
+
+	hv_service_code.len = strlen(csServiceCode);
+	memcpy(hv_service_code.arr,csServiceCode,hv_service_code.len);
+DEBUGLOG(("process_bucket service_code  = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+/*
+	hv_country.len = strlen(csCountry);
+	memcpy(hv_country.arr,csCountry,hv_country.len);
+DEBUGLOG(("process_bucket country  = [%.*s]\n",hv_country.len,hv_country.arr));
+*/
+	hv_release_period = iReleasePeriod;
+DEBUGLOG(("process_bucket release_period = [%d]\n",hv_release_period));
+
+
+        EXEC SQL DECLARE c_cursor_get_bucket CURSOR FOR
+		SELECT mb_posting_date,
+                        mb_merchant_id,
+                        mb_country_id,
+                        mb_currency_id,
+                        mb_psp_id,
+                        mb_bucket_type,
+                        mb_service_code,
+                        mb_bal
+                  FROM merchant_bucket
+                 WHERE mb_service_code = :hv_service_code
+                   AND mb_bucket_type = 'FT'
+                   AND mb_posting_date <= release_pkg.find_release_date(:hv_ph_posting_date,mb_country_id,:hv_release_period)
+                   AND mb_released_date is null
+                GROUP by mb_posting_date,
+                         mb_merchant_id,
+                         mb_country_id,
+                         mb_currency_id,
+                         mb_psp_id,
+                         mb_bucket_type,
+                         mb_service_code,
+                         mb_bal
+                ORDER BY mb_posting_date;
+		
+                
+        EXEC SQL OPEN c_cursor_get_bucket;
+        do {    
+                EXEC SQL FETCH c_cursor_get_bucket
+                INTO
+         		v_posting_date:ind_posting_date,
+         		v_merchant_id:ind_merchant_id,
+			v_country_id:ind_country_id,
+         		v_currency_id:ind_currency_id,
+         		v_psp_id:ind_psp_id,
+         		v_bucket_type:ind_bucket_type,
+         		v_service_code:ind_service_code,
+         		v_bal:ind_bal;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+
+		iRet = PD_OK;
+
+                hash_init(hTxn,0);
+
+		PutField_CString(hTxn,"cutoff_date",csPostingDate);
+
+/* posting_date */
+		if (ind_posting_date >= 0){
+			v_posting_date.arr[v_posting_date.len]='\0';
+			PutField_CString(hTxn,"posting_date",(const char*)v_posting_date.arr);
+DEBUGLOG(("Process Bucket: posting_date =[%.*s]\n",v_posting_date.len,v_posting_date.arr));
+		}
+
+/* merchant_id */
+		if (ind_merchant_id >= 0 ){
+			v_merchant_id.arr[v_merchant_id.len]='\0';
+			PutField_CString(hTxn,"merchant_id",(const char*)v_merchant_id.arr);
+DEBUGLOG(("Process Bucket: merchant_id =[%.*s]\n",v_merchant_id.len,v_merchant_id.arr));
+			if(GetClientId((const unsigned char *)v_merchant_id.arr,( unsigned char *)csClientId)==PD_OK){
+	                        PutField_CString(hTxn,"client_id",csClientId);
+       		        }
+		}
+
+/* country_id */
+         	if (ind_country_id >= 0 ){
+                	v_country_id.arr[v_country_id.len]='\0';
+			PutField_CString(hTxn,"country_id",(const char*)v_country_id.arr);
+DEBUGLOG(("Process Bucket: country_id =[%.*s]\n",v_country_id.len,v_country_id.arr));
+		}
+
+/* currency_id */
+		if (ind_currency_id >= 0 ){
+			v_currency_id.arr[v_currency_id.len]='\0';
+			PutField_CString(hTxn,"currency_id",(const char*)v_currency_id.arr);
+DEBUGLOG(("Process Bucket: currency_id =[%.*s]\n",v_currency_id.len,v_currency_id.arr));
+		}
+
+/* psp_id */
+		if (ind_psp_id >= 0 ){
+			v_psp_id.arr[v_psp_id.len]='\0';
+			PutField_CString(hTxn,"psp_id",(const char*)v_psp_id.arr);
+DEBUGLOG(("Process Bucket: psp_id =[%.*s]\n",v_psp_id.len,v_psp_id.arr));
+		}
+
+/* bucket_type */
+		if (ind_bucket_type >= 0 ){
+			v_bucket_type.arr[v_bucket_type.len]='\0';
+			PutField_CString(hTxn,"bucket_type",(const char*)v_bucket_type.arr);
+DEBUGLOG(("Process Bucket: bucket_type =[%.*s]\n",v_bucket_type.len,v_bucket_type.arr));
+		}
+
+/* service_code */
+		if (ind_service_code >= 0 ){
+			v_service_code.arr[v_service_code.len]='\0';
+			PutField_CString(hTxn,"service_code",(const char*)v_service_code.arr);
+DEBUGLOG(("Process Bucket: service_code =[%.*s]\n",v_service_code.len,v_service_code.arr));
+		}
+
+		if (is_holidays((const char*)v_country_id.arr,csPostingDate) == PD_TRUE) {
+                        iRet=PD_SKIP_OK;
+DEBUGLOG(("Process Bucket: today is holiday for %s... skip....\n",v_country_id.arr));
+                }
+
+/* bal */
+/* release amount */
+		if (ind_bal >= 0 ){
+			if(v_bal<0.0)
+				v_bal = 0.0;
+DEBUGLOG(("Process Bucket: bal =[%f]\n",v_bal));
+			PutField_Double(hTxn,"released_amt",v_bal);
+			PutField_Double(hTxn,"txn_amt",v_bal);
+		}
+
+
+/* release date */
+		PutField_CString(hTxn,"released_date",csPostingDate);
+
+		if(iRet==PD_OK){
+
+/* try to lock merchant balance record */
+			DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValuesForUpdate");
+               		iRet = (unsigned long)(DBObjPtr)(v_merchant_id.arr,
+						v_currency_id.arr,
+						v_country_id.arr,
+						v_service_code.arr,
+						hTxn);
+			if (iRet == PD_OK) {
+				if (allow_payout((const char*)v_psp_id.arr) == PD_TRUE) {
+DEBUGLOG(("Allow payout....\n"));
+					iRelease2AF = PD_FALSE;
+					PutField_Double(hTxn,"amount",v_bal);
+				}
+				else {
+DEBUGLOG(("Do not allow payout....\n"));
+					iRelease2AF = PD_TRUE;
+					RemoveField_Double(hTxn,"amount");
+
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","CreditMerchantAmount");
+                			iRet = (unsigned long)(DBObjPtr)(v_posting_date.arr,
+							v_merchant_id.arr,
+							v_country_id.arr,
+							v_currency_id.arr,
+							v_service_code.arr,
+							v_psp_id.arr,
+							PD_BUCKET_TYPE_AFTER_PAYOUT_FLOAT,
+							v_bal,
+							PD_UPDATE_USER);
+					if (iRet != PD_OK)  {
+DEBUGLOG(("CreditMerchantAmount Failure\n"));
+ERRLOG("handle_daily_float:process bucket CreditMerchantAmount Failure\n");
+					}
+					else {
+						DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","UpdateAfterPOFloat");
+                				iRet = (unsigned long)(DBObjPtr)(v_merchant_id.arr,
+								v_country_id.arr,
+								v_currency_id.arr,
+								v_service_code.arr,
+								v_bal,
+								PD_UPDATE_USER);
+						if (iRet != PD_OK)  {
+DEBUGLOG(("UpdateAfterPOFloat Failure\n"));
+ERRLOG("handle_daily_float:process bucket UpdateAfterPOFloat Failure\n");
+						}
+
+					}
+				}
+
+				if (iRet == PD_OK) {
+					PutField_Int(hTxn,"release_to_af",iRelease2AF);
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBucket","UpdateReleaseDetails");
+               				iRet = (unsigned long)(DBObjPtr)(hTxn);
+					if (iRet != PD_OK)  {
+DEBUGLOG(("UpdateReleaseDetails Failure\n"));
+ERRLOG("handle_daily_float:process bucket UpdateReleaseDetails Failure\n");
+					}
+				}
+				if (iRet == PD_OK) {
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","ReleaseFloat");
+                			iRet = (unsigned long)(DBObjPtr)(v_merchant_id.arr,
+							v_country_id.arr,
+							v_currency_id.arr,
+							v_service_code.arr,
+							v_bal,
+							PD_UPDATE_USER);
+					if (iRet != PD_OK)  {
+DEBUGLOG(("ReleaseFloat Failure\n"));
+ERRLOG("handle_daily_float:process bucket ReleaseFloat Failure\n");
+					}
+				}
+
+				if (iRet == PD_OK) {
+					DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+               				iRet = (unsigned long)(DBObjPtr)(v_merchant_id.arr,
+						v_currency_id.arr,
+						v_country_id.arr,
+						v_service_code.arr,
+						hTxn);
+					if (iRet == PD_OK) {
+						PutField_Char(hTxn,"status",PD_COMPLETE);
+                				PutField_Char(hTxn,"ar_ind",PD_ACCEPT);
+                				PutField_Int(hTxn,"internal_code",PD_OK);
+                				PutField_CString(hTxn,"response_code","0");
+                				PutField_CString(hTxn,"sub_status",PD_APPROVED);
+						iRet = AddTxnLog(hTxn);
+					}
+				}
+			}
+
+		}
+		if(iRet==PD_SKIP_OK){
+			iRet = PD_OK;
+		}
+		hash_destroy(hTxn);
+ 	}
+	while(PD_TRUE && iRet == PD_OK);
+
+        EXEC SQL CLOSE c_cursor_get_bucket;
+	if (iRet == PD_OK)  {
+		iRet = SUCCESS;
+		TxnCommit();
+	}
+	else  
+		iRet = FAILURE;
+
+	if(iRet==SUCCESS){
+DEBUGLOG(("Process Bucket Normal Exit\n"));
+	}
+	else{
+DEBUGLOG(("Process Bucket Error[%d]\n",iRet));
+	}
+
+	FREE_ME(hTxn);
+        return iRet;
+
+sql_error:
+    DEBUGLOG(("process_bucket error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    ERRLOG("handle_daily_float::process_bucket sql error %d\n", sqlca.sqlcode);
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_get_bucket;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+
+int process_release(hash_t *myHash)
+{
+	int iRet = PD_OK;
+	char	*csMerchantId;
+	char	csClientId[PD_CLIENT_ID_LEN+1];
+	char	*csCcyId;
+	char	*csCountry;
+	char	*csServiceCode;
+	char	*csTmp;
+	hash_t	*hTxn;
+	double	dReleaseBal=0;
+
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("*****process_release start*****\n"));
+
+	if(GetField_CString(myHash,"merchant_id",&csMerchantId)){
+		PutField_CString(hTxn,"merchant_id",csMerchantId);
+		if(GetClientId((const unsigned char *)csMerchantId,( unsigned char *)csClientId)==PD_OK){
+			PutField_CString(hTxn,"client_id",csClientId);
+		}
+	}
+	if(GetField_CString(myHash,"currency_id",&csCcyId)){
+		PutField_CString(hTxn,"currency_id",csCcyId);
+	}
+	if(GetField_CString(myHash,"country_id",&csCountry)){
+		PutField_CString(hTxn,"country_id",csCountry);
+	}
+	if(GetField_CString(myHash,"service_code",&csServiceCode)){
+		PutField_CString(hTxn,"service_code",csServiceCode);
+	}
+	if(GetField_CString(myHash,"cutoff_date",&csTmp)){
+		PutField_CString(hTxn,"cutoff_date",csTmp);
+	}
+
+
+	if(iRet==PD_OK){
+		if(GetField_Double(myHash,"released_amt",&dReleaseBal)){
+			PutField_Double(hTxn,"txn_amt",dReleaseBal);
+		}
+DEBUGLOG(("process_release DBMerchantBalance->ReleaseFloat\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","ReleaseFloat");
+		iRet = (unsigned long)(DBObjPtr)(csMerchantId,csCountry,csCcyId,csServiceCode,dReleaseBal,PD_UPDATE_USER);
+	}
+
+	
+	if(iRet==PD_OK){
+		PutField_Char(hTxn,"status",PD_COMPLETE);
+		PutField_Char(hTxn,"ar_ind",PD_ACCEPT);
+		PutField_Int(hTxn,"internal_code",PD_OK);
+		PutField_CString(hTxn,"response_code","0");
+
+		DBObjPtr = CreateObj(DBPtr,"DBMerchantBalance","GetCurrentValues");
+		if ((*DBObjPtr)(csMerchantId,csCcyId,csCountry,csServiceCode,hTxn)!=PD_OK){
+DEBUGLOG(("DBMerchantBalance::GetCurrentValues Failed\n"));
+		}
+
+		iRet = AddTxnLog(hTxn);
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("process_release Normal Exit\n"));
+	}	
+	else{
+DEBUGLOG(("process_release Error[%d]\n",iRet));
+ERRLOG("handle_daily_float::process_release Error[%d]\n",iRet);
+	}
+
+	FREE_ME(hTxn);
+	return iRet;
+}
+
+
+
+int parse_arg(int argc,char **argv)
+{
+/*
+        char    c;
+	strcpy(cs_cutoff_date,"");
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_cutoff_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_cutoff_date,"")) 
+                return FAILURE;
+
+*/
+        return SUCCESS;
+}
+
+
+int AddTxnLog(const hash_t* hVal)
+{
+	int 	iRet = PD_OK;
+	char	csTxnSeq[PD_TXN_SEQ_LEN+1];
+	char	*csTmp;
+	char	cTmp;
+	double	dTmp;
+	int	iTmp;
+	char	csDateTime[PD_DATETIME_LEN +1];
+	char	csDate[PD_DATE_LEN +1];
+	char	csTime[PD_TIME_LEN +1];
+
+	hash_t	*hTxn;
+	hash_t	*hEle;
+
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	hEle = (hash_t*) malloc (sizeof(hash_t));
+       	hash_init(hEle,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextTxnSeq");
+        strcpy(csTxnSeq,(*DBObjPtr)());
+        csTxnSeq[strlen(csTxnSeq)]='\0';
+	PutField_CString(hTxn,"txn_seq",csTxnSeq);
+DEBUGLOG(("AddTxnLog:: txn_id = [%s]\n",csTxnSeq));
+	
+
+	strcpy(csDateTime,getdatetime());
+	memcpy(csDate,&csDateTime[0],PD_DATE_LEN);
+	csDate[PD_DATE_LEN] = '\0';
+
+	memcpy(csTime,&csDateTime[PD_DATE_LEN],PD_TIME_LEN);
+	csTime[PD_TIME_LEN] = '\0';
+
+	if(GetField_CString(hVal,"cutoff_date",&csTmp)){
+		PutField_CString(hTxn,"approval_date",csTmp);
+		PutField_CString(hTxn,"host_posting_date",csTmp);
+		PutField_CString(hTxn,"transmission_datetime",csDateTime);
+		PutField_CString(hTxn,"tm_date",csDate);
+		PutField_CString(hTxn,"tm_time",csTime);
+		PutField_CString(hTxn,"local_tm_date",csDate);
+		PutField_CString(hTxn,"local_tm_time",csTime);
+DEBUGLOG(("AddTxnLog:: host_posting_date = [%s]\n",csTmp));
+	}
+
+	if(GetField_CString(hVal,"merchant_id",&csTmp)){
+		PutField_CString(hTxn,"merchant_id",csTmp);
+DEBUGLOG(("AddTxnLog:: merchant_id = [%s]\n",csTmp));
+	}
+
+	if(GetField_CString(hVal,"client_id",&csTmp)){
+		PutField_CString(hTxn,"client_id",csTmp);
+DEBUGLOG(("AddTxnLog:: client_id = [%s]\n",csTmp));
+	}
+
+
+	PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+	PutField_CString(hTxn,"process_type",PD_PROCESS_TYPE_DEF);
+	PutField_CString(hTxn,"process_code",PD_PROCESS_CODE_DEF);
+	PutField_CString(hTxn,"channel_code",PD_CHANNEL_WEB);
+	PutField_CString(hTxn,"txn_code",PD_RELEASE_FLOAT);
+
+	if(GetField_CString(hVal,"currency_id",&csTmp)){
+		PutField_CString(hTxn,"txn_ccy",csTmp);
+		PutField_CString(hTxn,"net_ccy",csTmp);
+                PutField_CString(hEle,"ccy",csTmp);
+DEBUGLOG(("AddTxnLog:: txn_ccy = [%s]\n",csTmp));
+	}
+
+	if(GetField_CString(hVal,"country_id",&csTmp)){
+		PutField_CString(hTxn,"txn_country",csTmp);
+DEBUGLOG(("AddTxnLog:: txn_country = [%s]\n",csTmp));
+	}
+
+	if(GetField_CString(hVal,"service_code",&csTmp)){
+		PutField_CString(hTxn,"service_code",csTmp);
+DEBUGLOG(("AddTxnLog:: service_code = [%s]\n",csTmp));
+	}
+
+	if(GetField_Char(hVal,"status",&cTmp)){
+		PutField_Char(hTxn,"status",cTmp);
+DEBUGLOG(("AddTxnLog:: status = [%c]\n",cTmp));
+	}
+	if(GetField_CString(hVal,"sub_status",&csTmp)){
+		PutField_CString(hTxn,"sub_status",csTmp);
+DEBUGLOG(("AddTxnLog:: sub status = [%s]\n",csTmp));
+	}
+
+	if(GetField_Char(hVal,"ar_ind",&cTmp)){
+		PutField_Char(hTxn,"ar_ind",cTmp);
+DEBUGLOG(("AddTxnLog:: ar_ind = [%c]\n",cTmp));
+	}
+
+	if(GetField_CString(hVal,"response_code",&csTmp)){
+		PutField_CString(hTxn,"response_code",csTmp);
+DEBUGLOG(("AddTxnLog:: response_code = [%s]\n",csTmp));
+	}
+
+	if(GetField_Int(hVal,"internal_code",&iTmp)){
+		PutField_Int(hTxn,"internal_code",iTmp);
+DEBUGLOG(("AddTxnLog:: internal_code = [%d]\n",iTmp));
+	}
+
+	if(GetField_Double(hVal,"txn_amt",&dTmp)){
+		PutField_Double(hTxn,"txn_amt",dTmp);
+		PutField_Double(hTxn,"net_amt",dTmp);
+DEBUGLOG(("AddTxnLog:: txn_amt = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"current_bal",&dTmp)){
+		PutField_Double(hTxn,"current_bal",dTmp);
+DEBUGLOG(("AddTxnLog:: current_bal = [%f]\n",dTmp));
+	}
+
+
+
+	if(GetField_Double(hVal,"total_float",&dTmp)){
+		PutField_Double(hTxn,"total_float",dTmp);
+DEBUGLOG(("AddTxnLog:: total_float = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"total_float_settlement",&dTmp)){
+		PutField_Double(hTxn,"total_float_settlement",dTmp);
+DEBUGLOG(("AddTxnLog:: total_float_settlement = [%f]\n",dTmp));
+	}
+	if(GetField_Double(hVal,"total_float_after_payout",&dTmp)){
+		PutField_Double(hTxn,"total_float_after_payout",dTmp);
+DEBUGLOG(("AddTxnLog:: total_float_after_payout = [%f]\n",dTmp));
+	}
+	if(GetField_Double(hVal,"total_reserved_amount",&dTmp)){
+		PutField_Double(hTxn,"total_reserved_amount",dTmp);
+DEBUGLOG(("AddTxnLog:: total_reserved_amount = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"total_hold",&dTmp)){
+		PutField_Double(hTxn,"total_hold",dTmp);
+DEBUGLOG(("AddTxnLog:: total_hold = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"total_hold_settlement",&dTmp)){
+		PutField_Double(hTxn,"total_hold_settlement",dTmp);
+DEBUGLOG(("AddTxnLog:: total_hold_settlement = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"fundin_payout",&dTmp)){
+		PutField_Double(hTxn,"fundin_payout",dTmp);
+DEBUGLOG(("AddTxnLog:: fundin_payout = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"reserved_payout",&dTmp)){
+		PutField_Double(hTxn,"reserved_payout",dTmp);
+DEBUGLOG(("AddTxnLog:: reserved_payout = [%f]\n",dTmp));
+	}
+
+
+	if(GetField_Double(hVal,"current_bal",&dTmp)){
+		PutField_Double(hTxn,"current_bal",dTmp);
+		PutField_Double(hTxn,"open_bal",dTmp);
+DEBUGLOG(("AddTxnLog:: current_bal = [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"current_bal_settlement",&dTmp)){
+		PutField_Double(hTxn,"current_bal_settlement",dTmp);
+		PutField_Double(hTxn,"open_bal_settlement",dTmp);
+DEBUGLOG(("AddTxnLog:: current_bal _settlement= [%f]\n",dTmp));
+	}
+
+	if(GetField_Double(hVal,"settlement_in_transit",&dTmp)){
+		PutField_Double(hTxn,"settlement_in_transit",dTmp);
+DEBUGLOG(("AddTxnLog:: settlement_in_transit = [%f]\n",dTmp));
+	}
+
+
+
+	PutField_Int(hTxn,"db_commit",PD_FALSE);
+	DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+	iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+	
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+		iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+	}
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+		iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+	}
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+		iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+	}
+	if (iRet == PD_OK) {
+		double	dTmp = 0.0;
+		
+		if (GetField_Double(hVal,"amount",&dTmp)) {
+			if(dTmp>0.0){
+				PutField_Double(hEle,"amount",dTmp);
+
+				PutField_CString(hEle,"txn_seq",csTxnSeq);
+		
+/* chg type */
+                		PutField_CString(hEle,"txn_element_type",PD_ELEMENT_MAPO_AMT);
+
+/* party type */
+                		PutField_Char(hEle,"party_type",PD_TYPE_MERCHANT);
+
+/* user */            
+	      			PutField_CString(hEle,"add_user",PD_UPDATE_USER);
+
+/* amount type */
+                		PutField_CString(hEle,"amount_type",PD_CR);
+
+				DBObjPtr = CreateObj(DBPtr,"DBTxnElements","Add");
+                		iRet = (unsigned long)(*DBObjPtr)(hEle);
+			}
+		}
+	}
+
+DEBUGLOG(("AddTxnLog:: iRet = [%d]\n",iRet));
+        hash_destroy(hEle);
+	FREE_ME(hEle);
+
+	FREE_ME(hTxn);
+	return iRet;
+}
+
+
+int	GetClientId(const unsigned char* csMerchantId,
+		    unsigned char* csClientId)
+{
+	int iRet = PD_ERR;
+	EXEC SQL WHENEVER SQLERROR GOTO getmerchant_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_merchant_id[PD_MERCHANT_ID_LEN];
+
+                varchar         v_client_id[PD_CLIENT_ID_LEN +1];
+		short           ind_client_id = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_merchant_id.len = strlen((const char*)csMerchantId);
+        memcpy(hv_merchant_id.arr,(const char*)csMerchantId,hv_merchant_id.len);
+DEBUGLOG(("GetMerchant merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+
+	EXEC SQL SELECT client_id
+		INTO	:v_client_id:ind_client_id
+		FROM	merch_detail
+		WHERE	merchant_id = :hv_merchant_id;
+
+	if (ind_client_id >= 0) {
+                        v_client_id.arr[v_client_id.len] = '\0';
+			strcpy((char*)csClientId,(const char*)v_client_id.arr);
+DEBUGLOG(("GetMerchant client_id = [%s]\n",csClientId));
+			iRet=PD_OK;
+                }
+
+	return iRet;
+
+getmerchant_error:
+DEBUGLOG(("getmerchant_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;	
+}

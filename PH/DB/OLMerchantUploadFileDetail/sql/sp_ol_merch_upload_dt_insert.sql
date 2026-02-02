@@ -1,0 +1,121 @@
+CREATE OR REPLACE FUNCTION sp_ol_merch_upload_dt_insert(
+	in_batch_id		ol_merchant_upload_file_detail.oud_batch_id%type,
+	in_seq_num		ol_merchant_upload_file_detail.oud_seq_num%type,
+	in_txn_id		ol_merchant_upload_file_detail.oud_txn_id%type,
+	in_aux_txn_id		ol_merchant_upload_file_detail.oud_aux_txn_id%type,
+	in_merchant_ref		ol_merchant_upload_file_detail.oud_merchant_ref%type,
+	in_country		ol_merchant_upload_file_detail.oud_country%type,
+	in_identity_id		ol_merchant_upload_file_detail.oud_identity_id%type,
+	in_account_num		ol_merchant_upload_file_detail.oud_account_num%type,
+	in_account_name		ol_merchant_upload_file_detail.oud_account_name%type,
+	in_bank_name		ol_merchant_upload_file_detail.oud_bank_name%type,
+	in_bank_code		ol_merchant_upload_file_detail.oud_bank_code%type,
+	in_branch		ol_merchant_upload_file_detail.oud_branch%type,
+	in_phone_num		ol_merchant_upload_file_detail.oud_phone_num%type,
+	in_province		ol_merchant_upload_file_detail.oud_province%type,
+	in_city			ol_merchant_upload_file_detail.oud_city%type,
+	in_payout_currency	ol_merchant_upload_file_detail.oud_payout_currency%type,
+	in_payout_amount	ol_merchant_upload_file_detail.oud_payout_amount%type,
+	in_request_currency	ol_merchant_upload_file_detail.oud_request_currency%type,
+	in_request_amount	ol_merchant_upload_file_detail.oud_request_amount%type,
+	in_merchant_fee_ccy	ol_merchant_upload_file_detail.oud_merchant_fee_ccy%type,
+	in_merchant_fee		ol_merchant_upload_file_detail.oud_merchant_fee%type,
+	in_member_fee_ccy	ol_merchant_upload_file_detail.oud_member_fee_ccy%type,
+	in_member_fee		ol_merchant_upload_file_detail.oud_member_fee%type,
+	in_markup_ccy		ol_merchant_upload_file_detail.oud_markup_ccy%type,
+	in_markup_amt		ol_merchant_upload_file_detail.oud_markup_amt%type,
+	in_ex_rate		ol_merchant_upload_file_detail.oud_exchange_rate%type,
+	in_status		ol_merchant_upload_file_detail.oud_status%type,
+	in_remark		ol_merchant_upload_file_detail.oud_remark%type,
+	in_merch_grp		ol_merchant_upload_file_detail.oud_merchant_payout_grp%type,
+	in_user			ol_merchant_upload_file_detail.oud_create_user%type
+)
+  RETURN NUMBER IS
+
+BEGIN
+  INSERT INTO ol_merchant_upload_file_detail(
+	oud_batch_id,
+	oud_seq_num,
+	oud_txn_id,
+	oud_aux_txn_id,
+	oud_merchant_ref,
+	oud_country,
+	oud_identity_id,
+	oud_account_num,
+	oud_account_name,
+	oud_bank_name,
+	oud_bank_code,
+	oud_branch,
+	oud_phone_num,
+	oud_province,
+	oud_city,
+	oud_payout_currency,
+	oud_payout_amount,
+	oud_request_currency,
+	oud_request_amount,
+	oud_merchant_fee_ccy,
+	oud_merchant_fee,
+	oud_member_fee_ccy,
+	oud_member_fee,
+	oud_markup_ccy,
+	oud_markup_amt,
+	oud_exchange_rate,
+	oud_status,
+	oud_remark,
+	oud_merchant_payout_grp,
+	oud_psp_payout_grp,
+	oud_create_timestamp,
+        oud_update_timestamp,
+        oud_create_user,
+        oud_update_user
+	)
+
+  VALUES(
+	in_batch_id,
+	in_seq_num,
+	in_txn_id,
+	in_aux_txn_id,
+	in_merchant_ref,
+	in_country,
+	in_identity_id,
+	in_account_num,
+	in_account_name,
+	in_bank_name,
+	in_bank_code,
+	in_branch,
+	in_phone_num,
+	in_province,
+	in_city,
+	in_payout_currency,
+	in_payout_amount,
+	in_request_currency,
+	in_request_amount,
+	in_merchant_fee_ccy,
+        in_merchant_fee,
+        in_member_fee_ccy,
+        in_member_fee,
+        in_markup_ccy,
+        in_markup_amt,
+	in_ex_rate,
+	in_status,
+	in_remark,
+	in_merch_grp,
+	in_merch_grp,
+	sysdate,
+        sysdate,
+        in_user,
+        in_user
+	);
+
+  IF SQL%ROWCOUNT = 0 THEN
+     RETURN 1;
+  ELSE
+     RETURN 0;
+  END IF;
+
+EXCEPTION
+  WHEN OTHERS THEN
+     RETURN 9;
+
+END sp_ol_merch_upload_dt_insert;
+/

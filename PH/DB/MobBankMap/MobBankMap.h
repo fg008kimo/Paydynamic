@@ -1,0 +1,30 @@
+#ifndef _MOB_BANK_MAP_H_
+#define _MOB_BANK_MAP_H_
+
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int GetMobileSegment(const char* csMerchantId,
+                     const char* csBankCode,
+                     hash_t * hTxn);
+
+int GetMobileBankByPsp(const char* csChannelId,
+                       hash_t* myHash);
+
+int GetOutage(const char* csCustomerGroup,
+                recordset_t* myRec);
+
+int FindGroupByPID(const char* csPspId,
+                recordset_t* myRec);
+
+int IsMobileOption(const char* csBankCode);
+
+int GetMobileBankByPID(const char* csPspId,
+                       hash_t* myHash);
+#ifdef __cplusplus
+}
+#endif
+
+#endif

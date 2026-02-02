@@ -1,0 +1,380 @@
+DROP VIEW CRR_VOD_REC_DEPOSIT_VIEW;
+
+CREATE OR REPLACE FORCE VIEW CRR_VOD_REC_DEPOSIT_VIEW
+(
+   CR_TXN_DATE,
+   CR_COUNTRY,
+   CR_PRODUCT,
+   TE_PARTY_TYPE,
+   PARTY_ID,
+   CR_CURRENCY,
+   CR_JNL_TYPE_ID,
+   CR_JNL_ENTRY_TYPE_ID,
+   CR_IND,
+   CR_GL_ID,
+   TXN_COUNT,
+   CR_AMOUNT
+)
+AS
+     SELECT TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TH_MERCHANT_ID PARTY_ID,
+            TD_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TH_NET_AMOUNT) CR_AMOUNT
+       FROM (SELECT *
+               FROM TXN_HEADER
+              WHERE     TH_STATUS IN ('C', 'R')
+                    AND TH_AR_IND = 'A'
+                    AND TH_TXN_CODE in ('VDS', 'VDR', 'VCH', 'VCF')
+                    AND TH_APPROVAL_DATE IS NOT NULL),
+            TXN_DETAIL,
+            (SELECT *
+               FROM CRR_RULE_POSTING
+              WHERE     CR_TXN_CODE = 'VDR'
+                    AND CR_DISABLED = 0
+                    AND CR_PARTY_TYPE = 'M'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'NET_AMT'),
+            (SELECT * FROM CRR_PRODUCT_CODE_MAP WHERE PM_DISABLED = 0)
+      WHERE     TH_TXN_ID = TD_TXN_ID
+            AND TH_MERCHANT_ID = CR_PARTY_ID
+            AND TD_TXN_CCY = CR_CURRENCY_ID
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND PM_MERCHANT_ID = TH_MERCHANT_ID
+            AND PM_SERVICE_CODE = TH_SERVICE_CODE
+            AND PM_COUNTRY = TD_TXN_COUNTRY
+            AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   GROUP BY TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TH_MERCHANT_ID,
+            TD_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+   UNION ALL
+     SELECT TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            '' PARTY_ID,
+            TE_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TE_AMOUNT) CR_AMOUNT
+       FROM (SELECT *
+               FROM TXN_HEADER
+              WHERE     TH_STATUS IN ('C', 'R')
+                    AND TH_AR_IND = 'A'
+                    AND TH_TXN_CODE in ('VDS', 'VDR', 'VCH', 'VCF')
+                    AND TH_APPROVAL_DATE IS NOT NULL),
+            TXN_DETAIL,
+            (SELECT *
+               FROM TXN_ELEMENTS
+              WHERE     TE_AMT_TYPE IS NOT NULL
+                    AND TE_TXN_ELEMENT_TYPE = 'TFEE'
+                    AND TE_PARTY_TYPE = 'M'),
+            (SELECT *
+               FROM CRR_RULE_POSTING
+              WHERE     CR_TXN_CODE = 'VDR'
+                    AND CR_DISABLED = 0
+                    AND CR_PARTY_TYPE = 'G'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'M_FEE'),
+            (SELECT * FROM CRR_PRODUCT_CODE_MAP WHERE PM_DISABLED = 0)
+      WHERE     TH_TXN_ID = TD_TXN_ID
+            AND TH_TXN_ID = TE_TXN_ID
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND PM_MERCHANT_ID = TH_MERCHANT_ID
+            AND PM_SERVICE_CODE = TH_SERVICE_CODE
+            AND PM_COUNTRY = TD_TXN_COUNTRY
+            AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   GROUP BY TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TH_MERCHANT_ID,
+            TE_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+   UNION ALL
+     SELECT TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            '' PARTY_ID,
+            TE_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TE_AMOUNT) CR_AMOUNT
+       FROM (SELECT *
+               FROM TXN_HEADER
+              WHERE     TH_STATUS IN ('C', 'R')
+                    AND TH_AR_IND = 'A'
+                    AND TH_TXN_CODE in ('VDS', 'VDR', 'VCH', 'VCF')
+                    AND TH_APPROVAL_DATE IS NOT NULL),
+            TXN_DETAIL,
+            (SELECT *
+               FROM TXN_ELEMENTS
+              WHERE     TE_AMT_TYPE IS NOT NULL
+                    AND TE_TXN_ELEMENT_TYPE = 'MAMT'
+                    AND TE_PARTY_TYPE = 'R'),
+            (SELECT *
+               FROM CRR_RULE_POSTING
+              WHERE     CR_TXN_CODE = 'VDR'
+                    AND CR_DISABLED = 0
+                    AND CR_PARTY_TYPE = 'G'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'M_FXMU_FEE'),
+            (SELECT * FROM CRR_PRODUCT_CODE_MAP WHERE PM_DISABLED = 0)
+      WHERE     TH_TXN_ID = TD_TXN_ID
+            AND TH_TXN_ID = TE_TXN_ID
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND PM_MERCHANT_ID = TH_MERCHANT_ID
+            AND PM_SERVICE_CODE = TH_SERVICE_CODE
+            AND PM_COUNTRY = TD_TXN_COUNTRY
+            AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   GROUP BY TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TH_MERCHANT_ID,
+            TE_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+   UNION ALL
+     SELECT TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TP_PSP_ID PARTY_ID,
+            TP_TXN_CCY CR_CURRENCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TP_TXN_AMOUNT) CR_AMOUNT
+       FROM (SELECT *
+               FROM TXN_HEADER
+              WHERE     TH_STATUS IN ('C', 'R')
+                    AND TH_AR_IND = 'A'
+                    AND TH_TXN_CODE in ('VDS', 'VDR', 'VCH', 'VCF')
+                    AND TH_APPROVAL_DATE IS NOT NULL),
+            TXN_DETAIL,
+            (SELECT *
+               FROM CRR_RULE_POSTING
+              WHERE     CR_TXN_CODE = 'VDR'
+                    AND CR_DISABLED = 0
+                    AND CR_PARTY_TYPE = 'P'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'TXN_AMT'),
+            TXN_PSP_DETAIL,
+            PSP_DETAIL,
+            (SELECT * FROM CRR_PSP_PRODUCT_CODE_MAP WHERE PM_DISABLED = 0)
+      WHERE     TH_TXN_ID = TD_TXN_ID
+            AND TH_TXN_ID = TP_TXN_ID
+            AND TP_PSP_ID = CR_PARTY_ID
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND TP_PSP_ID = PSP_ID
+            AND PM_PSP_ID = PSP_ID
+            AND PM_BUSINESS_TYPE = PSP_TYPE
+            AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   GROUP BY TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TP_PSP_ID,
+            TP_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+UNION ALL
+     SELECT TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            '' PARTY_ID,
+            TP_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TP_TXN_ID) TXN_COUNT,
+            SUM (TP_SERVICE_FEE) CR_AMOUNT
+       FROM (SELECT TH_TXN_ID,
+                    TH_TXN_CODE,
+                    TH_APPROVAL_DATE
+               FROM TXN_HEADER TH
+              WHERE     TH_STATUS IN ('C', 'R')
+                    AND TH_AR_IND = 'A'
+                    AND TH_TXN_CODE IN ('VDS', 'VDR', 'VCH', 'VCF')
+                    AND TH_APPROVAL_DATE IS NOT NULL),
+            TXN_DETAIL,
+            TXN_PSP_DETAIL,
+            PSP_DETAIL,
+            (SELECT * FROM CRR_PSP_PRODUCT_CODE_MAP WHERE PM_DISABLED = 0),
+            (SELECT CR_COUNTRY_ID,
+                    CR_PARTY_TYPE,
+                    CR_JNL_TYPE_ID,
+                    CR_JNL_ENTRY_TYPE_ID,
+                    CR_TXN_CODE,
+                    CR_PRODUCT_CODE,
+                    CR_PARTY_ID,
+                    CR_CREDIT_GL_ID,
+                    CR_DEBIT_GL_ID
+               FROM CRR_RULE_POSTING
+              WHERE     CR_PARTY_TYPE = 'G'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'PSP_COST'
+                    AND CR_TXN_CODE = 'VDR'
+                    AND CR_DISABLED = 0)
+      WHERE     TH_TXN_ID = TD_TXN_ID
+            AND TH_TXN_ID = TP_TXN_ID
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND TP_PSP_ID = PSP_ID
+            AND PM_PSP_ID = PSP_ID
+            AND PM_BUSINESS_TYPE = PSP_TYPE
+            AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   GROUP BY TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TP_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+UNION ALL
+     SELECT TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TP_PSP_ID PARTY_ID,
+            TP_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TP_TXN_ID) TXN_COUNT,
+            SUM (TP_SERVICE_FEE) CR_AMOUNT
+       FROM (SELECT TH_TXN_ID,
+                    TH_TXN_CODE,
+                    TH_APPROVAL_DATE
+               FROM TXN_HEADER TH
+              WHERE     TH_STATUS IN ('C', 'R')
+                    AND TH_AR_IND = 'A'
+                    AND TH_TXN_CODE IN ('VDS', 'VDR', 'VCH', 'VCF')
+                    AND TH_APPROVAL_DATE IS NOT NULL),
+            TXN_DETAIL,
+            TXN_PSP_DETAIL,
+            PSP_DETAIL,
+            (SELECT * FROM CRR_PSP_PRODUCT_CODE_MAP WHERE PM_DISABLED = 0),
+            (SELECT CR_COUNTRY_ID,
+                    CR_PARTY_TYPE,
+                    CR_JNL_TYPE_ID,
+                    CR_JNL_ENTRY_TYPE_ID,
+                    CR_TXN_CODE,
+                    CR_PRODUCT_CODE,
+                    CR_PARTY_ID,
+                    CR_CREDIT_GL_ID,
+                    CR_DEBIT_GL_ID
+               FROM CRR_RULE_POSTING
+              WHERE     CR_PARTY_TYPE = 'P'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'D_PSP_COST'
+                    AND CR_TXN_CODE = 'VDR'
+                    AND CR_DISABLED = 0)
+      WHERE     TH_TXN_ID = TD_TXN_ID
+            AND TH_TXN_ID = TP_TXN_ID
+            AND TP_PSP_ID = CR_PARTY_ID
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND TP_PSP_ID = PSP_ID
+            AND PM_PSP_ID = PSP_ID
+            AND PM_BUSINESS_TYPE = PSP_TYPE
+            AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   GROUP BY TH_APPROVAL_DATE,
+            CR_COUNTRY_ID,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TP_PSP_ID,
+            TP_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID;
+

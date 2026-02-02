@@ -1,0 +1,776 @@
+/*
+PDProTech (c)2020. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2020/08/24              [ZBL]
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "dbutility.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+int parse_arg(int argc, char **argv);
+int CheckStmtReconStatus(const char *csStmtTxnId);
+int GetPendingFundBAID(const char *csClientId, char *csPDFBaid);
+
+static char	cDebug = 'Y';
+char		cs_batch_id[PD_TXN_SEQ_LEN + 1];
+
+OBJPTR(Channel);
+OBJPTR(DB);
+OBJPTR(Txn);
+
+int batch_init(int argc, char *argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char *argv[])
+{
+	int		iCnt = 0;
+	int		iRet = FAILURE;
+	unsigned long	lBatchId;
+
+DEBUGLOG(("batch_proc: Start!\n"));
+
+	memset(cs_batch_id, 0, sizeof(cs_batch_id));
+	//memset(cs_batch_id, '\0', sizeof(cs_batch_id));
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet == SUCCESS)
+		lBatchId = ctol((const unsigned char *)cs_batch_id, strlen(cs_batch_id));
+	else
+	{
+printf("* Usage: -b BATCH_ID\n");
+		return FAILURE;
+	}
+
+	EXEC SQL WHENEVER SQLERROR GOTO batch_proc_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		unsigned long	hv_batch_id;
+
+		varchar		v_create_user[PD_USER_LEN + 1];
+		varchar		v_stmt_txn_id[PD_TXN_SEQ_LEN + 1];
+		varchar		v_baid[PD_BAID_LEN + 1];
+		varchar		v_report_date[PD_DATE_LEN + 1];
+		varchar		v_amt_type[PD_AMT_TYPE_LEN + 1];
+		varchar		v_txn_ccy[PD_CCY_ID_LEN + 1];
+		double		v_txn_amt;
+		varchar		v_baid_status[PD_ACCOUNT_STATUS_LEN + 1];
+		varchar		v_client_id[PD_CLIENT_ID_LEN + 1];
+		varchar		v_pid_status[PD_ACCOUNT_STATUS_LEN + 1];
+		varchar		v_pid_nature[PD_ACCT_TYPE_LEN + 1];
+		varchar		v_pid_product_map[PD_PRODUCT_CODE_LEN + 1];
+
+		short		ind_create_user		= -1;
+		short		ind_stmt_txn_id		= -1;
+		short		ind_baid		= -1;
+		short		ind_report_date		= -1;
+		short		ind_amt_type		= -1;
+		short		ind_txn_ccy		= -1;
+		short		ind_txn_amt		= -1;
+		short		ind_baid_status		= -1;
+		short		ind_client_id		= -1;
+		short		ind_pid_status		= -1;
+		short		ind_pid_nature		= -1;
+		short		ind_pid_product_map	= -1;
+	EXEC SQL END DECLARE SECTION;
+
+	/* batch_id */
+	hv_batch_id = lBatchId;
+DEBUGLOG(("- batch_id = [%lu]\n", hv_batch_id));
+
+	// Get Details From CRR Product
+	EXEC SQL DECLARE c_cursor_getbatchdetail CURSOR FOR 
+		SELECT	T1.oalg_create_user, 
+			T1.oalg_stmt_txn_id, 
+			T2.olsd_baid, 
+			to_char(T2.olsd_statement_timestamp, 'YYYYMMDD') report_date, 
+			T2.olsd_amt_type, 
+			T2.olsd_txn_ccy, 
+			T2.olsd_txn_amount, 
+			T3.obai_status, 
+			T4.opd_client_id, 
+			T4.opd_status, 
+			T4.opd_bank_acct_type, 
+			T5.pm_product_code 
+		FROM	ol_baid_intra_log_gen		T1, 
+			ol_statement_detail		T2, 
+			ol_bank_acct_id			T3, 
+			ol_psp_detail			T4, 
+			crr_psp_product_code_map	T5 
+		WHERE	T1.oalg_stmt_txn_id = T2.olsd_stat_txn_id 
+			AND T2.olsd_baid = T3.obai_baid 
+			AND T3.obai_psp_id = T4.opd_psp_id 
+			AND T4.opd_psp_id = T5.pm_psp_id(+) 
+			AND T1.oalg_batch_id = :hv_batch_id 
+			AND T1.oalg_status = 'P';
+
+	EXEC SQL OPEN c_cursor_getbatchdetail;
+	do
+	{
+		EXEC SQL FETCH c_cursor_getbatchdetail 
+			INTO	:v_create_user:ind_create_user, 
+				:v_stmt_txn_id:ind_stmt_txn_id, 
+				:v_baid:ind_baid, 
+				:v_report_date:ind_report_date, 
+				:v_amt_type:ind_amt_type, 
+				:v_txn_ccy:ind_txn_ccy, 
+				:v_txn_amt:ind_txn_amt, 
+				:v_baid_status:ind_baid_status, 
+				:v_client_id:ind_client_id, 
+				:v_pid_status:ind_pid_status, 
+				:v_pid_nature:ind_pid_nature, 
+				:v_pid_product_map:ind_pid_product_map;
+
+		if (SQLCODE == SQL_NOT_FOUND)
+			break;
+
+		char	csPDFBaid[PD_BAID_LEN + 1];
+		char	csTmDateTime[PD_DATETIME_LEN + 1];
+		char	csTmDate[PD_DATE_LEN + 1];
+		char	csTmTime[PD_TIME_LEN + 1];
+		char	csTmp[PD_TMP_BUF_LEN + 1];
+		char	*csPBFSeq = NULL;
+		char	*csTxnSeq = NULL;
+		int	iDtlRet = PD_OK;
+		int	iInternalErr = 0;
+		hash_t	*hContext, *hRequest, *hResponse, *hTxn;
+
+		memset(csPDFBaid, 0, sizeof(csPDFBaid));
+		memset(csTmDateTime, 0, sizeof(csTmDateTime));
+		memset(csTmDate, 0, sizeof(csTmDate));
+		memset(csTmTime, 0, sizeof(csTmTime));
+		memset(csTmp, 0, sizeof(csTmp));
+
+		hContext = (hash_t*)malloc(sizeof(hash_t));
+		hash_init(hContext, 0);
+
+		hRequest = (hash_t*)malloc(sizeof(hash_t));
+		hash_init(hRequest, 0);
+
+		hResponse = (hash_t*)malloc(sizeof(hash_t));
+		hash_init(hResponse, 0);
+
+		hTxn = (hash_t*)malloc(sizeof(hash_t));
+		hash_init(hTxn, 0);
+
+		/* batch_id */
+		PutField_Int(hRequest, "batch_id", lBatchId);
+		PutField_Int(hTxn, "batch_id", lBatchId);
+
+		/* stmt_txn_id */
+		if (ind_stmt_txn_id >= 0)
+		{
+			v_stmt_txn_id.arr[v_stmt_txn_id.len] = '\0';
+DEBUGLOG(("- [%d] stmt_txn_id = [%s]\n", iCnt, v_stmt_txn_id.arr));
+		}
+		else
+		{
+DEBUGLOG(("- [%d] Skipped!! Bank statement transaction id not found!!\n", iCnt));
+			iDtlRet = INT_TXN_ID_NOT_FOUND;
+			iRet = FAILURE;
+		}
+
+		// Check BAID Account Status
+		if (iRet == SUCCESS)
+		{
+			if (ind_baid_status >= 0)
+			{
+				v_baid_status.arr[v_baid_status.len] = '\0';
+DEBUGLOG(("- [%d] baid_status = [%s]\n", iCnt, v_baid_status.arr));
+
+				if (strcmp((const char*)v_baid_status.arr, PD_BAID_STATUS_OPEN))
+				{
+DEBUGLOG(("- [%d] Skipped!! BAID status is not open!!\n", iCnt));
+					iDtlRet = INT_BAID_NOT_OPEN;
+					iRet = FAILURE;
+				}
+			}
+			else
+			{
+DEBUGLOG(("- [%d] Skipped!! BAID status not found!!\n", iCnt));
+				iDtlRet = INT_STATUS_NOT_FOUND;
+				iRet = FAILURE;
+			}
+		}
+
+		// Check PID Account Status
+		if (iRet == SUCCESS)
+		{
+			if (ind_pid_status >= 0)
+			{
+				v_pid_status.arr[v_pid_status.len] = '\0';
+DEBUGLOG(("- [%d] pid_status = [%s]\n", iCnt, v_pid_status.arr));
+
+				if (strcmp((const char*)v_pid_status.arr, PD_ACC_OPEN))
+				{
+DEBUGLOG(("- [%d] Skipped!! PID status is not open!!\n", iCnt));
+					iDtlRet = INT_PID_NOT_OPEN;
+					iRet = FAILURE;
+				}
+			}
+			else
+			{
+DEBUGLOG(("- [%d] Skipped!! PID status not found!!\n", iCnt));
+				iDtlRet = INT_STATUS_NOT_FOUND;
+				iRet = FAILURE;
+			}
+		}
+
+		// Check PID Product Code Mapping Exists Or Not
+		if (iRet == SUCCESS)
+		{
+			if (ind_pid_product_map < 0)
+			{
+DEBUGLOG(("- [%d] Skipped!! PID product code mapping not found!!\n", iCnt));
+				iDtlRet = INT_PID_PRODUCT_CODE_EMPTY;
+				iRet = FAILURE;
+			}
+		}
+
+		// Check Bank Statement Reconcile Status
+		if (iRet == SUCCESS)
+		{
+			iRet = CheckStmtReconStatus((const char*)v_stmt_txn_id.arr);
+
+			if (iRet != SUCCESS)
+			{
+				if (iRet == PD_ERR)
+				{
+					iDtlRet = INT_ERR;
+					iRet = FAILURE;
+				}
+				else
+				{
+DEBUGLOG(("- [%d] Skipped!! Bank statement already reconciled!!\n", iCnt));
+					iDtlRet = INT_STMT_RECON_ALREADY;
+					iRet = FAILURE;
+				}
+			}
+		}
+
+		// Prepare For Adding A Transaction Log (OMTChannel::AddTxnLog)
+		if (iRet == SUCCESS)
+		{
+DEBUGLOG(("- [%d] Processing [stmt_txn_id] = [%s]...\n", iCnt, (const char*)v_stmt_txn_id.arr));
+
+			/* txn_seq */
+DEBUGLOG(("- [%d] Calling OLTxnSeq::GetNextOmtTxnSeq\n", iCnt));
+			DBObjPtr = CreateObj(DBPtr, "DBOLTxnSeq", "GetNextOmtTxnSeq");
+			csTxnSeq = strdup((*DBObjPtr)());
+
+DEBUGLOG(("- [%d] Generate batch seq for transaction (BAID Balance Transfer - Intra) = [%s]\n", iCnt, csTxnSeq));
+			PutField_CString(hContext, "txn_seq", csTxnSeq);
+
+			/* channel_code */
+			PutField_CString(hContext, "channel_code", PD_CHANNEL_OMT);
+
+			/* txn_code */
+			PutField_CString(hContext, "txn_code", PD_OL_PSP_BAID_BAL_TRF_INTRA);
+
+			/* PHDATE / local_tm_date / local_tm_time */
+			strcpy(csTmDateTime, getdatetime());
+
+			sprintf(csTmDate, "%.*s", PD_DATE_LEN, csTmDateTime);
+			PutField_CString(hContext, "PHDATE", csTmDate);
+			PutField_CString(hContext, "local_tm_date", csTmDate);
+
+			sprintf(csTmTime, "%.*s", PD_TIME_LEN, &csTmDateTime[PD_DATE_LEN]);
+			PutField_CString(hContext, "local_tm_time", csTmTime);
+
+			/* mini_mmm_mode */
+			DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+
+			if ((unsigned long)(DBObjPtr)(PD_MINI_MMM_ENABLE, csTmp) == PD_FOUND)
+			{
+DEBUGLOG(("- [%d] Mini-MMM Mode = [%s]\n", iCnt, csTmp));
+				PutField_CString(hContext, "mini_mmm_mode", csTmp);
+			}
+
+			/* do_logging */
+			PutField_Int(hContext, "do_logging", PD_TRUE);
+
+			/* db_commit */
+			PutField_Int(hContext, "db_commit", PD_FALSE);
+
+			/* add_user */
+			if (ind_create_user >= 0)
+			{
+				v_create_user.arr[v_create_user.len] = '\0';
+DEBUGLOG(("- [%d] create_user = [%s]\n", iCnt, v_create_user.arr));
+				PutField_CString(hContext, "add_user", (const char*)v_create_user.arr);
+				PutField_CString(hRequest, "add_user", (const char*)v_create_user.arr);
+			}
+
+			/* process_type / process_code */
+			PutField_CString(hContext, "process_type", PD_PROCESS_TYPE_DEF);
+			PutField_CString(hContext, "process_code", PD_PROCESS_CODE_DEF);
+
+			/* txn_ccy */
+			if (ind_txn_ccy >= 0)
+			{
+				v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+DEBUGLOG(("- [%d] txn_ccy = [%s]\n", iCnt, v_txn_ccy.arr));
+				PutField_CString(hRequest, "txn_ccy", (const char*)v_txn_ccy.arr);
+			}
+			else
+			{
+DEBUGLOG(("- [%d] Skipped!! Transaction currency not found!!\n", iCnt));
+				iDtlRet = INT_CURRENCY_CODE_NOT_FOUND;
+				iRet = FAILURE;
+			}
+
+			/* txn_amt */
+			if (ind_txn_amt >= 0)
+			{
+DEBUGLOG(("- [%d] txn_amt = [%lf]\n", iCnt, v_txn_amt));
+				sprintf(csTmp, "%lf", v_txn_amt);
+				PutField_CString(hRequest, "txnamt", csTmp);
+				//PutField_CString(hContext, "txn_amt", csTmp);
+			}
+			else
+			{
+DEBUGLOG(("- [%d] Skipped!! Transaction amount not found!!\n", iCnt));
+				iDtlRet = INT_TXN_AMT_MISSING;
+				iRet = FAILURE;
+			}
+
+			// Add Transaction Log (OMTChannel::AddTxnLog)
+			if (iRet == SUCCESS)
+			{
+DEBUGLOG(("- [%d] Calling OMTChannel::AddTxnLog\n", iCnt));
+				ChannelObjPtr = CreateObj(ChannelPtr, "OMTChannel", "AddTxnLog");
+				iDtlRet = (unsigned long)(ChannelObjPtr)(hContext, hRequest);
+
+				if (iDtlRet != PD_OK)
+				{
+DEBUGLOG(("- [%d] Calling OMTChannel::AddTxnLog Failure!!\n", iCnt));
+					iRet = FAILURE;
+				}
+			}
+
+			// Call Transaction Common Handler (TxnOmtByUsCOM::Authorize)
+			if (iRet == SUCCESS)
+			{
+DEBUGLOG(("- [%d] Calling TxnOmtByUsCOM::Authorize\n", iCnt));
+				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsCOM", "Authorize");
+				iDtlRet = (unsigned long)(TxnObjPtr)(hContext, hRequest, hResponse);
+
+				if (iDtlRet == PD_OK)
+				{
+					if (GetField_Int(hContext, "internal_error", &iInternalErr))
+					{
+DEBUGLOG(("- [%d] Calling TxnOmtByUsCOM::Authorize Return Internal Error [%d]!!\n", iCnt, iInternalErr));
+						//iDtlRet = iInternalErr;
+						iRet = FAILURE;
+					}
+				}
+				else
+				{
+DEBUGLOG(("- [%d] Calling TxnOmtByUsCOM::Authorize Failure [%d]!!\n", iCnt, iDtlRet));
+					iRet = FAILURE;
+				}
+			}
+
+			// Prepare For Calling Transaction BAID Balance BAID - Intra Handler (TxnOmtByUsPBF::Authorize)
+			if (iRet == SUCCESS)
+			{
+				/* client_id */
+				if (ind_client_id >= 0)
+				{
+					v_client_id.arr[v_client_id.len] = '\0';
+DEBUGLOG(("- [%d] client_id = [%s]\n", iCnt, (const char*)v_client_id.arr));
+
+					// Get Pending Fund BAID
+					iRet = GetPendingFundBAID((const char*)v_client_id.arr, csPDFBaid);
+
+					if (iRet != SUCCESS)
+					{
+						if (iRet == PD_ERR)
+						{
+							iDtlRet = INT_ERR;
+							iRet = FAILURE;
+						}
+						else
+						{
+DEBUGLOG(("- [%d] Skipped!! Pending Fund BAID not found!!\n", iCnt));
+							iDtlRet = INT_BAID_NOT_FOUND;
+							iRet = FAILURE;
+						}
+					}
+					else
+					{
+DEBUGLOG(("- [%d] pdf_baid = [%s]\n", iCnt, csPDFBaid));
+					}
+				}
+				else
+				{
+DEBUGLOG(("- [%d] Skipped!! Client ID not found!!\n", iCnt));
+					iDtlRet = INT_CLIENT_ID_NOT_FOUND;
+					iRet = FAILURE;
+				}
+
+				/* amt_type */
+				if (iRet == SUCCESS)
+				{
+					if (ind_amt_type >= 0)
+					{
+						v_amt_type.arr[v_amt_type.len] = '\0';
+DEBUGLOG(("- [%d] amt_type = [%s]\n", iCnt, v_amt_type.arr));
+					}
+					else
+					{
+DEBUGLOG(("- [%d] Skipped!! Amount type not found!!\n", iCnt));
+						iDtlRet = INT_AMT_TYPE_NOT_FOUND;
+						iRet = FAILURE;
+					}
+				}
+
+				/* baid */
+				if (iRet == SUCCESS)
+				{
+					if (ind_baid >= 0)
+					{
+						v_baid.arr[v_baid.len] = '\0';
+DEBUGLOG(("- [%d] baid = [%s]\n", iCnt, v_baid.arr));
+					}
+					else
+					{
+DEBUGLOG(("- [%d] Skipped!! BAID not found!!\n", iCnt));
+						iDtlRet = INT_BAID_NOT_FOUND;
+						iRet = FAILURE;
+					}
+				}
+
+				/* BAID Type */
+				if (iRet == SUCCESS)
+				{
+					if (ind_pid_nature >= 0)
+					{
+						v_pid_nature.arr[v_pid_nature.len] = '\0';
+DEBUGLOG(("- [%d] baid_type = [%s]\n", iCnt, v_pid_nature.arr));
+					}
+				}
+
+				/* fr_baid / to_baid */
+				if (iRet == SUCCESS)
+				{
+					if (!strcmp((const char*)v_amt_type.arr, PD_CR) && (!strcmp((const char*)v_pid_nature.arr, PD_NATURE_INTERMEDIATE) || !strcmp((const char*)v_pid_nature.arr, PD_NATURE_PAYOUT)))
+					{
+						PutField_CString(hRequest, "fr_baid", csPDFBaid);
+						PutField_CString(hRequest, "to_baid", (const char*)v_baid.arr);
+					}
+					else if (!strcmp((const char*)v_amt_type.arr, PD_DR) && (!strcmp((const char*)v_pid_nature.arr, PD_NATURE_INTERMEDIATE) || !strcmp((const char*)v_pid_nature.arr, PD_NATURE_PAYOUT)))
+					{
+						PutField_CString(hRequest, "fr_baid", (const char*)v_baid.arr);
+						PutField_CString(hRequest, "to_baid", csPDFBaid);
+					}
+					else
+					{
+DEBUGLOG(("- [%d] Skipped!! Unexpected value in amount type or unexpected type in BAID!!\n", iCnt));
+							iDtlRet = INT_AMT_TYPE_NOT_FOUND;
+							iRet = FAILURE;
+					}
+				}
+
+				// Call Transaction BAID Balance BAID - Intra Handler (TxnOmtByUsPBF::Authorize)
+				if (iRet == SUCCESS)
+				{
+					/* fr_remark / to_remark */
+					PutField_CString(hRequest, "fr_remark", "Log Gen");
+					PutField_CString(hRequest, "to_remark", "Log Gen");
+
+					/* report_date */
+					if (ind_report_date >= 0)
+					{
+						v_report_date.arr[v_report_date.len] = '\0';
+DEBUGLOG(("- [%d] report_date = [%s]\n", iCnt, v_report_date.arr));
+						PutField_CString(hRequest, "report_date", (const char*)v_report_date.arr);
+					}
+
+					/* gen_unique_amt */
+					PutField_CString(hRequest, "gen_unique_amt", PD_FIELD_DISABLE);
+
+DEBUGLOG(("- [%d] Calling TxnOmtByUsPBF::Authorize\n", iCnt));
+					TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsPBF", "Authorize");
+					iDtlRet = (unsigned long)(TxnObjPtr)(hContext, hRequest, hResponse);
+
+					if (iDtlRet == PD_OK)
+					{
+						if (GetField_Int(hContext, "internal_error", &iInternalErr))
+						{
+DEBUGLOG(("- [%d] Calling TxnOmtByUsPBF::Authorize Return Internal Error [%d]!!\n", iCnt, iInternalErr));
+							//iDtlRet = iInternalErr;
+							iRet = FAILURE;
+						}
+					}
+					else
+					{
+DEBUGLOG(("- [%d] Calling TxnOmtByUsPBF::Authorize Failure [%d]!!\n", iCnt, iDtlRet));
+						iRet = FAILURE;
+					}
+				}
+			}
+
+			// Prepare For Updating Transaction Log (OMTChannel::UpdateTxnLog)
+			if (iRet == SUCCESS)
+			{
+				/* status / ar_ind / sub_status / recon_status */
+				PutField_Char(hContext, "status", PD_COMPLETE);
+				PutField_Char(hContext, "ar_ind", PD_ACCEPT);
+				PutField_CString(hContext, "sub_status", PD_APPROVED);
+				PutField_Char(hContext, "recon_status", PD_UNRECONCILED);
+
+				/* internal_code / response_code */
+				PutField_Int(hContext, "internal_code", PD_OK);
+				PutField_CString(hContext, "response_code", "0");
+
+				// Update Transaction Log (OMTChannel::UpdateTxnLog)
+DEBUGLOG(("- [%d] Calling OMTChannel::UpdateTxnLog\n", iCnt));
+				ChannelObjPtr = CreateObj(ChannelPtr, "OMTChannel", "UpdateTxnLog");
+				iDtlRet = (unsigned long)(ChannelObjPtr)(hContext, hRequest, hResponse);
+
+				if (iDtlRet != PD_OK)
+				{
+DEBUGLOG(("- [%d] Calling OMTChannel::UpdateTxnLog Failure!!\n", iCnt));
+					iRet = FAILURE;
+				}
+			}
+		}
+
+		// Prepare For Updating BAID Intra Log Generate Info
+		/* batch_id / stmt_txn_id / gen_txn_id_fr / ret_code / update_user */
+		PutField_CString(hTxn, "batch_id", cs_batch_id);
+		PutField_CString(hTxn, "stmt_txn_id", (const char*)v_stmt_txn_id.arr);
+
+		if (iRet == SUCCESS && csTxnSeq != NULL)
+			PutField_CString(hTxn, "gen_txn_id_fr", csTxnSeq);
+
+		PutField_Int(hTxn, "ret_code", iDtlRet);
+		PutField_CString(hTxn, "update_user", (const char*)v_create_user.arr);
+
+		/* status / gen_txn_id_to */
+		if (iRet == SUCCESS && GetField_CString(hResponse, "txn_seq_tt", &csPBFSeq))
+		{
+DEBUGLOG(("- [%d] Return batch seq from transaction (BAID Balance Transfer - Intra) = [%s]!!\n", iCnt, csPBFSeq));
+
+			PutField_Char(hTxn, "status", PD_ACCEPT);
+			PutField_CString(hTxn, "gen_txn_id_to", csPBFSeq);
+		}
+		else
+		{
+			PutField_Char(hTxn, "status", PD_REJECT);
+			TxnAbort();
+		}
+
+		// Update BAID Intra Log Generate Info
+DEBUGLOG(("- [%d] Calling DBOLBaidIntraLogGen::UpdateByStmtTxnId\n", iCnt));
+		DBObjPtr = CreateObj(DBPtr, "DBOLBaidIntraLogGen", "UpdateByStmtTxnId");
+		iDtlRet = (unsigned long)((DBObjPtr)(hTxn));
+
+		if (iDtlRet == PD_OK)
+			TxnCommit();
+		else
+			TxnAbort();
+
+		iCnt++;
+		iRet = SUCCESS;
+
+		FREE_ME(csTxnSeq);
+
+		hash_destroy(hContext);
+		FREE_ME(hContext);
+
+		hash_destroy(hRequest);
+		FREE_ME(hRequest);
+
+		hash_destroy(hResponse);
+		FREE_ME(hResponse);
+
+		hash_destroy(hTxn);
+		FREE_ME(hTxn);
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getbatchdetail;
+
+DEBUGLOG(("batch_proc: normal exit!\n"));
+	return iRet;
+
+batch_proc_error:
+DEBUGLOG(("batch_proc_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getbatchdetail;
+	EXEC SQL ROLLBACK RELEASE;
+	return FAILURE;	
+}
+
+int batch_terminate(int argc, char *argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+
+	strcpy(cs_batch_id, "");
+
+	if (argc < 3)
+	{
+DEBUGLOG(("- argc = [%d]\n", argc));
+		return FAILURE;
+	}
+
+	while ((c = getopt(argc, argv, "b:")) != EOF)
+	{
+		switch (c)
+		{
+			case 'b':
+				strcpy(cs_batch_id, optarg);
+				break;
+
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_batch_id, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}
+
+int CheckStmtReconStatus(const char *csStmtTxnId)
+{
+	int iRet = SUCCESS;
+
+DEBUGLOG(("CheckStmtReconStatus: Begin!\n"));
+
+	EXEC SQL WHENEVER SQLERROR GOTO check_stmt_recon_status_err;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_stmt_txn_id[PD_TXN_SEQ_LEN];
+
+		char		v_recon_status;
+
+		short		ind_recon_status = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	/* stmt_txn_id */
+	hv_stmt_txn_id.len = strlen(csStmtTxnId);
+	memcpy(hv_stmt_txn_id.arr, csStmtTxnId, hv_stmt_txn_id.len);
+DEBUGLOG(("- stmt_txn_id = [%.*s]\n", hv_stmt_txn_id.len, hv_stmt_txn_id.arr));
+
+	EXEC SQL SELECT obt_recon_status 
+		INTO	:v_recon_status:ind_recon_status 
+		FROM	ol_baid_txn 
+		WHERE	obt_stat_txn_id = :hv_stmt_txn_id 
+			AND obt_status = 'C';
+
+	/* recon_status */
+	if (ind_recon_status >= 0)
+	{
+DEBUGLOG(("- recon_status = [%c]\n", v_recon_status));
+
+		if (v_recon_status != PD_UNRECONCILED)
+			iRet = FAILURE;
+	}
+	else
+	{
+DEBUGLOG(("- recon_status not found!!\n"));
+		iRet = PD_ERR;
+	}
+
+	return iRet;
+
+check_stmt_recon_status_err:
+DEBUGLOG(("check_stmt_recon_status_err code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("ol_bal_trf_in_intra_log_gen_CheckStmtReconStatus: SP_INTERNAL_ERR\n");
+DEBUGLOG(("CheckStmtReconStatus: SP_INTERNAL_ERR\n"));
+	return PD_ERR;
+}
+
+int GetPendingFundBAID(const char *csClientId, char *csPDFBaid)
+{
+	int iRet = FAILURE;
+
+DEBUGLOG(("GetPendingFundBAID: Begin!\n"));
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_pending_fund_baid_err;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar		hv_client_id[PD_CLIENT_ID_LEN];
+
+		varchar		v_pdf_baid[PD_BAID_LEN + 1];
+
+		short		ind_pdf_baid = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	/* client_id */
+	hv_client_id.len = strlen(csClientId);
+	memcpy(hv_client_id.arr, csClientId, hv_client_id.len);
+DEBUGLOG(("- client_id = [%.*s]\n", hv_client_id.len, hv_client_id.arr));
+
+	EXEC SQL SELECT obai_baid 
+		INTO	:v_pdf_baid:ind_pdf_baid 
+		FROM	ol_psp_detail, 
+			ol_bank_acct_id 
+		WHERE	opd_psp_id = obai_psp_id 
+			AND opd_bank_acct_type = 'PDF' 
+			AND opd_status = 'O' 
+			AND obai_status = 'O' 
+			AND obai_category = 'ITL_PEND' 
+			AND opd_client_id = :hv_client_id;
+
+	/* pdf_baid */
+	if (ind_pdf_baid >= 0)
+	{
+		v_pdf_baid.arr[v_pdf_baid.len] = '\0';
+		memcpy(csPDFBaid, v_pdf_baid.arr, v_pdf_baid.len);
+DEBUGLOG(("- pdf_baid = [%s]\n", (const char*)v_pdf_baid.arr));
+
+		iRet = SUCCESS;
+	}
+	else
+	{
+DEBUGLOG(("- pdf_baid not found!!\n"));
+	}
+
+	return iRet;
+
+get_pending_fund_baid_err:
+DEBUGLOG(("get_pending_fund_baid_err code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+ERRLOG("ol_bal_trf_in_intra_log_gen_GetPendingFundBAID: SP_INTERNAL_ERR\n");
+DEBUGLOG(("GetPendingFundBAID: SP_INTERNAL_ERR\n"));
+	return PD_ERR;
+}

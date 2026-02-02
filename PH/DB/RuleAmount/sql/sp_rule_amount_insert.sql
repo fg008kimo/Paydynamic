@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION sp_rule_amount_insert(
+	in_type			rule_amount.ra_type%type,
+	in_value		rule_amount.ra_value%type,
+	in_add_value		rule_amount.ra_add_value%type,
+	in_desc			rule_amount.ra_desc%type,
+	in_disabled		rule_amount.ra_disabled%type,
+	in_min_value		rule_amount.ra_min_value%type,
+	in_max_value		rule_amount.ra_max_value%type,
+	in_create_user		rule_amount.ra_create_user%type,
+	out_type_id	out	rule_amount.ra_id%type
+)
+return number is
+begin
+
+		select max(NVL(ra_id,0))+1
+		  into out_type_id
+		from rule_amount;
+
+		insert into rule_amount
+			(ra_id,
+			 ra_type,
+			 ra_value,
+			 ra_add_value,
+			 ra_desc,
+			 ra_disabled,
+			 ra_min_value,
+			 ra_max_value,
+			 ra_create_timestamp,
+			 ra_create_user,
+			 ra_update_timestamp,
+			 ra_update_user)
+		values(out_type_id,
+			in_type,
+			in_value,
+			in_add_value,
+			in_desc,
+			in_disabled,
+			in_min_value,
+			in_max_value,
+			sysdate,
+			in_create_user,
+			sysdate,
+			in_create_user);
+		if SQL%ROWCOUNT = 0 THEN
+			return 1;
+		else
+			return 0;
+		end if;
+
+exception
+  when others then
+  return 9;
+end sp_rule_amount_insert;
+/

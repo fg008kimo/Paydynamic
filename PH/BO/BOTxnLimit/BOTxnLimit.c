@@ -1,0 +1,608 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/05/29              Cody Chan
+Cater Voucher Payment				   2013/09/19		   Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOTxnLimit.h"
+
+char    cDebug;
+OBJPTR(DB);
+
+void BOTxnLimit(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int TxnMerchantCap(hash_t	*hContext,
+		const char* csCountryId,
+		const char*	csChannelCode,
+		const char*	csTxnCode,
+		const char*	csServiceCode,
+		const char*	csMerchantId,
+		const char*     csMerchantClientId,
+		const char*     csTxnCcy,
+		double		dTxnAmt);
+
+int     TxnCustomerCap(hash_t *hContext,
+                const char* csCountryId,
+                const char*     csChannelCode,
+                const char*     csTxnCode,
+                const char*     csServiceCode,
+                const char*     csMerchantId,
+                const char*     csMerchantClientId,
+                const char*     csTxnCcy,
+                const char*     csCustomerID,
+                double          dTxnAmt);
+
+int TxnLimit(hash_t *hContext,
+                        const hash_t *hRequest)
+{
+	int	iRet = PD_OK;
+	char	*csTxnSeq;
+	char	*csCountryId;
+	char	*csChannelCode;
+	char	*csServiceCode;
+	char	*csPayMethod;
+	char	*csMerchantId;
+	char	*csMerchantClientId;
+	char	*csTxnCcy;
+	char	*csTxnCode;
+
+	double	dTxnAmt;
+
+	char	cType;
+	double	dMinValue;
+	double	dMaxValue;
+	hash_t	*hRec;
+	recordset_t     *rRecordSet; 
+
+	int	iIsVoucher = PD_FALSE;
+	char	*csCustomerID;
+
+
+ 	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	
+	GetField_CString(hContext,"txn_seq",&csTxnSeq);
+
+        if (!GetField_CString(hContext,"org_txn_code",&csTxnCode)) {
+        	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_code = [%s]\n",csTxnCode));
+        	}
+        	else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_code not found!!!\n"));
+        	}
+	}
+	else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_code = [%s]\n",csTxnCode));
+	}
+
+/* channel_code */
+        if (GetField_CString(hContext,"channel_code",&csChannelCode)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() channel_code = [%s]\n",csChannelCode));
+        }
+        else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() channel_code is missing!!!\n"));
+        }
+
+/* service_code */
+        if (GetField_CString(hRequest,"service_code",&csServiceCode)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() service_code = [%s]\n",csServiceCode));
+        }
+        else if (GetField_CString(hContext,"org_service_code",&csServiceCode)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() org_service_code = [%s]\n",csServiceCode));
+        }
+        else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() service_code is missing!!!\n"));
+        }
+
+/* pay_method */
+        if (GetField_CString(hRequest,"pay_method",&csPayMethod)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() pay_method = [%s]\n",csPayMethod));
+        }
+        else {
+        	if (GetField_CString(hContext,"selected_pay_method",&csPayMethod)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() selected_pay_method = [%s]\n",csPayMethod));
+		}
+		else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() pay_method is missing!!!\n"));
+		}
+        }
+
+
+/*country id */
+        if (GetField_CString(hRequest,"txn_country",&csCountryId)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_country = [%s]\n",csCountryId));
+        }
+        else {
+        	if (GetField_CString(hContext,"org_txn_country",&csCountryId)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() org_txn_country = [%s]\n",csCountryId));
+		}
+		else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_country is missing!!!\n"));
+		}
+        }
+
+/*merchant id */
+        if (GetField_CString(hRequest,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() merchant_id = [%s]\n",csMerchantId));
+        }
+        else {
+        	if (GetField_CString(hContext,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() merchant_id = [%s]\n",csMerchantId));
+        	}
+		else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() merchant_id is missing!!!\n"));
+		}
+        }
+
+/*merchant client id */
+        if (GetField_CString(hContext,"merchant_client_id",&csMerchantClientId)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() merchant_client_id = [%s]\n",csMerchantClientId));
+        }
+        else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() merchant_client_id is missing!!!\n"));
+        }
+
+
+/*txn ccy */
+        if (GetField_CString(hRequest,"txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_ccy = [%s]\n",csTxnCcy));
+        }
+        else {
+        	if (GetField_CString(hContext,"org_txn_ccy",&csTxnCcy)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_ccy = [%s]\n",csTxnCcy));
+        	}
+		else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_ccy is missing!!!\n"));
+		}
+        }
+
+/*txn amt */
+        if (GetField_Double(hContext,"txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_amt = [%lf]\n",dTxnAmt));
+        }
+	else {
+        	if (GetField_Double(hContext,"org_txn_amt",&dTxnAmt)) {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_amt = [%lf]\n",dTxnAmt));
+		}
+		else {
+DEBUGLOG(("BOTxnLimit:TxnLimit() txn_amt is missing!!!\n"));
+		}
+        }
+
+/* customer id for voucher */
+	if (GetField_CString(hContext, "customer_id", &csCustomerID)) {
+DEBUGLOG(("BOxnLimit:TxnLimit() customer_id = [%s]\n", csCustomerID));
+		iIsVoucher = PD_TRUE;
+	}
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBRuleTxnLimit","Find");
+	if ((*DBObjPtr)(csTxnCode,
+			csCountryId,
+			csChannelCode,
+			csServiceCode,
+			csPayMethod,
+			csTxnCcy,
+                        csMerchantId,
+			csMerchantClientId,
+			rRecordSet) == PD_OK) {
+DEBUGLOG(("BOTxnLimit: foudn record\n"));
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) { 
+
+			if (!GetField_Char(hRec,"type",&cType))  {
+				cType = ' ';
+			}
+			if (!GetField_Double(hRec,"min_value",&dMinValue))  {
+				dMinValue = 0.0;
+			}
+DEBUGLOG(("BOTxnLimit: dMinValue = [%lf]\n",dMinValue));
+			if (!GetField_Double(hRec,"max_value",&dMaxValue))  {
+				dMaxValue = 0.0;
+			}
+DEBUGLOG(("BOTxnLimit: dMaxValue = [%lf]\n",dMaxValue));
+
+			if (dMinValue > 0) {
+				if (dMinValue > dTxnAmt)  {
+ERRLOG("BOTxnLimit Txn Amt[%lf] < [%lf] too small\n",dTxnAmt,dMinValue);
+DEBUGLOG(("BOTxnLimit Txn Amt[%lf] < [%lf] too small\n",dTxnAmt,dMinValue));
+					if (iIsVoucher == PD_TRUE) {
+						iRet = INT_INVALID_MIN_PAY_AMOUNT_VP;
+					} else {
+						iRet = INT_INVALID_PAY_AMOUNT;
+					}
+					PutField_Int(hContext,"internal_error",iRet);
+				}
+			}
+
+			if (dMaxValue > 0 && iRet == PD_OK) {
+				if (dTxnAmt > dMaxValue)  {
+ERRLOG("BOTxnLimit Txn Amt[%lf] >  [%lf] too large\n",dTxnAmt,dMaxValue);
+DEBUGLOG(("BOTxnLimit Txn Amt[%lf] > [%lf] too large\n",dTxnAmt,dMaxValue));
+					if (iIsVoucher == PD_TRUE) {
+						iRet = INT_INVALID_MAX_PAY_AMOUNT_VP;
+					} else {
+						iRet = INT_INVALID_PAY_AMOUNT;
+					}
+					PutField_Int(hContext,"internal_error",iRet);
+				}
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+        }
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+
+	if (iRet == PD_OK) {
+		iRet = TxnMerchantCap(hContext,
+					csCountryId,
+					csChannelCode,
+					csTxnCode,
+					csServiceCode,
+					csMerchantId,
+					csMerchantClientId,
+					csTxnCcy,
+					dTxnAmt);
+DEBUGLOG(("BOTxnLimit: TxnMerchantCap return [%d]\n", iRet));
+	}
+
+	if ((iRet == PD_OK) && (iIsVoucher == PD_TRUE)) {
+		iRet = TxnCustomerCap(hContext,
+					csCountryId,
+					csChannelCode,
+					csTxnCode,
+					csServiceCode,
+					csMerchantId,
+					csMerchantClientId,
+					csTxnCcy,
+					csCustomerID,
+					dTxnAmt);
+DEBUGLOG(("BOTxnLimit: TxnMerchantCap return [%d]\n", iRet));
+	}
+
+
+DEBUGLOG(("BOTxnLimit: exit = [%d]\n",iRet));
+	return iRet;
+}
+
+int TxnMerchantCap(hash_t* hContext,
+		const char* csCountryId,
+		const char*	csChannelCode,
+		const char*	csTxnCode,
+		const char*	csServiceCode,
+		const char*	csMerchantId,
+		const char*	csMerchantClientId,
+		const char*	csTxnCcy,
+		double		dTxnAmt)
+{
+	int	iRet = PD_OK;
+	char	cType;
+	char*	csCategory;
+	char	csLimitCcy[PD_CURRENCY_ID_LEN +1];
+	char*	csCcy;
+
+	double	dValue = 0.0;
+	double	dCounter = 0.0;
+	double	dTotalCounter = 0.0;
+	double	dTotal = 0.0;
+	double	dRate = 0.0;
+
+	hash_t	*hRec,*hCounter;
+	recordset_t     *rRecordSet; 
+	recordset_t     *rRec;
+
+ 	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+ 	rRec = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRec,0);
+DEBUGLOG(("TxnMerchantCap()\n"));
+DEBUGLOG(("TxnMerchantCap() country id = [%s]\n",csCountryId));
+DEBUGLOG(("TxnMerchantCap() channel code = [%s]\n",csChannelCode));
+DEBUGLOG(("TxnMerchantCap() txn code = [%s]\n",csTxnCode));
+DEBUGLOG(("TxnMerchantCap() service code = [%s]\n",csServiceCode));
+DEBUGLOG(("TxnMerchantCap() merchant id = [%s]\n",csMerchantId));
+DEBUGLOG(("TxnMerchantCap() client id = [%s]\n",csMerchantClientId));
+DEBUGLOG(("TxnMerchantCap() txn ccy = [%s]\n",csTxnCcy));
+DEBUGLOG(("TxnMerchantCap() txn amt = [%lf]\n",dTxnAmt));
+	
+        DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+        if ((unsigned long)(DBObjPtr)(PD_LIMIT_CCY,csLimitCcy) == FOUND) {
+DEBUGLOG(("TxnMerchantCap() limit ccy  = [%s]\n",csLimitCcy));
+        }
+        else {
+     		iRet = INT_ERR;
+ERRLOG("TxnMerchantCap() Unable to limit ccy\n");
+       }
+
+	DBObjPtr = CreateObj(DBPtr,"DBRuleMerchantTxnCap","Find");
+	if ((unsigned long)(*DBObjPtr)(csCountryId,
+			csChannelCode,
+			csTxnCode,
+			csServiceCode,
+			csMerchantId,
+			csMerchantClientId,
+			rRecordSet) == PD_FOUND) {
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) { 
+			if (!GetField_Char(hRec,"type",&cType))  {
+				cType = ' ';
+			}
+			else {
+DEBUGLOG(("TxnMerchantCap() type = [%c]*\n",cType));
+			}
+
+			if (!GetField_CString(hRec,"category",&csCategory))  {
+				csCategory = NULL;
+			}
+			else {
+DEBUGLOG(("TxnMerchantCap() category = [%s]*\n",csCategory));
+			}
+
+			if (!GetField_Double(hRec,"value",&dValue))  {
+				dValue = 0.0;
+			}
+			else {
+DEBUGLOG(("TxnMerchantCap() value = [%lf]*\n",dValue));
+			}
+
+			if (dValue  > 0 ) {
+					dTotal = 0.0;
+DEBUGLOG(("TxnMerchantCap check merchant cap\n"));
+				if (!strcmp(csCategory,PD_VALUE_TYPE_AMT)) {
+/* txn amt */
+					if (strcmp(csLimitCcy,csTxnCcy)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap exchange from [%s] to [%s]\n",csTxnCcy,csLimitCcy));
+                                		DBObjPtr = CreateObj(DBPtr,"DBExchangeLimitRate","GetExchangeLimitRate");
+                                        	if (!(*DBObjPtr)(csLimitCcy,csTxnCcy,&dRate)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap [%s] to [%s] = [%lf]\n",csLimitCcy,csTxnCcy,dRate));
+                                        		dTotal +=  dTxnAmt / dRate;
+
+                                        	}
+                                        	else {
+DEBUGLOG(("TxnMerchantCap check merchant cap  get limit exchange rate error!!!\n"));
+                                        	}
+                                	}
+                                	else {
+DEBUGLOG(("TxnMerchantCap check merchant cap Not exchange from [%s] to [%s]\n",csTxnCcy,csLimitCcy));
+                               			dTotal +=  dTxnAmt;
+                                	}
+DEBUGLOG(("TxnMerchantCap check merchant cap dTotal = [%lf]\n",dTotal));
+
+					DBObjPtr = CreateObj(DBPtr,"DBTxnCounters","FindCounters");
+					if ((unsigned long)(*DBObjPtr)(csTxnCode,
+									csCountryId,
+									csChannelCode,
+									csServiceCode,
+									cType,
+									csCategory,
+									PD_TYPE_MERCHANT,
+									csMerchantId,
+									rRec) == PD_FOUND){
+DEBUGLOG(("TxnMerchantCap check merchant cap Found\n"));
+						hCounter = RecordSet_GetFirst(rRec);
+						while (hCounter) {
+DEBUGLOG(("TxnMerchantCap check merchant cap b4 dTotal = [%lf]\n",dTotal));
+							if (GetField_CString(hCounter,"ccy",&csCcy)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap ccy = [%s]\n",csCcy));
+							}
+							if (GetField_Double(hCounter,"counter",&dCounter)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap counter = [%lf]\n",dCounter));
+							}
+							if (GetField_Double(hCounter,"total_counter",&dTotalCounter)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap total counter = [%lf]\n",dTotalCounter));
+							}
+							if (strcmp(csLimitCcy,csCcy)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap exchange from [%s] to [%s]\n",csCcy,csLimitCcy));
+								DBObjPtr = CreateObj(DBPtr,"DBExchangeLimitRate","GetExchangeLimitRate");
+								if (!(*DBObjPtr)(csLimitCcy,csCcy,&dRate)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap [%s] to [%s] = [%lf] [%lf]\n",csLimitCcy,csCcy,dRate, dTotalCounter / dRate));
+									dTotal +=  dTotalCounter / dRate;
+
+								}
+								else {
+DEBUGLOG(("TxnMerchantCap check merchant cap  get limit exchange rate error!!!\n"));
+								}
+							}
+							else {
+DEBUGLOG(("TxnMerchantCap check merchant cap Not exchange from [%s] to [%s] [%lf]\n",csCcy,csLimitCcy,dTotalCounter));
+									dTotal +=  dTotalCounter;
+							}
+DEBUGLOG(("TxnMerchantCap check merchant cap af dTotal = [%lf]\n",dTotal));
+							hCounter = RecordSet_GetNext(rRec);
+						}
+					}
+					else {
+DEBUGLOG(("TxnMerchantCap check merchant cap not Found\n"));
+					}
+
+					if (dTotal > dValue) {
+DEBUGLOG(("TxnMerchantCap Reach Limit [%lf]!!!\n",dValue));
+ERRLOG("TxnMerchantCap Reach Limit [%lf]!!!\n",dValue);
+						iRet = INT_EXCEED_LIMIT_MER_AMT;
+						PutField_Int(hContext,"internal_error",iRet);
+						break;
+					}
+				}
+				else if (!strcmp(csCategory,PD_VALUE_TYPE_CNT)) {
+					dTotal = 1;
+DEBUGLOG(("TxnMerchantCap check merchant cap dTotal = [%f]\n,dTotal"));
+					DBObjPtr = CreateObj(DBPtr,"DBTxnCounters","FindCounters");
+                                        if ((unsigned long)(*DBObjPtr)(csTxnCode,
+                                                                        csCountryId,
+                                                                        csChannelCode,
+                                                                        csServiceCode,
+                                                                        cType,
+                                                                        csCategory,
+                                                                        PD_TYPE_MERCHANT,
+                                                                        csMerchantId,
+                                                                        rRec) == PD_FOUND){
+DEBUGLOG(("TxnMerchantCap check merchant cap Found\n"));
+                                                hCounter = RecordSet_GetFirst(rRec);
+                                                while (hCounter) {
+							if (GetField_Double(hCounter,"total_counter",&dTotalCounter)) {
+DEBUGLOG(("TxnMerchantCap check merchant cap total counter = [%lf]\n",dTotalCounter));
+								dTotal += dTotalCounter;
+							}
+DEBUGLOG(("TxnMerchantCap check merchant cap dTotal = [%f]\n,dTotal"));
+							hCounter = RecordSet_GetNext(rRec);
+						}
+					}
+					if (dTotal > dValue) {
+DEBUGLOG(("TxnMerchantCap Reach Limit [%lf]!!!\n",dValue));
+ERRLOG("TxnMerchantCap Reach Limit [%lf]!!!\n",dValue);
+						iRet = INT_EXCEED_LIMIT_MER_CNT;
+						PutField_Int(hContext,"internal_error",iRet);
+						break;
+					}
+				}
+
+				RecordSet_Destroy(rRec);
+				
+			}
+
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+        FREE_ME(rRec);
+DEBUGLOG(("TxnMerchantCap iRet = [%d]\n",iRet));
+	return iRet;	
+}
+
+int	TxnCustomerCap(hash_t *hContext,
+		const char* csCountryId,
+		const char*     csChannelCode,
+		const char*     csTxnCode,
+		const char*     csServiceCode,
+		const char*     csMerchantId,
+		const char*     csMerchantClientId,
+		const char*     csTxnCcy,
+		const char*     csCustomerID,
+		double          dTxnAmt)
+{
+
+	/* Not handle amt checking now !*/
+
+        int     iRet = PD_OK;
+        char*   csCategory;
+
+	double  dDuration = 0.0;
+	double  dValue = 0.0;
+
+	//double  dTotalCounter = 0.0;
+	double  dTotal = 0.0;
+
+	int	iCustRecCnt = 0;
+
+	hash_t  *hRec;
+	recordset_t     *rRecordSet;
+
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+DEBUGLOG(("TxnCustomerCap()\n"));
+DEBUGLOG(("TxnCustomerCap() country id = [%s]\n",csCountryId));
+DEBUGLOG(("TxnCustomerCap() channel code = [%s]\n",csChannelCode));
+DEBUGLOG(("TxnCustomerCap() txn code = [%s]\n",csTxnCode));
+DEBUGLOG(("TxnCustomerCap() service code = [%s]\n",csServiceCode));
+DEBUGLOG(("TxnCustomerCap() merchant id = [%s]\n",csMerchantId));
+DEBUGLOG(("TxnCustomerCap() client id = [%s]\n",csMerchantClientId));
+DEBUGLOG(("TxnCustomerCap() txn ccy = [%s]\n",csTxnCcy));
+DEBUGLOG(("TxnCustomerCap() txn amt = [%lf]\n",dTxnAmt));
+DEBUGLOG(("TxnCustomerCap() customer_id = [%s]\n", csCustomerID));
+
+	DBObjPtr = CreateObj(DBPtr,"DBRuleCustomerTxnCap","Find");
+	if ((unsigned long)(*DBObjPtr)(csCountryId,
+				csChannelCode,
+				csTxnCode,
+				csServiceCode,
+				csMerchantId,
+				csMerchantClientId,
+				rRecordSet) == PD_FOUND) {
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+			if (!GetField_CString(hRec,"category",&csCategory))  {
+				csCategory = NULL;
+			}
+			else {
+DEBUGLOG(("TxnCustomerCap() category = [%s]*\n",csCategory));
+                        }
+
+			if (!GetField_Double(hRec, "duration", &dDuration)) {
+				dDuration = 0.0;
+			} else {
+DEBUGLOG(("TxnCustomerCap() duration = [%lf]*\n", dDuration));
+			}
+
+			if (!GetField_Double(hRec,"value",&dValue))  {
+				dValue = 0.0;
+			}
+			else {
+DEBUGLOG(("TxnCustomerCap() value = [%lf]*\n",dValue));
+			}
+
+			if ((dDuration > 0.0) && (dValue > 0.0)) {
+				dTotal = 0.0;
+DEBUGLOG(("TxnCustomerCap check customer cap\n"));
+				if (!strcmp(csCategory, PD_VALUE_TYPE_AMT)) {
+DEBUGLOG(("TxnCustomerCap NOT SUPPORT AMT type now!!\n"));
+				} 
+				else if (!strcmp(csCategory, PD_VALUE_TYPE_CNT)) {
+
+DEBUGLOG(("TxnCustomerCap Check Record Count!\n"));				
+					DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetRecCntByCustID");
+					if (((unsigned long)(*DBObjPtr)(csCustomerID, csTxnCode, dDuration, &iCustRecCnt)) == PD_OK) {
+DEBUGLOG(("TxnCustomerCap Check Record Count [%d]!\n", iCustRecCnt));				
+						if (iCustRecCnt >= (int)dValue) {
+DEBUGLOG(("TxnCustomerCap Reach Cnt Limit [%d] >= [%lf]\n", iCustRecCnt, dValue));
+ERRLOG("TxnCustomerCap Reach Cnt Limit [%d] >= [%lf]!!!\n",iCustRecCnt, dValue);;
+							iRet = INT_EXCEED_LIMIT_MER_CNT_VP;
+							PutField_Int(hContext, "internal_error", iRet);
+							break;
+						}
+					} else {
+DEBUGLOG(("TxnCustomerCap GetRecCntByCustID FAILED\n"));
+ERRLOG("TxnCustomerCap GetRecCntByCustID FAILED\n");
+						iRet = INT_ERR;
+						PutField_Int(hContext, "internal_error", iRet);
+						break;
+					}
+				}
+
+			}
+
+			hRec = RecordSet_GetNext(rRecordSet);		
+		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("TxnCustomerCap iRet = [%d]\n",iRet));
+        return iRet;
+
+}

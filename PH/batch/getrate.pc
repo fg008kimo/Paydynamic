@@ -1,0 +1,754 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "getrate.h"
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+#include "ExchangeRate.h"
+#include "SystemParameter.h"
+
+OBJPTR(DB);
+char    cDebug;
+
+char    csReqURL[ERS_REQ_URL_LEN + 1];
+
+char *replace(const char *s, char ch, const char *repl);
+
+int varify_value(rData *oResp);
+
+
+struct string
+{
+	char *ptr;
+	size_t len;
+};
+
+void init_string(struct string *s)
+{
+	s->len = 0;
+	s->ptr = malloc(s->len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "malloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	s->ptr[0] = '\0';
+}
+
+size_t writefunc(void *ptr, size_t size, size_t nmemb, struct string *s)
+{
+	size_t new_len = s->len + size*nmemb;
+	s->ptr = realloc(s->ptr, new_len+1);
+	if (s->ptr == NULL)
+	{
+		fprintf(stderr, "realloc() failed\n");
+		exit(EXIT_FAILURE);
+	}
+	memcpy(s->ptr+s->len, ptr, size*nmemb);
+	s->ptr[new_len] = '\0';
+	s->len = new_len;
+
+	return size*nmemb;
+}
+
+
+////convert Date format from "DD MON YYYY" to "YYYYMMDD"////
+int convertDateFormat(const char *sDate, const char *sTime, rData *oResp)
+{
+	int i=0;
+	char sDD[PD_DD_LEN+1];
+	char sMON[4];
+	char sYYYY[PD_YYYY_LEN+1];
+	char sMM[PD_MM_LEN+1];
+
+	char csMonth[12][4]={"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+	char iMonth[12][PD_MM_LEN+1]={"01","02","03","04","05","06","07","08","09","10","11","12"};
+
+	int iCheck = sscanf(sDate,"%2s %3s %4s", sDD, sMON, sYYYY);
+	if(iCheck!=3)
+	{
+DEBUGLOG(("convertDateFormat Error: %s\n", sDate));
+		return FAILURE;
+	}
+
+	do{
+		if(strncmp(sMON,csMonth[i],(PD_MM_LEN+1))==0){
+			strcpy(sMM, iMonth[i]);
+			break;
+		}
+		else{
+			i++;
+			if(i>12){
+DEBUGLOG(("convertDateFormat Error: %s\n", sDate));
+				return FAILURE;
+			}
+		}
+	}while(PD_TRUE);
+	
+	sMM[PD_MM_LEN]='\0';
+
+	snprintf(oResp->sDate, strlen("yyyymmddhh:mi:ss")+1, "%s%s%s%s", sYYYY, sMM, sDD, sTime);
+
+	return SUCCESS;
+}
+
+
+
+int checkRespString(struct string *s, rData *oResp)
+{
+	int bResult = FAILURE;
+	char sRespHeader[RESP_HEADER_LEN]={0};
+	struct tm *ts;  
+        long ltime;
+                                
+        time( &ltime ); 
+
+	////check the header, for success case, Header = "FXP/1.1 200 ok"////
+	strncpy(sRespHeader, s->ptr, RESP_HEADER_LEN);
+
+	if(strncmp(RESP_HEADER,sRespHeader,RESP_HEADER_LEN)!=0)
+	{
+DEBUGLOG(("Error: %s\n", s->ptr));
+	}
+
+	else
+	{
+		////get the effect date////
+		char *sRate = strstr(s->ptr,"GMT");
+
+		ts = gmtime( &ltime );
+		char sDate[DATE_LEN]={0};
+		ts->tm_hour = ts->tm_hour + 8;
+		strftime(sDate,sizeof(sDate),"%Y%m%d%H:%M:%S", ts);
+		sprintf(oResp->sDate,"%s", sDate);		
+
+		/*
+		strncpy(sDate, sRate-strlen("dd mon yyyy hh:mi:ss "), strlen("dd mon yyyy"));
+		sDate[strlen("dd mon yyyy")]='\0';
+		strncpy(sTime, sRate-strlen("hh:mi:ss "), strlen("hh:mi:ss"));
+		sTime[strlen("hh:mi:ss")]='\0';
+		*/
+		//if(convertDateFormat(sDate, sTime, oResp)==SUCCESS)
+		//{
+
+			////get the values of min_bid, bid, max_bid, min_ask, ask, max_ask////
+			int rc =sscanf(sRate+4,"%s %s %s %s %s %s", oResp->min_bid, oResp->bid, oResp->max_bid, oResp->min_ask, oResp->ask, oResp->max_ask);
+			if( rc!=6)
+			{
+DEBUGLOG(("Output Invalid: %s\n",sRate+4));
+			}
+			else
+			{
+DEBUGLOG(("Result: min_bid %s, bid %s, max_bid %s, min_ask %s, ask %s, max_ask %s\n",oResp->min_bid, oResp->bid, oResp->max_bid, oResp->min_ask, oResp->ask, oResp->max_ask));
+				////some values will appear as "na", replace them by mid value////
+				if( varify_value(oResp) == SUCCESS){
+					bResult=SUCCESS;
+				}
+
+/*
+				if((strncmp("na",oResp->bid,2)!=0)&&(strncmp("na",oResp->ask,2)!=0))
+				{
+					if(strncmp("na",oResp->min_bid,2)==0) strcpy(oResp->min_bid,oResp->bid);
+					if(strncmp("na",oResp->max_bid,2)==0) strcpy(oResp->max_bid,oResp->bid);
+					if(strncmp("na",oResp->min_ask,2)==0) strcpy(oResp->min_ask,oResp->ask);
+					if(strncmp("na",oResp->max_ask,2)==0) strcpy(oResp->max_ask,oResp->ask);
+
+					bResult=SUCCESS;
+				}
+*/
+				else
+DEBUGLOG(("id[%s %s]: return values are Invalid. Process Ended [%s]\n", oResp->sFromCCY, oResp->sToCCY, sRate+4));
+			}
+		//}
+		
+	}
+
+
+	free(s->ptr);
+	return bResult;
+
+}
+
+int check_is_double(char *value)
+{
+	int     iRet = PD_FALSE;
+
+	char    *p = NULL;
+        double  dTmp = 0.0;
+
+	p = (char*)strchr((const char *)value, '.');
+        if (p == NULL){
+                if(is_numeric((char*)value)!=PD_FALSE){
+                        iRet= PD_TRUE;
+                }
+        }
+        else{
+                if(sscanf((const char *)value,"%lf",&dTmp)==1){
+                        iRet = PD_TRUE;
+                }
+        }
+
+	return iRet;	
+}
+
+
+int varify_value(rData *oResp)
+{
+	int	iRet = FAILURE;
+
+	if(check_is_double((char*)&(oResp->bid)) && check_is_double((char*)&(oResp->ask))){
+		iRet = SUCCESS;
+	}
+
+	if(iRet==SUCCESS){
+		if( !strncmp("na",oResp->min_bid,2) || !strncmp("NA",oResp->min_bid,2) ){
+			strcpy(oResp->min_bid,oResp->bid);
+		}
+		else{
+			 if(!check_is_double((char*)&(oResp->min_bid))){
+				iRet = FAILURE;
+			 }
+		}
+
+		if( !strncmp("na",oResp->max_bid,2) || !strncmp("NA",oResp->max_bid,2) ){
+			strcpy(oResp->max_bid,oResp->bid);
+		}
+		else{ 
+                         if(!check_is_double((char*)&(oResp->max_bid))){
+                                iRet = FAILURE;
+                         }
+                }
+
+
+		if( !strncmp("na",oResp->min_ask,2) || !strncmp("NA",oResp->min_ask,2) ){
+			strcpy(oResp->min_ask,oResp->ask);
+		}
+		else{ 
+                         if(!check_is_double((char*)&(oResp->min_ask))){
+                                iRet = FAILURE;
+                         }
+                }
+
+
+		if( !strncmp("na",oResp->max_ask,2) || !strncmp("NA",oResp->max_ask,2) ){
+			strcpy(oResp->max_ask,oResp->ask);
+		}
+		else{
+                         if(!check_is_double((char*)&(oResp->max_ask))){
+                                iRet = FAILURE;
+                         }
+                }
+	}
+
+
+	return iRet;
+}
+
+
+void createReqString(char * sReq, char* sFromCCY, char* sToCCY)
+{
+	struct tm *ts;  
+        long ltime;
+                                
+        time( &ltime ); 
+
+	char    sTmpReq[PD_MAX_FILE_LEN];
+
+/*	char    *csCode;
+        char    *csValue;
+	char	csYear[PD_YYYY_LEN+1];
+	char	csMonth[PD_MM_LEN+1];
+	char	csDay[PD_DD_LEN+1];
+	int	iYear = 0;
+	int	iMonth = 0;
+	int	iDay = 0;
+*/	
+/*	hash_t  *hRec;
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0); 
+*/
+        /* Obtain coordinated universal time: */
+        ts = gmtime( &ltime );
+        char sDate[DATE_LEN]={0};
+	strftime(sDate,sizeof(sDate),"%a, %d %b %Y %H:%M:%S", ts);
+
+/*
+	DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetAllCodes");
+        if ((*DBObjPtr)(rRecordSet) == PD_OK) {
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        if (GetField_CString(hRec,"code",&csCode)) {
+                                if (GetField_CString(hRec,"value",&csValue)) {
+                                        if (!strcmp(csCode,"CTPHDATE")) {
+DEBUGLOG(("createReqString:Current Processor Hub Date= [%s]\n",csValue));
+						sprintf(csYear,"%s",csValue);
+						csYear[PD_YYYY_LEN]='\0';
+						sprintf(csMonth,"%s",&csValue[PD_YYYY_LEN]);
+						csMonth[PD_MM_LEN]='\0';
+						sprintf(csDay,"%s",&csValue[PD_YYYYMM_LEN]);
+						csDay[PD_DD_LEN]='\0';
+						iYear = atoi(csYear);
+						iMonth = atoi(csMonth);
+						iDay= atoi(csDay);
+						ts->tm_year = iYear-1900;
+						ts->tm_mon = iMonth-1;
+						ts->tm_mday = iDay;
+						ts->tm_hour = 0;
+						ts->tm_min = 3;
+						ts->tm_sec = 0;
+						
+						strftime(sDate,sizeof(sDate),"%a %d %b %Y %H:%M:%S", ts);
+                                        }
+                                }
+                        }
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+        }
+*/
+
+        ////Construct the request URL with all parameters////
+        memset(sTmpReq, 0, sizeof(sTmpReq));
+        //snprintf(sTmpReq, REQ_STRING_LEN, "%s%s&Quotecurrency: %s&Basecurrency: %s&Date: %s GMT&Quotetype: %s",REQUEST_URL,REQUEST_HEADER, sFromCCY, sToCCY,sDate,QUOTE_TYPE);
+	sprintf(sTmpReq, "%s%s&Quotecurrency: %s&Basecurrency: %s&Date: %s GMT&Quotetype: %s",csReqURL,REQUEST_HEADER, sFromCCY, sToCCY,sDate,QUOTE_TYPE);
+
+	strcpy(sReq, replace((const char *)sTmpReq, ' ', "+"));
+
+
+//	RecordSet_Destroy(rRecordSet);
+//	FREE_ME(rRecordSet);
+}
+
+
+
+int proc_CURL(const char *sReq, rData *oRespData)
+{
+        CURL *curl;
+        CURLcode res;
+
+	curl = curl_easy_init();
+        if(curl)
+        {
+                struct string sBuffer;
+                init_string(&sBuffer);
+
+                curl_easy_setopt(curl, CURLOPT_URL,sReq);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sBuffer);
+                res = curl_easy_perform(curl);
+
+                curl_easy_cleanup(curl);
+
+		////check the response string to get the return values////
+                if(checkRespString(&sBuffer, oRespData)==SUCCESS)
+                {
+DEBUGLOG(("id[%s %s] date[%s] values[%s %s %s %s %s %s]\n",oRespData->sFromCCY,oRespData->sToCCY,oRespData->sDate,oRespData->min_bid,oRespData->bid,oRespData->max_bid,oRespData->min_ask,oRespData->ask,oRespData->max_ask ));
+                }
+		else
+		{
+			return FAILURE;
+		}
+	}
+	else
+	{
+DEBUGLOG(("Init CURL failed\n"));
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+
+int proc_Rate(rData *oResult)
+{
+	////calculate the final result////
+
+	hash_t *hRate;
+	double dRate;
+	double dBid;
+	double dMaxBid;
+	double dMedBid;
+	double dMinBid;
+	double dMaxAsk;
+	double dMedAsk;
+	double dMinAsk;
+	double dMinMax;
+	double dMeanMinMax;
+
+	dMaxBid =  atof(oResult->max_bid);
+	dMedBid =  atof(oResult->bid);
+	dMinBid =  atof(oResult->min_bid);
+	dBid    =  atof(oResult->bid);
+	dRate	=  atof(oResult->bid);
+	dMaxAsk =  atof(oResult->max_ask);
+	dMedAsk =  atof(oResult->ask);
+	dMinAsk =  atof(oResult->min_ask);
+
+	dMeanMinMax=0.0; 
+	dMinMax=0.0; 
+
+	//if(strcmp(oResult->sFromCCY,oResult->sToCCY)==0)
+	//	dMinMax = 1;
+	//else
+	//	dMinMax= 0.0;
+
+	//dRate = dMinMax;
+
+DEBUGLOG(("Overall: id[%s %s] date[%s] values[%f %f %f %f %f %f] MeanMinMax[%f] MinMax[%f] rate[%f]\n",oResult->sFromCCY, oResult->sToCCY, oResult->sDate, dMinBid, dMedBid, dMaxBid, dMinAsk, dMedAsk, dMaxAsk, dMeanMinMax, dMinMax, dRate));
+
+
+	hRate = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRate,0);
+
+	PutField_CString(hRate,"from_ccy_id",oResult->sFromCCY);
+	PutField_CString(hRate,"to_ccy_id",oResult->sToCCY);
+	PutField_CString(hRate,"create_user",PD_UPDATE_USER);
+	PutField_CString(hRate,"effect_date",oResult->sDate);
+
+	PutField_Double(hRate,"rate",dRate);
+	PutField_Double(hRate,"bid",dBid);
+	PutField_Double(hRate,"max_bid",dMaxBid);
+	PutField_Double(hRate,"med_bid",dMedBid);
+	PutField_Double(hRate,"min_bid",dMinBid);
+	PutField_Double(hRate,"max_ask",dMaxAsk);
+	PutField_Double(hRate,"med_ask",dMedAsk);
+	PutField_Double(hRate,"min_ask",dMinAsk);
+	PutField_Double(hRate,"min_max",dMinMax);
+	PutField_Double(hRate,"mean_min_max",dMeanMinMax);
+
+
+	////insert the record into table exchange_rate////
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","Add");
+
+	if ((unsigned long int)(*DBObjPtr)(hRate) == PD_OK) {
+	}
+	else {
+DEBUGLOG(("Add Rate Error\n"));
+		return FAILURE;
+	}
+
+
+	return SUCCESS;
+}
+
+
+int proc_crossRate(rData *oResult, rData *oResultFromNbase, rData *oResultToNBase, rData *oResultBaseNfrom, rData *oResultBaseNto)
+{
+	////calculate the final result from three request results////
+
+	hash_t *hRate;
+	double dRate;
+	double dBid;
+	double dMaxBid;
+	double dMedBid;
+	double dMinBid;
+	double dMaxAsk;
+	double dMedAsk;
+	double dMinAsk;
+	double dMinMax;
+	double dMeanMinMax;
+
+	dMaxBid =  atof(oResult->max_bid);
+	dMedBid =  atof(oResult->bid);
+	dMinBid =  atof(oResult->min_bid);
+	dBid    =  atof(oResult->bid);
+	dMaxAsk =  atof(oResult->max_ask);
+	dMedAsk =  atof(oResult->ask);
+	dMinAsk =  atof(oResult->min_ask);
+
+DEBUGLOG(("to_min_bid = [%f] + to_max_ask = [%f] / from_min_bid [%f]+ from_max_ask [%f]\n",oResultBaseNto->min_bid,oResultBaseNto->max_ask,oResultBaseNfrom->min_bid,oResultBaseNfrom->max_ask));
+	dMeanMinMax= newround((atof(oResultBaseNto->min_bid) + atof(oResultBaseNto->max_ask))/(atof(oResultBaseNfrom->min_bid) + atof(oResultBaseNfrom->max_ask)),PD_ROUND_UP_DEC);
+
+	if(strcmp(oResult->sFromCCY,oResult->sToCCY)==0){
+		dMinMax = 1;
+	}
+	else{
+		dMinMax= newround(atof(oResultFromNbase->min_bid)/atof(oResultToNBase->max_ask),PD_ROUND_UP_DEC);
+	}
+	dRate = dMinMax;
+
+DEBUGLOG(("Overall: id[%s %s] date[%s] values[%f %f %f %f %f %f] MeanMinMax[%f] MinMax[%f] rate[%f]\n",oResult->sFromCCY, oResult->sToCCY, oResult->sDate, dMinBid, dMedBid, dMaxBid, dMinAsk, dMedAsk, dMaxAsk, dMeanMinMax, dMinMax, dRate));
+
+
+	hRate = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRate,0);
+
+	PutField_CString(hRate,"from_ccy_id",oResult->sFromCCY);
+	PutField_CString(hRate,"to_ccy_id",oResult->sToCCY);
+	PutField_CString(hRate,"create_user",PD_UPDATE_USER);
+	PutField_CString(hRate,"effect_date",oResult->sDate);
+
+	PutField_Double(hRate,"rate",dRate);
+	PutField_Double(hRate,"bid",dBid);
+	PutField_Double(hRate,"max_bid",dMaxBid);
+	PutField_Double(hRate,"med_bid",dMedBid);
+	PutField_Double(hRate,"min_bid",dMinBid);
+	PutField_Double(hRate,"max_ask",dMaxAsk);
+	PutField_Double(hRate,"med_ask",dMedAsk);
+	PutField_Double(hRate,"min_ask",dMinAsk);
+	PutField_Double(hRate,"min_max",dMinMax);
+	PutField_Double(hRate,"mean_min_max",dMeanMinMax);
+
+
+	////insert the record into table exchange_rate////
+	DBObjPtr = CreateObj(DBPtr,"DBExchangeRate","Add");
+
+	if ((unsigned long int)(*DBObjPtr)(hRate) == PD_OK) {
+	}
+	else {
+DEBUGLOG(("Add Rate Error\n"));
+		return FAILURE;
+	}
+
+
+	return SUCCESS;
+}
+
+int findBasedCurrency(char *sCode, char *sValue)
+{
+	////there is a based currency for calculating a more accurate exchange rate. i.e. USD////
+
+	DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+	if((unsigned long int)(*DBObjPtr)(sCode,sValue) == FOUND)
+	{
+		if(strlen(sValue)!=PD_CCY_ID_LEN)
+		{
+DEBUGLOG(("Invalid Base Currency Code:[%s]\n",sValue));
+			return FAILURE;
+		}
+		else
+		{
+DEBUGLOG(("Base Currency Code:[%s]\n",sValue));
+		}
+	}
+	else
+	{
+DEBUGLOG(("Find Base Currency Code Error\n"));
+		return FAILURE;
+	}
+	return SUCCESS;
+}
+
+
+int batch_init(int argc, char* argv[])
+{
+/*	if(argc<2)
+	{
+DEBUGLOG(("Please input enought arguments\n"));
+		return FAILURE;
+	}
+	else  {
+        	return SUCCESS;
+	}
+*/
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iLoop = 0;
+	int iRec = 0;
+	int jLoop = 0;
+	int iFromRestrict = PD_FALSE;
+	int iToRestrict = PD_FALSE;
+	char aCcyList[MAX_CYY_NUM][PD_CCY_ID_LEN+1];
+	char sReqString[REQ_STRING_LEN];
+	char sReqStringR[REQ_STRING_LEN];
+	char sBaseCurrency[PD_CCY_ID_LEN+1];
+	char sRestrictedCcy[PD_CCY_ID_LEN+1];
+	rData oResult;
+	rData oResultFromNbase;
+	rData oResultBaseNfrom;
+	rData oResultToNBase;
+	rData oResultBaseNto;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar v_currencyId[PD_CCY_ID_LEN+1];
+
+		short ind_v_currencyId	= -1;
+		int   iCount = -1;
+        EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL SELECT COUNT (*) INTO :iCount FROM currency
+		WHERE disabled = 0;
+
+
+DEBUGLOG(("Num of active record in table[CURRENCY] = %d\n", iCount));
+        if(iCount<=0)
+                return FAILURE;
+
+	EXEC SQL DECLARE currency_cursor CURSOR FOR
+		SELECT currency_id
+		FROM currency
+		WHERE disabled = 0;
+
+	EXEC SQL OPEN currency_cursor;
+
+	for(iLoop=0; iLoop<iCount; iLoop++)
+	{
+		EXEC SQL FETCH currency_cursor
+			INTO :v_currencyId:ind_v_currencyId;
+		
+
+		if(ind_v_currencyId>=0)
+		{
+			v_currencyId.arr[v_currencyId.len]='\0';
+			snprintf(aCcyList[iRec], PD_CCY_ID_LEN+1, "%s", v_currencyId.arr);
+DEBUGLOG(("Currency_ID List[%d] = %s\n", iRec, aCcyList[iRec]));
+			iRec ++;
+		}
+	}
+
+	EXEC SQL CLOSE currency_cursor;
+
+	// Get Request URL from System Parameter
+        memset(csReqURL, 0, sizeof(csReqURL));
+        strcpy(csReqURL, REQUEST_URL); // Default
+
+        DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+        if((unsigned long int)(*DBObjPtr)(ERS_REQ_URL,csReqURL) == FOUND)
+        {
+DEBUGLOG(("Request URL:[%s]\n",csReqURL));
+        }
+        else
+        {
+DEBUGLOG(("Get Request URL Error\n"));
+                return FAILURE;
+        }
+
+/*
+	if(findBasedCurrency(BASE_CURR_CODE,sBaseCurrency)!=SUCCESS)
+	{
+		return FAILURE;
+	}
+*/
+	for(iLoop=0; iLoop<iRec; iLoop++)
+	{
+		for(jLoop=0; jLoop<iRec; jLoop++)
+		{
+			createReqString(sReqString, aCcyList[iLoop], aCcyList[jLoop]);
+DEBUGLOG(("The request string = [%s]\n", sReqString));
+			snprintf(oResult.sFromCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[iLoop]);
+			snprintf(oResult.sToCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[jLoop]);
+
+			if(proc_CURL(sReqString, &oResult)==SUCCESS)
+			{
+
+				DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+				iToRestrict = (unsigned long)(*DBObjPtr)(oResult.sToCCY);
+
+				DBObjPtr = CreateObj(DBPtr,"DBCurrency","IsRestricted");
+				iFromRestrict = (unsigned long)(*DBObjPtr)(oResult.sFromCCY);
+
+				if((iFromRestrict||iToRestrict) &&
+				   strcmp(oResult.sToCCY,oResult.sFromCCY)){
+					if(iFromRestrict){
+						sprintf(sRestrictedCcy,oResult.sFromCCY);
+					}
+					else{
+						sprintf(sRestrictedCcy,oResult.sToCCY);
+					}
+					DBObjPtr = CreateObj(DBPtr,"DBCurrency","FindBundledCurrency");
+					if((unsigned long) ((*DBObjPtr)(sRestrictedCcy,sBaseCurrency))==PD_FOUND){
+
+						createReqString(sReqString, sBaseCurrency, aCcyList[iLoop]);
+						snprintf(oResultBaseNfrom.sFromCCY, PD_CCY_ID_LEN+1, "%s", sBaseCurrency);
+						snprintf(oResultBaseNfrom.sToCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[iLoop]);
+
+						createReqString(sReqStringR, aCcyList[iLoop],sBaseCurrency);
+						snprintf(oResultFromNbase.sFromCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[iLoop]);
+						snprintf(oResultFromNbase.sToCCY, PD_CCY_ID_LEN+1, "%s", sBaseCurrency);
+
+						if(proc_CURL(sReqString, &oResultBaseNfrom)==SUCCESS &&
+						   proc_CURL(sReqStringR, &oResultFromNbase)==SUCCESS)
+						{
+
+							createReqString(sReqString, sBaseCurrency, aCcyList[jLoop]);
+							snprintf(oResultBaseNto.sFromCCY, PD_CCY_ID_LEN+1, "%s", sBaseCurrency);
+							snprintf(oResultBaseNto.sToCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[jLoop]);
+
+							createReqString(sReqStringR, aCcyList[jLoop], sBaseCurrency);
+							snprintf(oResultToNBase.sFromCCY, PD_CCY_ID_LEN+1, "%s", aCcyList[jLoop]);
+							snprintf(oResultToNBase.sToCCY, PD_CCY_ID_LEN+1, "%s", sBaseCurrency);
+
+							if(proc_CURL(sReqString, &oResultBaseNto)==SUCCESS &&
+							   proc_CURL(sReqStringR, &oResultToNBase)==SUCCESS)
+							{
+								proc_crossRate(&oResult, &oResultFromNbase, &oResultToNBase,
+											 &oResultBaseNfrom, &oResultBaseNto);
+							}
+							else{
+								return FAILURE;
+							}
+						}
+						else{
+							return FAILURE;
+						}
+					}
+				}
+				else{
+					proc_Rate(&oResult);
+				}
+
+			}
+			else{
+				return FAILURE;
+			}
+		}
+	}
+
+
+	return SUCCESS;
+
+
+sql_error:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;    
+
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+
+char *replace(const char *s, char ch, const char *repl) {
+    int count = 0;
+    const char *t;
+    for(t=s; *t; t++)
+        count += (*t == ch);
+
+    size_t rlen = strlen(repl);
+    char *res = malloc(strlen(s) + (rlen-1)*count + 1);
+    char *ptr = res;
+    for(t=s; *t; t++) {
+        if(*t == ch) {
+            memcpy(ptr, repl, rlen);
+            ptr += rlen;
+        } else {
+            *ptr++ = *t;
+        }
+    }
+    *ptr = 0;
+    return res;
+}
+
+

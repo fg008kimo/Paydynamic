@@ -1,0 +1,1095 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/06/13              [MSN]
+Amend to support update payout_split_limit         2012/08/16              [SWK]
+Add rej_small_delta_amt                            2013/04/16              [STP]
+Add psp_remark                                     2013/06/13              [SWK]
+Add proc_name                                      2013/09/02              [SWK]
+Add pid_grp                                        2013/10/29              [MSN]
+Add MOB_CHANNEL_FE_DISPLAY                         2015/08/26              [MSN]
+Add UpdateRemark2NULL                              2015/12/14              [WMC]
+Add card_type                                      2016/09/29	           [WMC]
+Add nbxa_pid_grp                                   2017/07/13              [WMC]
+Add UpdatePIDGroup2NULL	                           2017/08/01              [WWK]
+PRD151 add 5 fields for PSP accout update          2018/09/11              [TNY]
+PRD281 add a field settle_prd_str                  2020/08/06              [ANC]
+PRD290
+ - Add amt_diff
+ - Add 4 fields for PSP amount difference range    2020/11/20              [ZBL]
+PRD021
+ - Add total_cnt / restrict_deposit_ip
+ - Add 4 fiedls for PSP restrict ip region         2021/01/19              [ZBL]
+PRD305 allow amt_type = 'F'			   2021/02/08		   [MSN]
+PRD304 Add Enable Daily Success Txn Threshold      2021/03/18              [ANC]
+PRD332
+ - Add 5 fields for PSP API parameters
+ - Add IsValid
+ - Add CheckURLSpecialHandling
+ - Add URLCharacterConverter                       2021/07/30              [ZBL]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <regex.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsCPD.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define PD_DETAIL_TAG			"dt"
+#define PD_SPECIAL_CHARACTER		'?'
+#define PD_SPECIAL_CHARACTER_LEN	3
+#define PD_TYPE_PSP_MID			1
+#define PD_TYPE_PSP_KEY			2
+#define PD_TYPE_PSP_URL			3
+#define PD_TYPE_PSP_REQUEST_URL		4
+#define PD_TYPE_PSP_SERVICE_URL		5
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsCPD(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+	          hash_t* hRequest,
+	          hash_t* hResponse)
+{
+	int iRet = PD_OK;
+
+	char	*csTmp;
+	char	cTmp;
+	int	iTmp;
+	long	lTmp;
+	double dTmp;
+	int	iRemarkNull = PD_FALSE;
+	int	iPIDGroupNull = PD_FALSE;
+	int	iNBXAPIDGroupNull = PD_FALSE;
+/* PRD290 PSP Actual Amount From Deposit Callback */
+	int	iAmtDiff = PD_FALSE;
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+/* PRD021 Non-China IP */
+	char	csTag[PD_TAG_LEN + 1];
+	int	i = 0;
+	int	iCnt = 0;
+	int	iRestrictDepositIp = PD_FALSE;
+	hash_t	*hPspRestrictIpRegion;
+
+	hPspRestrictIpRegion = (hash_t*)malloc(sizeof(hash_t));
+	hash_init(hPspRestrictIpRegion, 0);
+/* End - PRD021 Non-China IP */
+/* PRD332 Create Online PID */
+	char		csPspKey[PD_MD5_KEY_LEN + 1];
+	char		csPspUrl[PD_PSP_URL_LEN + 1];
+	char		csPspReqTxnUrl[PD_FUNCTION_URL_LEN + 1];
+	char		csServPspUrl[PD_SERVICE_PSP_URL_LEN + 1];
+	char		*csChannelCode;
+	char		*csPspId;
+	int		iDtlRet = PD_ERR;
+	int		iLen = 0;
+	int		iReplicate = PD_FALSE;
+	int		iServicePspUrlEmpty = PD_TRUE;
+	hash_t		*hPspDetail;
+	hash_t		*hPspInfo;
+	recordset_t	*rRecordSet;
+
+	hPspDetail = (hash_t*)malloc(sizeof(hash_t));
+	hash_init(hPspDetail, 0);
+
+	hPspInfo = (hash_t*)malloc(sizeof(hash_t));
+	hash_init(hPspInfo, 0);
+
+	rRecordSet = (recordset_t*)malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+/* End - PRD332 Create Online PID */
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+DEBUGLOG(("Authorize\n"));
+
+
+	if (GetField_CString(hRequest, "psp_id", &csPspId)) {
+DEBUGLOG(("Authorize::psp_id = [%s]\n", csPspId));
+		PutField_CString(hTxn, "psp_id", csPspId);
+/* PRD021 Non-China IP */
+		PutField_CString(hPspRestrictIpRegion, "psp_id", csPspId);
+/* End - PRD021 Non-China IP */
+/* PRD332 Create Online PID */
+		PutField_CString(hPspInfo, "psp_id", csPspId);
+/* End - PRD332 Create Online PID */
+	} 
+	else {
+DEBUGLOG(("Authorize::psp_id not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::psp_id not found!!\n");
+
+		iRet = INT_PSP_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	} 
+	
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+/* PRD290 PSP Actual Amount From Deposit Callback */
+		/* create_user */
+		PutField_CString(hTxn, "create_user", csTmp);
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+/* PRD021 Non-China IP */
+		/* create_user */
+		PutField_CString(hPspRestrictIpRegion, "create_user", csTmp);
+/* End - PRD021 Non-China IP */
+/* PRD332 Create Online PID */
+		PutField_CString(hPspInfo, "create_user", csTmp);
+		PutField_CString(hPspInfo, "update_user", csTmp);
+/* End - PRD332 Create Online PID */
+		PutField_CString(hTxn,"update_user",csTmp);
+	}
+
+
+	if(GetField_CString(hRequest,"name",&csTmp)){
+DEBUGLOG(("Authorize::psp_name = [%s]\n",csTmp));
+		PutField_CString(hTxn,"psp_name",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"txn_type",&csTmp)){
+DEBUGLOG(("Authorize::txn_type = [%s]\n",csTmp));
+		cTmp = csTmp[0];
+		if(!(cTmp==PD_TYPE_DEPOSIT || cTmp==PD_TYPE_PAYOUT || cTmp==PD_TYPE_ALL)){
+DEBUGLOG(("Authorize::invalid txn_type!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid txn_type!!\n");
+			iRet=INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else{
+			PutField_CString(hTxn,"txn_type",csTmp);
+		}
+	}
+
+	if (GetField_CString(hRequest, "status", &csTmp)){
+		PutField_CString(hTxn, "status", csTmp);
+DEBUGLOG(("Authorize::status = [%s]\n",csTmp));
+	}
+	else{
+		PutField_CString(hTxn, "status",PD_ACC_OPEN);
+DEBUGLOG(("Authorize::status = [%s]\n",PD_ACC_OPEN));
+	}
+
+	if (GetField_CString(hRequest, "po_split_limit", &csTmp)) {
+		iTmp = atoi(csTmp);
+		PutField_Int(hTxn, "payout_split_limit", iTmp);
+DEBUGLOG(("Authorize::po_split_limit = [%d]\n", iTmp));
+	}
+
+	if (GetField_CString(hRequest, "rej_small_delta_amt", &csTmp)) {
+		iTmp = atoi(csTmp);
+		PutField_Int(hTxn, "rej_small_delta_amt", iTmp);
+DEBUGLOG(("Authorize::rej_small_delta_amt = [%d]\n", iTmp));
+	}
+
+	if(GetField_CString(hRequest,"remark",&csTmp)){
+DEBUGLOG(("Authorize::psp_remark = [%s]\n",csTmp));
+		PutField_CString(hTxn,"psp_remark",csTmp);
+	} else {
+DEBUGLOG(("Authorize::psp_remark = [NULL]\n"));
+		iRemarkNull = PD_TRUE;
+	}
+
+	if(GetField_CString(hRequest,"proc_name",&csTmp)){
+DEBUGLOG(("Authorize::proc_name = [%s]\n",csTmp));
+		PutField_CString(hTxn,"processor_name",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"pid_grp",&csTmp)){
+DEBUGLOG(("Authorize::pid_grp = [%s]\n",csTmp));
+		PutField_CString(hTxn,"pid_group",csTmp);
+        } else {
+DEBUGLOG(("Authorize::pid_grp = [NULL]\n"));
+		iPIDGroupNull = PD_TRUE;
+	}
+
+	if(GetField_CString(hRequest,"nbxa_pid_grp",&csTmp)){
+DEBUGLOG(("Authorize::nbxa_pid_grp = [%s]\n",csTmp));
+		PutField_CString(hTxn,"nbxa_pid_group",csTmp);
+	} else {
+DEBUGLOG(("Authorize::nbxa_pid_grp = [NULL]\n"));
+		iNBXAPIDGroupNull = PD_TRUE;
+	}
+
+	if(GetField_CString(hRequest,"mob_fe_display",&csTmp)){
+DEBUGLOG(("Authorize::mob_fe_display = [%s]\n",csTmp));
+		PutField_CString(hTxn,"mob_channel_fe_display",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"card_type",&csTmp)){
+		cTmp = csTmp[0];
+DEBUGLOG(("Authorize::card_type = [%c]\n",cTmp));
+		PutField_Char(hTxn,"card_type",cTmp);
+	} else {
+		PutField_Char(hTxn, "card_type", PD_DEPOSIT_CARD_TYPE_DEBIT);
+DEBUGLOG(("Authorize::card_type (default) = [%c]\n", PD_DEPOSIT_CARD_TYPE_DEBIT));
+   	}
+
+/* PRD151 PSP Account Update */
+	if(GetField_CString(hRequest,"backend",&csTmp)){
+DEBUGLOG(("Authorize::backend = [%s]\n",csTmp));
+		PutField_CString(hTxn,"backend",csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::backend = []\n"));
+		PutField_CString(hTxn,"backend","");
+	}
+		
+
+	if(GetField_CString(hRequest,"txn_amt_lmt",&csTmp)){
+		lTmp = atol(csTmp);
+DEBUGLOG(("Authorize::txn_amt_lmt = [%ld]\n",lTmp));
+		PutField_Long(hTxn,"txn_amt_lmt",lTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::invalid txn_amt_lmt!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid txn_amt_lmt!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"settle_prd",&csTmp)){
+DEBUGLOG(("Authorize::setlmnt_prd = [%s]\n",csTmp));
+		PutField_CString(hTxn,"settle_prd",csTmp);
+	}
+
+	if(GetField_CString(hRequest,"add_cost",&csTmp)){
+		if(sscanf(csTmp,"%lf",&dTmp)==PD_TRUE){
+DEBUGLOG(("Authorize::add_cost = [%lf]\n",dTmp));
+			PutField_Double(hTxn,"add_cost",dTmp);
+		}
+	}
+	else {
+DEBUGLOG(("Authorize::invalid add_cost!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid add_cost!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"max_deposit",&csTmp)){
+		lTmp = atol(csTmp);
+DEBUGLOG(("Authorize::max_deposit = [%ld]\n",lTmp));
+		PutField_Long(hTxn,"max_deposit",lTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::invalid max_deposit!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::max_deposit!!\n");
+		iRet=INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+/* End - PRD151 PSP Account Update */
+
+/* PRD281 PSP Account Settlement Period Setting Enhancement */
+	if(GetField_CString(hRequest,"settle_prd_str",&csTmp)){
+DEBUGLOG(("Authorize::settle_prd_str = [%s]\n",csTmp));
+		PutField_CString(hTxn,"settle_prd_str",csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::settle_prd_str  = []\n"));
+		PutField_CString(hTxn,"settle_prd_str","");
+	}
+/* End - PRD281 PSP Account Settlement Period Setting Enhancement */
+
+/* PRD290 PSP Actual Amount From Deposit Callback */
+	/* amt_diff */
+	if (GetField_CString(hRequest, "amt_diff", &csTmp)) {
+		iAmtDiff = atoi(csTmp);
+DEBUGLOG(("Authorize::amt_diff = [%d]\n", iAmtDiff));
+		PutField_Int(hTxn, "allow_amt_diff", iAmtDiff);
+	}
+
+	if (iAmtDiff == PD_TRUE) {
+		/* amt_type */
+		if (GetField_CString(hRequest, "amt_type", &csTmp)) {
+			cTmp = csTmp[0];
+DEBUGLOG(("Authorize::amt_type = [%c]\n", cTmp));
+
+			if (cTmp != PD_PRECENTAGE && cTmp != PD_FIXED_AMOUNT) {
+DEBUGLOG(("Authorize::invalid amt_type!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_type!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else
+				PutField_Char(hTxn, "type", cTmp);
+		}
+		else {
+DEBUGLOG(("Authorize::invalid amt_type!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_type!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		/* amt_sign */
+		if (GetField_CString(hRequest, "amt_sign", &csTmp)) {
+			cTmp = csTmp[0];
+DEBUGLOG(("Authorize::amt_sign = [%c]\n", cTmp));
+
+			if (cTmp != PD_AMT_DIFF_SIGN_UPPER_RANGE && cTmp != PD_AMT_DIFF_SIGN_LOWER_RANGE && cTmp != PD_AMT_DIFF_SIGN_UPPER_AND_LOWER_RANGE) {
+DEBUGLOG(("Authorize::invalid amt_sign!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_sign!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else
+				PutField_Char(hTxn, "sign", cTmp);
+		}
+		else {
+DEBUGLOG(("Authorize::invalid amt_sign!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid amt_sign!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		/* diff_val */
+		if (GetField_CString(hRequest, "diff_val", &csTmp)) {
+			char	*csPtr = NULL;
+			int	iCheck = PD_FALSE;
+
+			csPtr = (char*)strchr(csTmp, '.');
+
+			if (csPtr == NULL) {
+				iCheck = is_numeric(csTmp);
+
+				if (iCheck != PD_FALSE) {
+					if (sscanf(csTmp, "%lf", &dTmp) == PD_TRUE) {
+DEBUGLOG(("Authorize::diff_val = [%lf]\n", dTmp));
+						PutField_Double(hTxn, "value", dTmp);
+					}
+				}
+
+			}
+			else {
+				if (sscanf(csTmp, "%lf", &dTmp) == PD_TRUE) {
+DEBUGLOG(("Authorize::diff_val = [%lf]\n", dTmp));
+					PutField_Double(hTxn, "value", dTmp);
+
+					iCheck = PD_TRUE;
+				}
+			}
+
+			if (iCheck == PD_FALSE) {
+DEBUGLOG(("Authorize::invalid diff_val!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid diff_val!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+		else {
+DEBUGLOG(("Authorize::invalid diff_val!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid diff_val!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+
+		/* disabled - Default is enabled */
+		PutField_Int(hTxn, "disabled", !PD_DISABLED);
+	}
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+
+/* PRD021 Non-China IP */
+	/* total_cnt */
+	if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("Authorize::total_cnt = [%d]\n", iCnt));
+		PutField_Int(hResponse, "total_cnt", iCnt);
+	}
+	else {
+DEBUGLOG(("Authorize::invalid total_cnt!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid total_cnt!!\n");
+
+		iRet = INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	/* restrict_deposit_ip */
+	if (GetField_CString(hRequest, "restrict_deposit_ip", &csTmp)) {
+		iRestrictDepositIp = atoi(csTmp);
+DEBUGLOG(("Authorize::restrict_deposit_ip = [%d]\n", iRestrictDepositIp));
+
+		if (iRestrictDepositIp != PD_TRUE && iRestrictDepositIp != PD_FALSE) {
+DEBUGLOG(("Authorize::invalid restrict_deposit_ip!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid restrict_deposit_ip!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else if ((iRestrictDepositIp == PD_TRUE && iCnt <= 0) || (iRestrictDepositIp == PD_FALSE && iCnt > 0)) {
+DEBUGLOG(("Authorize::invalid total_cnt [%d] with restrict_deposit_ip [%d]!!\n", iCnt, iRestrictDepositIp));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid total_cnt [%d] with restrict_deposit_ip [%d]!!\n", iCnt, iRestrictDepositIp);
+
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		else
+			PutField_Int(hTxn, "restrict_deposit_ip", iRestrictDepositIp);
+	}
+	else {
+DEBUGLOG(("Authorize::invalid restrict_deposit_ip!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid restrict_deposit_ip!!\n");
+
+		iRet = INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+/* End - PRD021 Non-China IP */
+
+/* PRD304 Assign PID Based on PID Daily Threshold and Customer ID */
+	/* daily_succ_txn_threshold */
+	if (GetField_CString(hRequest, "daily_succ_txn_threshold", &csTmp)) {
+		if (csTmp != NULL) {
+			iTmp = atoi(csTmp);
+			if (iTmp >= 0 && iTmp <= 1000) {
+DEBUGLOG(("Authorize::daily_succ_txn_threshold = [%d]\n", iTmp));
+				PutField_Int(hTxn, "daily_succ_txn_threshold", iTmp);
+			} else {
+DEBUGLOG(("Authorize::invalid daily_succ_txn_threshold\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid daily_succ_txn_threshold!!\n");
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+		} else {
+DEBUGLOG(("Authorize::invalid daily_succ_txn_threshold\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid daily_succ_txn_threshold!!\n");
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+	}
+/* End - PRD304 Assign PID Based on PID Daily Threshold and Customer ID */
+
+/* PRD332 Create Online PID */
+	if (iRet == PD_OK) {
+		// Get Channel Code And Replicate By PSP Id
+DEBUGLOG(("Authorize::Call PspDetail::GetPspDetail\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBPspDetail", "GetPspDetail");
+		iDtlRet = (unsigned long)(*DBObjPtr)(csPspId, hPspDetail);
+
+		if (iDtlRet == PD_OK) {
+			/* psp_replicate_en */
+			if (GetField_Int(hPspDetail, "psp_replicate_en", &iReplicate)) {
+DEBUGLOG(("- psp_replicate_en = [%d]\n", iReplicate));
+			}
+			else {
+DEBUGLOG(("- PspDetail::GetPspDetail::psp_replicate_en not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize:: Call PspDetail::GetPspDetail psp_replicate_en not found!!\n");
+
+				iRet = INT_ERR;
+			}
+
+			/* channel_code */
+			if (GetField_CString(hPspDetail, "psp_channel_code", &csChannelCode)) {
+DEBUGLOG(("- psp_channel_code = [%s]\n", csChannelCode));
+			}
+			else {
+DEBUGLOG(("- PspDetail::GetPspDetail::psp_channel_code not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize:: Call PspDetail::GetPspDetail psp_channel_code not found!!\n");
+
+				iRet = INT_ERR;
+			}
+		}
+		else {
+DEBUGLOG(("- Call PspDetail::GetPspDetail Error!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize:: Call PspDetail::GetPspDetail Error!!\n");
+
+			iRet = INT_ERR;
+		}
+	}
+
+	if (iRet == PD_OK && iReplicate == PD_TRUE) {
+		/* psp_merchant_id */
+		if (GetField_CString(hRequest, "psp_merchant_id", &csTmp)) {
+DEBUGLOG(("Authorize::psp_merchant_id = [%s]\n", csTmp));
+
+			if (strlen(csTmp) > PD_PSP_MID_LEN) {
+DEBUGLOG(("Authorize::invalid psp_merchant_id!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_merchant_id!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+			else {
+				if (IsValid((const char*)csTmp, PD_TYPE_PSP_MID) != PD_OK) {
+DEBUGLOG(("Authorize::invalid psp_merchant_id!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_merchant_id!!\n");
+
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				}
+				else
+					PutField_CString(hTxn, "psp_merchant_id", csTmp);
+			}
+		}
+		else {
+DEBUGLOG(("Authorize::psp_merchant_id not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::psp_merchant_id not found!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+
+		/* psp_key */
+		if (GetField_CString(hRequest, "psp_key", &csTmp)) {
+DEBUGLOG(("Authorize::psp_key = [%s]\n", csTmp));
+
+			memset(csPspKey, 0, PD_MD5_KEY_LEN + 1);
+			urldecode((const unsigned char*)csTmp, strlen(csTmp), (unsigned char*)csPspKey, &iLen);
+
+DEBUGLOG(("Authorize::psp_key (Decode) = [%s]\n", csPspKey));
+
+			if (strlen(csPspKey) > PD_MD5_KEY_LEN) {
+DEBUGLOG(("Authorize::invalid psp_key!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_key!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+			else {
+				if (IsValid((const char*)csPspKey, PD_TYPE_PSP_KEY) != PD_OK) {
+DEBUGLOG(("Authorize::invalid psp_key!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_key!!\n");
+
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				}
+				else {
+					// Set Up The Key Type And Value
+					PutField_CString(hPspInfo, "key", PD_PTK_KEY_NAME);
+					PutField_CString(hPspInfo, "key_value", csPspKey);
+				}
+			}
+		}
+		else {
+DEBUGLOG(("Authorize::psp_key not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::psp_key not found!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+
+		/* psp_url */
+		if (GetField_CString(hRequest, "psp_url", &csTmp)) {
+DEBUGLOG(("Authorize::psp_url = [%s]\n", csTmp));
+
+			memset(csPspUrl, 0, PD_PSP_URL_LEN + 1);
+			urldecode((const unsigned char*)csTmp, strlen(csTmp), (unsigned char*)csPspUrl, &iLen);
+
+DEBUGLOG(("Authorize::psp_url (Decode) = [%s]\n", csPspUrl));
+
+			if (strlen(csPspUrl) > PD_PSP_URL_LEN) {
+DEBUGLOG(("Authorize::invalid psp_url!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_url!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+			else {
+				if (IsValid((const char*)csPspUrl, PD_TYPE_PSP_URL) != PD_OK) {
+DEBUGLOG(("Authorize::invalid psp_url!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_url!!\n");
+
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				}
+				else {
+					/*
+				 	 * Special Character Handling
+				 	 *  - PSP Channel Code "COP" Only
+				 	 */
+					iDtlRet = CheckURLSpecialHandling(PD_SPECIAL_CHARACTER, (const char*)csChannelCode, (const char*)csPspUrl);
+
+					if (iDtlRet == PD_OK) {
+						char csNPspUrl[PD_PSP_URL_LEN * PD_SPECIAL_CHARACTER_LEN+ 1];
+						memset(csNPspUrl, 0, PD_PSP_URL_LEN * PD_SPECIAL_CHARACTER_LEN + 1);
+
+DEBUGLOG(("- [Before] psp_url = [%s]\n", csPspUrl));
+						URLCharacterConverter(PD_SPECIAL_CHARACTER, (const char*)csPspUrl, csNPspUrl);
+
+						if (strlen(csNPspUrl) > 0) {
+DEBUGLOG(("- [After] psp_url = [%s]\n", csNPspUrl));
+
+							if (strlen(csNPspUrl) > PD_PSP_URL_LEN) {
+DEBUGLOG(("Authorize::invalid psp_url (After special character converting)!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_url (After special character converting)!!\n");
+
+								iRet = INT_ERR;
+								PutField_Int(hContext, "internal_error", iRet);
+							}
+							else
+								PutField_CString(hPspInfo, "psp_url", csNPspUrl);
+						}
+						else {
+DEBUGLOG(("- Call URLCharacterConverter Error!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize:: Call URLCharacterConverter Error!!\n");
+
+							iRet = INT_ERR;
+							PutField_Int(hContext, "internal_error", iRet);
+						}
+					}
+					else {
+DEBUGLOG(("- No need to convert the special character of PSP URL\n"));
+						PutField_CString(hPspInfo, "psp_url", csPspUrl);
+					}
+
+				}
+			}
+		}
+		else {
+DEBUGLOG(("Authorize::psp_url not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::psp_url not found!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+
+		/* psp_req_txn_url */
+		if (GetField_CString(hRequest, "psp_req_txn_url", &csTmp)) {
+DEBUGLOG(("Authorize::psp_req_txn_url = [%s]\n", csTmp));
+
+			memset(csPspReqTxnUrl, 0, PD_FUNCTION_URL_LEN + 1);
+			urldecode((const unsigned char*)csTmp, strlen(csTmp), (unsigned char*)csPspReqTxnUrl, &iLen);
+
+DEBUGLOG(("Authorize::psp_req_txn_url (Decode) = [%s]\n", csPspReqTxnUrl));
+
+			if (strlen(csPspReqTxnUrl) > PD_FUNCTION_URL_LEN) {
+DEBUGLOG(("Authorize::invalid psp_req_txn_url!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_req_txn_url!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+			else {
+				if (IsValid((const char*)csTmp, PD_TYPE_PSP_REQUEST_URL) != PD_OK) {
+DEBUGLOG(("Authorize::invalid psp_req_txn_url!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid psp_req_txn_url!!\n");
+
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				}
+				else {
+					// Set Up The Transaction Code To "Deposit"
+					PutField_CString(hPspInfo, "txn_code", PD_INITIAL_TXN_CODE);
+					PutField_CString(hPspInfo, "request_function", csPspReqTxnUrl);
+				}
+			}
+		}
+		else {
+DEBUGLOG(("Authorize::psp_req_txn_url not found!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::psp_req_txn_url not found!!\n");
+
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+		}
+
+		/* serv_psp_url */
+		if (GetField_CString(hRequest, "serv_psp_url", &csTmp)) {
+DEBUGLOG(("Authorize::serv_psp_url = [%s]\n", csTmp));
+
+			memset(csServPspUrl, 0, PD_SERVICE_PSP_URL_LEN + 1);
+			urldecode((const unsigned char*)csTmp, strlen(csTmp), (unsigned char*)csServPspUrl, &iLen);
+
+DEBUGLOG(("Authorize::serv_psp_url (Decode) = [%s]\n", csServPspUrl));
+
+			if (strlen(csServPspUrl) > PD_SERVICE_PSP_URL_LEN) {
+DEBUGLOG(("Authorize::invalid serv_psp_url!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid serv_psp_url!!\n");
+
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+			}
+			else {
+				if (IsValid((const char*)csServPspUrl, PD_TYPE_PSP_SERVICE_URL) != PD_OK) {
+DEBUGLOG(("Authorize::invalid serv_psp_url!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize::invalid serv_psp_url!!\n");
+
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+				}
+				else {
+					iServicePspUrlEmpty = PD_FALSE;
+					PutField_CString(hPspInfo, "service_psp_url", csServPspUrl);
+				}
+			}
+		}
+	}
+/* End - PRD332 Create Online PID */
+
+	if(iRet==PD_OK){
+
+		// Update PspDetail
+DEBUGLOG(("Authorize::Call PspDetail:Update\n")); 
+		DBObjPtr = CreateObj(DBPtr,"DBPspDetail","Update");
+		if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+			iRet = INT_ERR; 
+		}
+DEBUGLOG(("Authorize::PspDetail:Update: iRet[%d]\n",iRet)); 
+		
+		// Update remark NULL	
+		if ((iRet==PD_OK)&&(iRemarkNull==PD_TRUE)){
+DEBUGLOG(("Authorize::Call PspDetail:UpdateRemark2NULL\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspDetail","UpdateRemark2NULL");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+			}
+DEBUGLOG(("Authorize::PspDetail:UpdateRemark2NULL: iRet[%d]\n",iRet));			
+		}
+
+		// Update pid_grp NULL
+		if ((iRet==PD_OK)&&(iPIDGroupNull==PD_TRUE)){
+DEBUGLOG(("Authorize::Call PspDetail:UpdatePIDGroup2NULL\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspDetail","UpdatePIDGroup2NULL");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+			}
+DEBUGLOG(("Authorize::PspDetail:UpdatePIDGroup2NULL: iRet[%d]\n",iRet));
+		}
+
+		// Update nbxa_pid_grp NULL
+		if ((iRet==PD_OK)&&(iNBXAPIDGroupNull==PD_TRUE)){
+DEBUGLOG(("Authorize::Call PspDetail:UpdateNBXAPIDGroup2NULL\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBPspDetail","UpdateNBXAPIDGroup2NULL");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+			}
+DEBUGLOG(("Authorize::PspDetail:UpdateNBXAPIDGroup2NULL: iRet[%d]\n",iRet));
+		}
+
+/* PRD290 PSP Actual Amount From Deposit Callback */
+		// Update PSP Amount Difference Range Configuration
+		if ((iRet == PD_OK) && (iAmtDiff == PD_TRUE)) {
+DEBUGLOG(("Authorize::Call PspAmtDiffRange:Update\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspAmtDiffRange", "Update");
+
+			if ((unsigned long)((*DBObjPtr)(hTxn)) != PD_OK)
+				iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspAmtDiffRange:Update: iRet = [%d]\n", iRet));
+		}
+/* End - PRD290 PSP Actual Amount From Deposit Callback */
+
+/* PRD021 Non-China IP */
+		// Update PSP Restrict IP Region
+		if (iRet == PD_OK) {
+			// Step 1: Disable PSP Restrict IP Region By PSP Id No Matter "restrict_deposit_ip" Is Enabled Or Not
+DEBUGLOG(("Authorize::Call PspRestrictIpRegion:UpdateByPspId\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspRestrictIpRegion", "UpdateByPspId");
+
+			/* disabled */
+			PutField_Int(hPspRestrictIpRegion, "disabled", PD_TRUE);
+
+			if ((unsigned long)((*DBObjPtr)(hPspRestrictIpRegion)) != PD_OK)
+				iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspRestrictIpRegion:UpdateByPspId: iRet = [%d]\n", iRet));
+
+			// Step 2: Enable PSP Restrict IP Region By PSP Id And Region Code If "restrict_deposit_ip" Is Enabled
+			if (iRet == PD_OK && iRestrictDepositIp == PD_TRUE) {
+DEBUGLOG(("Authorize::Call PspRestrictIpRegion:Update\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBPspRestrictIpRegion", "Update");
+
+				/* disabled */
+				PutField_Int(hPspRestrictIpRegion, "disabled", PD_FALSE);
+
+				// Loop iCnt ( "total_cnt" ) To Update PSP Restrict IP Region
+				for (i = 0; i < iCnt; i++) {
+					sprintf(csTag, "%s_region_code_%d", PD_DETAIL_TAG, i + 1);
+
+					if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::%s = [%s]\n", csTag, csTmp));
+
+						/* region_code */
+						PutField_CString(hPspRestrictIpRegion, "region_code", csTmp);
+
+						if ((unsigned long)((*DBObjPtr)(hPspRestrictIpRegion)) != PD_OK)
+							iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspRestrictIpRegion:Update: iRet = [%d]\n", iRet));
+
+						sprintf(csTag, "ret_%d", i + 1);
+DEBUGLOG(("Authorize::%s = [%d]\n", csTag, iRet));
+
+						PutField_Int(hResponse, csTag, iRet);
+						RemoveField_CString(hPspRestrictIpRegion, "region_code");
+					}
+				}
+			}
+		}	
+/* End - PRD021 Non-China IP */
+
+/* PRD332 Create Online PID */
+		/*
+ 		 * Update PSP API Parameters
+ 		 *  - Key
+ 		 *  - Url
+ 		 *  - Request Function
+ 		 *  - Service Url
+ 		 *    - Add The Service PSP Url If The Service PSP Url Not Exist And serv_psp_url" Is Not Empty
+ 		 *    - Delete The Service PSP Url If The Service PSP Url Exists And "serv_psp_url" Is Empty
+ 		 *    - Update The Service PSP Url If The Service PSP Url Exists And serv_psp_url" Is Not Empty
+ 		 */
+		if (iRet == PD_OK && iReplicate == PD_TRUE) {
+			// Update PSP Key
+DEBUGLOG(("Authorize::Call PspKeys:UpdatePspKey\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspKeys", "UpdatePspKey");
+
+			if ((unsigned long)((*DBObjPtr)(hPspInfo)) != PD_OK)
+				iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspKeys:UpdatePspKey: iRet = [%d]\n", iRet));
+
+			// Update PSP Url
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call PspUrl:UpdatePspUrl\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBPspUrl", "UpdatePspUrl");
+
+				if ((unsigned long)((*DBObjPtr)(hPspInfo)) != PD_OK)
+					iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspUrl:UpdatePspUrl: iRet = [%d]\n", iRet));
+			}
+
+			// Update PSP Request Function
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call PspRequestTxnUrl:UpdatePspRequestTxnUrl\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBPspRequestTxnUrl", "UpdatePspRequestTxnUrl");
+
+				if ((unsigned long)((*DBObjPtr)(hPspInfo)) != PD_OK)
+					iRet = INT_ERR;
+
+DEBUGLOG(("Authorize::PspRequestTxnUrl:UpdatePspRequestTxnUrl: iRet = [%d]\n", iRet));
+			}
+
+			// Update Service PSP Url
+			if (iRet == PD_OK) {
+				// Get Service Code From Table "TXN_BE_URL"
+DEBUGLOG(("Authorize::Call TxnBeUrl:GetServiceCode\n"));
+				DBObjPtr = CreateObj(DBPtr, "DBTxnBeUrl", "GetServiceCode");
+				iDtlRet = (unsigned long)(*DBObjPtr)(csPspId, PD_INITIAL_TXN_CODE, rRecordSet);
+
+				if (iDtlRet == PD_FOUND) {
+					hash_t *hRec = NULL;
+					hRec = RecordSet_GetFirst(rRecordSet);
+
+					iCnt = 0;
+
+					while (hRec && iRet == PD_OK) {
+						char csUrl[PD_SERVICE_PSP_URL_LEN + 1];
+						char *csServiceCode;
+
+						memset(csUrl, 0, PD_SERVICE_PSP_URL_LEN + 1);
+
+						/* service_code */
+						if (GetField_CString(hRec, "service_code", &csServiceCode)) {
+DEBUGLOG(("- [%d] service_code = [%s]\n", iCnt, csServiceCode));
+
+							/*
+						 	 * Check The Service PSP Url Exists Or Not
+						 	 *  - Exist
+						 	 *    - Delete	: "serv_psp_url" Is Empty
+						 	 *    - Update	: "serv_psp_url" Is Not Empty
+						 	 *
+						 	 *  - Not Exist
+						 	 *    - Add	: "serv_psp_url" Is Not Empty
+						 	 */
+DEBUGLOG(("- [%d] Call ServicePspUrl:FindURL\n", iCnt));
+							DBObjPtr = CreateObj(DBPtr, "DBServicePspUrl", "FindURL");
+
+							if ((unsigned long)((*DBObjPtr)(csServiceCode, csPspId, csUrl)) == FOUND) {
+								if (iServicePspUrlEmpty == PD_TRUE) {
+DEBUGLOG(("- [%d] Call ServicePspUrl:Delete\n", iCnt));
+									DBObjPtr = CreateObj(DBPtr, "DBServicePspUrl", "Delete");
+
+									if ((unsigned long)((*DBObjPtr)(csPspId, csServiceCode)) != PD_OK)
+										iRet = INT_ERR;
+
+DEBUGLOG(("- [%d] Call ServicePspUrl:Delete: iRet = [%d]\n", iCnt, iRet));
+								}
+								else {
+									/* service_code */
+									PutField_CString(hPspInfo, "service_code", csServiceCode);
+
+DEBUGLOG(("- [%d] Call ServicePspUrl:UpdateServicePspUrl\n", iCnt));
+									DBObjPtr = CreateObj(DBPtr, "DBServicePspUrl", "UpdateServicePspUrl");
+
+									if ((unsigned long)((*DBObjPtr)(hPspInfo)) != PD_OK)
+										iRet = INT_ERR;
+
+DEBUGLOG(("- [%d] Call ServicePspUrl:UpdateServicePspUrl: iRet = [%d]\n", iCnt, iRet));
+								}
+							}
+							else {
+								if (iServicePspUrlEmpty == PD_FALSE) {
+									/* service_code */
+									PutField_CString(hPspInfo, "service_code", csServiceCode);
+
+DEBUGLOG(("- [%d] Call ServicePspUrl:Add\n", iCnt));
+									DBObjPtr = CreateObj(DBPtr, "DBServicePspUrl", "Add");
+
+									if ((unsigned long)((*DBObjPtr)(hPspInfo)) != PD_OK)
+										iRet = INT_ERR;
+
+DEBUGLOG(("- [%d] Call ServicePspUrl:Add: iRet = [%d]\n", iCnt, iRet));
+								}
+							}
+						}
+
+						iCnt++;
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+				}
+				else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("- Call TxnBeUrl::GetServiceCode Not Found!!\n"));
+				}
+				else {
+DEBUGLOG(("- Call TxnBeUrl::GetServiceCode Error!!\n"));
+ERRLOG("TxnMgtByUsCPD::Authorize:: Call TxnBeUrl::GetServiceCode Error!!\n");
+
+					iRet = INT_ERR;
+				}
+			}
+		}
+/* End - PRD332 Create Online PID */
+	}
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+/* PRD021 Non-China IP */
+	hash_destroy(hPspRestrictIpRegion);
+	FREE_ME(hPspRestrictIpRegion);
+/* End - PRD021 Non-China IP */
+
+/* PRD332 Create Online PID */
+	hash_destroy(hPspDetail);
+	FREE_ME(hPspDetail);
+
+	hash_destroy(hPspInfo);
+	FREE_ME(hPspInfo);
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+/* End - PRD332 Create Online PID */
+
+DEBUGLOG(("TxnMgtByUsCPD Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int CheckURLSpecialHandling(const char cCharacter, const char* csChannelCode, const char* csPspUrl)
+{
+	char	*csTmp;
+	int	iRet = PD_OK;
+
+	// Special Handling For Channel Code "COP" Only If The Special Character Exists
+	if (!strcmp(csChannelCode, PD_CHANNEL_CLOUD123PAY))
+	{
+		if (strchr(csPspUrl, cCharacter) == NULL)
+			iRet = PD_SKIP_OK;
+	}
+	else
+		iRet = PD_SKIP_OK;
+
+	return iRet;
+}
+
+int IsValid(const char* csParameter, int iType)
+{
+	char		csPattern[PD_TMP_BUF_LEN + 1];
+	const size_t	sMatch = 1;			// The Length Of "regmatch_t" Structure
+	int		iRet = PD_OK;
+	int		iStatus;
+	regex_t		reCompileResult;
+	regmatch_t	reMatchResult[1];		// Full Match If The Length Of "regmatch_t" Structure Is Equal To 1
+
+	memset(csPattern, 0, PD_TMP_BUF_LEN + 1);
+
+	if (iType == PD_TYPE_PSP_MID)
+		strcpy(csPattern, "^[a-z0-9_-]+$");
+	else if (iType == PD_TYPE_PSP_KEY)
+		strcpy(csPattern, "^[][a-z0-9~!@#$%^&*()_+`=\\;\',./{}|:\"<>?-]+$");
+	else if (iType == PD_TYPE_PSP_URL || iType == PD_TYPE_PSP_REQUEST_URL || iType == PD_TYPE_PSP_SERVICE_URL)
+		strcpy(csPattern, "^[][a-z0-9._~:/?#@!$&\'()*+,;=%-]+$");
+	else
+		return PD_ERR;
+
+	if (regcomp(&reCompileResult, (const char*)csPattern, REG_EXTENDED | REG_ICASE) != SUCCESS)
+	{
+DEBUGLOG(("- IsValid:: Compile regular expression failed...\n"));
+		return PD_ERR;
+	}
+
+	iStatus = regexec(&reCompileResult, csParameter, sMatch, reMatchResult, 0);
+
+	if (iStatus == REG_NOMATCH)
+	{
+DEBUGLOG(("- IsValid:: Invalid characters within the target = [%s]\n", csParameter));
+		iRet = PD_ERR;
+	}
+	else
+	{
+		if (iStatus != 0)
+		{
+			char csErrorMsg[PD_TMP_BUF_LEN];
+
+			memset(csErrorMsg, 0, PD_TMP_BUF_LEN);
+			regerror(iStatus, &reCompileResult, csErrorMsg, sizeof(csErrorMsg));
+DEBUGLOG(("- IsValid:: Error message = [%s]\n", csErrorMsg));
+
+			iRet = PD_ERR;
+		}
+	}
+
+	regfree(&reCompileResult);
+
+	return iRet;
+}
+
+void URLCharacterConverter(const char cCharacter, const char* csOPspUrl, char* csCPspUrl)
+{
+	char	*csCharacter = (char*)csOPspUrl;
+	int	i = 0;
+
+	while (*csCharacter != '\0')
+	{
+		if (*csCharacter == cCharacter)
+		{
+			char	*csLTmp = (char*)malloc(PD_SPECIAL_CHARACTER_LEN + 1);
+			char	*csUTmp = NULL;
+			int	j = 0;
+
+			memset(csLTmp, 0, PD_SPECIAL_CHARACTER_LEN + 1);
+			*csLTmp = *csCharacter;
+
+			csUTmp = url_encode(csLTmp);
+
+			for (j = 0; j < PD_SPECIAL_CHARACTER_LEN; j++)
+				csCPspUrl[i++] = toupper(csUTmp[j]);
+
+			FREE_ME(csLTmp);
+		}
+		else
+			csCPspUrl[i++] = *csCharacter;
+
+		csCharacter++;
+	}
+}

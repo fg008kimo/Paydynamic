@@ -1,0 +1,176 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/08/17              Virginia Yun
+enter target value				   2012/12/12		   LokMan Chow
+log txn_amt to net_amt also			   2013/12/19		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUsAFM.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Channel);
+
+void TxnMgtByUsAFM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+        char    *csUser = NULL;
+	char	*csMerchantId = NULL;
+	char    *csTxnCountry=strdup("");
+	char	*csTxnCcy = NULL;
+	char	*csServiceCode = NULL;
+	char	*csTmp = NULL;
+	double	dAmt = 0.0;
+	char	cDCInd;
+
+	
+	if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csUser));
+		PutField_CString(hContext,"update_user",csUser);
+	}
+
+	if(GetField_CString(hRequest,"merchant_id",&csMerchantId)){
+DEBUGLOG(("Authorize::merchant_id= [%s]\n",csMerchantId));
+		PutField_CString(hContext,"merchant_id",csMerchantId);
+	}
+	else{
+DEBUGLOG(("Authorize::merchant_id not found!!\n"));
+ERRLOG("TxnMgtByUsAFM::Authorize::merchant_id not found!!\n");
+		iRet=INT_MERCHANT_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"service_code",&csServiceCode)){
+DEBUGLOG(("Authorize::sevice_code= [%s]\n",csServiceCode));
+		PutField_CString(hContext,"service_code",csServiceCode);
+	}
+	else{
+DEBUGLOG(("Authorize::service_code not found!!\n"));
+ERRLOG("TxnMgtByUsAFM::Authorize::service_code not found!!\n");
+		iRet=INT_SERVICE_CODE_MISSING;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"txn_ccy",&csTxnCcy)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTxnCcy));
+		PutField_CString(hContext,"txn_ccy",csTxnCcy);
+		PutField_CString(hContext,"net_ccy",csTxnCcy);
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMgtByUsAFM::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(GetField_CString(hRequest,"txn_country",&csTxnCountry)){
+DEBUGLOG(("Authorize::txn_country= [%s]\n",csTxnCountry));
+		PutField_CString(hContext,"txn_country",csTxnCountry);
+	}
+	else{
+/*		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"DBService","FindCountryByService");
+                        if ((unsigned long)(DBObjPtr)(csServiceCode,csTxnCountry) == PD_FOUND) {
+                                PutField_CString(hContext,"txn_country",csTxnCountry);
+DEBUGLOG(("Authorize::Found Country [%s] for Service [%s]\n",csTxnCountry,csServiceCode));
+                        }
+                        else{
+                                iRet = INT_INVALID_SERVICE_CODE;
+DEBUGLOG(("Authorize::invalid service code[%s]\n",csServiceCode));
+ERRLOG("TxnMgtByUsAFM:Authorize::invalid service code [%s]\n",csServiceCode);
+
+                                PutField_Int(hContext,"internal_error",iRet);
+                        }
+                }
+*/
+DEBUGLOG(("Authorize::country not found!!\n"));
+ERRLOG("TxnMgtByUsAFM::Authorize::country not found!!\n");
+		iRet=INT_TXN_COUNTRY_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+	if(GetField_Double(hContext,"txn_amt",&dAmt)){
+		PutField_Double(hContext,"net_amt",dAmt);
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dAmt));
+	}
+	else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMgtByUsAFM::Authorize::txn_amt not found!!\n");
+		iRet=INT_PAY_AMOUNT_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if (GetField_CString(hRequest, "dc_ind", &csTmp)) {
+		cDCInd = csTmp[0];
+DEBUGLOG(("Authorize::dc_ind = [%c]\n",cDCInd));
+		PutField_Char(hContext, "dc_ind", cDCInd);
+	} else {
+DEBUGLOG(("Authorize::dc_ind not found!!\n"));
+ERRLOG("TxnMgtByUsAFM::Authorize::dc_ind not found!!\n");
+		iRet=INT_DC_IND_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	PutField_Char(hContext, "party_type", PD_TYPE_MERCHANT);
+	PutField_Int(hContext, "chg_bal_mode", PD_FALSE); 
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOBalance: ProcessFundinPayout\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOBalance","ProcessFundinPayout");
+                iRet = (unsigned long)((*BOObjPtr)(hContext));
+	
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call MGTChannel:UpdateTxnDetailLog\n"));
+                ChannelObjPtr = CreateObj(ChannelPtr, "MGTChannel","UpdateTxnDetailLog");
+                if ((unsigned long)((*ChannelObjPtr)(hContext, hRequest, hResponse)) != PD_OK) {
+                        iRet = INT_ERR;
+                }
+	}
+
+	if (iRet == PD_OK) {
+		//GetField_CString(hContext, "PHDATE", &csTmp);
+
+		//PutField_CString(hContext, "approval_date", csTmp);
+		PutField_CString(hContext, "sub_status", PD_APPROVED);
+		
+	}
+
+	if(iRet==PD_OK){
+		if(GetField_CString(hContext,"txn_seq",&csTmp)){
+			PutField_CString(hResponse,"org_txn_seq",csTmp);
+		}
+	}
+
+
+	FREE_ME(csTxnCountry);
+DEBUGLOG(("TxnMgtByUsAFM Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

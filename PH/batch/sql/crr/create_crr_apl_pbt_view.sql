@@ -1,0 +1,119 @@
+DROP VIEW CRR_APL_PBT_VIEW;
+
+CREATE OR REPLACE FORCE VIEW CRR_APL_PBT_VIEW
+(
+   TH_TXN_ID,
+   CR_TXN_DATE,
+   CR_COUNTRY,
+   CR_PRODUCT,
+   TE_PARTY_TYPE,
+   PARTY_ID,
+   CR_CURRENCY,
+   CR_JNL_TYPE_ID,
+   CR_JNL_ENTRY_TYPE_ID,
+   CR_IND,
+   CR_GL_ID,
+   TXN_COUNT,
+   CR_AMOUNT
+)
+AS
+   SELECT TH_TXN_ID,
+          TH_APPROVAL_DATE,
+          CR_COUNTRY_ID,
+          CR_PRODUCT_CODE,
+          CR_PARTY_TYPE,
+          TP_PSP_ID,
+          TP_TXN_CCY,
+          CR_JNL_TYPE_ID,
+          CR_JNL_ENTRY_TYPE_ID,
+          CASE
+             WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+             WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+             ELSE ''
+          END
+             CR_IND,
+          CASE
+             WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+             WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+             ELSE 0
+          END
+             CR_GL_ID,
+          1 TXN_COUNT,
+          TP_TXN_AMOUNT CR_AMOUNT
+     FROM (SELECT *
+             FROM TXN_HEADER
+            WHERE     TH_TXN_CODE = 'PTF'
+                  AND TH_STATUS IN ('C', 'R')
+                  AND TH_AR_IND = 'A'
+                  AND TH_APPROVAL_DATE IS NOT NULL),
+          TXN_DETAIL,
+          TXN_PSP_DETAIL,
+          PSP_DETAIL,
+          (SELECT *
+             FROM CRR_PSP_PRODUCT_CODE_MAP
+            WHERE PM_DISABLED = 0),
+          (SELECT *
+             FROM CRR_RULE_POSTING
+            WHERE     CR_DISABLED = 0
+                  AND CR_TXN_CODE = 'PTF'
+                  AND CR_PARTY_TYPE = 'P'
+                  AND CR_JNL_ENTRY_TYPE_ID = 'SRC_TXN_AMT')
+    WHERE     TH_TXN_ID = TD_TXN_ID
+          AND TH_TXN_ID = TP_TXN_ID
+          AND TP_PSP_ID = CR_PARTY_ID
+          AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+          AND TP_PSP_ID = PSP_ID
+          AND PM_PSP_ID = PSP_ID
+          AND PM_BUSINESS_TYPE = PSP_TYPE
+          AND PM_PRODUCT_CODE = CR_PRODUCT_CODE
+   UNION ALL
+   SELECT TH_ORG_TXN_ID,
+          TH_APPROVAL_DATE,
+          CR_COUNTRY_ID,
+          CR_PRODUCT_CODE,
+          CR_PARTY_TYPE,
+          TP_PSP_ID,
+          TP_TXN_CCY,
+          CR_JNL_TYPE_ID,
+          CR_JNL_ENTRY_TYPE_ID,
+          CASE
+             WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+             WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+             ELSE ''
+          END
+             CR_IND,
+          CASE
+             WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+             WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+             ELSE 0
+          END
+             CR_GL_ID,
+          1 TXN_COUNT,
+          TP_TXN_AMOUNT CR_AMOUNT
+     FROM (SELECT *
+             FROM TXN_HEADER
+            WHERE     TH_TXN_CODE = 'PTT'
+                  AND TH_STATUS IN ('C', 'R')
+                  AND TH_AR_IND = 'A'
+                  AND TH_APPROVAL_DATE IS NOT NULL),
+          TXN_DETAIL,
+          TXN_PSP_DETAIL,
+          PSP_DETAIL,
+          (SELECT *
+             FROM CRR_PSP_PRODUCT_CODE_MAP
+            WHERE PM_DISABLED = 0),
+          (SELECT *
+             FROM CRR_RULE_POSTING
+            WHERE     CR_DISABLED = 0
+                  AND CR_TXN_CODE = 'PTF'
+                  AND CR_PARTY_TYPE = 'P'
+                  AND CR_JNL_ENTRY_TYPE_ID = 'DST_TXN_AMT')
+    WHERE     TH_TXN_ID = TD_TXN_ID
+          AND TH_TXN_ID = TP_TXN_ID
+          AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+          AND TP_PSP_ID = CR_PARTY_ID
+          AND TP_PSP_ID = PSP_ID
+          AND PM_PSP_ID = PSP_ID
+          AND PM_BUSINESS_TYPE = PSP_TYPE
+          AND PM_PRODUCT_CODE = CR_PRODUCT_CODE;
+

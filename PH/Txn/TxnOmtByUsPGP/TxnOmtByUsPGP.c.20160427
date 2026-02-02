@@ -1,0 +1,214 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/01/15              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsPGP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+char cDebug;
+OBJPTR(DB);
+
+void TxnOmtByUsPGP(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	char	*csTmp;
+	char	*csDate;
+	char	*csUser;
+	char	*csTxnId;
+	char	csErrMsg[PD_TMP_BUF_LEN+1];
+	int	iInsert = PD_FALSE;
+	char	cGrp;
+	char	cMerchGrp;
+	int	iChk = PD_OK;
+	char	*csAcctNum;
+	char	*csAcctName;
+
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	hash_t  *hUpd;
+        hUpd = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t  *hChk;
+        hChk = (hash_t*) malloc (sizeof(hash_t));
+
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	hash_t *hRec;
+
+DEBUGLOG(("Authorize\n"));
+
+/* merchant_id */
+	if(GetField_CString(hRequest,"merchant_id",&csTmp)){
+		PutField_CString(hTxn,"merchant_id",csTmp);
+DEBUGLOG(("Authorize: merchant_id[%s]\n",csTmp));
+	}
+
+/* user */
+	if(GetField_CString(hRequest,"add_user",&csUser)){
+		PutField_CString(hTxn,"add_user",csUser);
+DEBUGLOG(("Authorize: add_user[%s]\n",csUser));
+	}
+
+/* PHDATE */
+	if(GetField_CString(hContext,"PHDATE",&csDate)){
+		PutField_CString(hTxn,"posting_date",csDate);
+DEBUGLOG(("Authorize: PHDATE [%s]\n",csDate));
+	}
+
+DEBUGLOG(("Authorize::Call DBOLMerchantUploadFileDetail:GetDetailForPayoutGrp\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBOLMerchantUploadFileDetail","GetDetailForPayoutGrp");
+	if((unsigned long)(*DBObjPtr)(hTxn,rRecordSet) == PD_OK){
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec && iChk==PD_OK){
+			hash_init(hUpd,0);
+			hash_init(hChk,0);
+			iInsert = PD_FALSE;
+
+			if(GetField_CString(hRec,"txn_seq",&csTxnId)){
+DEBUGLOG(("Authorize: txn_id [%s]\n",csTxnId));
+			}
+			if(GetField_CString(hRec,"account_num",&csAcctNum)){
+				PutField_CString(hChk,"bank_acct_num",csAcctNum);
+DEBUGLOG(("Authorize: account_num [%s]\n",csAcctNum));
+			}
+			if(GetField_CString(hRec,"account_name",&csAcctName)){
+				PutField_CString(hChk,"bank_acct_name",csAcctName);
+DEBUGLOG(("Authorize: account_name [%s]\n",csAcctName));
+			}
+			if(GetField_Char(hRec,"merch_payout_grp",&cMerchGrp)){
+DEBUGLOG(("Authorize: merch_payout_grp [%c]\n",cMerchGrp));
+			}
+
+			if(cMerchGrp=='A'){
+				//A->A
+				PutField_Char(hUpd,"psp_group",cMerchGrp);
+DEBUGLOG(("Authorize: psp_payout_grp [%c]\n",cMerchGrp));
+			}
+			else if(cMerchGrp=='D'){
+				//D->D
+				PutField_Char(hUpd,"psp_group",cMerchGrp);
+DEBUGLOG(("Authorize: psp_payout_grp [%c]\n",cMerchGrp));
+
+				//if grp D not found in D list, insert to D list
+				sprintf(csErrMsg,"DBOLPayoutGrpList: MatchRecord [%s][%s] Failed!!!!",csAcctNum,csAcctName);
+				DBObjPtr = CreateObj(DBPtr,"DBOLPayoutGrpList","MatchRecord");
+				iChk = (unsigned long)(*DBObjPtr)(hChk);
+				if(iChk!=PD_ERR){
+					if(iChk==PD_FOUND){
+						iChk=PD_OK;
+						if(GetField_Char(hChk,"payout_group",&cGrp)){
+							if(cGrp!='D'){
+								iInsert = PD_TRUE;
+
+								//delete the org record
+								sprintf(csErrMsg,"DBOLPayoutGrpList: Delete [%c][%s][%s] Failed!!!!",cGrp,csAcctNum,csAcctName);
+								DBObjPtr = CreateObj(DBPtr,"DBOLPayoutGrpList","Delete");
+								iChk = (unsigned long)(*DBObjPtr)(hChk);
+							}
+						}
+					}
+					else{
+						iInsert = PD_TRUE;
+						iChk=PD_OK;
+					}
+					if(iInsert && iChk==PD_OK){
+						PutField_CString(hChk,"posting_date",csDate);
+						PutField_CString(hChk,"add_user",csUser);
+						PutField_Char(hChk,"payout_group",'D');
+						sprintf(csErrMsg,"DBOLPayoutGrpList: Add [D][%s][%s] Failed!!!!",csAcctNum,csAcctName);
+						DBObjPtr = CreateObj(DBPtr,"DBOLPayoutGrpList","Add");
+						iChk = (unsigned long)(*DBObjPtr)(hChk);
+					}
+				}
+
+				if(iChk!=PD_OK){
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: %s\n",csErrMsg));
+				}
+				
+			}
+			else{//check B and C
+				sprintf(csErrMsg,"DBOLPayoutGrpList: MatchRecord [%s][%s] Failed!!!!",csAcctNum,csAcctName);
+				DBObjPtr = CreateObj(DBPtr,"DBOLPayoutGrpList","MatchRecord");
+				iChk = (unsigned long)(*DBObjPtr)(hChk);
+				if(iChk!=PD_ERR){
+					if(iChk==PD_FOUND){
+						if(GetField_Char(hChk,"payout_group",&cGrp)){
+							//if grp B/C found in D list, assing to D
+							//if grp B/C found in B list, assing to B
+							PutField_Char(hUpd,"psp_group",cGrp);
+DEBUGLOG(("Authorize: psp_payout_grp [%c]\n",cGrp));
+						}
+					}
+					else{
+						//if grp B/C not found in B/D list, assing to C
+						PutField_Char(hUpd,"psp_group",'C');
+DEBUGLOG(("Authorize: psp_payout_grp [%c]\n",'C'));
+					}
+					iChk=PD_OK;
+				}
+				else{
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: %s\n",csErrMsg));
+				}
+			}
+
+
+			if(iChk == PD_OK){
+				//update psp_payout_grp in merchant_upload_file_detail
+				DBObjPtr = CreateObj(DBPtr,"DBOLMerchantUploadFileDetail","UpdateDetailByTxnId");
+				if((unsigned long)(*DBObjPtr)(csTxnId,hUpd) != PD_OK){
+					iChk = INT_ERR;
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: DBOLMerchantUploadFileDetail: UpdateDetailByTxnId Failed!!!!!\n"));
+				}
+			}
+
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	else{
+		iRet = INT_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::DBOLMerchantUploadFileDetail:GetDetailForPayoutGrp Failed!!!\n"));
+	}
+
+	FREE_ME(hTxn);
+	FREE_ME(hUpd);
+	FREE_ME(hChk);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+DEBUGLOG(("TxnOmtByUsPGP Normal Exit() iRet = [%d]\n",iRet));
+        return iRet;
+}

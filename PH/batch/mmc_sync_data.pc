@@ -1,0 +1,395 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	MMC_PHONLINE	'O'
+#define	MMC_PHOFFLINE	'F'
+
+char	cDebug='Y';
+
+char	c_mode = ' ';
+
+OBJPTR(Txn);
+OBJPTR(Channel);
+int parse_arg(int argc,char **argv);
+
+int process_phonlinesync();
+int process_phofflinesync();
+int Send2Host(const hash_t*);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int	iRet;
+	
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS) {
+                printf("usage:  -o Mode (O/F)\n");
+                return (iRet);
+        }
+
+	if (iRet == SUCCESS ) {
+DEBUGLOG(("success\n"));
+                switch (c_mode) {
+                        case MMC_PHONLINE:
+				iRet = process_phonlinesync();
+                                break;
+                        case MMC_PHOFFLINE:
+				iRet = process_phofflinesync();
+                                break;
+                        default:
+                                return FAILURE;
+                }
+	}
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+
+        while ((c = getopt(argc,argv,"o:")) != EOF) {
+                switch (c) {
+                        case 'o':
+                                c_mode = optarg[0];
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if ((c_mode != MMC_PHONLINE) && (c_mode != MMC_PHOFFLINE))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+int process_phonlinesync()
+{
+	int iRet = SUCCESS;
+	hash_t  *hData;
+
+DEBUGLOG(("process_phonlinesync()\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar		v_client_id[PD_CLIENT_ID_LEN +1];
+		varchar		v_psp_id[PD_PSP_ID_LEN +1];
+		varchar		v_baid[PD_BAID_LEN +1];
+		varchar		v_client_name[PD_CLIENT_NAME_LEN +1];
+		varchar		v_psp_name[PD_PSP_NAME_LEN +1];
+		varchar		v_baid_name[PD_BAID_NAME_LEN +1];
+		varchar		v_country[PD_COUNTRY_LEN +1];
+
+		short		ind_client_id = -1;
+		short		ind_psp_id = -1;
+		short		ind_baid = -1;
+		short		ind_client_name = -1;
+		short		ind_psp_name = -1;
+		short		ind_baid_name = -1;
+		short		ind_country = -1;
+
+	EXEC SQL END DECLARE SECTION;	
+
+	EXEC SQL DECLARE c_cursor_getonlinepsp CURSOR FOR
+		SELECT  CLIENT_ID,
+       			PSP_DETAIL.PSP_ID,
+                        '00000000000000000000' as BAID,
+       			PM_CLIENT_NAME,
+       			PSP_NAME,
+                        PSP_NAME as BAID_NAME,
+			COUNTRY
+       
+                 FROM PSP_DETAIL,
+		      PSP_MASTER,
+		      PSP_COUNTRY
+                WHERE disabled= 0 
+                  AND client_id = pm_client_id
+		  AND PSP_DETAIL.PSP_ID = PSP_COUNTRY.PSP_ID;
+
+	EXEC SQL OPEN c_cursor_getonlinepsp;
+        do {
+                EXEC SQL FETCH c_cursor_getonlinepsp
+                INTO
+			:v_client_id:ind_client_id,
+			:v_psp_id:ind_psp_id,
+			:v_baid:ind_baid,
+			:v_client_name:ind_client_name,
+			:v_psp_name:ind_psp_name,
+			:v_baid_name:ind_baid_name,
+			:v_country:ind_country;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		hData = (hash_t*)  malloc (sizeof(hash_t));
+        	hash_init(hData,0);
+
+DEBUGLOG(("Record found\n"));
+/* client id */
+		if (ind_client_id >= 0 ) {
+			v_client_id.arr[v_client_id.len] ='\0';
+			PutField_CString(hData,"client_id",(const char*)v_client_id.arr);
+DEBUGLOG(("client_id = [%.*s]\n",v_client_id.len,v_client_id.arr));
+		}
+
+/* psp id */
+		if (ind_psp_id >= 0 ) {
+                        v_psp_id.arr[v_psp_id.len] = '\0';
+			PutField_CString(hData,"psp_id",(const char*)v_psp_id.arr);
+DEBUGLOG(("psp id= [%.*s]\n",v_psp_id.len,v_psp_id.arr));
+		}
+
+/* baid */
+		if (ind_baid >= 0 ) {
+                        v_baid.arr[v_baid.len] = '\0';
+			PutField_CString(hData,"baid",(const char*)v_baid.arr);
+DEBUGLOG(("baid = [%.*s]\n",v_baid.len,v_baid.arr));
+		}
+/* client_name */
+		if (ind_client_name >= 0 ) {
+                        v_client_name.arr[v_client_name.len] = '\0';
+			PutField_CString(hData,"client_name",(const char*)v_client_name.arr);
+DEBUGLOG(("client_name = [%.*s]\n",v_baid_name.len,v_client_name.arr));
+		}
+
+
+/* psp name */
+		if (ind_psp_name >= 0 ) {
+                        v_psp_name.arr[v_psp_name.len] = '\0';
+			PutField_CString(hData,"psp_name",(const char*)v_psp_name.arr);
+DEBUGLOG(("psp_name = [%.*s]\n",v_psp_name.len,v_psp_name.arr));
+		}
+
+/* baid_name */
+		if (ind_baid_name >= 0 ) {
+                        v_baid_name.arr[v_baid_name.len] = '\0';
+			PutField_CString(hData,"baid_name",(const char*)v_baid_name.arr);
+DEBUGLOG(("baid_name = [%.*s]\n",v_baid_name.len,v_baid_name.arr));
+		}
+/* country */
+		if (ind_country >= 0 ) {
+                        v_country.arr[v_country.len] = '\0';
+			PutField_CString(hData,"country",(const char*)v_country.arr);
+DEBUGLOG(("country = [%.*s]\n",v_country.len,v_country.arr));
+		}
+
+
+		iRet = Send2Host(hData);
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+        EXEC SQL CLOSE c_cursor_getonlinepsp;
+
+	hash_destroy(hData);
+        FREE_ME(hData);
+
+DEBUGLOG(("process_phonlinesync() return =[%d]\n",iRet));
+	return iRet;
+
+sql_error:
+    DEBUGLOG(("process_phonlinesync error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getonlinepsp;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int Send2Host(const hash_t* hData)
+{
+	int iRet = SUCCESS;
+	hash_t	*hContext, *hResponse;
+
+DEBUGLOG(("Send2Host()\n"));
+	hContext = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hContext,0);
+
+
+	hResponse = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hResponse,0);
+
+	ChannelObjPtr = CreateObj(ChannelPtr,"MMCChannel","UpdateContext");
+	if ((unsigned long)(*ChannelObjPtr)(hContext) == PD_OK) {
+	}
+	else 
+		iRet = FAILURE;
+
+	if (iRet == SUCCESS) {
+		TxnObjPtr = CreateObj(TxnPtr,"TxnMmcByUsSyn","Authorize");
+		if ((unsigned long)(*TxnObjPtr)(hContext,hData,hResponse) == PD_OK) {
+		}
+		else 
+			iRet = FAILURE;
+	}
+	hash_destroy(hContext);
+        FREE_ME(hContext);
+	hash_destroy(hResponse);
+        FREE_ME(hResponse);
+
+DEBUGLOG(("Send2Host return iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int process_phofflinesync()
+{
+	int iRet = SUCCESS;
+	hash_t  *hData;
+
+DEBUGLOG(("process_phofflinesync()\n"));
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar		v_client_id[PD_CLIENT_ID_LEN +1];
+		varchar		v_psp_id[PD_PSP_ID_LEN +1];
+		varchar		v_baid[PD_BAID_LEN +1];
+		varchar		v_client_name[PD_CLIENT_NAME_LEN +1];
+		varchar		v_psp_name[PD_PSP_NAME_LEN +1];
+		varchar		v_baid_name[PD_BAID_NAME_LEN +1];
+		varchar		v_country[PD_COUNTRY_LEN +1];
+
+		short		ind_client_id = -1;
+		short		ind_psp_id = -1;
+		short		ind_baid = -1;
+		short		ind_client_name = -1;
+		short		ind_psp_name = -1;
+		short		ind_baid_name = -1;
+		short		ind_country = -1;
+
+	EXEC SQL END DECLARE SECTION;	
+
+	EXEC SQL DECLARE c_cursor_getofflinepsp CURSOR FOR
+		SELECT  pm_client_id,
+			pm_client_name,
+       			opd_psp_id,
+			opd_psp_name,
+       			obai_baid,
+			obai_baid_name,
+			db_country
+ 		  FROM  psp_master a,
+       			ol_psp_detail b,
+       			ol_bank_acct_id c,
+			def_bank d
+  		 WHERE  pm_client_id = opd_client_id
+    		   AND opd_psp_id = obai_psp_id
+		   AND db_int_bank_code = obai_int_bank_code;
+
+	EXEC SQL OPEN c_cursor_getofflinepsp;
+        do {
+                EXEC SQL FETCH c_cursor_getofflinepsp
+                INTO
+			:v_client_id:ind_client_id,
+			:v_client_name:ind_client_name,
+			:v_psp_id:ind_psp_id,
+			:v_psp_name:ind_psp_name,
+			:v_baid:ind_baid,
+			:v_baid_name:ind_baid_name,
+			:v_country:ind_country;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		hData = (hash_t*)  malloc (sizeof(hash_t));
+        	hash_init(hData,0);
+
+DEBUGLOG(("Record found\n"));
+/* client id */
+		if (ind_client_id >= 0 ) {
+			v_client_id.arr[v_client_id.len] ='\0';
+			PutField_CString(hData,"client_id",(const char*)v_client_id.arr);
+DEBUGLOG(("client_id = [%.*s]\n",v_client_id.len,v_client_id.arr));
+		}
+
+/* psp id */
+		if (ind_psp_id >= 0 ) {
+                        v_psp_id.arr[v_psp_id.len] = '\0';
+			PutField_CString(hData,"psp_id",(const char*)v_psp_id.arr);
+DEBUGLOG(("psp id= [%.*s]\n",v_psp_id.len,v_psp_id.arr));
+		}
+
+/* baid */
+		if (ind_baid >= 0 ) {
+                        v_baid.arr[v_baid.len] = '\0';
+			PutField_CString(hData,"baid",(const char*)v_baid.arr);
+DEBUGLOG(("baid = [%.*s]\n",v_baid.len,v_baid.arr));
+		}
+/* client_name */
+		if (ind_client_name >= 0 ) {
+                        v_client_name.arr[v_client_name.len] = '\0';
+			PutField_CString(hData,"client_name",(const char*)v_client_name.arr);
+DEBUGLOG(("client_name = [%.*s]\n",v_baid_name.len,v_client_name.arr));
+		}
+
+
+/* psp name */
+		if (ind_psp_name >= 0 ) {
+                        v_psp_name.arr[v_psp_name.len] = '\0';
+			PutField_CString(hData,"psp_name",(const char*)v_psp_name.arr);
+DEBUGLOG(("psp_name = [%.*s]\n",v_psp_name.len,v_psp_name.arr));
+		}
+
+/* baid_name */
+		if (ind_baid_name >= 0 ) {
+                        v_baid_name.arr[v_baid_name.len] = '\0';
+			PutField_CString(hData,"baid_name",(const char*)v_baid_name.arr);
+DEBUGLOG(("baid_name = [%.*s]\n",v_baid_name.len,v_baid_name.arr));
+		}
+
+/* country */
+		if (ind_country >= 0 ) {
+                        v_country.arr[v_country.len] = '\0';
+			PutField_CString(hData,"country",(const char*)v_country.arr);
+DEBUGLOG(("country = [%.*s]\n",v_country.len,v_country.arr));
+		}
+
+		iRet = Send2Host(hData);
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+        EXEC SQL CLOSE c_cursor_getonlinepsp;
+
+	hash_destroy(hData);
+        FREE_ME(hData);
+
+DEBUGLOG(("process_phofflinesync() return =[%d]\n",iRet));
+	return iRet;
+
+sql_error:
+    DEBUGLOG(("process_phofflinesync error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getofflinepsp;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+

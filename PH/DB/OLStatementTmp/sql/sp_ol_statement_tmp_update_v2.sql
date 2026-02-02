@@ -1,0 +1,136 @@
+CREATE OR REPLACE FUNCTION PHUSER.sp_ol_statement_tmp_update_v2 (
+   in_file_id                ol_statement_tmp.olst_file_id%TYPE,
+   in_seq                    ol_statement_tmp.olst_seq%TYPE,
+   in_ver                    ol_statement_tmp.olst_ver%TYPE,
+   in_latest_ver             ol_statement_tmp.olst_latest_ver%TYPE,
+   in_disabled               ol_statement_tmp.olst_disabled%TYPE,
+   in_int_bank_code          ol_statement_tmp.olst_int_bank_code%TYPE,
+   in_bank_acct_num          ol_statement_tmp.olst_bank_acct_num%TYPE,
+   in_sys_seq                ol_statement_tmp.olst_sys_seq%TYPE,
+   in_user_seq               ol_statement_tmp.olst_user_seq%TYPE,
+   in_skip                   ol_statement_tmp.olst_skip%TYPE,
+   in_raw_date               ol_statement_tmp.olst_raw_date%TYPE,
+   in_raw_time               ol_statement_tmp.olst_raw_time%TYPE,
+   in_statement_date         ol_statement_tmp.olst_statement_date%TYPE,
+   in_statement_time         ol_statement_tmp.olst_statement_time%TYPE,
+   in_tfr_bank_name          ol_statement_tmp.olst_tfr_bank_name%TYPE,
+   in_tfr_bank_acct_num      ol_statement_tmp.olst_tfr_bank_acct_num%TYPE,
+   in_tfr_type               ol_statement_tmp.olst_tfr_type%TYPE,
+   in_tfr_channel            ol_statement_tmp.olst_tfr_channel%TYPE,
+   in_tfr_text               ol_statement_tmp.olst_tfr_text%TYPE,
+   in_tfr_customer_text      ol_statement_tmp.olst_tfr_customer_text%TYPE,
+   in_sender_name            ol_statement_tmp.olst_sender_name%TYPE,
+   in_txn_ref_num            ol_statement_tmp.olst_txn_ref_num%TYPE,
+   in_balance                ol_statement_tmp.olst_balance%TYPE,
+   in_amt_type               ol_statement_tmp.olst_amt_type%TYPE,
+   in_txn_amount             ol_statement_tmp.olst_txn_amount%TYPE,
+   in_bank_charge            ol_statement_tmp.olst_bank_charge%TYPE,
+   in_sender_baid_name       ol_statement_tmp.olst_sender_baid_name%TYPE,
+   in_recipient_baid_name    ol_statement_tmp.olst_recipient_baid_name%TYPE,
+   in_client_name            ol_statement_tmp.olst_client_name%TYPE,
+   in_create_user            ol_statement_tmp.olst_create_user%TYPE,
+   in_create_timestamp       ol_statement_tmp.olst_create_timestamp%TYPE,
+   in_update_user            ol_statement_tmp.olst_update_user%TYPE,
+   in_txn_location           ol_statement_tmp.olst_txn_location%TYPE,
+   in_txn_type               ol_statement_tmp.olst_txn_type%TYPE,
+   in_txn_reference          ol_statement_tmp.olst_txn_reference%TYPE)
+   RETURN NUMBER
+IS
+BEGIN
+   UPDATE ol_statement_tmp
+      SET olst_latest_ver = in_ver - 1
+    WHERE     olst_file_id = in_file_id
+          AND olst_seq = in_seq
+          AND olst_ver IS NULL;
+
+   IF SQL%ROWCOUNT = 0
+   THEN
+      RETURN 1;
+   END IF;
+
+   INSERT INTO ol_statement_tmp (olst_file_id,
+                                 olst_seq,
+                                 olst_ver,
+                                 olst_latest_ver,
+                                 olst_disabled,
+                                 olst_int_bank_code,
+                                 olst_bank_acct_num,
+                                 olst_sys_seq,
+                                 olst_user_seq,
+                                 olst_skip,
+                                 olst_raw_date,
+                                 olst_raw_time,
+                                 olst_statement_date,
+                                 olst_statement_time,
+                                 olst_tfr_bank_name,
+                                 olst_tfr_bank_acct_num,
+                                 olst_tfr_type,
+                                 olst_tfr_channel,
+                                 olst_tfr_text,
+                                 olst_tfr_customer_text,
+                                 olst_sender_name,
+                                 olst_txn_ref_num,
+                                 olst_balance,
+                                 olst_amt_type,
+                                 olst_txn_amount,
+                                 olst_bank_charge,
+                                 olst_sender_baid_name,
+                                 olst_recipient_baid_name,
+                                 olst_client_name,
+                                 olst_create_user,
+                                 olst_create_timestamp,
+                                 olst_update_user,
+                                 olst_update_timestamp,
+                                 olst_txn_location,
+                                 olst_txn_type,
+                                 olst_txn_reference)
+        VALUES (in_file_id,
+                in_seq,
+                in_ver,
+                in_latest_ver,
+                in_disabled,
+                in_int_bank_code,
+                in_bank_acct_num,
+                in_sys_seq,
+                in_user_seq,
+                in_skip,
+                in_raw_date,
+                in_raw_time,
+                in_statement_date,
+                in_statement_time,
+                in_tfr_bank_name,
+                in_tfr_bank_acct_num,
+                in_tfr_type,
+                in_tfr_channel,
+                in_tfr_text,
+                in_tfr_customer_text,
+                in_sender_name,
+                in_txn_ref_num,
+                in_balance,
+                in_amt_type,
+                in_txn_amount,
+                in_bank_charge,
+                in_sender_baid_name,
+                in_recipient_baid_name,
+                in_client_name,
+                in_create_user,
+                in_create_timestamp,
+                in_update_user,
+                SYSDATE,
+                in_txn_location,
+                in_txn_type,
+                in_txn_reference);
+
+   IF SQL%ROWCOUNT = 0
+   THEN
+      RETURN 1;
+   ELSE
+      RETURN 0;
+   END IF;
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+END sp_ol_statement_tmp_update_v2;
+/
+

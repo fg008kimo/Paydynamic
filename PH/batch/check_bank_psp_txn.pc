@@ -1,0 +1,117 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include <pthread.h>
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+pthread_mutex_t mutex1 = PTHREAD_MUTEX_INITIALIZER;
+OBJPTR(DB);
+OBJPTR(BO);
+
+typedef struct str_thdata {
+    char bank_code[PD_BANK_CODE_LEN+1];
+} thdata;
+
+char	cDebug='Y';
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+void *thread_function(void *ptr)
+{
+	char    csCmd[100];
+	thdata *data;
+
+        pthread_mutex_lock( &mutex1 );
+	data = (thdata*) ptr;
+DEBUGLOG(("Thread number %ld = [%s]\n",pthread_self(),data->bank_code));
+	sprintf(csCmd,"check_bank_psp_txn_email.sh %ld %s > /dev/null 2>&1 &",pthread_self(),data->bank_code);
+	system(csCmd);
+
+        pthread_mutex_unlock( &mutex1 );
+
+	return NULL;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int 	iRet = PD_OK;
+	int	n=0;
+	pthread_t thread_id[100];
+	thdata	pData[100];
+
+	EXEC SQL WHENEVER SQLERROR GOTO getpsp_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar         v_bank_code[PD_BANK_CODE_LEN+1];
+
+		short		ind_bank_code;
+	EXEC SQL END DECLARE SECTION;	
+
+	EXEC SQL DECLARE c_cursor_getbank CURSOR FOR
+		SELECT  BC1.BC_BANK_CODE
+                FROM    BANK_TXN_CHECK BC1
+                WHERE   BC1.BC_DISABLED = 0
+		GROUP BY BC1.BC_BANK_CODE
+                ORDER BY BC1.BC_BANK_CODE;	
+
+	EXEC SQL OPEN c_cursor_getbank;
+        do {
+		EXEC SQL FETCH c_cursor_getbank
+                INTO
+			:v_bank_code:ind_bank_code;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if (ind_bank_code  >=  0) {
+                        v_bank_code.arr[v_bank_code.len] = '\0';
+//DEBUGLOG(("batch_proc bank_code = [%s]\n",v_bank_code.arr));
+//			strcpy(pData[n].bank_code,(char*)v_bank_code.arr);
+//			pthread_create( &thread_id[n], NULL, thread_function,(void *) &pData[n]);	
+//			n++;
+			printf("%s;\n",(char*)v_bank_code.arr);
+                }
+	} while(PD_TRUE);
+
+//	if (n > 0) {
+//		int j;
+//		for(j=0; j < n; j++)
+//        	{
+//                	pthread_join( thread_id[j], NULL);
+//        	}
+//	}
+        EXEC SQL CLOSE c_cursor_getbank;
+
+	return iRet;
+
+getpsp_error:
+DEBUGLOG(("getpsp_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getbank;
+        return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+

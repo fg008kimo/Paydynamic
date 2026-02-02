@@ -1,0 +1,422 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/07/26              David Wong
+Add ProcessStmtFile                                2013/07/29              Stan Poon
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "BOOLBankStmt.h"
+#include "myrecordset.h"
+#include "myhash.h"
+
+#define IN_FILE_EXT_DELIMITER "."
+#define OUT_FILE_NAME_SUFFIX "_converted"
+#define EXCEL_CONVERT_SCRIPT "xls2txt"
+#define TEXT_CONVERT_SCRIPT "iconv"
+#define OUT_FILE_ENCODING "UTF-8"
+
+#define	PD_FILE_PATH			"tmp/bank_statement/"
+
+#define	PD_FORMAT_TYPE_FORMAT_ID	"format_id"
+#define	PD_FORMAT_TYPE_DELIMITER	"delimiter"
+#define	PD_FORMAT_TYPE_START_ROW	"start_row"
+#define	PD_FORMAT_TYPE_END_ROW		"end_row"
+#define	PD_FORMAT_TYPE_TOTAL_FIELD	"total_field"
+#define	PD_FORMAT_TYPE_TITLE_ROW	"title_row"
+
+#define	PD_FORMAT_NEXT_LEVEL	"nextlevel"
+#define	PD_FORMAT_DESC		"desc"
+#define	PD_FORMAT_TEMPLATE	"template"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void BOOLBankStmt(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int ConvertStmtFile(const char* csIntBankCode, const char* csInFileName, char** csOutFileName)
+{
+	int iRet = PD_OK;
+	int iCnt = 0;
+	char *csTmpForStrtok;
+	char *csTmp;
+	char *csInFileExt;
+	char *csScriptName = strdup("");
+	char *csInFileEncoding = strdup("");
+	char *csTmpFileName;
+	char *csSysCmd = strdup("");
+
+/* get in_file_ext */
+	if (iRet == PD_OK) {
+		iCnt = 0;
+		csTmpForStrtok = strdup(csInFileName);
+		csTmp = strtok(csTmpForStrtok, IN_FILE_EXT_DELIMITER);
+		while (csTmp != NULL) {
+DEBUGLOG(("ConvertStmtFile() in_file_name token: [%s]\n", csTmp));
+			iCnt++;
+			csInFileExt = strdup(csTmp);
+			csTmp = strtok(NULL, IN_FILE_EXT_DELIMITER);
+		}
+
+		if (iCnt > 0) {
+DEBUGLOG(("ConvertStmtFile() in_file_ext = [%s]\n", csInFileExt));
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("ConvertStmtFile() in_file_ext is missing!!!\n"));
+ERRLOG("BOOLBankStmt::ConvertStmtFile() in_file_ext is missing!!!\n");
+		}
+	}
+
+/* get convert info */
+	if (iRet == PD_OK) {
+DEBUGLOG(("ConvertStmtFile() call OLStmtConvertScript::GetConvertInfo()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLStmtConvertScript", "GetConvertInfo");
+		iRet = (unsigned long)(*DBObjPtr)(csIntBankCode, csInFileExt, csScriptName, csInFileEncoding);
+
+		if (iRet == PD_OK) {
+DEBUGLOG(("ConvertStmtFile() script_name = [%s]\n", csScriptName));
+DEBUGLOG(("ConvertStmtFile() in_file_encoding = [%s]\n", csInFileEncoding));
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("ConvertStmtFile() call OLStmtConvertScript::GetConvertInfo() failed!!!\n"));
+ERRLOG("BOOLBankStmt::ConvertStmtFile() call OLStmtConvertScript::GetConvertInfo() failed!!!\n");
+		}
+	}
+
+/* do the conversion
+example: xls2csv -x "spreadsheet.xls" -b WINDOWS-1252 -c "csvfile.csv" -a UTF-8
+example: iconv -f WINDOWS-1252 -t UTF-8 "spreadsheet.xls"
+example: xls2txt "spreadsheet.xls"
+*/
+	if (iRet == PD_OK) {
+		csTmpFileName = strdup(csInFileName);
+		strcat(csTmpFileName, OUT_FILE_NAME_SUFFIX);
+		if (strcmp(csScriptName, EXCEL_CONVERT_SCRIPT) == 0) {
+			sprintf(csSysCmd, "cd $HOME/tmp/bank_statement/ ; %s \"%s\" > \"%s\"", EXCEL_CONVERT_SCRIPT, csInFileName, csTmpFileName);
+DEBUGLOG(("ConvertStmtFile() call system command [%s]\n", csSysCmd));
+			iRet = system(csSysCmd);
+		}
+		else if (strcmp(csScriptName, TEXT_CONVERT_SCRIPT) == 0) {
+			sprintf(csSysCmd, "cd $HOME/tmp/bank_statement/ ; %s -f %s -t %s \"%s\" > \"%s\"", TEXT_CONVERT_SCRIPT, csInFileEncoding, OUT_FILE_ENCODING, csInFileName, csTmpFileName);
+DEBUGLOG(("ConvertStmtFile() call system command [%s]\n", csSysCmd));
+			iRet = system(csSysCmd);
+		} else {
+			iRet = INT_ERR;
+DEBUGLOG(("ConvertStmtFile() unsupported script name!!!\n"));
+ERRLOG("BOOLBankStmt::ConvertStmtFile() unsupported script name!!!\n");
+		}
+
+		if (iRet == PD_OK) {
+			*csOutFileName = strdup(csTmpFileName);
+		} else {
+DEBUGLOG(("ConvertStmtFile() convert failed!!!\n"));
+ERRLOG("BOOLBankStmt::ConvertStmtFile() convert failed!!!\n");
+		}
+	}
+
+DEBUGLOG(("ConvertStmtFile() Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+char *mystrtok_r(char *string, const char *seps, char **context);
+int splitLineByhFormat(const char* csLine, const char* csFormatId,
+				const hash_t* hFormat, hash_t* hRec);
+
+int ProcessStmtFile(const char* cs_file_name, const char* cs_bank_code,
+			const char* cs_acct_num, const hash_t* hFormat)
+{
+	int     iRet = SUCCESS, iHdrRet = SUCCESS, iDtlRet = SUCCESS;
+	int	iStartRow=0, iEndRow=0, iTotalLine=0, iCurrLine=0;
+	int	iAcceptCount=0, iRejectCount=0, iSkipCount=0, iTotalCount=0;
+
+	char	csFullFileName[PD_MAX_BUFFER + 1];
+	char	csNewFileName[PD_MAX_FILE_LEN + 1];
+	char	*csFileSplitName;
+	int	iFileCount = 1;
+	char	*csFormatId;
+	char	csCcy[PD_CCY_ID_LEN + 1];
+	char	cs_input_buf[PD_MAX_BUFFER + 1];
+	int	iStatementSeq = 1;
+
+	char	*csTmp;
+	FILE	*fin;
+	hash_t	*hRec;
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+
+	sprintf(csFullFileName,"%s/%s/%s",getenv("HOME"),PD_FILE_PATH,cs_file_name);
+	fin = fopen(csFullFileName,"r");
+	if (fin == NULL) {
+printf("ProcessStmtFile:: Error!!! CANNOT OPEN FILE [%s]\n",cs_file_name);
+		return FAILURE;
+	}
+
+	while (fgets(cs_input_buf,PD_MAX_BUFFER,fin)!=NULL) {
+		iTotalLine++;
+	}
+
+	if (!GetField_CString(hFormat,PD_FORMAT_TYPE_FORMAT_ID,&csFormatId)){
+printf("ProcessStmtFile:: csFormatId NOT FOUND!!!\n");
+	}
+
+	if (!GetField_CString(hFormat,PD_FORMAT_TYPE_START_ROW,&csTmp)){
+		iStartRow = 1;
+	} else {
+		iStartRow = atoi(csTmp);
+	}
+
+	if (!GetField_CString(hFormat,PD_FORMAT_TYPE_END_ROW,&csTmp)){
+		iEndRow = 1;
+	} else {
+		iEndRow = atoi(csTmp);
+	}
+
+	if (iTotalLine < iStartRow+iEndRow-1) {
+		iRet = FAILURE;
+printf("ProcessStmtFile:: Number of Row FAIL!!\n");
+	}
+
+	if (iRet == SUCCESS) {
+printf("DBOLBankAccts::GetAcctCcy() called\n");
+		DBObjPtr = CreateObj(DBPtr,"DBOLBankAccts","GetAcctCcy");
+		if ((*DBObjPtr)(cs_bank_code,cs_acct_num,csCcy)) {
+			iRet = FAILURE;
+printf("DBOLBankAccts::GetAcctCcy:: FAILURE\n");
+		}
+	}
+
+	hash_init(hRec,0);
+	strcpy(csNewFileName,cs_file_name);
+	PutField_CString(hRec,"filename",csNewFileName);
+	PutField_CString(hRec,"int_bank_code",cs_bank_code);
+	PutField_CString(hRec,"bank_acct_num",cs_acct_num);
+	PutField_CString(hRec,"create_user",PD_UPDATE_USER);
+
+	while(iRet == SUCCESS) {
+printf("DBOLStatement::CheckHeaderExist() called\n");
+		DBObjPtr = CreateObj(DBPtr,"DBOLStatement","CheckHeaderExist");
+		iHdrRet = (unsigned long)(*DBObjPtr)(csNewFileName);
+		if (iHdrRet != PD_FOUND && iHdrRet != PD_NOT_FOUND) {
+			iRet = FAILURE;
+printf("DBOLStatement::CheckHeaderExist:: FAILURE!!!\n");
+		}
+		else if (iHdrRet == PD_NOT_FOUND) {
+printf("DBOLStatement::AddHeader:() called\n");
+			DBObjPtr = CreateObj(DBPtr,"DBOLStatement","AddHeader");
+			if ((*DBObjPtr)(hRec)) {
+				iRet = FAILURE;
+printf("DBOLStatement::AddHeader:: FAILURE!!!\n");
+			}
+			else {
+				break;
+			}
+		}
+		else if (iHdrRet == PD_FOUND) {
+			strcpy(csTmp,cs_file_name);
+
+			csFileSplitName = mystrtok(csTmp,".");
+			sprintf(csNewFileName,"%s(%d)",csFileSplitName,iFileCount++);
+			csFileSplitName = mystrtok(NULL,".");
+			if (csFileSplitName != NULL) {
+				strcat(csNewFileName,".");
+				strcat(csNewFileName,csFileSplitName);
+			}
+			PutField_CString(hRec,"filename",csNewFileName);
+		}
+	}
+
+	hash_destroy(hRec);
+
+	rewind(fin);
+	while (iRet==SUCCESS && fgets(cs_input_buf,PD_MAX_BUFFER,fin)!=NULL) {
+		cs_input_buf[strlen(cs_input_buf)-1] = '\0';
+//printf("ProcessStmtFile:: line = [%s]\n",cs_input_buf);
+		iCurrLine++;
+		if(iCurrLine < iStartRow || iCurrLine > iTotalLine-iEndRow+1)
+			continue;
+
+		iTotalCount++;
+		hash_init(hRec,0);
+
+		iDtlRet = splitLineByhFormat(cs_input_buf,csFormatId,hFormat,hRec);
+		if (iDtlRet == SUCCESS) {
+			PutField_CString(hRec,"filename",csNewFileName);
+			PutField_CString(hRec,"int_bank_code",cs_bank_code);
+			PutField_CString(hRec,"bank_acct_num",cs_acct_num);
+			PutField_Int(hRec,"statement_seq",iStatementSeq);
+			PutField_CString(hRec,"create_user",PD_UPDATE_USER);
+
+			PutField_Char(hRec,"status",PD_STATUS_UNALLOCATED);
+			if (!GetField_CString(hRec,"txn_ccy",&csTmp))
+				PutField_CString(hRec,"txn_ccy",csCcy);
+
+//printf("DBOLStatement::AddDetail() called\n");
+			DBObjPtr = CreateObj(DBPtr,"DBOLStatement","AddDetail");
+			if ((*DBObjPtr)(hRec)) {
+				iDtlRet = FAILURE;
+printf("DBOLStatement::AddDetail:: FAILURE!!!\n");
+			} else {
+				iAcceptCount++;
+				iStatementSeq++;
+			}
+		}
+
+		if (iDtlRet != SUCCESS) {
+			iRejectCount++;
+printf("ProcessStmtFile:: Line = [%s]\n",cs_input_buf);
+		}
+
+		hash_destroy(hRec);
+	}
+
+	if (iRet == SUCCESS) {
+		hash_init(hRec,0);
+
+		PutField_CString(hRec,"filename",csNewFileName);
+		PutField_Int(hRec,"skip_count",iSkipCount);
+		//PutField_Int(hRec,"",iRejectCount);
+		PutField_Int(hRec,"accept_count",iAcceptCount);
+		PutField_Int(hRec,"total_count",iTotalCount);
+		PutField_CString(hRec,"update_user",PD_UPDATE_USER);
+
+printf("DBOLStatement::UpdateHeader() called\n");
+		DBObjPtr = CreateObj(DBPtr,"DBOLStatement","UpdateHeader");
+		if ((*DBObjPtr)(hRec)) {
+			iRet = FAILURE;
+printf("DBOLStatement::UpdateHeader:: FAILURE!!!\n");
+		}
+		hash_destroy(hRec);
+	}
+
+	fclose(fin);
+	FREE_ME(hRec);
+	return iRet;
+}
+
+
+char *mystrtok_r(char *string, const char *seps, char **context)
+{
+	char *head;  /* start of word */
+	char *tail;  /* end of word */
+ 
+	/* If we're starting up, initialize context */
+	if (string) {
+		*context = string;
+	}
+ 
+	/* Get potential start of this next word */
+	head = *context;
+	if (head == NULL) {
+		return NULL;
+	}
+ 
+	/* Skip any leading separators
+	while (*head && strchr(seps, *head)) {
+		head++;
+	}*/
+ 
+	/* Did we hit the end? */
+	if (*head == 0) {
+		/* Nothing left */
+		*context = NULL;
+		return NULL;
+	}
+ 
+	/* skip over word */
+	tail = head;
+	while (*tail && !strchr(seps, *tail)) {
+		tail++;
+	}
+ 
+	/* Save head for next time in context */
+	if (*tail == 0) {
+		*context = NULL;
+	}
+	else {
+		*tail = 0;
+		tail++;
+		*context = tail;
+	}
+ 
+	/* Return current word */
+	return head;
+}
+
+
+int splitLineByhFormat(const char* csLine, const char* csFormatId,
+				const hash_t* hFormat, hash_t* hRec)
+{
+	int	iRet = SUCCESS;
+	char	*csDesc, *csTemplate;
+	int	iNextLevel;
+
+	char	*csDelimiter, *csFirstField, *csRemainField;
+	int	iFieldCount = 1;
+	char	*csTag = (char*) malloc (64);
+
+	char	csTmpField[PD_MAX_BUFFER + 1];
+	char	csTmpLine[PD_MAX_BUFFER + 1];
+	strcpy(csTmpLine, csLine);
+
+	sprintf(csTag,"%s_%s",PD_FORMAT_TYPE_DELIMITER,csFormatId);
+	if (!GetField_CString(hFormat,csTag,&csDelimiter)) {
+		iRet = FAILURE;
+printf("%s NOT FOUND!!!\n",csTag);
+	}
+
+	csFirstField = mystrtok_r(csTmpLine,csDelimiter,&csRemainField);
+	while (csFirstField != NULL && iRet == SUCCESS) {//
+		strcpy(csTmpField,TrimAll((const unsigned char*)csFirstField,strlen(csFirstField)));
+
+		sprintf(csTag,"%s_%s_%d",PD_FORMAT_DESC,csFormatId,iFieldCount);
+		if (!GetField_CString(hFormat,csTag,&csDesc)) {
+		}
+
+		sprintf(csTag,"%s_%s_%d",PD_FORMAT_NEXT_LEVEL,csFormatId,iFieldCount);
+		if (GetField_Int(hFormat,csTag,&iNextLevel)) {
+			if (iNextLevel == 1) {
+				iRet=splitLineByhFormat(csFirstField,csDesc,hFormat,hRec);//
+			} else if (iNextLevel == 0){
+				if (!strcmp(csDesc,PD_CR_TXN_AMOUNT) && atof(csTmpField)) {
+					PutField_CString(hRec,"amt_type",PD_CR);
+					PutField_CString(hRec,PD_TXN_AMOUNT,csTmpField);
+//printf(" #[%s %s] = [%s]\n",PD_TXN_AMOUNT,PD_CR,csTmpField);
+				} else if (!strcmp(csDesc,PD_DR_TXN_AMOUNT) && atof(csTmpField)) {
+					PutField_CString(hRec,"amt_type",PD_DR);
+					PutField_CString(hRec,PD_TXN_AMOUNT,csTmpField);
+//printf(" #[%s %s] = [%s]\n",PD_TXN_AMOUNT,PD_DR,csTmpField);
+				} else if (strcmp(csTmpField,"")){
+					PutField_CString(hRec,csDesc,csTmpField);
+//printf(" #[%s] = [%s]\n",csDesc,csTmpField);
+				}
+			}
+		}
+
+		sprintf(csTag,"%s_%s_%d",PD_FORMAT_TEMPLATE,csFormatId,iFieldCount);
+		if (GetField_CString(hFormat,csTag,&csTemplate)) {
+			sprintf(csTag,"%s_t",csDesc);
+			PutField_CString(hRec,csTag,csTemplate);
+		}
+
+		iFieldCount++;
+		csFirstField = mystrtok_r(NULL,csDelimiter,&csRemainField);//
+	}//
+
+	free(csTag);
+
+	return iRet;
+}
+

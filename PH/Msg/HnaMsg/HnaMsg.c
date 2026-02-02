@@ -1,0 +1,1416 @@
+/*
+PDProTech (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   2014/07/16              LokMan Chow
+Add card_type                                      2016/09/30              Elvis Wong
+fallback card_type				   2016/12/08		   LokMan Chow
+Support enquiry					   2019/02/14		   David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "HnaMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include <zlib.h>
+#include "b64.h"
+#include "internal.h"
+#define __USE_XOPEN
+#include <time.h>
+
+static char	cDebug;
+
+char csBeginTime[PD_DATETIME_LEN * 2];
+char csEndTime[PD_DATETIME_LEN * 2];
+char csCurrDateTime[PD_DATETIME_LEN * 2];
+
+void	HnaMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int FormatMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int	iRet = PD_OK;
+	char*   csTmp = NULL;
+	char*   csPtr = NULL;
+	char*   csTxnId= NULL;
+	char*   csBuf;
+	double  dTmp;
+	char*   csMethod = NULL;
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+	memset(outMsg,0,sizeof(outMsg));
+	if (GetField_CString(hIn,"redirect_url",&csPtr)) {
+DEBUGLOG(("FormatMsg here\n"));
+		strcat((char *)outMsg,csPtr);
+		strcat((char *)outMsg,"?");
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+
+
+/* 0 version*/
+		strcat((char*)outMsg,"version");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_HNA_VERSION);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: version = [%s]\n",MY_HNA_VERSION));
+
+
+/* 1 serialID*/
+		if (GetField_CString(hIn,"txn_seq",&csTxnId)) {
+			strcat((char*)outMsg,"serialID");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTxnId);
+			strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: serialID = [%s]\n",csTxnId));
+		}
+
+/* 2 submitTime */
+		if (GetField_CString(hIn,"local_tm_date",&csTmp)) {
+DEBUGLOG(("FormatMsg:: local_tm_date = [%s]\n",csTmp));
+                        char*   csPtr2;
+                        char    csDateTime[PD_DATETIME_LEN * 2];
+                        if (GetField_CString(hIn,"local_tm_time",&csPtr2)) {
+DEBUGLOG(("FormatMsg:: local_tm_time = [%s]\n",csPtr2));
+                                sprintf(csDateTime,"%s%s",csTmp,csPtr2);
+DEBUGLOG(("FormatMsg:: submitTime  = [%s]\n",csDateTime));
+                                strcat((char*)outMsg,"submitTime");
+                                strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+                                strcat((char*)outMsg,csDateTime);
+                                strcat((char*)outMsg,MY_HNA_TOKEN);
+                        }
+                        else {
+DEBUGLOG(("FormatMsg:: local_tm_time is missing!!!\n"));
+                        }
+                }
+                else {
+DEBUGLOG(("FormatMsg:: local_tm_date is missing!!!\n"));
+                }
+
+
+/*3 failureTime */
+		strcat((char*)outMsg,"failureTime");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+
+/*4 customerIP */
+		strcat((char*)outMsg,"customerIP");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+
+		char    csTmpAmt[PD_TMP_BUF_LEN +1];
+		csTmpAmt[0] = '\0';
+		if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+
+			sprintf((char*)csTmpAmt,"%ld",double2long(dTmp));
+DEBUGLOG(("FormatMsg:: order_amount = [%s]\n",csTmpAmt));
+		}
+		else {
+DEBUGLOG(("FormatMsg:: psp_txn_amt is missing!!!\n"));
+		}
+
+/*5 orderDetails*/
+		strcat((char*)outMsg,"orderDetails");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,csTxnId);
+		strcat((char*)outMsg,MY_HNA_SEPERATER);
+		strcat((char*)outMsg,csTmpAmt);
+		strcat((char*)outMsg,MY_HNA_SEPERATER);
+		strcat((char*)outMsg,"DSP");
+		strcat((char*)outMsg,MY_HNA_SEPERATER);
+		strcat((char*)outMsg,"DSP");
+		strcat((char*)outMsg,MY_HNA_SEPERATER);
+		strcat((char*)outMsg,"1");
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+
+/*6 totalAmount*/
+		strcat((char*)outMsg,"totalAmount");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,csTmpAmt);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+		
+/*7 type*/
+		strcat((char*)outMsg,"type");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,"1000");
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: type = [1000]\n"));
+
+
+/*8 buyerMarked*/
+		if (GetField_CString(hIn,"buyer_marked",&csTmp)) {
+			strcat((char*)outMsg,"buyerMarked");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: buyerMarked = [%s]\n",csTmp));
+		}
+
+/*9 payType*/
+		strcat((char*)outMsg,"payType");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		if (GetField_CString(hIn,"psp_key_uid",&csTmp)) {
+			strcat((char*)outMsg,csTmp);
+DEBUGLOG(("FormatMsg:: payType = [%s]\n",csTmp));
+		}
+		else {
+			strcat((char*)outMsg,"BANK_B2C");
+DEBUGLOG(("FormatMsg:: payType = [BANK_B2C]\n"));
+		}
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+
+/*10 orgCode*/
+		if (GetField_CString(hIn,"bank_code",&csTmp)) {
+			strcat((char*)outMsg,"orgCode");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: orgCode = [%s]\n",csTmp));
+		}
+		else {
+DEBUGLOG(("FormatMsg:: bank_code is missing!!!\n"));
+		}
+
+/*11 currencyCode*/
+		strcat((char*)outMsg,"currencyCode");
+                strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+                strcat((char*)outMsg,"1");
+                strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: currencyCode = [1]\n"));
+
+/*12 directFlag*/
+		strcat((char*)outMsg,"directFlag");
+                strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+                //strcat((char*)outMsg,"0");
+                strcat((char*)outMsg,"1");
+                strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: directFlag = [1]\n"));
+
+/*13 borrowingMarked*/
+		strcat((char*)outMsg,"borrowingMarked");
+                strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+                strcat((char*)outMsg,"0");
+                strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: borrowingMarked = [0]\n"));
+
+/*14 couponFlag*/
+		strcat((char*)outMsg,"couponFlag");
+                strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+                strcat((char*)outMsg,"0");
+                strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: couponFlag = [0]\n"));
+
+/*15 platformID*/
+		strcat((char*)outMsg,"platformID");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+
+
+/*16 returnUrl*/
+		if (GetField_CString(hIn,"fe_url",&csTmp)) {
+			strcat((char*)outMsg,"returnUrl");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: returnUrl = [%s]\n",csTmp));
+		}
+
+/*17 noticeUrl*/
+		if (GetField_CString(hIn,"return_url_only",&csTmp)) {
+			strcat((char*)outMsg,"noticeUrl");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: noticeUrl = [%s]\n",csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: *** return_url_only is missing\n"));
+		}
+
+
+/*18 partnerID*/
+		if (GetField_CString(hIn,"psp_merchant_id",&csTmp)) {
+			strcat((char*)outMsg,"partnerID");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: partnerID = [%s]\n",csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: ***psp_merchant_id is missing\n"));
+		}
+
+/*19 remark*/
+		strcat((char*)outMsg,"remark");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,csTxnId);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: remark = [%s]\n",csTxnId));
+
+
+/*20 charset*/
+		strcat((char*)outMsg,"charset");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_HNA_CHARSET);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: charset = [%s]\n",MY_HNA_CHARSET));
+
+
+
+/*21 signType*/
+		strcat((char*)outMsg,"signType");
+		strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_HNA_SIGNTYPE);
+		strcat((char*)outMsg,MY_HNA_TOKEN);
+DEBUGLOG(("FormatMsg:: signType = [%s]\n",MY_HNA_SIGNTYPE));
+
+
+/*22 signMsg*/
+		if (GetField_CString(hIn,"sign",&csTmp)) {
+			strcat((char*)outMsg,"signMsg");
+			strcat((char*)outMsg,MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+DEBUGLOG(("FormatMsg:: signMsg = [%s]\n",csTmp));
+		}
+
+/* url_method */
+                if (GetField_CString(hIn,"url_method",&csMethod)) {
+DEBUGLOG(("FormatMsg:: url_method = [%s]\n",csMethod));
+                }
+
+DEBUGLOG(("FormatMsg:: outmsg = [%s]\n",outMsg));
+		base64_encode(outMsg,strlen((char *)outMsg),csBuf,PD_MAX_BUFFER);
+DEBUGLOG(("FormatMsg:: after encode\n"));
+                outMsg[0] = '\0';
+                strcat((char*)outMsg,"redirect_url");
+                strcat((char*)outMsg,"=");
+                strcat((char*)outMsg,csBuf);
+                strcat((char*)outMsg,MY_HNA_TOKEN);
+		strcat((char*)outMsg,"url_method");
+		strcat((char*)outMsg,"=");
+		strcat((char*)outMsg,csMethod);
+                strcat((char*)outMsg,MY_HNA_TOKEN);
+		strcat((char*)outMsg,"ret_status=0");
+DEBUGLOG(("FormatMsg:: outMsg = [%s]\n",outMsg));
+
+		*outLen = strlen((const char*)outMsg);
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: Redirct url not found\n"));
+	}
+
+
+DEBUGLOG(("FormatMsg:: normal exit iret =[%d]\n",iRet));
+	FREE_ME(csBuf);
+	return 	iRet;
+}
+
+
+
+int BreakDownMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	hash_t  *hRec;
+
+        hRec = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n",inMsg,inLen));
+
+	if (Str2Cls(hRec,(char *)inMsg,MY_HNA_TOKEN,MY_HNA_FIELD_TOKEN) == PD_OK) {
+// for enquiry start
+
+/* serialID */
+		if (GetField_CString(hRec, "serialID", &csPtr)) {
+DEBUGLOG(("BreakDownMsg:: serialID = [%s]\n", csPtr));
+			PutField_CString(hOut, "serialID", csPtr);
+		}
+
+/* mode */
+		if (GetField_CString(hRec, "mode", &csPtr)) {
+DEBUGLOG(("BreakDownMsg:: mode = [%s]\n", csPtr));
+			PutField_CString(hOut, "mode", csPtr);
+		}
+
+/* type */
+		if (GetField_CString(hRec, "type", &csPtr)) {
+DEBUGLOG(("BreakDownMsg:: type = [%s]\n", csPtr));
+			PutField_CString(hOut, "type", csPtr);
+		}
+
+/* queryDetailsSize */
+		if (GetField_CString(hRec, "queryDetailsSize", &csPtr)) {
+DEBUGLOG(("BreakDownMsg:: queryDetailsSize = [%s]\n", csPtr));
+			PutField_CString(hOut, "queryDetailsSize", csPtr);
+		}
+
+/* queryDetails */
+		if (GetField_CString(hRec, "queryDetails", &csPtr)) {
+			PutField_CString(hOut, "queryDetails", csPtr);
+
+			char csDelimiter[2] = "";
+			char *csTmp = NULL;
+			int iFieldCnt = 0;
+
+			sprintf(csDelimiter, "%c", ',');
+			csTmp = mystrtok(csPtr, csDelimiter);
+			while (csTmp != NULL) {
+DEBUGLOG(("field[%d] = [%s]\n", iFieldCnt, csTmp));
+				switch (iFieldCnt)
+				{
+					case 0:
+						PutField_CString(hRec, "orderID", csTmp);
+						break;
+					case 1:
+						PutField_CString(hRec, "orderAmount", csTmp);
+						break;
+					case 2:
+						PutField_CString(hRec, "payAmount", csTmp);
+						break;
+					case 3:
+						PutField_CString(hRec, "acquiringTime", csTmp);
+						break;
+					case 4:
+						PutField_CString(hRec, "completeTime", csTmp);
+						break;
+					case 5:
+						PutField_CString(hRec, "orderNo", csTmp);
+						break;
+					case 6:
+						PutField_CString(hRec, "stateCode", csTmp);
+						break;
+					default:
+DEBUGLOG(("invalid column for queryDetails!\n"));
+						break;
+				}
+				iFieldCnt++;
+				csTmp = mystrtok(NULL, csDelimiter);
+			}
+
+			if (iFieldCnt != MY_HNA_QUERY_DET_COLUMN) {
+DEBUGLOG(("invalid column for queryDetails!\n"));
+				iRet = PD_ERR;
+			}
+		}
+
+// for enquiry end
+
+/* 1 orderID */
+		if (GetField_CString(hRec,"orderID",&csPtr)) {
+			PutField_CString(hOut,"txn_seq",csPtr);
+DEBUGLOG(("BreakDownMsg:: txn_seq = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: txn_seq not found\n"));
+		}
+
+/* 2 resultCode */
+		if (GetField_CString(hRec,"resultCode",&csPtr)) {
+			PutField_CString(hOut,"resultCode",csPtr);
+DEBUGLOG(("BreakDownMsg:: resultCode = [%s]\n",csPtr));
+		}
+
+/* 3 stateCode */
+		if (GetField_CString(hRec,"stateCode",&csPtr)) {
+			PutField_CString(hOut,"status",csPtr);
+DEBUGLOG(("BreakDownMsg:: status = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: status not found\n"));
+		}
+
+/* 4 orderAmount */
+		if (GetField_CString(hRec,"orderAmount",&csPtr)) {
+			PutField_CString(hOut,"txn_amt",csPtr);
+DEBUGLOG(("BreakDownMsg:: txn_amt = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: txn_amt not found\n"));
+		}
+
+/* 5 payAmount */
+		if (GetField_CString(hRec,"payAmount",&csPtr)) {
+			PutField_CString(hOut,"pay_amt",csPtr);
+DEBUGLOG(("BreakDownMsg:: pay_amt = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: pay_amt not found\n"));
+		}
+
+/* 6 acquiringTime */
+		if (GetField_CString(hRec,"acquiringTime",&csPtr)) {
+			PutField_CString(hOut,"acquiring_time",csPtr);
+
+			csPtr[PD_DATETIME_LEN] = '\0';
+                        char csTxnDate[PD_DATE_LEN +1];
+			sprintf(csTxnDate,"%.*s",PD_DATE_LEN,csPtr);
+			PutField_CString(hOut,"txn_date",csTxnDate);
+DEBUGLOG(("BreakDownMsg:: acquiring_time = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: acquiringTime not found\n"));
+		}
+
+/* 7 completeTime */
+		if (GetField_CString(hRec,"completeTime",&csPtr)) {
+DEBUGLOG(("BreakDownMsg:: completeTime = [%s]\n",csPtr));
+			PutField_CString(hOut,"fundin_date",csPtr);
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: completeTime not found\n"));
+		}
+
+/* 8 orderNo */
+		if (GetField_CString(hRec,"orderNo",&csPtr)) {
+			PutField_CString(hOut,"tid",csPtr);
+DEBUGLOG(("BreakDownMsg:: tid = [%s]\n",csPtr));
+		}
+
+/* 9 partnerID */
+		if (GetField_CString(hRec,"partnerID",&csPtr)) {
+DEBUGLOG(("BreakDownMsg:: partnerID = [%s]\n",csPtr));
+			PutField_CString(hOut,"mid",csPtr);
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: partnerID not found\n"));
+		}
+
+/* 10 remark */
+		if (GetField_CString(hRec,"remark",&csPtr)) {
+DEBUGLOG(("BreakDownMsg:: remark = [%s]\n",csPtr));
+			PutField_CString(hOut,"remark",csPtr);
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: remark not found\n"));
+		}
+
+/* 11 charset */
+		if (GetField_CString(hRec,"charset",&csPtr)) {
+DEBUGLOG(("BreakDownMsg:: charset = [%s]\n",csPtr));
+			PutField_CString(hOut,"charset",csPtr);
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: charset not found\n"));
+		}
+
+/* 12 signType */
+		if (GetField_CString(hRec,"signType",&csPtr)) {
+DEBUGLOG(("BreakDownMsg:: signType = [%s]\n",csPtr));
+			PutField_CString(hOut,"signType",csPtr);
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: signType not found\n"));
+		}
+
+/*13 signMsg */
+                if (GetField_CString(hRec,"signMsg",&csPtr)) {
+                        PutField_CString(hOut,"sign",csPtr);
+DEBUGLOG(("BreakDownMsg:: sign = [%s]\n",csPtr));
+                }
+                else{
+DEBUGLOG(("BreakDownMsg:: sign not found\n"));
+                }
+	}
+	else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+                iRet = PD_ERR;
+        }
+        
+        hash_destroy(hRec);
+	FREE_ME(hRec);
+
+DEBUGLOG(("BreakDownMsg Exit\n"));
+	return	iRet;
+}
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	return iRet;
+}
+
+
+int BuildAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csTmp;
+        char*   csBuf;
+        char*   csTxnId = NULL;
+	double	dTmp;
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+	int	iForEnquiry = PD_FALSE;
+	int	iForEnquiryRsp = PD_FALSE;
+
+DEBUGLOG(("BuildAuthData()\n"));
+
+	GetField_Int(hIn, "for_enquiry_use", &iForEnquiry);
+	if (iForEnquiry) {
+		return BuildInqAuthData(hIn);
+	}
+
+	GetField_Int(hIn, "for_enquiry_rsp_use", &iForEnquiryRsp);
+	if (iForEnquiryRsp) {
+		return BuildCallbackAuthData(hIn);
+	}
+
+	memset(csBuf,0,MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+/* 0 version*/
+	strcat((char*)csBuf,"version");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,MY_HNA_VERSION);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: version = [%s]\n",MY_HNA_VERSION));
+
+
+/* 1 serialID*/
+	if (GetField_CString(hIn,"txn_seq",&csTxnId)) {
+		strcat((char*)csBuf,"serialID");
+		strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf,csTxnId);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: serialID = [%s]\n",csTxnId));
+	}
+
+/* 2 submitTime */
+	if (GetField_CString(hIn,"local_tm_date",&csTmp)) {
+DEBUGLOG(("BuildAuthData:: local_tm_date = [%s]\n",csTmp));
+		char*   csPtr2;
+		char    csDateTime[PD_DATETIME_LEN * 2];
+		if (GetField_CString(hIn,"local_tm_time",&csPtr2)) {
+DEBUGLOG(("BuildAuthData:: local_tm_time = [%s]\n",csPtr2));
+			sprintf(csDateTime,"%s%s",csTmp,csPtr2);
+DEBUGLOG(("BuildAuthData:: submitTime  = [%s]\n",csDateTime));
+			strcat((char*)csBuf,"submitTime");
+			strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+			strcat((char*)csBuf,csDateTime);
+			strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+		}
+		else {
+DEBUGLOG(("BuildAuthData:: local_tm_time is missing!!!\n"));
+		}
+	}
+	else {
+DEBUGLOG(("BuildAuthData:: local_tm_date is missing!!!\n"));
+	}
+
+
+/*3 failureTime */
+	strcat((char*)csBuf,"failureTime");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+
+/*4 customerIP */
+	strcat((char*)csBuf,"customerIP");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+
+	char    csTmpAmt[PD_TMP_BUF_LEN +1];
+	csTmpAmt[0] = '\0';
+	if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+
+		sprintf((char*)csTmpAmt,"%ld",double2long(dTmp));
+DEBUGLOG(("BuildAuthData:: order_amount = [%s]\n",csTmpAmt));
+	}
+	else {
+DEBUGLOG(("BuildAuthData:: psp_txn_amt is missing!!!\n"));
+	}
+
+/*5 orderDetails*/
+	strcat((char*)csBuf,"orderDetails");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,csTxnId);
+	strcat((char*)csBuf,MY_HNA_SEPERATER);
+	strcat((char*)csBuf,csTmpAmt);
+	strcat((char*)csBuf,MY_HNA_SEPERATER);
+	strcat((char*)csBuf,"DSP");
+	strcat((char*)csBuf,MY_HNA_SEPERATER);
+	strcat((char*)csBuf,"DSP");
+	strcat((char*)csBuf,MY_HNA_SEPERATER);
+	strcat((char*)csBuf,"1");
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+
+/*6 totalAmount*/
+	strcat((char*)csBuf,"totalAmount");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,csTmpAmt);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+
+/*7 type*/
+	strcat((char*)csBuf,"type");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,"1000");
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: type = [1000]\n"));
+
+
+/*8 buyerMarked*/
+	if (GetField_CString(hIn,"buyer_marked",&csTmp)) {
+		strcat((char*)csBuf,"buyerMarked");
+		strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf,csTmp);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: buyerMarked = [%s]\n",csTmp));
+	}
+
+/*9 payType*/
+	strcat((char*)csBuf,"payType");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	if (GetField_CString(hIn,"psp_key_uid",&csTmp)) {
+		strcat((char*)csBuf,csTmp);
+DEBUGLOG(("BuildAuthData:: payType = [%s]\n", csTmp));
+	}
+	else {
+		strcat((char*)csBuf,"BANK_B2C");
+DEBUGLOG(("BuildAuthData:: payType = [BANK_B2C]\n"));
+	}
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+
+/*10 orgCode*/
+	if (GetField_CString(hIn,"bank_code",&csTmp)) {
+		strcat((char*)csBuf,"orgCode");
+		strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf,csTmp);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: orgCode = [%s]\n",csTmp));
+	}
+	else {
+DEBUGLOG(("BuildAuthData:: bank_code is missing!!!\n"));
+	}
+
+/*11 currencyCode*/
+	strcat((char*)csBuf,"currencyCode");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,"1");
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: currencyCode = [1]\n"));
+
+/*12 directFlag*/
+	strcat((char*)csBuf,"directFlag");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,"1");
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: directFlag = [1]\n"));
+
+/*13 borrowingMarked*/
+	strcat((char*)csBuf,"borrowingMarked");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,"0");
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: borrowingMarked = [0]\n"));
+
+/*14 couponFlag*/
+	strcat((char*)csBuf,"couponFlag");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,"0");
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: couponFlag = [0]\n"));
+
+/*15 platformID*/
+	strcat((char*)csBuf,"platformID");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+
+
+/*16 returnUrl*/
+	if (GetField_CString(hIn,"fe_url",&csTmp)) {
+		strcat((char*)csBuf,"returnUrl");
+		strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf,csTmp);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: returnUrl = [%s]\n",csTmp));
+	}
+
+/*17 noticeUrl*/
+	if (GetField_CString(hIn,"return_url_only",&csTmp)) {
+		strcat((char*)csBuf,"noticeUrl");
+		strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf,csTmp);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: noticeUrl = [%s]\n",csTmp));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("BuildAuthData:: *** return_url_only is missing\n"));
+	}
+
+
+/*18 partnerID*/
+	if (GetField_CString(hIn,"psp_merchant_id",&csTmp)) {
+		strcat((char*)csBuf,"partnerID");
+		strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf,csTmp);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: partnerID = [%s]\n",csTmp));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("BuildAuthData:: ***psp_merchant_id is missing\n"));
+	}
+
+/*19 remark*/
+	strcat((char*)csBuf,"remark");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,csTxnId);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: remark = [%s]\n",csTxnId));
+
+
+/*20 charset*/
+	strcat((char*)csBuf,"charset");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,MY_HNA_CHARSET);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: charset = [%s]\n",MY_HNA_CHARSET));
+
+
+
+/*21 signType*/
+	strcat((char*)csBuf,"signType");
+	strcat((char*)csBuf,MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf,MY_HNA_SIGNTYPE);
+	strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildAuthData:: signType = [%s]\n",MY_HNA_SIGNTYPE));
+
+
+	strcat((char*)csBuf,"pkey=");
+	PutField_CString(hIn,"auth_data",csBuf);
+DEBUGLOG(("BuildAuthData:: auth_data = [%s]\n",csBuf));
+	FREE_ME(csBuf);
+        
+DEBUGLOG(("BuildAuthData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+int BuildRspAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csPtr;
+        char*   csBuf;
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+	int	iForEnquiryRsp = PD_FALSE;
+
+DEBUGLOG(("BuildRspAuthData()\n"));
+
+	GetField_Int(hIn, "for_enquiry_rsp_use", &iForEnquiryRsp);
+	if (iForEnquiryRsp) {
+		return BuildInqRspAuthData(hIn);
+	}
+
+	memset(csBuf,0,MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+/* 1 orderID*/
+	if (GetField_CString(hIn,"txn_seq",&csPtr)) {
+		strcat((char*)csBuf,"orderID=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: orderID = [%s]\n",csPtr));
+	}
+
+/* 2 resultCode*/
+	if (GetField_CString(hIn,"resultCode",&csPtr)) {
+		strcat((char*)csBuf,"resultCode=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: resultCode = [%s]\n",csPtr));
+	}
+	else{
+		strcat((char*)csBuf,"resultCode=");
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+	}
+
+/* 3 stateCode*/
+	if (GetField_CString(hIn,"status",&csPtr)) {
+		strcat((char*)csBuf,"stateCode=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: stateCode = [%s]\n",csPtr));
+	}
+
+
+/* 4 orderAmount*/
+	if (GetField_CString(hIn,"txn_amt",&csPtr)) {
+		strcat((char*)csBuf,"orderAmount=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: orderAmount = [%s]\n",csPtr));
+	}
+
+/* 5 payAmount*/
+	if (GetField_CString(hIn,"pay_amt",&csPtr)) {
+		strcat((char*)csBuf,"payAmount=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: payAmount = [%s]\n",csPtr));
+	}
+
+
+/* 6 acquiringTime*/
+	if (GetField_CString(hIn,"acquiring_time",&csPtr)) {
+		strcat((char*)csBuf,"acquiringTime=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: acquiringTime = [%s]\n",csPtr));
+	}
+
+/* 7 completeTime*/
+	if (GetField_CString(hIn,"fundin_date",&csPtr)) {
+		strcat((char*)csBuf,"completeTime=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: completeTime = [%s]\n",csPtr));
+	} else {
+		strcat((char*)csBuf,"completeTime=");
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+	}
+
+/* 8 orderNo*/
+	if (GetField_CString(hIn,"tid",&csPtr)) {
+		strcat((char*)csBuf,"orderNo=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: orderNo = [%s]\n",csPtr));
+	}
+	else{
+		strcat((char*)csBuf,"orderNo=");
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+	}
+
+/* 9 partnerID*/
+	if (GetField_CString(hIn,"mid",&csPtr)) {
+		strcat((char*)csBuf,"partnerID=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: partnerID = [%s]\n",csPtr));
+	}
+
+/* 10 remark*/
+	if (GetField_CString(hIn,"remark",&csPtr)) {
+		strcat((char*)csBuf,"remark=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: remark = [%s]\n",csPtr));
+	}
+
+/* 11 charset*/
+	if (GetField_CString(hIn,"charset",&csPtr)) {
+		strcat((char*)csBuf,"charset=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: charset = [%s]\n",csPtr));
+	}
+
+/* 12 signType*/
+	if (GetField_CString(hIn,"signType",&csPtr)) {
+		strcat((char*)csBuf,"signType=");
+		strcat((char*)csBuf,csPtr);
+		strcat((char*)csBuf,MY_HNA_AUTH_TOKEN);
+DEBUGLOG(("BuildRspAuthData:: signType = [%s]\n",csPtr));
+	}
+
+	strcat((char*)csBuf,"pkey=");
+
+	PutField_CString(hIn,"auth_data",csBuf);
+DEBUGLOG(("BuildRspAuthData:: auth_data = [%s]\n",csBuf));
+	FREE_ME(csBuf);
+        
+DEBUGLOG(("BuildRspAuthData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+
+int FormatInqMsg(const hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int iRet = PD_OK;
+	char *csBuf;
+	char *csURL = NULL;
+	char *csPtr = NULL;
+	char *csTmp = NULL;
+
+DEBUGLOG(("FormatInqMsg() Start\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	memset(outMsg, 0, sizeof(outMsg));
+
+	if (GetField_CString(hIn, "psp_url", &csURL)) {
+		if (GetField_CString(hIn, "request_function", &csPtr)) {
+			strcpy((char*)csBuf, "url");
+			strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+			strcat((char*)csBuf, csURL);
+			strcat((char*)csBuf, "/");
+			strcat((char*)csBuf, csPtr);
+
+			/* added for gw to identify the request */
+			strcat((char*)csBuf, MY_HNA_TOKEN);
+			strcat((char*)csBuf, "enq");
+			strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+			strcat((char*)csBuf, "1");
+
+			strcat((char*)csBuf, MY_HNA_TOKEN);
+			strcat((char*)csBuf, "METHOD");
+			strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+			if (GetField_CString(hIn, "url_method", &csPtr)) {
+				strcat((char*)csBuf, csPtr);
+			}
+			else {
+				strcat((char*)csBuf, PD_DEFAULT_METHOD);
+			}
+		}
+
+		sprintf((char*)outMsg, "%0*d", PD_WEB_HEADER_LEN_LEN, (int)strlen(csBuf));
+		strcat((char*)outMsg, csBuf);
+DEBUGLOG(("outMsg = [%s]\n", outMsg));
+
+		// inq_msg
+		if (GetField_CString(hIn, "inq_msg", &csTmp)) {
+DEBUGLOG(("inq_msg = [%s]\n", csTmp));
+			strcat((char*)outMsg, csTmp);
+		} else {
+DEBUGLOG(("***inq_msg is missing\n"));
+			iRet = PD_ERR;
+		}
+
+		// signMsg
+		if (GetField_CString(hIn, "sign", &csTmp)) {
+DEBUGLOG(("signMsg = [%s]\n", csTmp));
+			strcat((char*)outMsg, "signMsg");
+			strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			//strcat((char*)outMsg, MY_HNA_TOKEN);
+		} else {
+DEBUGLOG(("***sign is missing\n"));
+			iRet = PD_ERR;
+		}
+	} else {
+DEBUGLOG(("***psp_url is missing\n"));
+		iRet = PD_ERR;
+	}
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInqMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatInqMsg() Exit iRet = [%d]\n", iRet));
+	FREE_ME(csBuf);
+	return iRet;
+}
+
+
+int BuildInqAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+	char *csBuf;
+	char *csTmp = NULL;
+	char *csTxnId = NULL;
+
+DEBUGLOG(("BuildInqAuthData() Start\n"));
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+	// preparation
+	if (!GetField_CString(hIn, "txn_seq", &csTxnId)) {
+DEBUGLOG(("***txn_seq is missing\n"));
+		iRet = PD_ERR;
+	}
+
+	strcpy(csCurrDateTime, getdatetime());
+
+	// version
+DEBUGLOG(("version = [%s]\n", MY_HNA_VERSION));
+	strcat((char*)csBuf, "version");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, MY_HNA_VERSION);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// serialID
+DEBUGLOG(("serialID = [%s_%s]\n", csTxnId, csCurrDateTime));
+	strcat((char*)csBuf, "serialID");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, csTxnId);
+	strcat((char*)csBuf, "_");
+	strcat((char*)csBuf, csCurrDateTime);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// mode
+DEBUGLOG(("mode = [%s]\n", MY_HNA_MODE));
+	strcat((char*)csBuf, "mode");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, MY_HNA_MODE);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// type
+DEBUGLOG(("type = [%s]\n", MY_HNA_TYPE));
+	strcat((char*)csBuf, "type");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, MY_HNA_TYPE);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// orderID
+DEBUGLOG(("orderID = [%s]\n", csTxnId));
+	strcat((char*)csBuf, "orderID");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, csTxnId);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// beginTime & endTime
+	struct tm orig_tm;
+	time_t epoch;
+	struct tm *converted_tm;
+	char csConverted[PD_DATETIME_LEN * 2];
+	if (strptime((const char*)csCurrDateTime, "%Y%m%d%H%M%S", &orig_tm) != NULL) {
+		epoch = mktime(&orig_tm);
+		epoch = epoch - atoi(MY_HNA_ENQ_RANGE_SEC);
+		converted_tm = localtime(&epoch);
+		strftime(csConverted, sizeof(csConverted), "%Y%m%d%H%M%S", converted_tm);
+		strcpy(csBeginTime, csConverted);
+		strcpy(csEndTime, csCurrDateTime);
+DEBUGLOG(("beginTime = [%s]\n", csBeginTime));
+		strcat((char*)csBuf, "beginTime");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csBeginTime);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+DEBUGLOG(("endTime = [%s]\n", csEndTime));
+		strcat((char*)csBuf, "endTime");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csEndTime);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+	// partnerID
+	if (GetField_CString(hIn, "psp_merchant_id", &csTmp)) {
+DEBUGLOG(("partnerID = [%s]\n", csTmp));
+		strcat((char*)csBuf, "partnerID");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csTmp);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	} else {
+DEBUGLOG(("***psp_merchant_id is missing\n"));
+		iRet = PD_ERR;
+	}
+
+	// remark
+DEBUGLOG(("remark = [%s]\n", csTxnId));
+	strcat((char*)csBuf, "remark");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, csTxnId);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// charset
+DEBUGLOG(("charset = [%s]\n", MY_HNA_CHARSET));
+	strcat((char*)csBuf, "charset");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, MY_HNA_CHARSET);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	// signType
+DEBUGLOG(("signType = [%s]\n", MY_HNA_SIGNTYPE));
+	strcat((char*)csBuf, "signType");
+	strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+	strcat((char*)csBuf, MY_HNA_SIGNTYPE);
+	strcat((char*)csBuf, MY_HNA_TOKEN);
+
+	PutField_CString(hIn, "inq_msg", csBuf);
+
+	strcat((char*)csBuf, "pkey=");
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("BuildInqAuthData() auth_data = [%s]\n", csBuf));
+DEBUGLOG(("BuildInqAuthData() Exit iRet = [%d]\n", iRet));
+	FREE_ME(csBuf);
+	return iRet;
+}
+
+
+int BreakDownInqRspMsg(hash_t *hContext, hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int iRet = PD_OK;
+
+DEBUGLOG(("BreakDownInqRspMsg() Start\n"));
+
+DEBUGLOG(("BreakDownInqRspMsg() call BreakDownMsg()\n"));
+	iRet = BreakDownMsg(hOut, inMsg, inLen);
+
+DEBUGLOG(("BreakDownInqRspMsg() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildInqRspAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+	char *csPtr;
+	char *csBuf;
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+DEBUGLOG(("BuildInqRspAuthData()\n"));
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+/* serialID */
+	if (GetField_CString(hIn, "serialID", &csPtr)) {
+DEBUGLOG(("serialID = [%s]\n", csPtr));
+		strcat((char*)csBuf, "serialID");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* mode */
+	if (GetField_CString(hIn, "mode", &csPtr)) {
+DEBUGLOG(("mode = [%s]\n", csPtr));
+		strcat((char*)csBuf, "mode");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* type */
+	if (GetField_CString(hIn, "type", &csPtr)) {
+DEBUGLOG(("type = [%s]\n", csPtr));
+		strcat((char*)csBuf, "type");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* resultCode */
+	if (GetField_CString(hIn, "resultCode", &csPtr)) {
+DEBUGLOG(("resultCode = [%s]\n", csPtr));
+		strcat((char*)csBuf, "resultCode");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* queryDetailsSize */
+	if (GetField_CString(hIn, "queryDetailsSize", &csPtr)) {
+DEBUGLOG(("queryDetailsSize = [%s]\n", csPtr));
+		strcat((char*)csBuf, "queryDetailsSize");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* queryDetails */
+	if (GetField_CString(hIn, "queryDetails", &csPtr)) {
+DEBUGLOG(("queryDetails = [%s]\n", csPtr));
+		strcat((char*)csBuf, "queryDetails");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}  else {
+		strcat((char*)csBuf, "queryDetails");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* partnerID */
+	if (GetField_CString(hIn, "mid", &csPtr)) {
+DEBUGLOG(("partnerID = [%s]\n", csPtr));
+		strcat((char*)csBuf, "partnerID");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* remark */
+	if (GetField_CString(hIn, "remark", &csPtr)) {
+DEBUGLOG(("remark = [%s]\n", csPtr));
+		strcat((char*)csBuf, "remark");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* charset */
+	if (GetField_CString(hIn, "charset", &csPtr)) {
+DEBUGLOG(("charset = [%s]\n", csPtr));
+		strcat((char*)csBuf, "charset");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+/* signType */
+	if (GetField_CString(hIn, "signType", &csPtr)) {
+DEBUGLOG(("signType = [%s]\n", csPtr));
+		strcat((char*)csBuf, "signType");
+		strcat((char*)csBuf, MY_HNA_FIELD_TOKEN);
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_HNA_TOKEN);
+	}
+
+	strcat((char*)csBuf, "pkey=");
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("BuildInqRspAuthData:: auth_data = [%s]\n", csBuf));
+	FREE_ME(csBuf);
+
+DEBUGLOG(("BuildInqRspAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildCallbackAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+
+DEBUGLOG(("BuildCallbackAuthData() Start\n"));
+
+	RemoveField_Int(hIn, "for_enquiry_rsp_use");
+DEBUGLOG(("BuildCallbackAuthData() call BuildRspAuthData()\n"));
+	iRet = BuildRspAuthData(hIn);
+	PutField_Int(hIn, "for_enquiry_rsp_use", PD_TRUE);
+
+DEBUGLOG(("BuildCallbackAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int FormatCallbackMsg(hash_t *hContext, hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int iRet = PD_OK;
+	char *csPtr = NULL;
+
+DEBUGLOG(("FormatCallbackMsg() Start\n"));
+
+	memset(outMsg, 0, sizeof(outMsg));
+
+	// orderID
+	if (GetField_CString(hIn, "txn_seq", &csPtr)) {
+DEBUGLOG(("orderID = [%s]\n", csPtr));
+		strcat((char*)outMsg, "orderID");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// resultCode
+	if (GetField_CString(hIn, "resultCode", &csPtr)) {
+DEBUGLOG(("resultCode = [%s]\n", csPtr));
+		strcat((char*)outMsg, "resultCode");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// stateCode
+	if (GetField_CString(hIn, "status", &csPtr)) {
+DEBUGLOG(("stateCode = [%s]\n", csPtr));
+		strcat((char*)outMsg, "stateCode");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// orderAmount
+	if (GetField_CString(hIn, "txn_amt", &csPtr)) {
+DEBUGLOG(("orderAmount = [%s]\n", csPtr));
+		strcat((char*)outMsg, "orderAmount");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// payAmount
+	if (GetField_CString(hIn, "pay_amt", &csPtr)) {
+DEBUGLOG(("payAmount = [%s]\n", csPtr));
+		strcat((char*)outMsg, "payAmount");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// acquiringTime
+	if (GetField_CString(hIn, "acquiring_time", &csPtr)) {
+DEBUGLOG(("acquiringTime = [%s]\n", csPtr));
+		strcat((char*)outMsg, "acquiringTime");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// completeTime
+	if (GetField_CString(hIn, "fundin_date", &csPtr)) {
+DEBUGLOG(("completeTime = [%s]\n", csPtr));
+		strcat((char*)outMsg, "completeTime");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// orderNo
+	if (GetField_CString(hIn, "tid", &csPtr)) {
+DEBUGLOG(("orderNo = [%s]\n", csPtr));
+		strcat((char*)outMsg, "orderNo");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// partnerID
+	if (GetField_CString(hIn, "mid", &csPtr)) {
+DEBUGLOG(("partnerID = [%s]\n", csPtr));
+		strcat((char*)outMsg, "partnerID");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// remark
+	if (GetField_CString(hIn, "remark", &csPtr)) {
+DEBUGLOG(("remark = [%s]\n", csPtr));
+		strcat((char*)outMsg, "remark");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// charset
+	if (GetField_CString(hIn, "charset", &csPtr)) {
+DEBUGLOG(("charset = [%s]\n", csPtr));
+		strcat((char*)outMsg, "charset");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// signType
+	if (GetField_CString(hIn, "signType", &csPtr)) {
+DEBUGLOG(("signType = [%s]\n", csPtr));
+		strcat((char*)outMsg, "signType");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	// signMsg
+	if (GetField_CString(hIn, "sign", &csPtr)) {
+DEBUGLOG(("signMsg = [%s]\n", csPtr));
+		strcat((char*)outMsg, "signMsg");
+		strcat((char*)outMsg, MY_HNA_FIELD_TOKEN);
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, MY_HNA_TOKEN);
+	}
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatCallbackMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatCallbackMsg() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+

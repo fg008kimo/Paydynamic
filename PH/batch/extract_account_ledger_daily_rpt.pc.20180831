@@ -1,0 +1,1012 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                            Change Date     Change By
+------------------------------------------    ------------    --------------
+Init Version                                  2018/08/09      Philip Yu
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "ObjPtr.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_CURR_BALANCE	   'C'
+#define PD_REC_ENABLED     0
+
+OBJPTR(DB);
+
+char csDate[PD_DATE_LEN + 1];
+char csInMerchantId[PD_MERCHANT_ID_LEN+1];
+char csInCcyId[PD_COUNTRY_CODE_LEN+1];
+char csInCountryCode[PD_CCY_ID_LEN+1];
+char csInServiceCode[PD_SERVICE_CODE_LEN+1];
+
+static char cDebug = 'Y';
+
+int parse_arg(int argc,char **argv);
+
+int process_data(const char* csTxnDate); 
+
+int process_single_acct(const char* csTxnDate,
+                        const char* csMerchantId,
+                        const char* csCcyId,
+                        const char* csCountryCode,
+                        const char* csServiceCode);
+
+int process_cbledger(const char* csMerchantId,
+                     const char* csCcyId,
+                     const char* csCountryCode,
+                     const char* csServiceCode,
+                     const char* csReportDate,
+                     FILE *fp);
+
+int mkFullPathDir(const char* csYearMthDy);
+
+char* getYYYY(const char* csTxnDate);
+
+char* getYYYYMM(const char* csTxnDate);
+
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 2) {
+		printf("usage: -d Date\n");
+
+		return FAILURE;
+	}
+	else if (argc > 3 && argc < 10) {
+		printf("usage: -d Date"
+		       " -m Merchant_ID"
+		       " -o Country_code"
+		       " -c CCY_ID"
+		       " -s Service_code\n"
+		);
+
+		return FAILURE;
+	}
+	else
+  		return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet;
+
+	iRet = parse_arg(argc,argv);
+         
+	if (iRet != SUCCESS) {
+		if (argc < 2)
+			printf("usage: -d Date\n");
+		else if (argc > 3 && argc < 10) {
+			printf("usage: -d Date"
+			       " -m Merchant_ID"
+			       " -o Country_code"
+			       " -c CCY_ID"
+			       " -s Service_code\n"
+			);
+		}
+
+		return (iRet);
+	}
+
+	if (argc == 3)
+		iRet = process_data(csDate);
+	else
+		iRet = process_single_acct(csDate,csInMerchantId,csInCcyId,
+		                           csInCountryCode,csInServiceCode);
+
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int process_data(const char* csTxnDate)
+{               
+	int     iRet = SUCCESS;
+	char    csMerchantId[PD_MERCHANT_ID_LEN+1];
+	char    csCountryCode[PD_COUNTRY_CODE_LEN+1];
+	char    csCcyId[PD_CCY_ID_LEN+1];
+	char    csServiceCode[PD_SERVICE_CODE_LEN+1];
+	char    csUploadFilename[PD_UPLOAD_FILENAME_LEN+1];
+	char    csUploadFullFile[PD_PATH_LEN+1];
+	char    csTmp[PD_TMP_BUF_LEN+1];
+	char    csTmpCmd[PD_TMP_BUF_LEN+1];
+	char    csYear[PD_YYYY_LEN+1];
+	char    csYearMth[PD_YYYYMM_LEN+1];
+	FILE    *fp;
+	hash_t* hAccBal;
+
+	hAccBal = (hash_t*) malloc (sizeof(hash_t));
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN+1];
+		varchar v_service_code[PD_SERVICE_CODE_LEN+1];
+		varchar v_country_code[PD_COUNTRY_CODE_LEN+1];
+		varchar v_ccy_id[PD_CCY_ID_LEN+1];
+    
+		short   ind_merchant_id  = -1;
+		short   ind_service_code = -1;
+		short   ind_country_code = -1;
+		short   ind_ccy_id       = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	EXEC SQL DECLARE c_cursor_getMerBalAcct CURSOR FOR
+		SELECT MB_MERCHANT_ID,
+		       MB_COUNTRY,
+		       MB_CCY_ID,
+		       MB_SERVICE_CODE
+		FROM MERCHANT_BAL_ACCT
+		ORDER BY MB_MERCHANT_ID,MB_COUNTRY,MB_CCY_ID,MB_SERVICE_CODE
+		;
+
+	EXEC SQL OPEN c_cursor_getMerBalAcct;
+
+	do {
+		EXEC SQL FETCH c_cursor_getMerBalAcct
+		INTO :v_merchant_id:ind_merchant_id,
+		     :v_country_code:ind_country_code,
+		     :v_ccy_id:ind_ccy_id,
+		     :v_service_code:ind_service_code;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+/* Extract report data */
+		hash_init(hAccBal,0);
+ 
+/* Table Field merchant_id */
+		if (ind_merchant_id >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_merchant_id.len,v_merchant_id.arr);
+			strcpy(csMerchantId, csTmp); 
+			PutField_CString(hAccBal,"merchant_id",csTmp);
+		}
+  
+/* Table Field country */
+		if (ind_country_code >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_country_code.len,v_country_code.arr);
+			strcpy(csCountryCode, csTmp);
+			PutField_CString(hAccBal,"country",csTmp);
+		}
+
+/* Table Field CCY_ID */
+		if (ind_ccy_id >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_ccy_id.len,v_ccy_id.arr);
+			strcpy(csCcyId, csTmp);
+			PutField_CString(hAccBal,"ccy",csTmp);
+		}
+
+/* Table Field service_code */
+		if (ind_service_code >= 0)
+		{
+			sprintf(csTmp,"%.*s",v_service_code.len,v_service_code.arr);
+			strcpy(csServiceCode, csTmp);
+			PutField_CString(hAccBal,"service_code",csTmp);
+		}
+
+/* Table Field ledger_type */
+		PutField_Char(hAccBal,"ledger_type",PD_CURR_BALANCE); 
+
+/* Table Field  disabled*/
+		PutField_Int(hAccBal,"disabled",PD_REC_ENABLED);
+
+/* Addition field Report Data */
+		if (strlen(csTxnDate) > 0)
+		{
+			PutField_CString(hAccBal,"report_date",csTxnDate);
+		}
+
+		sprintf(csUploadFilename, 
+		        "curr_bal_%s_%s_%s_%s_%s.zip",
+		        csMerchantId,
+		        csCountryCode,
+		        csCcyId,
+		        csServiceCode,
+		        csTxnDate);
+
+/* Addition field Filename */
+		PutField_CString(hAccBal,"filename",csUploadFilename);
+
+/* Addition field Update_user */
+		PutField_CString(hAccBal,"user",PD_UPDATE_USER);
+
+/* Extract year and year month */
+		strcpy(csYear, getYYYY(csTxnDate));
+
+		strcpy(csYearMth, getYYYYMM(csTxnDate));
+
+/* Check and make current balance report folder */
+		if (mkFullPathDir(csTxnDate) != PD_OK)
+		{
+DEBUGLOG(("process_data:unable to create path [%s %s %s]\n",csYear, csYearMth, csTxnDate));
+			return FAILURE;
+		}
+
+		sprintf(csUploadFullFile,"%s/%s/%s/%s/curr_bal_%s_%s_%s_%s_%s.xls",  
+		        getenv("ALRPT_HOME"), csYear, csYearMth, csTxnDate,
+		        csMerchantId, csCountryCode, csCcyId, csServiceCode, 
+		        csTxnDate);
+		        
+		fp = fopen(csUploadFullFile,"w");
+		if (fp == NULL) {
+DEBUGLOG(("process_data:unable to open [%s]\n",csUploadFullFile));
+			return FAILURE;
+		}
+
+/* create xml header */
+		fprintf(fp,"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+		fprintf(fp,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+		fprintf(fp,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\txmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+		fprintf(fp,"\t xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+		fprintf(fp,"\t xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+		fprintf(fp,"\t xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+		fprintf(fp,"<Styles>\n");
+		fprintf(fp,"\t<Style ss:ID=\"shd\">\n");
+		fprintf(fp,"\t\t<ss:Font ss:Bold=\"1\"/>\n");
+		fprintf(fp,"\t\t<Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"\t<Style ss:ID=\"sdt\">\n");
+		fprintf(fp,"\t\t<NumberFormat ss:Format=\"yyyy-mm-dd hh:mm:ss\"/>\n");
+		fprintf(fp,"\t</Style>\n");
+		fprintf(fp,"</Styles>\n");
+		fprintf(fp,"<Worksheet ss:Name=\"Account Ledger\">\n");
+		fprintf(fp,"<Table>\n");
+		fprintf(fp,"<Row>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Approval Time Stamp</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Sub Transaction Type</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction ID</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Reference</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Currency</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Credit</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Debit</Data></Cell>\n");
+		fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Balance</Data></Cell>\n");
+		fprintf(fp,"</Row>\n");
+
+/* process CB Ledger data */
+		if (process_cbledger(csMerchantId,
+		                     csCcyId,
+		                     csCountryCode,
+		                     csServiceCode,
+		                     csTxnDate,
+		                     fp
+		    ) == PD_OK){
+/* Addition field Status */
+			PutField_Char(hAccBal,"status",PD_PREGEN_RPT_COMPLETED); 
+		}
+		else
+		{
+/* Addition field Status */
+			PutField_Char(hAccBal,"status",PD_PREGEN_RPT_FAILURE);
+			iRet=PD_ERR;
+DEBUGLOG(("process_cbledger failed!!!!!!\n"));
+		}
+
+/* create xml footer */
+		fprintf(fp, "</Table>\n");
+		fprintf(fp, "</Worksheet>\n");
+		fprintf(fp, "</Workbook>\n");
+
+		fclose(fp);
+
+/* zip the report */
+		sprintf(csTmpCmd, 
+		        "zip_alrpt.sh %s %s %s %s %s 1>/dev/null",
+		        csTxnDate,
+		        csMerchantId,
+		        csCountryCode,
+		        csCcyId,
+		        csServiceCode);
+
+		if (system(csTmpCmd) == PD_ERR)
+		{
+DEBUGLOG(("extract_account_ledger_daily_rpt::zip: fail %s\n", csTmpCmd));
+		}
+		else
+		{
+DEBUGLOG(("extract_account_ledger_daily_rpt::zip: success %s\n", csTmpCmd));
+		}
+
+/* Insert/update acct_ldgr_rpt_hist */
+		DBObjPtr = CreateObj(DBPtr,"DBAcctLedgerDailyReport","Add");
+		if ((*DBObjPtr)(hAccBal) != PD_OK) 
+		{
+			DBObjPtr = CreateObj(DBPtr,"DBAcctLedgerDailyReport","UpdateStatus");
+			if ((*DBObjPtr)(hAccBal) != PD_OK) 
+				iRet = PD_ERR;
+		}
+
+		if (iRet == PD_OK)
+		{
+DEBUGLOG(("extract_account_ledger_daily_rpt::commit: MerchantId[%s] Country[%s] CcyId[%s] ServiceCode[%s] TxnDate[%s]\n", csMerchantId,csCountryCode,csCcyId,csServiceCode,csTxnDate));
+			TxnCommit();
+		}
+
+		hash_destroy(hAccBal);
+
+	} while (PD_TRUE);
+
+	EXEC SQL CLOSE c_cursor_getMerBalAcct;
+
+	if (hAccBal)
+	{
+		FREE_ME(hAccBal);
+	}
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("extract_account_ledger_daily_rpt::process_data: error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getMerBalAcct;
+	EXEC SQL ROLLBACK RELEASE;
+
+	if (hAccBal) 
+	{
+		hash_destroy(hAccBal);
+	}
+   	FREE_ME(hAccBal);
+
+	return PD_ERR;
+}
+
+int process_single_acct(const char* csTxnDate,
+                        const char* csMerchantId,
+                        const char* csCcyId,
+                        const char* csCountryCode,
+                        const char* csServiceCode)
+{               
+	int     iRet = SUCCESS;
+	char    csUploadFilename[PD_UPLOAD_FILENAME_LEN+1];
+	char    csUploadFullFile[PD_PATH_LEN+1];
+	char    csTmpCmd[PD_TMP_BUF_LEN+1];
+	char    csYear[PD_YYYY_LEN+1];
+	char    csYearMth[PD_YYYYMM_LEN+1];
+	FILE    *fp;
+	hash_t* hAccBal;
+
+
+/* Report data */
+	hAccBal = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hAccBal,0);
+ 
+/* Table Field merchant_id */
+	if (strlen(csMerchantId) > 0)
+	{
+		PutField_CString(hAccBal,"merchant_id",csMerchantId);
+	}
+  
+/* Table Field country */
+	if (strlen(csCountryCode) > 0)
+	{
+		PutField_CString(hAccBal,"country",csCountryCode);
+	}
+
+/* Table Field CCY_ID */
+	if (strlen(csCcyId) > 0)
+	{
+		PutField_CString(hAccBal,"ccy",csCcyId);
+	}
+
+/* Table Field service_code */
+	if (strlen(csServiceCode) >= 0)
+	{
+		PutField_CString(hAccBal,"service_code",csServiceCode);
+	}
+
+/* Table Field ledger_type */
+	PutField_Char(hAccBal,"ledger_type",PD_CURR_BALANCE); 
+
+/* Addition field Report Data */
+	if (strlen(csTxnDate) > 0)
+	{
+		PutField_CString(hAccBal,"report_date",csTxnDate);
+	}
+
+	sprintf(csUploadFilename, 
+	        "curr_bal_%s_%s_%s_%s_%s.zip", csMerchantId, csCountryCode,
+	        csCcyId, csServiceCode, csTxnDate);
+
+/* Addition field Filename */
+	PutField_CString(hAccBal,"filename",csUploadFilename);
+
+/* Addition field Update_user */
+	PutField_CString(hAccBal,"user",PD_UPDATE_USER);
+
+/* Extract year and year month */
+	strcpy(csYear, getYYYY(csTxnDate));
+
+	strcpy(csYearMth, getYYYYMM(csTxnDate));
+
+/* Check and make current balance report folder */
+	if (mkFullPathDir(csTxnDate) != PD_OK)
+	{
+DEBUGLOG(("process_data:unable to create path [%s]\n", csTxnDate));
+		return FAILURE;
+	}
+
+	sprintf(csUploadFullFile,"%s/%s/%s/%s/curr_bal_%s_%s_%s_%s_%s.xls",  
+	        getenv("ALRPT_HOME"), csYear, csYearMth, csTxnDate,
+	        csMerchantId, csCountryCode, csCcyId, csServiceCode, 
+	        csTxnDate);
+	        
+	fp = fopen(csUploadFullFile,"w");
+	if (fp == NULL) {
+DEBUGLOG(("process_data:unable to open [%s]\n",csUploadFullFile));
+		return FAILURE;
+	}
+
+/* create xml header */
+	fprintf(fp,"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+	fprintf(fp,"<?mso-application progid=\"Excel.Sheet\"?>\n");
+	fprintf(fp,"<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+	fprintf(fp,"\txmlns:o=\"urn:schemas-microsoft-com:office:office\"\n");
+	fprintf(fp,"\t xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n");
+	fprintf(fp,"\t xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"\n");
+	fprintf(fp,"\t xmlns:html=\"http://www.w3.org/TR/REC-html40\">\n");
+	fprintf(fp,"<Styles>\n");
+	fprintf(fp,"\t<Style ss:ID=\"shd\">\n");
+	fprintf(fp,"\t\t<ss:Font ss:Bold=\"1\"/>\n");
+	fprintf(fp,"\t\t<Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\"/>\n");
+	fprintf(fp,"\t</Style>\n");
+	fprintf(fp,"\t<Style ss:ID=\"sdt\">\n");
+	fprintf(fp,"\t\t<NumberFormat ss:Format=\"yyyy-mm-dd hh:mm:ss\"/>\n");
+	fprintf(fp,"\t</Style>\n");
+	fprintf(fp,"</Styles>\n");
+	fprintf(fp,"<Worksheet ss:Name=\"Account Ledger\">\n");
+	fprintf(fp,"<Table>\n");
+	fprintf(fp,"<Row>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Approval Time Stamp</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction Type</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Sub Transaction Type</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Transaction ID</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Merchant Reference</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Currency</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Credit</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Debit</Data></Cell>\n");
+	fprintf(fp,"\t<Cell><Data ss:Type=\"String\">Balance</Data></Cell>\n");
+	fprintf(fp,"</Row>\n");
+
+/* process CB Ledger data */
+	if (process_cbledger(csMerchantId,
+	                     csCcyId,
+	                     csCountryCode,
+	                     csServiceCode,
+	                     csTxnDate,
+	                     fp
+	    ) == PD_OK){
+/* Addition field Status */
+		PutField_Char(hAccBal,"status",PD_PREGEN_RPT_COMPLETED); 
+	}
+	else
+	{
+/* Addition field Status */
+		PutField_Char(hAccBal,"status",PD_PREGEN_RPT_FAILURE);
+		iRet=PD_ERR;
+DEBUGLOG(("process_cbledger failed!!!!!!\n"));
+	}
+
+/* create xml footer */
+	fprintf(fp, "</Table>\n");
+	fprintf(fp, "</Worksheet>\n");
+	fprintf(fp, "</Workbook>\n");
+
+	fclose(fp);
+
+/* zip the report */
+	sprintf(csTmpCmd, 
+	        "zip_alrpt.sh %s %s %s %s %s 1>/dev/null",		
+	        csTxnDate,
+	        csMerchantId,
+	        csCountryCode,
+	        csCcyId,
+	        csServiceCode);
+
+	if (system(csTmpCmd) == PD_ERR)
+	{
+DEBUGLOG(("extract_account_ledger_daily_rpt::zip: fail %s\n", csTmpCmd));
+	}
+	else
+	{
+DEBUGLOG(("extract_account_ledger_daily_rpt::zip: success %s\n", csTmpCmd));
+	}
+
+/* Insert/update acct_ldgr_rpt_hist */
+	DBObjPtr = CreateObj(DBPtr,"DBAcctLedgerDailyReport","Add");
+	if ((*DBObjPtr)(hAccBal) != PD_OK) 
+	{
+		DBObjPtr = CreateObj(DBPtr,"DBAcctLedgerDailyReport","UpdateStatus");
+		if ((*DBObjPtr)(hAccBal) != PD_OK) 
+			iRet = PD_ERR;
+	}
+
+	if (iRet == PD_OK)
+	{
+DEBUGLOG(("extract_account_ledger_daily_rpt::commit: MerchantId[%s] Country[%s] CcyId[%s] ServiceCode[%s] TxnDate[%s]\n", csMerchantId,csCountryCode,csCcyId,csServiceCode,csTxnDate));
+		TxnCommit();
+	}
+
+	if (hAccBal)
+	{
+		hash_destroy(hAccBal);
+		FREE_ME(hAccBal);
+	}
+
+
+	return iRet;
+}
+
+int process_cbledger(const char* csMerchantId,
+                     const char* csCcyId,
+                     const char* csCountryCode,
+                     const char* csServiceCode,
+                     const char* csReportDate,
+                     FILE *fp)
+{
+	int   	iRet = SUCCESS;
+
+	char    csTxnId[PD_TXN_ID_LEN+1];
+	char    csTxnCode[PD_TXN_CODE_LEN+1];
+	char    csTxnDesc[PD_DESC_LEN+1];
+	double  dOpenBalance;
+	char    csAmountType[PD_AMT_TYPE_LEN+1];
+	double  dAmount;
+	double  dBalance;
+	char    csElementType[PD_TXN_ELEMENT_TYPE_LEN+1];
+	char    csTxnElementTypeDesc[PD_DESC_LEN+1];
+	int     iExecSeq;
+	char    csTxnCcy[PD_CCY_ID_LEN+1];
+	char    csApprovalDate[PD_DATE_LEN+1];
+	double  dCredit;
+	double  dDebit;
+	char    csApprovalTimestamp[PD_TIMESTAMP_LEN+1];
+	char    csMerchantRef[PD_MERCHANT_REF_LEN+1];
+
+
+	EXEC SQL WHENEVER SQLERROR GOTO cbledger_sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+  
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_merchant_id[PD_MERCHANT_ID_LEN];
+		varchar hv_service_code[PD_SERVICE_CODE_LEN];
+		varchar hv_country_code[PD_COUNTRY_CODE_LEN];
+		varchar hv_ccy_id[PD_CCY_ID_LEN];
+		varchar	hv_report_date[PD_DATE_LEN];
+    
+		varchar v_txn_id[PD_TXN_ID_LEN+1];
+		varchar v_txn_code[PD_TXN_CODE_LEN+1];
+		varchar v_txn_desc[PD_DESC_LEN+1];
+		double  v_open_balance;
+		varchar v_amount_type[PD_AMT_TYPE_LEN+1];
+		double  v_amount;
+		double  v_balance;
+		varchar v_element_type[PD_TXN_ELEMENT_TYPE_LEN+1];
+		varchar v_txn_element_type_desc[PD_DESC_LEN+1];
+		int     v_exec_seq;
+		varchar v_txn_ccy[PD_CCY_ID_LEN+1];
+		varchar v_approval_date[PD_DATE_LEN];
+		double  v_credit;
+		double  v_debit;
+		varchar v_dummi_timestamp[PD_TIMESTAMP_LEN+1];
+		varchar v_approval_timestamp[PD_TIMESTAMP_LEN+1];
+		varchar v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		
+		short   ind_txn_id = -1;
+		short   ind_txn_code = -1;
+		short   ind_txn_desc = -1;
+		short   ind_open_balance = -1;
+		short   ind_amount_type = -1;
+		short   ind_amount = -1;
+		short   ind_balance = -1;
+		short   ind_element_type = -1;
+		short   ind_txn_element_type_desc = -1;
+		short   ind_exec_seq = -1;
+		short   ind_txn_ccy = -1;
+		short   ind_approval_date = -1;
+		short   ind_credit = -1;
+		short   ind_debit = -1;
+		short   ind_dummi_timestamp = -1;
+		short   ind_approval_timestamp = -1;
+		short   ind_merchant_ref = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("process_cbledger:Begin\n"));
+
+	if(strlen(csMerchantId) > 0)
+	{
+		hv_merchant_id.len = strlen(csMerchantId);
+		strncpy((char *)hv_merchant_id.arr, csMerchantId, hv_merchant_id.len);
+DEBUGLOG(("process_cbledger:merchant_id = [%.*s]\n",hv_merchant_id.len,hv_merchant_id.arr));
+	} else {
+DEBUGLOG(("process_cbledger:merchant_id is missing\n"));
+ERRLOG("extract_account_ledger_daily_rpt::process_cbledger: merchant_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCcyId) > 0)
+	{
+		hv_ccy_id.len = strlen(csCcyId);
+		strncpy((char *)hv_ccy_id.arr, csCcyId, hv_ccy_id.len);
+DEBUGLOG(("process_cbledger:ccy_id = [%.*s]\n",hv_ccy_id.len,hv_ccy_id.arr));
+	} else {
+DEBUGLOG(("process_cbledger:ccy_id is missing\n"));
+ERRLOG("extract_account_ledger_daily_rpt::process_cbledger: ccy_id is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csCountryCode) > 0)
+	{
+		hv_country_code.len = strlen(csCountryCode);
+		strncpy((char *)hv_country_code.arr, csCountryCode, hv_country_code.len);
+DEBUGLOG(("process_cbledger:country = [%.*s]\n",hv_country_code.len,hv_country_code.arr));
+	} else {
+DEBUGLOG(("process_cbledger:country is missing\n"));
+ERRLOG("extract_account_ledger_daily_rpt::process_cbledger: country is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csServiceCode) > 0)
+	{
+		hv_service_code.len = strlen(csServiceCode);
+		strncpy((char *)hv_service_code.arr, csServiceCode, hv_service_code.len);
+DEBUGLOG(("process_cbledger:service_code = [%.*s]\n",hv_service_code.len,hv_service_code.arr));
+	} else {
+DEBUGLOG(("process_cbledger:service_code is missing\n"));
+ERRLOG("extract_account_ledger_daily_rpt::process_cbledger: service_code is missing\n");
+		return PD_ERR;
+	}
+
+	if(strlen(csReportDate) > 0)
+	{
+		hv_report_date.len = strlen(csReportDate);
+		strncpy((char *)hv_report_date.arr, csReportDate, hv_report_date.len);
+DEBUGLOG(("process_cbledger:report_date = [%.*s]\n",hv_report_date.len,hv_report_date.arr));
+	} else {
+DEBUGLOG(("process_cbledger:report_date is missing\n"));
+ERRLOG("extract_account_ledger_daily_rpt::process_cbledger: report_date is missing\n");
+		return PD_ERR;
+	}
+
+
+	EXEC SQL DECLARE c_cursor_getcbledger CURSOR FOR
+		SELECT
+		    TXN_ID AS TXN_ID,
+		    TXN_CODE AS TXN_CODE,
+		    TXN_CODE_DESC AS TXN_DESC,
+		    OPEN_BAL AS OPEN_BALANCE,
+		    AMT_TYPE AS AMOUNT_TYPE,
+		    AMOUNT AS AMOUNT,
+		    BAL AS BALANCE,
+		    TXN_ELEMENT_TYPE AS ELEMENT_TYPE,
+		    TXN_ELEMENT_TYPE_DESC AS TXN_ELEMENT_TYPE_DESC,
+		    EXEC_SEQ AS EXEC_SEQ,
+		    TXN_CCY AS TXN_CCY,
+		    APPROVAL_DATE AS APPROVAL_DATE,
+		    CASE WHEN AMT_TYPE = 'CR' THEN AMOUNT ELSE 0 END AS CREDIT,
+		    CASE WHEN AMT_TYPE = 'DR' THEN AMOUNT ELSE 0 END AS DEBIT,
+		    APPROVAL_TIMESTAMP,
+		    TO_CHAR(APPROVAL_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS') AS FORMAT_TIMESTAMP,
+		    MERCHANT_REF AS MERCHANT_REF
+		FROM TABLE(LEDGER_PKG.F_CB_LEDGER(
+		    to_timestamp(to_date(:hv_report_date, 'YYYYMMDD HH24:MI')),
+		    to_timestamp(to_date(:hv_report_date, 'YYYYMMDD HH24:MI') + 1),
+		    :hv_merchant_id,
+		    :hv_country_code,
+		    :hv_service_code,
+		    :hv_ccy_id
+		)) ORDER BY APPROVAL_TIMESTAMP, EXEC_SEQ;
+
+        EXEC SQL OPEN c_cursor_getcbledger;
+
+        do {
+
+			EXEC SQL FETCH c_cursor_getcbledger
+			INTO
+			    :v_txn_id:ind_txn_id,
+			    :v_txn_code:ind_txn_code,
+			    :v_txn_desc:ind_txn_desc,
+			    :v_open_balance:ind_open_balance,
+			    :v_amount_type:ind_amount_type,
+			    :v_amount:ind_amount,
+			    :v_balance:ind_balance,
+			    :v_element_type:ind_element_type,
+			    :v_txn_element_type_desc:ind_txn_element_type_desc,
+			    :v_exec_seq:ind_exec_seq,
+			    :v_txn_ccy:ind_txn_ccy,
+			    :v_approval_date:ind_approval_date,
+			    :v_credit:ind_credit,
+			    :v_debit:ind_debit,
+			    :v_dummi_timestamp:ind_dummi_timestamp,
+			    :v_approval_timestamp:ind_approval_timestamp,
+			    :v_merchant_ref:ind_merchant_ref
+			;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			fprintf(fp,"<Row>\n");
+/*	v_approval_timestamp	*/
+			if (ind_approval_timestamp >= 0)
+			{
+				v_approval_timestamp.arr[v_approval_timestamp.len] = '\0';
+				strcpy(csApprovalTimestamp,(const char*)v_approval_timestamp.arr);
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csApprovalTimestamp);
+/*DEBUGLOG(("process_cbledger v_approval_timestamp = [%s]\n", v_approval_timestamp.arr));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/* txn_desc	*/
+			if(ind_txn_desc >= 0)
+			{
+				v_txn_desc.arr[v_txn_desc.len] = '\0';
+				strcpy(csTxnDesc,(const char*)v_txn_desc.arr);
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnDesc);
+/*DEBUGLOG(("process_cbledger v_txn_desc = [%s]\n", v_txn_desc.arr));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/*	v_txn_element_type_desc */
+			if (ind_txn_element_type_desc >= 0)
+			{
+				v_txn_element_type_desc.arr[v_txn_element_type_desc.len] = '\0';
+				strcpy(csTxnElementTypeDesc,(const char*)v_txn_element_type_desc.arr);
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnElementTypeDesc);
+/*DEBUGLOG(("process_cbledger v_txn_element_type_desc = [%s]\n", v_txn_element_type_desc.arr));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/* txn_id */
+			if(ind_txn_id >=0)
+			{
+				v_txn_id.arr[v_txn_id.len] = '\0';
+				strcpy(csTxnId,(const char*)v_txn_id.arr);
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnId);
+/*DEBUGLOG(("process_cbledger v_txn_id = [%s]\n", v_txn_id.arr));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/*	v_merchant_ref  */
+			if (ind_merchant_ref >= 0)
+			{
+				v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+				strcpy(csMerchantRef,(const char*)v_merchant_ref.arr);
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csMerchantRef);
+/*DEBUGLOG(("process_cbledger v_merchant_ref = [%s]\n", v_merchant_ref.arr));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/*	v_txn_ccy	*/
+			if (ind_txn_ccy >= 0)
+			{
+				v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+				strcpy(csTxnCcy,(const char*)v_txn_ccy.arr);
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\">%s</Data></Cell>\n",csTxnCcy);
+/*DEBUGLOG(("process_cbledger v_txn_ccy = [%s]\n", v_txn_ccy.arr));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"String\"> </Data></Cell>\n");
+
+/*	v_credit	*/
+			if (ind_credit >= 0)
+			{
+				dCredit = v_credit;
+				fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dCredit);
+/*DEBUGLOG(("process_cbledger v_credit = [%f]\n",v_credit));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+
+/*	v_debit	*/
+			if(ind_debit >= 0)
+			{
+				dDebit = v_debit;
+				fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dDebit);
+/*DEBUGLOG(("process_cbledger v_debit = [%f]\n",v_debit));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+
+/*	v_open_balance	*/
+			if (ind_open_balance >= 0)
+			{
+				dOpenBalance = v_open_balance;
+/*DEBUGLOG(("process_cbledger v_open_balance = [%f]\n",v_open_balance));*/
+			}
+
+/*	v_amount	*/
+			if (ind_amount >= 0)
+			{
+				dAmount = v_amount;
+/*DEBUGLOG(("process_cbledger v_amount = [%f]\n",v_amount));*/
+			}
+
+/* txn_code */
+			if (ind_txn_code >=0 )
+			{
+				v_txn_code.arr[v_txn_code.len] = '\0';
+				strcpy(csTxnCode,(const char*)v_txn_code.arr);
+/*DEBUGLOG(("process_cbledger v_txn_code = [%s]\n", v_txn_code.arr));*/
+			}
+
+/*	v_amount_type	*/
+			if (ind_amount_type >= 0)
+			{
+				v_amount_type.arr[v_amount_type.len] = '\0';
+				strcpy(csAmountType,(const char*)v_amount_type.arr);
+/*DEBUGLOG(("process_cbledger v_amount_type = [%s]\n", v_amount_type.arr));*/
+			}
+
+/*	v_balance	*/
+			if(ind_balance >= 0)
+			{
+				dBalance  = v_balance;
+				fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">%.2f</Data></Cell>\n",dBalance);
+/*DEBUGLOG(("process_cbledger v_balance = [%f]\n",v_balance));*/
+			}
+			else
+				fprintf(fp,"\t<Cell><Data ss:Type=\"Number\">0</Data></Cell>\n");
+
+/*	v_element_type  */
+			if (ind_element_type >= 0)
+			{
+				v_element_type.arr[v_element_type.len] = '\0';
+				strcpy(csElementType,(const char*)v_element_type.arr);
+/*DEBUGLOG(("process_cbledger v_element_type = [%s]\n", v_element_type.arr));*/
+			}
+
+/*	v_exec_seq	*/
+			if (ind_exec_seq >= 0)
+			{
+				iExecSeq = v_exec_seq;
+/*DEBUGLOG(("process_cbledger v_exec_seq = [%d]\n",v_exec_seq));*/
+			}
+
+/*	v_approval_date */
+			if (ind_approval_date >= 0)
+			{
+				v_approval_date.arr[v_approval_date.len] = '\0';
+				strcpy(csApprovalDate,(const char*)v_approval_date.arr);
+/*DEBUGLOG(("process_cbledger v_approval_date = [%s]\n", v_approval_date.arr));*/
+			}
+
+			fprintf(fp,"</Row>\n");
+
+        } while (PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getcbledger;
+
+	return iRet;
+
+cbledger_sql_error:
+DEBUGLOG(("extract_account_ledger_daily_rpt:process_cbledger code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getcbledger;
+	EXEC SQL ROLLBACK RELEASE;
+
+	return PD_ERR;
+}
+
+int mkFullPathDir(const char * csYearMthDy) 
+{
+	int  iRet = SUCCESS;
+	char csTmpCmd[PD_TMP_BUF_LEN+1];
+
+	sprintf(csTmpCmd, 
+	        "mkdir_acctledger_tree.sh %s 1> /dev/null",		
+	        csYearMthDy);
+	
+	if (system(csTmpCmd) == PD_ERR)
+	{
+		iRet = PD_ERR;
+	}
+
+	return iRet;
+}
+
+char* getYYYY(const char* csTxnDate)
+{
+	char csTmpYYYY[PD_YYYY_LEN+1];
+
+	strncpy(csTmpYYYY, csTxnDate, PD_YYYY_LEN);
+	csTmpYYYY[PD_YYYY_LEN] = '\0';
+
+	return csTmpYYYY;
+}
+
+char* getYYYYMM(const char* csTxnDate)
+{
+	char csTmpYYYYMM[PD_YYYYMM_LEN+1];
+
+	strncpy(csTmpYYYYMM, csTxnDate, PD_YYYYMM_LEN);
+	csTmpYYYYMM[PD_YYYYMM_LEN] = '\0';
+
+	return csTmpYYYYMM;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char c;
+	strcpy(csDate,"");
+	strcpy(csInMerchantId,"");
+	strcpy(csInCcyId,"");
+	strcpy(csInCountryCode,"");
+	strcpy(csInServiceCode,"");
+
+	while ((c = getopt(argc,argv,"d:m:c:o:s:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(csDate, optarg);
+				break;
+			case 'm':
+				strcpy(csInMerchantId, optarg);
+				break;
+			case 'c':
+				strcpy(csInCcyId, optarg);
+				break;
+			case 'o':
+				strcpy(csInCountryCode, optarg);
+				break;
+			case 's':
+				strcpy(csInServiceCode, optarg);
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(csDate,""))
+		return FAILURE;
+
+	if (argc > 3) {
+		if (!strcmp(csInMerchantId,""))
+			return FAILURE;
+
+		if (!strcmp(csInCcyId,""))
+			return FAILURE;
+
+		if (!strcmp(csInCountryCode,""))
+			return FAILURE;
+
+		if (!strcmp(csInServiceCode,""))
+			return FAILURE;
+	}
+
+	return SUCCESS;
+}
+

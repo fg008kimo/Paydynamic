@@ -1,0 +1,1001 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/10/26              LokMan Chow
+add html format					   2010/11/12		   LokMan Chow
+add argv:mode (SENT/UPDATED)			   2010/11/23		   LokMan Chow
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+OBJPTR(DB);
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR		','
+#define ALREADY_UPDATED 	10
+#define MAX_MERCHANT_NUM	100
+#define PD_FILEPATH_LEN		50
+#define PD_TR           "<tr>"
+#define PD_TD           "<td>"
+#define PD_TD_STYLE     "<td class=\"format\">"
+#define PD_TR_END       "</tr>"
+#define PD_TD_END       "</td>"
+
+
+char    cs_date[PD_DATE_LEN + 1];
+char    cs_filepath[PD_FILEPATH_LEN + 1];
+char    cs_mode[PD_FILEPATH_LEN + 1];
+char    cDebug;
+
+int process_txn(const char *csMerchId,FILE *fp);
+int process_not_sent(const char* csMerchId,FILE *fp);
+int process_header(const char* csMerchId);
+int getAllMerchId(char (*csMerchIdList)[PD_MERCHANT_ID_LEN+1]);
+int update_status(const char* csMerchId, const char* csBatchId);
+int UpdatePayoutHeader(const char* csBatchId, const int iSuccCount, const int iProcessing);
+int UpdatePayoutRecord(const char* csBatchId, const char* csMerchRef, const char cArInd, const char* csRespCode);
+
+
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 4) {
+      	printf("usage: -d date -o outputfile path -m mode\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_date,"");
+        strcpy(cs_filepath,"");
+        strcpy(cs_mode,"");
+
+        while ((c = getopt(argc,argv,"d:o:m:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        case 'o':
+                                strcpy(cs_filepath, optarg);
+                                break;
+                        case 'm':
+                                strcpy(cs_mode, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_date,"") || !strcmp(cs_filepath,"") || !strcmp(cs_mode,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+        char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+	char	csMerchIdList[MAX_MERCHANT_NUM][PD_MERCHANT_ID_LEN+1];
+	FILE    *fp;
+	int	iNumOfRecord = 0;
+        
+	iRet = parse_arg(argc,argv);
+        if (iRet != SUCCESS) {
+                printf("usage: -d date -o outputfile path -m mode\n");
+                return (iRet);
+        }
+
+	if(iRet==SUCCESS){
+		iNumOfRecord = getAllMerchId(csMerchIdList);
+	}
+
+	if(iNumOfRecord>0){
+		int i;
+		for(i=0;i<iNumOfRecord;i++){
+			iRet = process_header(csMerchIdList[i]);
+			
+			if(iRet!=FAILURE){
+				sprintf(cs_outfile_name, "%s/PAYOUT_%s-%s-%s.xls",cs_filepath,cs_mode,csMerchIdList[i],cs_date);
+				fp = fopen(cs_outfile_name,"w");
+				if (fp != NULL) {
+				
+					fprintf(fp,"<html><body><table>\n");
+					fprintf(fp,"<style type=\"text/css\"> .format{ mso-number-format:'\\@';} </style>\n");
+					fprintf(fp,"<meta http-equiv=\"Content-Type\" content=\"text/html;charset=UTF-8\">\n");
+
+					fprintf(fp,"<tr><td>TID</td><td>Txn Date</td><td>Batch Id</td><td>Seq Num</td><td>Merchant Ref</td><td>Country</td><td>Identity id</td><td>Account Num</td><td>Bank Code</td><td>Account Name</td><td>Bank name</td><td>Branch</td><td>Phone Num</td><td>Province</td><td>City</td><td>Amount</td><td>Payout Currency</td><td>Destination Currency</td><td>Checksum</td><td>Status</td><td>Response Code</td></tr>\n");
+					iRet = process_txn(csMerchIdList[i],fp);
+
+					if(iRet!=FAILURE)
+						iRet = process_not_sent(csMerchIdList[i],fp);
+
+					fprintf(fp,"</table></body></html>\n");
+				}
+				else
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outfile_name));
+
+				fclose(fp);
+			}
+		}
+	}
+
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int getAllMerchId(char (*csMerchIdList)[PD_MERCHANT_ID_LEN+1])
+{
+	int iRet = 0;
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		char		hv_type;
+		int		hv_disabled;
+
+		varchar		v_merch_id[PD_MERCHANT_ID_LEN+1];
+
+		short		ind_merch_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_type = 'M';
+	hv_disabled = 0;
+
+	EXEC SQL DECLARE c_cursor_getmerchantid CURSOR FOR
+		select	b.merchant_id
+		from	clients a,
+			merch_detail b
+		where	a.type = :hv_type
+		and	b.client_id = a.client_id
+		and	b.disabled = :hv_disabled;
+		
+	EXEC SQL OPEN c_cursor_getmerchantid;
+	do{
+		EXEC SQL FETCH c_cursor_getmerchantid
+		INTO	:v_merch_id:ind_merch_id;
+
+		
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+/*merch_id*/
+		if(ind_merch_id >= 0){
+			strcpy(csMerchIdList[iRet],v_merch_id.arr);
+			csMerchIdList[iRet][v_merch_id.len]='\0';
+DEBUGLOG(("Client type[%c]  Valid MerchId[%s]\n",hv_type,csMerchIdList[iRet]));
+			iRet++;
+		}
+
+	}while(PD_TRUE);
+
+
+	EXEC SQL CLOSE c_cursor_getmerchantid;
+        return iRet;
+
+get_error:
+    DEBUGLOG(("get merchant id: error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getmerchantid;
+    EXEC SQL ROLLBACK RELEASE;
+    return 0;
+}
+
+int process_header(const char* csMerchId)
+{
+	int     iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO header_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+		varchar         hv_txn_date[PD_DATE_LEN];
+                varchar         hv_merch_id[PD_MERCHANT_ID_LEN];
+
+		char            v_status;
+		varchar		v_batch_id[PD_TXN_SEQ_LEN+1];
+
+		short           ind_status = -1;
+		short		ind_batch_id = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_txn_date.len = strlen(cs_date);
+        memcpy(hv_txn_date.arr,cs_date,hv_txn_date.len);
+DEBUGLOG(("process_header::txn_date = [%.*s]\n",hv_txn_date.len,hv_txn_date.arr));
+
+        hv_merch_id.len = strlen(csMerchId);
+        memcpy(hv_merch_id.arr,csMerchId,hv_merch_id.len);
+DEBUGLOG(("process_header::merch_id = [%.*s]\n",hv_merch_id.len,hv_merch_id.arr));
+
+	EXEC SQL DECLARE c_cursor_hdstatus CURSOR FOR
+		select	status,
+			batch_id
+		from	payout_header
+		where	merchant_id =:hv_merch_id
+		and	txn_date =:hv_txn_date;
+
+	EXEC SQL OPEN c_cursor_hdstatus;
+
+	do{
+		EXEC SQL FETCH c_cursor_hdstatus
+                INTO    :v_status:ind_status,
+			:v_batch_id:ind_batch_id;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if(v_status==PD_INIT_STATE){
+DEBUGLOG(("Payout request not send yet, batch_id[%.*s] [%s] [%s](Status[%c]).\n",v_batch_id.len,v_batch_id.arr,csMerchId,cs_date,v_status));
+			continue;
+		}
+		else if(v_status==PD_REJECTED){
+DEBUGLOG(("Payout rejected, batch_id[%.*s] [%s] [%s](Status[%c]).\n",v_batch_id.len,v_batch_id.arr,csMerchId,cs_date,v_status));
+			continue;
+		}
+
+		if(ind_batch_id>=0)
+			v_batch_id.arr[v_batch_id.len]='\0';
+
+		iRet = update_status(csMerchId, (const char*)v_batch_id.arr);
+
+		if(iRet!=SUCCESS)
+DEBUGLOG(("get status error [%.*s] [%s] [%s], no report generate\n",v_batch_id.len,v_batch_id.arr,csMerchId,cs_date));
+		
+	}while(PD_TRUE);
+
+	return iRet;
+
+header_error:
+    DEBUGLOG(("process_header error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_hdstatus;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int update_status(const char* csMerchId, const char* csBatchId)
+{               
+ 
+        int     iRet = SUCCESS;
+	int	iSuccCount = 0; 
+	int	iRecordCnt = 0;
+ 	int	iProcessing = 0;
+
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar		hv_txn_date[PD_DATE_LEN];
+		varchar		hv_merch_id[PD_MERCHANT_ID_LEN];
+		varchar		hv_batch_id[PD_TXN_SEQ_LEN+1];
+
+		varchar		v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		char		v_status;
+		char		v_ar_ind;
+		varchar		v_resp_code[PD_ERROR_CODE_LEN+1];
+
+                short           ind_merchant_ref= -1;
+                short           ind_status = -1;
+                short           ind_ar_ind = -1;
+                short           ind_resp_code= -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_txn_date.len = strlen(cs_date);
+        memcpy(hv_txn_date.arr,cs_date,hv_txn_date.len);
+DEBUGLOG(("update_status::txn_date = [%.*s]\n",hv_txn_date.len,hv_txn_date.arr));
+
+        hv_merch_id.len = strlen(csMerchId);
+        memcpy(hv_merch_id.arr,csMerchId,hv_merch_id.len);
+DEBUGLOG(("update_status::merch_id = [%.*s]\n",hv_merch_id.len,hv_merch_id.arr));
+
+        hv_batch_id.len = strlen(csBatchId);
+        memcpy(hv_batch_id.arr,csBatchId,hv_batch_id.len);
+DEBUGLOG(("update_status::batch_id= [%.*s]\n",hv_batch_id.len,hv_batch_id.arr));
+
+
+        EXEC SQL DECLARE c_cursor_getstatus CURSOR FOR
+		select	a.merchant_ref,
+			c.th_status,
+			c.th_ar_ind,
+			c.th_response_code
+  		   from payout_record a,
+			txn_header c
+		  where a.merchant_id = :hv_merch_id
+		    and	a.batch_id = :hv_batch_id
+		    and	c.th_merchant_ref=a.merchant_ref
+		    and c.th_host_posting_date =:hv_txn_date
+		    and	c.th_merchant_id = :hv_merch_id;
+                
+        EXEC SQL OPEN c_cursor_getstatus;
+        do {    
+                EXEC SQL FETCH c_cursor_getstatus
+                INTO	:v_merchant_ref:ind_merchant_ref,
+			:v_status:ind_status,
+			:v_ar_ind:ind_ar_ind,
+			:v_resp_code:ind_resp_code;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+                }
+
+
+/*status*/
+                if (ind_status< 0 )
+			v_status = ' ';
+		else{
+			if(v_status==PD_SENT){
+DEBUGLOG(("Process not completed [%s] [%.*s](Status[%c])\n",csBatchId,v_merchant_ref.len,v_merchant_ref.arr,v_status));
+				iProcessing ++;
+				continue;
+			}
+		}
+
+
+/*ar_ind*/
+                if (ind_ar_ind< 0 )
+			v_ar_ind= ' ';
+
+
+/*resp_code*/
+                if (ind_resp_code< 0 )
+                        v_resp_code.arr[0] = '\0';
+		else	v_resp_code.arr[v_resp_code.len] = '\0';
+
+
+/*merch_ref*/
+		if(ind_merchant_ref<0)
+			v_merchant_ref.arr[0]='\0';
+		else	v_merchant_ref.arr[v_merchant_ref.len]='\0';
+
+
+//Update Payout Record
+		iRet = UpdatePayoutRecord(csBatchId,(const char*)v_merchant_ref.arr,(const char)v_ar_ind,(const char*)v_resp_code.arr);
+
+		if(v_ar_ind=='A')
+			iSuccCount ++;
+
+		iRecordCnt++;
+
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+
+//Update Payout Header
+	if((iRet==SUCCESS) && (iRecordCnt!=0))
+	{
+		iRet = UpdatePayoutHeader(csBatchId,iSuccCount,iProcessing);
+	}
+
+	EXEC SQL CLOSE c_cursor_getstatus;
+
+DEBUGLOG(("RET = [%d]\n",iRet));
+
+        return iRet;
+sql_error:
+    DEBUGLOG(("update_status error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getstatus;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int process_txn(const char* csMerchId,FILE *fp)
+{               
+ 
+        int     iRet = SUCCESS;
+ 
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar		hv_txn_date[PD_DATE_LEN];
+		varchar		hv_merch_id[PD_MERCHANT_ID_LEN];
+
+		varchar		v_tid[PD_MERCHANT_REF_LEN+1];
+		varchar		v_batch_id[PD_TXN_SEQ_LEN+1];
+		varchar		v_seq_num[PD_SEQ_NUM_LEN+1];
+		varchar		v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		varchar 	v_country[PD_COUNTRY_LEN+1];
+		varchar 	v_identity_id[PD_IDENTITY_ID_LEN+1];
+		varchar 	v_account_num[PD_AC_NO_LEN+1];
+		varchar 	v_account_name[PD_ACC_NAME_LEN+1];
+		varchar 	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar 	v_bank_code[PD_BANK_CODE_LEN+1];
+		varchar 	v_branch[PD_BANK_BRANCH_LEN+1];
+		varchar		v_phone_num[PD_MOBILE_NO_LEN+1];
+		varchar		v_province[PD_PROVINCE_LEN+1];
+		varchar		v_city[PD_CITY_LEN+1];
+		varchar		v_payout_ccy[PD_CCY_ID_LEN+1];
+		varchar		v_dest_ccy[PD_CCY_ID_LEN+1];
+		varchar		v_checksum[PD_CHECKSUM_LEN+1];
+		varchar		v_amount[PD_AMOUNT_LEN+1];
+		char		v_status;
+		varchar		v_resp_code[PD_ERROR_CODE_LEN+1];
+
+		short		ind_tid = -1;
+		short		ind_batch_id = -1;
+                short           ind_seq_num = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_country = -1;
+                short           ind_identity_id = -1;
+                short           ind_account_num = -1;
+                short           ind_account_name = -1;
+                short           ind_bank_name = -1;
+                short           ind_bank_code = -1;
+                short           ind_branch = -1;
+                short           ind_phone_num = -1;
+                short           ind_province = -1;
+                short           ind_city = -1;
+                short           ind_payout_ccy = -1;
+                short           ind_dest_ccy = -1;
+                short           ind_checksum = -1;
+                short           ind_amount = -1;
+                short           ind_status = -1;
+                short           ind_resp_code= -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_txn_date.len = strlen(cs_date);
+        memcpy(hv_txn_date.arr,cs_date,hv_txn_date.len);
+DEBUGLOG(("process_txn::txn_date = [%.*s]\n",hv_txn_date.len,hv_txn_date.arr));
+
+        hv_merch_id.len = strlen(csMerchId);
+        memcpy(hv_merch_id.arr,csMerchId,hv_merch_id.len);
+DEBUGLOG(("process_txn::merch_id = [%.*s]\n",hv_merch_id.len,hv_merch_id.arr));
+
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select  a.batch_id,
+			a.seq_num,
+                        a.merchant_ref,
+                        a.country,
+                        a.identity_id,
+                        a.account_name,
+                        a.account_num,
+                        a.bank_name,
+                        a.bank_code,
+                        a.branch,
+                        a.phone_num,
+                        a.province,
+                        a.city,
+                        a.amount,
+                        a.payout_currency,
+                        a.dest_currency,
+                        a.checksum,
+			a.status,
+			a.response_code,
+			d.tp_tid
+  		   from payout_record a,
+			payout_header b,
+			txn_header c,
+			txn_psp_detail d
+		  where	b.merchant_id =:hv_merch_id
+                    and b.txn_date =:hv_txn_date
+		    and	a.merchant_id = b.merchant_id
+		    and	a.batch_id = b.batch_id
+		    and c.th_host_posting_date=:hv_txn_date
+		    and c.th_merchant_ref=a.merchant_ref
+		    and d.tp_txn_id = c.th_txn_id
+		  order by d.tp_tid;
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO	:v_batch_id:ind_batch_id,
+			:v_seq_num:ind_seq_num,
+                        :v_merchant_ref:ind_merchant_ref,
+                        :v_country:ind_country,
+                        :v_identity_id:ind_identity_id,
+                        :v_account_name:ind_account_name,
+                        :v_account_num:ind_account_num,
+                        :v_bank_name:ind_bank_name,
+                        :v_bank_code:ind_bank_code,
+                        :v_branch:ind_branch,
+                        :v_phone_num:ind_phone_num,
+                        :v_province:ind_province,
+                        :v_city:ind_city,
+                        :v_amount:ind_amount,
+                        :v_payout_ccy:ind_payout_ccy,
+                        :v_dest_ccy:ind_dest_ccy,
+                        :v_checksum:ind_checksum,
+			:v_status:ind_status,
+			:v_resp_code:ind_resp_code,
+			:v_tid:ind_tid;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		fprintf(fp,"%s",PD_TR);
+
+/* Field #0 tid */
+		if (ind_tid < 0 )
+			v_tid.arr[0] = '\0';
+		fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_tid.len,v_tid.arr,PD_TD_END);
+
+/* Field #0 txn_date */
+		fprintf(fp,"%s%s%s",PD_TD,cs_date,PD_TD_END);
+
+/* Field #0 batch_id */
+		if (ind_batch_id < 0 )
+			v_batch_id.arr[0] = '\0';
+		fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_batch_id.len,v_batch_id.arr,PD_TD_END);
+
+/* Field #0 seq_num */
+                if (ind_seq_num < 0 )
+                        v_seq_num.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_seq_num.len,v_seq_num.arr,PD_TD_END);
+
+/* Field #1 merchant_ref */
+                if (ind_merchant_ref < 0 )
+                        v_merchant_ref.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_merchant_ref.len,v_merchant_ref.arr,PD_TD_END);
+
+/* Field #2 country*/
+                if (ind_country < 0 )
+                        v_country.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_country.len,v_country.arr,PD_TD_END);
+
+/* Field #3 ID*/
+                if (ind_identity_id< 0 )
+                        v_identity_id.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_identity_id.len,v_identity_id.arr,PD_TD_END);
+
+/* Field #4 account_num */
+                if (ind_account_num < 0 )
+			v_account_num.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_account_num.len,v_account_num.arr,PD_TD_END);
+
+/* Field #5 bank_code */
+                if (ind_bank_code < 0 )
+                        v_bank_code.arr[0] = '\0';
+		fprintf(fp,"%s%.*s%s",PD_TD,v_bank_code.len,v_bank_code.arr,PD_TD_END);
+
+/* Field #6  account_name*/
+                if (ind_account_name < 0 )
+                        v_account_name.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_account_name.len,v_account_name.arr,PD_TD_END);
+
+/* Field #7  bank_name*/
+                if (ind_bank_name< 0 )
+                        v_bank_name.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_bank_name.len,v_bank_name.arr,PD_TD_END);
+
+/* Field #8  branch*/
+                if (ind_branch< 0 )
+                        v_branch.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_branch.len,v_branch.arr,PD_TD_END);
+
+/* Field #9 phone_num*/
+                if (ind_phone_num< 0 )
+                        v_phone_num.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_phone_num.len,v_phone_num.arr,PD_TD_END);
+
+/* Field #10 province*/
+                if (ind_province< 0 )
+                        v_province.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_province.len,v_province.arr,PD_TD_END);
+
+/* Field #11 city*/
+                if (ind_city< 0 )
+                        v_city.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_city.len,v_city.arr,PD_TD_END);
+
+/* Field #12 amount*/
+                if (ind_amount< 0 )
+                        v_amount.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_amount.len,v_amount.arr,PD_TD_END);
+
+/* Field #13 payout_ccy*/
+                if (ind_payout_ccy< 0 )
+                        v_payout_ccy.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_payout_ccy.len,v_payout_ccy.arr,PD_TD_END);
+
+/* Field #14 dest_ccy*/
+                if (ind_dest_ccy< 0 )
+                        v_dest_ccy.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_dest_ccy.len,v_dest_ccy.arr,PD_TD_END);
+
+/* Field #15  checksum*/
+                if (ind_checksum< 0 )
+                        v_checksum.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_checksum.len,v_checksum.arr,PD_TD_END);
+
+/* Field #16 status*/
+                if (ind_status< 0 )
+			v_status = ' ';
+		if(v_status==PD_SENT)
+			fprintf(fp,"%sSent to PSP%s",PD_TD,PD_TD_END);
+		else if(v_status==PD_ACCEPT)
+			fprintf(fp,"%sAccepted%s",PD_TD,PD_TD_END);
+		else if(v_status==PD_REJECT)
+                	fprintf(fp,"%sRejected%s",PD_TD,PD_TD_END);
+
+/* Field #17 resp_code*/
+                if (ind_resp_code< 0 )
+                        v_resp_code.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_resp_code.len,v_resp_code.arr,PD_TD_END);
+
+		fprintf(fp,"%s\n",PD_TR_END);
+
+
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	
+
+	EXEC SQL CLOSE c_cursor_gettxn;
+DEBUGLOG(("RET = [%d]\n",iRet));
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int process_not_sent(const char* csMerchId,FILE *fp)
+{               
+ 
+        int     iRet = SUCCESS;
+ 
+        EXEC SQL WHENEVER SQLERROR GOTO not_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar		hv_txn_date[PD_DATE_LEN];
+		varchar		hv_merch_id[PD_MERCHANT_ID_LEN];
+
+		varchar		v_batch_id[PD_TXN_SEQ_LEN+1];
+		varchar		v_seq_num[PD_SEQ_NUM_LEN+1];
+		varchar		v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		varchar 	v_country[PD_COUNTRY_LEN+1];
+		varchar 	v_identity_id[PD_IDENTITY_ID_LEN+1];
+		varchar 	v_account_num[PD_AC_NO_LEN+1];
+		varchar 	v_account_name[PD_ACC_NAME_LEN+1];
+		varchar 	v_bank_name[PD_BANK_NAME_LEN+1];
+		varchar 	v_bank_code[PD_BANK_CODE_LEN+1];
+		varchar 	v_branch[PD_BANK_BRANCH_LEN+1];
+		varchar		v_phone_num[PD_MOBILE_NO_LEN+1];
+		varchar		v_province[PD_PROVINCE_LEN+1];
+		varchar		v_city[PD_CITY_LEN+1];
+		varchar		v_payout_ccy[PD_CCY_ID_LEN+1];
+		varchar		v_dest_ccy[PD_CCY_ID_LEN+1];
+		varchar		v_checksum[PD_CHECKSUM_LEN+1];
+		varchar		v_amount[PD_AMOUNT_LEN+1];
+		char		v_status;
+		varchar		v_resp_code[PD_ERROR_CODE_LEN+1];
+
+		short		ind_batch_id = -1;
+                short           ind_seq_num = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_country = -1;
+                short           ind_identity_id = -1;
+                short           ind_account_num = -1;
+                short           ind_account_name = -1;
+                short           ind_bank_name = -1;
+                short           ind_bank_code = -1;
+                short           ind_branch = -1;
+                short           ind_phone_num = -1;
+                short           ind_province = -1;
+                short           ind_city = -1;
+                short           ind_payout_ccy = -1;
+                short           ind_dest_ccy = -1;
+                short           ind_checksum = -1;
+                short           ind_amount = -1;
+                short           ind_status = -1;
+                short           ind_resp_code= -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_txn_date.len = strlen(cs_date);
+        memcpy(hv_txn_date.arr,cs_date,hv_txn_date.len);
+DEBUGLOG(("process_not_sent::txn_date = [%.*s]\n",hv_txn_date.len,hv_txn_date.arr));
+
+        hv_merch_id.len = strlen(csMerchId);
+        memcpy(hv_merch_id.arr,csMerchId,hv_merch_id.len);
+DEBUGLOG(("process_not_sent::merch_id = [%.*s]\n",hv_merch_id.len,hv_merch_id.arr));
+
+
+        EXEC SQL DECLARE c_cursor_getnot CURSOR FOR
+		select  a.batch_id,
+			a.seq_num,
+                        a.merchant_ref,
+                        a.country,
+                        a.identity_id,
+                        a.account_name,
+                        a.account_num,
+                        a.bank_name,
+                        a.bank_code,
+                        a.branch,
+                        a.phone_num,
+                        a.province,
+                        a.city,
+                        a.amount,
+                        a.payout_currency,
+                        a.dest_currency,
+                        a.checksum,
+			a.status,
+			a.response_code
+  		   from payout_record a,
+			payout_header b
+		  where	b.merchant_id =:hv_merch_id
+                    and b.txn_date =:hv_txn_date
+		    and	a.merchant_id = b.merchant_id
+		    and	a.batch_id = b.batch_id
+		    and a.status in('I','R')
+		  order by a.seq_num;
+                
+        EXEC SQL OPEN c_cursor_getnot;
+        do {    
+                EXEC SQL FETCH c_cursor_getnot
+                INTO	:v_batch_id:ind_batch_id,
+			:v_seq_num:ind_seq_num,
+                        :v_merchant_ref:ind_merchant_ref,
+                        :v_country:ind_country,
+                        :v_identity_id:ind_identity_id,
+                        :v_account_name:ind_account_name,
+                        :v_account_num:ind_account_num,
+                        :v_bank_name:ind_bank_name,
+                        :v_bank_code:ind_bank_code,
+                        :v_branch:ind_branch,
+                        :v_phone_num:ind_phone_num,
+                        :v_province:ind_province,
+                        :v_city:ind_city,
+                        :v_amount:ind_amount,
+                        :v_payout_ccy:ind_payout_ccy,
+                        :v_dest_ccy:ind_dest_ccy,
+                        :v_checksum:ind_checksum,
+			:v_status:ind_status,
+			:v_resp_code:ind_resp_code;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if(v_status==PD_REJECT){
+			if(atoi(v_resp_code.arr)<1000)
+				continue;
+		}
+
+		fprintf(fp,"%s",PD_TR);
+
+/* Field #0 tid=NULL */
+		fprintf(fp,"%s%s",PD_TD_STYLE,PD_TD_END);
+
+/* Field #0 txn_date */
+		fprintf(fp,"%s%s%s",PD_TD,cs_date,PD_TD_END);
+
+/* Field #0 batch_id */
+		if (ind_batch_id < 0 )
+			v_batch_id.arr[0] = '\0';
+		fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_batch_id.len,v_batch_id.arr,PD_TD_END);
+
+/* Field #0 seq_num */
+                if (ind_seq_num < 0 )
+                        v_seq_num.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_seq_num.len,v_seq_num.arr,PD_TD_END);
+
+/* Field #1 merchant_ref */
+                if (ind_merchant_ref < 0 )
+                        v_merchant_ref.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_merchant_ref.len,v_merchant_ref.arr,PD_TD_END);
+
+/* Field #2 country*/
+                if (ind_country < 0 )
+                        v_country.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_country.len,v_country.arr,PD_TD_END);
+
+/* Field #3 ID*/
+                if (ind_identity_id< 0 )
+                        v_identity_id.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_identity_id.len,v_identity_id.arr,PD_TD_END);
+
+/* Field #4 account_num */
+                if (ind_account_num < 0 )
+			v_account_num.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_account_num.len,v_account_num.arr,PD_TD_END);
+
+/* Field #5 bank_code */
+                if (ind_bank_code < 0 )
+                        v_bank_code.arr[0] = '\0';
+		fprintf(fp,"%s%.*s%s",PD_TD,v_bank_code.len,v_bank_code.arr,PD_TD_END);
+
+/* Field #6  account_name*/
+                if (ind_account_name < 0 )
+                        v_account_name.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_account_name.len,v_account_name.arr,PD_TD_END);
+
+/* Field #7  bank_name*/
+                if (ind_bank_name< 0 )
+                        v_bank_name.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_bank_name.len,v_bank_name.arr,PD_TD_END);
+
+/* Field #8  branch*/
+                if (ind_branch< 0 )
+                        v_branch.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_branch.len,v_branch.arr,PD_TD_END);
+
+/* Field #9 phone_num*/
+                if (ind_phone_num< 0 )
+                        v_phone_num.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD_STYLE,v_phone_num.len,v_phone_num.arr,PD_TD_END);
+
+/* Field #10 province*/
+                if (ind_province< 0 )
+                        v_province.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_province.len,v_province.arr,PD_TD_END);
+
+/* Field #11 city*/
+                if (ind_city< 0 )
+                        v_city.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_city.len,v_city.arr,PD_TD_END);
+
+/* Field #12 amount*/
+                if (ind_amount< 0 )
+                        v_amount.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_amount.len,v_amount.arr,PD_TD_END);
+
+/* Field #13 payout_ccy*/
+                if (ind_payout_ccy< 0 )
+                        v_payout_ccy.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_payout_ccy.len,v_payout_ccy.arr,PD_TD_END);
+
+/* Field #14 dest_ccy*/
+                if (ind_dest_ccy< 0 )
+                        v_dest_ccy.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_dest_ccy.len,v_dest_ccy.arr,PD_TD_END);
+
+/* Field #15  checksum*/
+                if (ind_checksum< 0 )
+                        v_checksum.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_checksum.len,v_checksum.arr,PD_TD_END);
+
+/* Field #16 status*/
+		if(ind_status<0)
+			v_status=' ';
+		if(v_status==PD_INIT_STATE)
+			fprintf(fp,"%sNot Sent%s",PD_TD,PD_TD_END);
+		else if(v_status==PD_REJECT)
+                	fprintf(fp,"%sRejected%s",PD_TD,PD_TD_END);
+		else
+			fprintf(fp,"%sUnknown Status%s",PD_TD,PD_TD_END);
+
+/* Field #17 resp_code*/
+                if (ind_resp_code< 0 )
+                        v_resp_code.arr[0] = '\0';
+                fprintf(fp,"%s%.*s%s",PD_TD,v_resp_code.len,v_resp_code.arr,PD_TD_END);
+
+		fprintf(fp,"%s\n",PD_TR_END);
+
+
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+
+	
+
+	EXEC SQL CLOSE c_cursor_getnot;
+DEBUGLOG(("RET = [%d]\n",iRet));
+        return iRet;
+not_error:
+    DEBUGLOG(("process_not_sent error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getnot;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int	UpdatePayoutHeader(const char* csBatchId, const int iSuccCount, const int iProcessing)
+{
+	int iRet = SUCCESS;
+
+	hash_t *hHead;
+	hHead = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hHead,0);
+
+	if(iProcessing==0)
+	{	
+		if(iSuccCount>0)
+			PutField_Char(hHead,"status",PD_ACCEPTED);
+		else
+			PutField_Char(hHead,"status",PD_REJECTED);
+		PutField_CString(hHead,"txn_date",cs_date);
+		PutField_CString(hHead,"batch_id",csBatchId);
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutHeader","UpdateStatus");
+		if((unsigned long int)(*DBObjPtr)(hHead) == SUCCESS){
+DEBUGLOG(("Update Payout Header Status Success:BatchId[%s] HostDate[%s]\n",csBatchId,cs_date));
+		}
+		else{
+DEBUGLOG(("Update Payout Header Status Failed:BatchId[%s] HostDate[%s]\n",csBatchId,cs_date));
+			iRet = FAILURE;
+		}
+	}
+	else{
+DEBUGLOG(("No Update in Payout Header Status(Processing) BatchId[%s] HostDate[%s]\n",csBatchId,cs_date));
+	}
+	hash_destroy(hHead);
+	FREE_ME(hHead);
+
+	return iRet;
+
+}
+
+
+
+int	UpdatePayoutRecord(const char* csBatchId, const char* csMerchRef, const char cArInd, const char* csRespCode)
+{
+	int iRet = SUCCESS;
+	hash_t *hUpd;
+	hUpd = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hUpd,0);
+	PutField_Char(hUpd,"status",cArInd);
+	PutField_CString(hUpd,"resp_code",csRespCode);
+	PutField_CString(hUpd,"merchant_ref",csMerchRef);
+	PutField_CString(hUpd,"batch_id",csBatchId);
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutRecord","UpdateStatus");
+	if((unsigned long int)(*DBObjPtr)(hUpd) == SUCCESS){
+DEBUGLOG(("Update Payout Status Success:BatchId[%s] MerchRef[%s] ArInd[%c] RespCode[%s]\n",csBatchId,csMerchRef,cArInd,csRespCode));
+	}
+	else{
+DEBUGLOG(("Update Payout Status Failed:BatchId[%s] MerchRef[%s] ArInd[%c] RespCode[%s]\n",csBatchId,csMerchRef,cArInd,csRespCode));
+		iRet = FAILURE;
+	}
+
+	hash_destroy(hUpd);
+	FREE_ME(hUpd);
+
+	return iRet;
+
+}
+

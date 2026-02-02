@@ -1,0 +1,776 @@
+/*
+PDProTech (c)2017. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/02/13              David Wong
+Add deposit trace function                         2019/04/29              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "SmeMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include <zlib.h>
+#include "b64.h"
+#include "internal.h"
+#include "ObjPtr.h"
+#define __USE_XOPEN
+#include <time.h>
+
+static char cDebug;
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+
+void SmeMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int FormatMsg(const hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;
+	char	*csPtr = NULL;
+	char	*csBuf;
+	double	dTmp;
+	char	*csMethod = NULL;
+	char	*csTag;
+	char	*csTmpBuf;
+	int	iOpt = INT_ERR;
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	csTag = (char*) malloc (PD_TAG_LEN + 1);
+	csTmpBuf = (char*) malloc (PD_TMP_BUF_LEN + 1);
+
+	memset(outMsg, 0, sizeof(outMsg));
+	if (GetField_CString(hIn, "redirect_url", &csPtr)) {
+DEBUGLOG(("FormatMsg here\n"));
+		strcat((char*)outMsg, csPtr);
+		strcat((char*)outMsg, "?");
+
+// version
+		strcat((char*)outMsg, "version");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_VERSION);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("version = [%s]\n", MY_SME_VERSION));
+
+// v_currency
+		strcat((char*)outMsg, "v_currency");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_CURRENCY);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_currency = [%s]\n", MY_SME_CURRENCY));
+
+// v_amount
+		if (GetField_Double(hIn, "psp_txn_amt", &dTmp)) {
+			char csTmpAmt[PD_TMP_BUF_LEN + 1];
+			sprintf((char*)csTmpAmt, "%.2f", dTmp);
+			strcat((char*)outMsg, "v_amount");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmpAmt);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_amount = [%s]\n", csTmpAmt));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***psp_txn_amt is missing\n"));
+		}
+
+// v_firstname
+		strcat((char*)outMsg, "v_firstname");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_FIRST_NAME);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_firstname = [%s]\n", MY_SME_FIRST_NAME));
+
+// v_lastname
+		strcat((char*)outMsg, "v_lastname");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_LAST_NAME);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_lastname = [%s]\n", MY_SME_LAST_NAME));
+
+// v_billemail
+		strcat((char*)outMsg, "v_billemail");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_BILLEMAIL);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_billemail = [%s]\n", MY_SME_BILLEMAIL));
+
+// v_billstreet
+		strcat((char*)outMsg, "v_billstreet");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_BILLSTREET);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_billstreet = [%s]\n", MY_SME_BILLSTREET));
+
+// v_billcity
+		strcat((char*)outMsg, "v_billcity");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_BILLCITY);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_billcity = [%s]\n", MY_SME_BILLCITY));
+
+// v_billcountry
+		strcat((char*)outMsg, "v_billcountry");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_BILLCOUNTRY);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_billcountry = [%s]\n", MY_SME_BILLCOUNTRY));
+
+// v_billphone
+		strcat((char*)outMsg, "v_billphone");
+		strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+		strcat((char*)outMsg, MY_SME_BILLPHONE);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_billphone = [%s]\n", MY_SME_BILLPHONE));
+
+// v_bankid
+		if (GetField_CString(hIn, "bank_code", &csTmp)) {
+DEBUGLOG(("bank_code = [%s]\n", csTmp));
+			DBObjPtr = CreateObj(DBPtr, "DBMobBankMap", "IsMobileOption");
+			iOpt = (unsigned long)(*DBObjPtr)(csTmp);
+			if (iOpt == PD_FALSE && iOpt != INT_ERR) {
+				strcat((char*)outMsg, "v_bankid");
+				strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+				strcat((char*)outMsg, csTmp);
+				strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_bankid = [%s]\n", csTmp));
+			}
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***bank_code is missing\n"));
+		}
+
+// CID
+		if (GetField_CString(hIn, "psp_merchant_id", &csTmp)) {
+			strcat((char*)outMsg, "CID");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("CID = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***psp_merchant_id is missing\n"));
+		}
+
+// signature
+		if (GetField_CString(hIn, "sign", &csTmp)) {
+			strcat((char*)outMsg, "signature");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("signature = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***sign is missing\n"));
+		}
+
+// v_CartID
+		if (GetField_CString(hIn, "txn_seq", &csTmp)) {
+			strcat((char*)outMsg, "v_CartID");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("v_CartID = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***txn_seq is missing\n"));
+		}
+
+// callBackURL
+		if (GetField_CString(hIn, "return_url_only", &csTmp)) {
+			strcat((char*)outMsg, "callBackURL");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("callBackURL = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***return_url_only is missing\n"));
+		}
+
+// returnURL
+		if (GetField_CString(hIn, "fe_url", &csTmp)) {
+			strcat((char*)outMsg, "returnURL");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("returnURL = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***fe_url is missing\n"));
+		}
+
+// orderDateTime
+		if (GetField_CString(hIn, "local_tm_date", &csTmp)) {
+			char *csTmp2 = NULL;
+			char csDateTime[PD_DATETIME_LEN * 2];
+			if (GetField_CString(hIn, "local_tm_time", &csTmp2)) {
+				sprintf(csDateTime, "%s%s", csTmp, csTmp2);
+				strcat((char*)outMsg, "orderDateTime");
+				strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+				strcat((char*)outMsg, csDateTime);
+				strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("orderDateTime = [%s]\n", csDateTime));
+			}
+			else {
+				iRet = PD_ERR;
+DEBUGLOG(("***local_tm_time is missing\n"));
+			}
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("***local_tm_date is missing\n"));
+		}
+
+// TLG - Transaction Logging
+		if (GetField_CString(hIn, "psp_id", &csTmp)) {
+			int iDtlRet = PD_FALSE;
+DEBUGLOG(("Call DBPspUrl:IsRedirectURL\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBPspUrl", "IsRedirectURL");
+			iDtlRet = ((unsigned long)(DBObjPtr)(csTmp));
+DEBUGLOG(("IsRedirectUrl = [%d]\n", iDtlRet));
+
+			if (iDtlRet) {
+				if (GetField_CString(hIn, "txn_seq", &csTmp)) {
+DEBUGLOG(("Call DBDefTlgTagConvert:GetRandomTag\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBDefTlgTagConvert", "GetRandomTag");
+					iDtlRet = ((unsigned long)(DBObjPtr)("txn_seq", csTag));
+
+					if (iDtlRet == PD_OK) {
+DEBUGLOG(("org_tag [%s], new_tag [%s]\n", "txn_seq", csTag));
+						base64_encode((unsigned char*)csTmp, strlen(csTmp), csTmpBuf, PD_TMP_BUF_LEN);
+						strcat((char*)outMsg, csTag);
+						strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+						strcat((char*)outMsg, csTmpBuf);
+						strcat((char*)outMsg, MY_SME_TOKEN);
+					} else {
+DEBUGLOG(("Call DBDefTlgTagConvert:GetRandomTag failed! Skip insert TLG, iDtlRet = [%d]\n", iDtlRet));
+					}
+				} else {
+DEBUGLOG(("txn_seq not found! Skip insert TLG\n"));
+				}
+			}
+		}
+
+// url_method
+		if (GetField_CString(hIn, "url_method", &csMethod)) {
+DEBUGLOG(("url_method = [%s]\n", csMethod));
+		}
+		else
+			csMethod = strdup("");
+
+DEBUGLOG(("outmsg = [%s]\n", outMsg));
+		base64_encode(outMsg, strlen((char*)outMsg), csBuf, PD_MAX_BUFFER);
+DEBUGLOG(("after encode\n"));
+		outMsg[0] = '\0';
+		strcat((char*)outMsg, "redirect_url");
+		strcat((char*)outMsg, "=");
+		strcat((char*)outMsg, csBuf);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+		strcat((char*)outMsg, "url_method");
+		strcat((char*)outMsg, "=");
+		strcat((char*)outMsg, csMethod);
+		strcat((char*)outMsg, MY_SME_TOKEN);
+		strcat((char*)outMsg, "ret_status=0");
+DEBUGLOG(("outMsg = [%s]\n", outMsg));
+
+		*outLen = strlen((const char*)outMsg);
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("***redirect_url is missing\n"));
+	}
+
+DEBUGLOG(("FormatMsg:: normal exit iRet = [%d]\n", iRet));
+	FREE_ME(csBuf);
+	FREE_ME(csTag);
+	FREE_ME(csTmpBuf);
+	return iRet;
+}
+
+
+int BreakDownMsg(hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	hash_t 	*hRec;
+
+	hRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRec, 0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n", inMsg, inLen));
+
+	if (Str2Cls(hRec, (char *)inMsg, MY_SME_TOKEN, MY_SME_FIELD_TOKEN) == PD_OK) {
+// mid
+		if (GetField_CString(hRec, "mid", &csPtr)) {
+			PutField_CString(hOut, "psp_merchant_id", csPtr);
+DEBUGLOG(("mid:psp_merchant_id = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("mid:psp_merchant_id not found\n"));
+		}
+
+// oid
+		if (GetField_CString(hRec, "oid", &csPtr)) {
+			PutField_CString(hOut, "tid", csPtr);
+DEBUGLOG(("oid:tid = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("oid:tid not found\n"));
+		}
+
+// cur
+		if (GetField_CString(hRec, "cur", &csPtr)) {
+			PutField_CString(hOut, "cur", csPtr);
+DEBUGLOG(("cur = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("cur not found\n"));
+		}
+
+// amt
+		if (GetField_CString(hRec, "amt", &csPtr)) {
+			PutField_CString(hOut, "txn_amt", csPtr);
+DEBUGLOG(("amt:txn_amt = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("amt:txn_amt not found\n"));
+		}
+
+// status
+		if (GetField_CString(hRec, "status", &csPtr)) {
+			PutField_CString(hOut, "status", csPtr);
+			PutField_CString(hOut, "org_status", csPtr);
+DEBUGLOG(("status = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("status not found\n"));
+		}
+
+// latestatus
+		if (GetField_CString(hRec, "latestatus", &csPtr)) {
+			PutField_CString(hOut, "status", csPtr);
+DEBUGLOG(("latestatus:status = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("latestatus:status not found\n"));
+		}
+
+// cartid
+		if (GetField_CString(hRec, "cartid", &csPtr)) {
+			PutField_CString(hOut, "txn_seq", csPtr);
+DEBUGLOG(("cartid:txn_seq = [%s]\n", csPtr));
+		}
+		else {
+DEBUGLOG(("cartid:txn_seq not found\n"));
+		}
+
+// signature
+		if (GetField_CString(hRec, "signature", &csPtr)) {
+			PutField_CString(hOut, "sign", csPtr);
+DEBUGLOG(("signature:sign = [%s]\n", csPtr));
+		}
+		else {
+			PutField_CString(hOut, "sign", " ");
+DEBUGLOG(("signature:sign not found\n"));
+		}
+
+// EPKey
+
+// Descriptor
+
+	}
+	else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+		iRet = PD_ERR;
+	}
+
+	hash_destroy(hRec);
+	FREE_ME(hRec);
+
+DEBUGLOG(("BreakDownMsg Exit\n"));
+	return	iRet;
+}
+
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	return iRet;
+}
+
+
+int BuildAuthData(hash_t *hIn)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	*csBuf;
+	double	dTmp;
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+	int	iForEnquiry = PD_FALSE;
+	int	iForEnquiryRsp = PD_FALSE;
+
+DEBUGLOG(("BuildAuthData()\n"));
+
+	GetField_Int(hIn, "for_enquiry_use", &iForEnquiry);
+	if (iForEnquiry) {
+		return BuildInqAuthData(hIn);
+	}
+
+	GetField_Int(hIn, "for_enquiry_rsp_use", &iForEnquiryRsp);
+	if (iForEnquiryRsp) {
+		return BuildCallbackAuthData(hIn);
+	}
+
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+// CID
+	if (GetField_CString(hIn, "psp_merchant_id", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+DEBUGLOG(("CID = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("psp_merchant_id is missing\n"));
+	}
+
+// v_CartID
+	if (GetField_CString(hIn, "txn_seq", &csPtr)) {
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+DEBUGLOG(("v_CartID = [%s]\n", csPtr));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("txn_seq is missing\n"));
+	}
+
+// v_amount
+	if (GetField_Double(hIn, "psp_txn_amt", &dTmp)) {
+		char csTmpAmt[PD_TMP_BUF_LEN + 1];
+		sprintf((char*)csTmpAmt, "%ld", double2long(dTmp));
+		strcat((char*)csBuf, csTmpAmt);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+DEBUGLOG(("v_amount = [%s]\n", csTmpAmt));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("psp_txn_amt is missing\n"));
+	}
+
+// v_currency
+	strcat((char*)csBuf, MY_SME_CURRENCY);
+DEBUGLOG(("v_currency = [%s]\n", MY_SME_CURRENCY));
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("auth_data = [%s]\n", csBuf));
+	FREE_ME(csBuf);
+        
+DEBUGLOG(("BuildAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildRspAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+	char *csPtr;
+	char *csBuf;
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+
+	double dAmt = 0.0;
+
+DEBUGLOG(("BuildRspAuthData()\n"));
+	memset(csBuf, 0, MAX_MSG_SIZE);
+	csBuf[0] = '\0';
+
+// mid
+	if (GetField_CString(hIn, "psp_merchant_id", &csPtr)) {
+DEBUGLOG(("mid = [%s]\n", csPtr));
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+	}
+
+// oid
+	if (GetField_CString(hIn, "tid", &csPtr)) {
+DEBUGLOG(("oid = [%s]\n", csPtr));
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+	}
+
+// cartid
+	if (GetField_CString(hIn, "txn_seq", &csPtr)) {
+DEBUGLOG(("cartid = [%s]\n", csPtr));
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+	}
+
+// amt
+	if (GetField_CString(hIn, "txn_amt", &csPtr)) {
+DEBUGLOG(("amt = [%s]\n", csPtr));
+		sscanf(csPtr, "%lf", &dAmt);
+		char csTmpAmt[PD_TMP_BUF_LEN + 1];
+		sprintf((char*)csTmpAmt, "%ld", double2long(dAmt));
+		strcat((char*)csBuf, csTmpAmt);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+	}
+
+// cur
+	if (GetField_CString(hIn, "cur", &csPtr)) {
+DEBUGLOG(("cur = [%s]\n", csPtr));
+		strcat((char*)csBuf, csPtr);
+		strcat((char*)csBuf, MY_SME_SIGN_TOKEN);
+	}
+
+// status
+	//if (GetField_CString(hIn, "org_status", &csPtr)) {
+	if (GetField_CString(hIn, "status", &csPtr)) {
+DEBUGLOG(("status = [%s]\n", csPtr));
+		strcat((char*)csBuf, csPtr);
+	}
+
+	PutField_CString(hIn, "auth_data", csBuf);
+DEBUGLOG(("BuildRspAuthData:: auth_data = [%s]\n", csBuf));
+	FREE_ME(csBuf);
+
+DEBUGLOG(("BuildRspAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int FormatInqMsg(const hash_t* hIn, unsigned char *outMsg, int *outLen)
+{
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;
+	char	*csPtr = NULL;
+	char	*csBuf;
+	char	*csURL;
+	char	*csTxnCode;
+	double	dTmp = 0.0;
+	int	iForEnquiry = PD_FALSE;
+
+	GetField_Int(hIn, "for_enquiry_use", &iForEnquiry);
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1);
+//txn code
+	if (GetField_CString(hIn, "txn_code", &csTxnCode)) {
+DEBUGLOG(("FormatInqMsg:: txn_code = [%s]\n", csTxnCode));
+	}
+
+	memset(outMsg,0,sizeof(outMsg));
+
+	if (GetField_CString(hIn, "psp_url", &csURL)) {
+		if (GetField_CString(hIn, "request_function", &csPtr)) {
+			strcpy((char*)csBuf, "url");
+			strcat((char*)csBuf, MY_SME_FIELD_TOKEN);
+			strcat((char*)csBuf, csURL);
+			strcat((char*)csBuf, "/");
+			strcat((char*)csBuf, csPtr);
+		}
+
+DEBUGLOG(("FormatInqMsg: [%s]\n", csBuf));
+		sprintf((char*)outMsg, "%0*d", PD_WEB_HEADER_LEN_LEN, (int)strlen(csBuf));
+DEBUGLOG(("FormatInqMsg:: outMsg = [%s]\n", outMsg));
+		strcat((char*)outMsg, csBuf);
+DEBUGLOG(("FormatInqMsg:: outMsg = [%s]\n", outMsg));
+
+// cartID
+		if (iForEnquiry) {
+			if (GetField_CString(hIn, "txn_seq", &csTmp)) {
+				strcat((char*)outMsg, "cartID");
+				strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+				strcat((char*)outMsg, csTmp);
+				strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("FormatInqMsg:: cartID = [%s]\n", csTmp));
+			}
+			else {
+				iRet = PD_ERR;
+DEBUGLOG(("FormatInqMsg:: ***txn_seq is missing\n"));
+			}
+		} else {
+			if (GetField_CString(hIn, "org_txn_seq", &csTmp)) {
+				strcat((char*)outMsg, "cartID");
+				strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+				strcat((char*)outMsg, csTmp);
+				strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("FormatInqMsg:: cartID = [%s]\n", csTmp));
+			}
+			else {
+				iRet = PD_ERR;
+DEBUGLOG(("FormatInqMsg:: ***org_txn_seq is missing\n"));
+			}
+		}
+
+// companyID
+		if (GetField_CString(hIn, "psp_merchant_id", &csTmp)) {
+			strcat((char*)outMsg, "companyID");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmp);
+			strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("FormatInqMsg:: companyID = [%s]\n", csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatInqMsg:: ***psp_merchant_id is missing\n"));
+		}
+
+// merchantKey
+		if (iForEnquiry) {
+			if (GetField_CString(hIn, "aes_key", &csTmp)) {
+				strcat((char*)outMsg, "merchantKey");
+				strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+				strcat((char*)outMsg, csTmp);
+				strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("FormatInqMsg:: merchantKey = [%s]\n", csTmp));
+			}
+			else {
+				iRet = PD_ERR;
+DEBUGLOG(("FormatInqMsg:: ***aes_key is missing\n"));
+			}
+		} else {
+			if (GetField_CString(hIn, "psp_key", &csTmp)) {
+				strcat((char*)outMsg, "merchantKey");
+				strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+				strcat((char*)outMsg, csTmp);
+				strcat((char*)outMsg, MY_SME_TOKEN);
+DEBUGLOG(("FormatInqMsg:: merchantKey = [%s]\n", csTmp));
+			}
+			else {
+				iRet = PD_ERR;
+DEBUGLOG(("FormatInqMsg:: ***psp_key is missing\n"));
+			}
+		}
+
+// amount
+		if (GetField_Double(hIn, "txn_amt", &dTmp)) {
+			char csTmpAmt[PD_TMP_BUF_LEN + 1];
+			sprintf((char*)csTmpAmt, "%.2f", dTmp);
+			strcat((char*)outMsg, "amount");
+			strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+			strcat((char*)outMsg, csTmpAmt);
+DEBUGLOG(("FormatInqMsg:: amount = [%s]\n", csTmpAmt));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatInqMsg:: ***amount is missing\n"));
+		}
+	}
+	else {
+DEBUGLOG(("FormatInqMsg:: psp_url not found\n"));
+		iRet = PD_ERR;
+	}
+
+DEBUGLOG(("outmsg = [%s]\n", outMsg));
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInqMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatInqMsg() Exit\n"));
+	FREE_ME(csPtr);
+	FREE_ME(csURL);
+	return iRet;
+}
+
+
+int BuildInqAuthData(hash_t *hIn)
+{
+	int iRet = PD_FALSE;
+
+DEBUGLOG(("BuildInqAuthData() Skipped\n"));
+DEBUGLOG(("BuildInqAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BreakDownInqRspMsg(hash_t *hContext, hash_t *hOut, const unsigned char *inMsg, int inLen)
+{
+	int iRet = PD_OK;
+	char *csTmp = NULL;
+
+DEBUGLOG(("BreakDownInqRspMsg() Start\n"));
+
+	PutField_CString(hOut, "orig_msg", (const char *)inMsg);
+DEBUGLOG(("BreakDownInqRspMsg() call BreakDownMsg()\n"));
+	iRet = BreakDownMsg(hOut, inMsg, inLen);
+
+	if (GetField_CString(hOut, "sign", &csTmp))
+		RemoveField_CString(hOut, "sign");
+
+DEBUGLOG(("BreakDownInqRspMsg() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildInqRspAuthData(hash_t *hIn)
+{
+	int iRet = PD_FALSE;
+
+DEBUGLOG(("BuildInqRspAuthData() Skipped\n"));
+DEBUGLOG(("BuildInqRspAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int BuildCallbackAuthData(hash_t *hIn)
+{
+	int iRet = PD_OK;
+
+DEBUGLOG(("BuildCallbackAuthData() Start\n"));
+
+DEBUGLOG(("BuildCallbackAuthData() call BuildRspAuthData()\n"));
+	iRet = BuildRspAuthData(hIn);
+
+DEBUGLOG(("BuildCallbackAuthData() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int FormatCallbackMsg(hash_t *hContext, hash_t *hIn, unsigned char *outMsg, int *outLen)
+{
+	int iRet = PD_OK;
+	char *csPtr = NULL;
+
+DEBUGLOG(("FormatCallbackMsg() Start\n"));
+
+	memset(outMsg, 0, sizeof(outMsg));
+	GetField_CString(hIn, "orig_msg", &csPtr);
+	strcat((char*)outMsg, csPtr);
+
+	// special handling, generate signature again
+	BOObjPtr = CreateObj(BOPtr, "BOSecurity", "GenerateMD5Sign");
+	PutField_Int(hContext, "isInq", PD_TRUE);
+	iRet = (unsigned long)(*BOObjPtr)(hContext, hIn);
+
+	strcat((char*)outMsg, MY_SME_TOKEN);
+	strcat((char*)outMsg, "signature");
+	strcat((char*)outMsg, MY_SME_FIELD_TOKEN);
+	GetField_CString(hIn, "sign", &csPtr);
+	strcat((char*)outMsg, csPtr);
+
+	*outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatCallbackMsg() [%s][%d]\n", outMsg, *outLen));
+DEBUGLOG(("FormatCallbackMsg() Exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+

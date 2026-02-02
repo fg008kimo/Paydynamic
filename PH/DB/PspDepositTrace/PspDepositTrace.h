@@ -1,0 +1,18 @@
+#ifndef _PSP_DEPOSIT_TRACE_H_
+#define _PSP_DEPOSIT_TRACE_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
+int IsTraceOn(const char* csPspChannelCode);
+int GetDetail(const char* csPspChannelCode, const char* csPspId, hash_t* hRec);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -1,0 +1,171 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+char cDebug = 'Y';
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+	int iEnable = PD_TRUE;
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+
+	char csBaidTxnAuto[PD_SP_VALUE_LEN];
+	char csBaidTxnDateRange[PD_SP_VALUE_LEN];
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_txn_code_1[PD_TXN_CODE_LEN];
+		varchar hv_txn_code_2[PD_TXN_CODE_LEN];
+		varchar hv_txn_code_3[PD_TXN_CODE_LEN];
+		varchar hv_txn_code_4[PD_TXN_CODE_LEN];
+		char hv_status;
+		char hv_ar_ind;
+		varchar hv_sub_status[PD_SUB_STATUS_LEN];
+		int hv_baid_txn_date_range;
+
+		varchar v_baid_txn_id[PD_TXN_SEQ_LEN + 1];
+		short ind_baid_txn_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("offline_auto_classify_queue: call DBSystemParameter::FindCode()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(*DBObjPtr)(PD_OFL_BAID_TXN_AUTO, csBaidTxnAuto) == PD_FOUND) {
+DEBUGLOG(("offline_auto_classify_queue: baid_txn_auto = [%d]\n", atoi(csBaidTxnAuto)));
+			if (atoi(csBaidTxnAuto) != PD_TRUE) {
+DEBUGLOG(("offline_auto_classify_queue: auto classify disabled\n"));
+				iEnable = PD_FALSE;
+			}
+		} else {
+DEBUGLOG(("offline_auto_classify_queue: cannot find [%s] in system parameter\n", PD_OFL_BAID_TXN_AUTO));
+ERRLOG("offline_auto_classify_queue: cannot find [%s] in system parameter\n", PD_OFL_BAID_TXN_AUTO);
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK && iEnable) {
+DEBUGLOG(("offline_auto_classify_queue: call DBSystemParameter::FindCode()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(*DBObjPtr)(PD_OFL_BAID_TXN_DATE_RANGE, csBaidTxnDateRange) == PD_FOUND) {
+DEBUGLOG(("offline_auto_classify_queue: baid_txn_date_range = [%d]\n", atoi(csBaidTxnDateRange)));
+		} else {
+DEBUGLOG(("offline_auto_classify_queue: cannot find [%s] in system parameter\n", PD_OFL_BAID_TXN_DATE_RANGE));
+ERRLOG("offline_auto_classify_queue: cannot find [%s] in system parameter\n", PD_OFL_BAID_TXN_DATE_RANGE);
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK && iEnable) {
+		hv_txn_code_1.len = strlen(PD_TXN_CODE_UNKNOWN_CREDIT);
+		memcpy(hv_txn_code_1.arr, PD_TXN_CODE_UNKNOWN_CREDIT, hv_txn_code_1.len);
+
+		hv_txn_code_2.len = strlen(PD_TXN_CODE_UNKNOWN_DEBIT);
+		memcpy(hv_txn_code_2.arr, PD_TXN_CODE_UNKNOWN_DEBIT, hv_txn_code_2.len);
+
+		hv_txn_code_3.len = strlen(PD_TXN_CODE_UNKNOWN_SWEEP_IN);
+		memcpy(hv_txn_code_3.arr, PD_TXN_CODE_UNKNOWN_SWEEP_IN, hv_txn_code_3.len);
+
+		hv_txn_code_4.len = strlen(PD_TXN_CODE_UNKNOWN_SWEEP_OUT);
+		memcpy(hv_txn_code_4.arr, PD_TXN_CODE_UNKNOWN_SWEEP_OUT, hv_txn_code_4.len);
+
+		hv_status = PD_COMPLETE;
+
+		hv_ar_ind = PD_ACCEPT;
+
+		hv_sub_status.len = strlen(PD_APPROVED);
+		memcpy(hv_sub_status.arr, PD_APPROVED, hv_sub_status.len);
+
+		hv_baid_txn_date_range = atoi(csBaidTxnDateRange);
+
+		EXEC SQL DECLARE c_cursor_getunclassrecords CURSOR FOR
+			SELECT obt_txn_id
+			FROM ol_baid_txn
+			WHERE obt_txn_code in (:hv_txn_code_1, :hv_txn_code_2, :hv_txn_code_3, :hv_txn_code_4)
+			AND obt_status = :hv_status
+			AND obt_ar_ind = :hv_ar_ind
+			AND obt_sub_status = :hv_sub_status
+			AND obt_recon_status = 'U'
+			AND nvl(obt_hold_recon, 0) = 0
+			AND obt_approval_timestamp >= sysdate - :hv_baid_txn_date_range
+			ORDER BY obt_approval_timestamp ASC;
+
+		EXEC SQL OPEN c_cursor_getunclassrecords;
+		for (;;) {
+			EXEC SQL FETCH c_cursor_getunclassrecords
+			INTO :v_baid_txn_id:ind_baid_txn_id;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			hash_init(myHash, 0);
+
+			// baid_txn_id
+			if (ind_baid_txn_id >= 0) {
+				v_baid_txn_id.arr[v_baid_txn_id.len] = '\0';
+				PutField_CString(myHash, "baid_txn_id", (const char*)v_baid_txn_id.arr);
+DEBUGLOG(("offline_auto_classify_queue: baid_txn_id = [%s]\n", (const char*)v_baid_txn_id.arr));
+
+				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsATC", "Authorize");
+				iTmpRet = (unsigned long)(*TxnObjPtr)(myHash, myHash, myHash);
+				if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_auto_classify_queue: call TxnOmtByUsATC:Authorize(%s) failed\n", (const char*)v_baid_txn_id.arr));
+ERRLOG("offline_auto_classify_queue: call TxnOmtByUsATC:Authorize(%s) failed\n", (const char*)v_baid_txn_id.arr);
+				}
+			}
+
+			hash_destroy(myHash);
+		}
+		EXEC SQL CLOSE c_cursor_getunclassrecords;
+	}
+
+	FREE_ME(myHash);
+
+DEBUGLOG(("offline_auto_classify_queue: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+
+sql_error:
+DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("offline_auto_classify_queue:: sql error\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getunclassrecords;
+	EXEC SQL ROLLBACK RELEASE;
+	FREE_ME(myHash);
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+

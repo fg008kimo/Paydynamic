@@ -1,0 +1,225 @@
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/08/01              Gilbert Lum
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char	cs_txn_date[PD_DATE_LEN + 1];
+char    cDebug;
+
+int parse_arg(int argc,char **argv);
+int process_txn(unsigned char* csTxnDate);
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 1) {
+		printf("usage: -d txn_date\n");
+		return FAILURE;
+	}
+	else
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage:  -d txn_date\n");
+		return (iRet);
+        }
+
+
+	iRet = process_txn((unsigned char*) cs_txn_date);
+
+	return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int process_txn(unsigned char * csTxnDate)
+{
+	int     iRet = SUCCESS;
+
+	int     iCnt;
+
+	EXEC SQL WHENEVER SQLERROR GOTO get_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		SQL_CURSOR      c_cursor_txn_data;
+
+		short		hv_return_value;
+		short		hv_ret_value;
+
+		varchar	hv_date [PD_DATE_LEN];
+
+		varchar	hv_user[PD_USER_LEN];
+		short	ind_user;
+				
+		varchar v_host_posting_date[PD_DATE_LEN + 1];
+		varchar v_txn_id[PD_TXN_ID_LEN +1];
+		varchar v_merchant_id[PD_MERCHANT_ID_LEN +1];
+		varchar v_psp_id[PD_PSP_ID_LEN + 1];
+		varchar v_txn_code[PD_TXN_CODE_LEN +1];
+		char    v_status;
+		char    v_ar_ind;				
+		varchar v_sub_status[PD_DESC_LEN +1];
+               				
+		short   ind_host_posting_date = -1;
+		short   ind_txn_id = -1;
+		short   ind_merchant_id = -1;
+		short   ind_psp_id = -1;                
+		short   ind_txn_code = -1;
+		short   ind_status = -1;
+		short   ind_ar_ind = -1;				
+		short   ind_sub_status = -1;               
+	EXEC SQL END DECLARE SECTION;
+
+
+	hv_date.len = strlen((const char*) csTxnDate);
+        memcpy(hv_date.arr,csTxnDate,hv_date.len);
+DEBUGLOG(("hv_date = [%.*s]\n",hv_date.len,hv_date.arr));	
+
+	hv_user.len=strlen(PD_UPDATE_USER);
+	memcpy(hv_user.arr, PD_UPDATE_USER, hv_user.len);
+	ind_user = 0;
+DEBUGLOG(("hv_user = [%.*s]\n",hv_user.len,hv_user.arr));	
+
+	EXEC SQL ALLOCATE :c_cursor_txn_data;
+
+	EXEC SQL EXECUTE
+		BEGIN
+			:hv_return_value := sp_txn_snapshot(:hv_date, :c_cursor_txn_data);
+		END;
+	END-EXEC;
+
+
+	if (hv_return_value == 1) {
+DEBUGLOG(("start_process:txn no more record to be processed!\n"));
+	}
+	else if (hv_return_value == SP_OK) {
+		iCnt = 0;
+
+		for (;;) {
+			ind_host_posting_date = -1;
+			ind_txn_id = -1;
+			ind_merchant_id = -1;
+			ind_psp_id = -1;                
+			ind_txn_code = -1;
+			ind_status = -1;
+			ind_ar_ind = -1;				
+			ind_sub_status = -1;   
+
+			EXEC SQL WHENEVER NOTFOUND DO break;
+			EXEC SQL FETCH :c_cursor_txn_data
+			INTO    :v_host_posting_date:ind_host_posting_date,
+				:v_txn_id:ind_txn_id,
+				:v_merchant_id:ind_merchant_id,
+				:v_psp_id:ind_psp_id,
+				:v_txn_code:ind_txn_code,
+				:v_status:ind_status,
+				:v_ar_ind:ind_ar_ind,
+				:v_sub_status:ind_sub_status;
+                             
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			EXEC SQL EXECUTE
+			BEGIN
+                        :hv_ret_value := sp_txn_snapshot_insert(
+					//:v_host_posting_date:ind_host_posting_date,
+					:hv_date,
+					:v_txn_id:ind_txn_id,
+					:v_merchant_id:ind_merchant_id,
+					:v_psp_id:ind_psp_id,
+					:v_txn_code:ind_txn_code,
+					:v_status:ind_status,
+					:v_ar_ind:ind_ar_ind,
+					:v_sub_status:ind_sub_status,
+					:hv_user:ind_user
+					);
+			END;
+			END-EXEC;
+
+			if (hv_ret_value == SP_OTHER_ERR)  {
+DEBUGLOG(("Add: SP_OTHER_ERR TxnAbort\n"));
+				iRet = PD_OTHER_ERR;
+				break;
+			}
+
+			if (hv_ret_value == SP_ERR)  {
+DEBUGLOG(("Add: SP_ERR TxnAbort\n"));
+				iRet = PD_ERR;
+				break;
+			}
+
+		}
+
+	}
+
+	EXEC SQL CLOSE :c_cursor_txn_data;
+	EXEC SQL FREE :c_cursor_txn_data;
+
+	return iRet;
+
+get_error:
+DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE :c_cursor_txn_data;
+    EXEC SQL FREE :c_cursor_txn_data;
+
+    return PD_ERR;
+
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_txn_date,"");
+
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(cs_txn_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_txn_date,"")) 
+                return FAILURE;
+
+        return SUCCESS;
+}

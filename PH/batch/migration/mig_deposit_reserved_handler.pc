@@ -1,0 +1,968 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/03/19              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "../batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "mig_txn_handler.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+#include "mig_deposit_reserved_handler.h"
+#include "mig_bo_funct.h"
+#include "mig_funct.h"
+#include "mig_log_funct.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_CHAR		0x0D
+
+OBJPTR(DB);
+OBJPTR(Txn);
+OBJPTR(Channel);
+OBJPTR(BO);
+
+char    cDebug;
+
+int  CreateNewDepositReservedTxn (hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResponse);
+int  HandleDepositReservedBalance(hash_t *hMyHash, hash_t *hMerchBalace);
+
+int  process_deposit_reserved_approve(hash_t *hMyHash);
+int  process_release_deposit_reserved(hash_t *hMyHash);
+
+
+
+int mig_deposit_reserved_handler(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+	int iRecExists = PD_TRUE;
+
+	hash_t  *hTxnHeader;
+
+	char	*csTmp = NULL;
+
+
+	char	*csTxnStatus;
+
+	hash_t 	*hContext, *hRequest, *hResponse;
+
+	hTxnHeader = (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxnHeader, 0);
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+	hash_init (hContext, 0);
+	hash_init (hRequest, 0);
+	hash_init (hResponse, 0);
+
+
+DEBUGLOG(("mig_deposit_reversed_handler:: START\n"));
+
+	iRet = mf_get_merch_txn_info(hMyHash);
+DEBUGLOG(("mig_deposit_handler:: mf_get_mercvh_txn_info Ret [%d]\n", iRet));
+
+	if (iRet == SUCCESS) {
+		
+		PutField_Int(hMyHash, "db_commit", PD_FALSE);
+
+		GetField_CString(hMyHash, "txn_status", &csTxnStatus);
+
+		// PENDING
+		if (!strcmp(csTxnStatus, "MERCHANT_RESERVE_PENDING") && (iRecExists == PD_TRUE)) {
+			iRet = FAILURE;
+		}
+
+		if (iRet == SUCCESS) {
+			if (!strcmp(csTxnStatus, "MERCHANT_RESERVE_REVERSED")) {
+				PutField_CString(hMyHash, "txn_seq_suffix", "A");
+				
+				GetField_CString(hMyHash, "reversal_txn_code", &csTmp);
+				PutField_CString(hMyHash, "txn_code", csTmp);
+
+			}
+
+			iRet = CreateNewDepositReservedTxn(hMyHash, hContext, hRequest, hResponse);
+		}
+
+		if (iRet == SUCCESS) {
+			if (!strcmp(csTxnStatus, "MERCHANT_RESERVE_APPROVED")) {
+				iRet = process_deposit_reserved_approve(hMyHash);
+			}
+
+                        if (!strcmp(csTxnStatus, "MERCHANT_RESERVE_REVERSED")) {
+				iRet = process_release_deposit_reserved(hMyHash);
+			}
+
+
+		}
+
+		if (iRet == SUCCESS) {
+			iRet = mf_UpdateProcessResult(hMyHash, "COMPLETE");
+		}
+
+	}
+
+	
+	hash_destroy(hTxnHeader);
+	FREE_ME(hTxnHeader);
+	
+	hash_destroy(hContext);
+	hash_destroy(hRequest);
+	hash_destroy(hResponse);
+
+	FREE_ME(hContext);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+
+
+	return iRet;
+}
+
+
+
+int CreateNewDepositReservedTxn (hash_t *hMyHash, hash_t *hContext, hash_t *hRequest, hash_t *hResposne)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTxnSeq;
+	char	*csTxnSeqSuffix = NULL; 
+	char	csTmpTxnSeq[PD_TXN_SEQ_LEN + 1];
+
+	hash_t	*hHeader, *hDetail;
+	char	*csVNCRefNum;
+
+	char	*csTmp;
+	double	dTmp = 0.0;
+	int	iTmp = PD_FALSE;
+
+	char	*csLocalDate;
+	char	*csLocalTime;
+	char	csTxnDateTime[PD_DATE_LEN + PD_TIME_LEN + 1];
+
+	hHeader = (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hDetail = (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+DEBUGLOG(("CreateNewDepositReservedTxn: db_commit [%d]\n", iTmp));
+                PutField_Int(hHeader, "db_commit", iTmp);
+	}
+
+	GetField_CString(hMyHash, "txn_nmb", &csTmp);
+	if (GetField_CString(hMyHash, "txn_seq_suffix", &csTxnSeqSuffix)) {
+		sprintf(csTmpTxnSeq, "%s%s", csTmp, csTxnSeqSuffix);
+
+		PutField_CString(hMyHash, "org_reserve_txn_seq", csTmp);
+	} else {
+		sprintf(csTmpTxnSeq, "%s", csTmp);
+	}
+	csTxnSeq = strdup(csTmpTxnSeq);
+	PutField_CString(hMyHash, "txn_seq", csTxnSeq);
+	PutField_CString(hContext, "txn_seq", csTxnSeq);
+DEBUGLOG(("CreateNewRecord: Format TxnSeq [%s]\n", csTxnSeq));
+
+
+	PutField_CString(hHeader, "txn_seq", csTxnSeq);
+	PutField_CString(hDetail, "txn_seq", csTxnSeq);
+
+	PutField_CString(hHeader, "add_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "add_user", PD_UPDATE_USER);
+
+	PutField_CString(hHeader, "channel_code", PD_CHANNEL_MGT);
+
+	PutField_Char(hHeader,"status",PD_PROCESSING);
+
+
+	if (GetField_CString(hMyHash, "txn_code", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: txn_code [%s]\n", csTmp));
+		PutField_CString(hHeader, "txn_code", csTmp);
+	}
+
+        if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: post_post [%s]\n", csTmp));
+                PutField_CString(hHeader, "host_posting_date", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: local_tm_date [%s]\n", csTmp));
+                PutField_CString(hHeader, "local_tm_date", csTmp);
+	}  
+
+        if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: local_tm_time [%s]\n", csTmp));
+                PutField_CString(hHeader, "local_tm_time", csTmp);
+        }
+
+
+	if (GetField_CString(hMyHash, "local_tm_date", &csLocalDate) &&
+	    GetField_CString(hMyHash, "local_tm_time", &csLocalTime)) {
+	
+		sprintf(csTxnDateTime, "%s%s", csLocalDate, csLocalTime);
+
+		PutField_CString(hHeader, "transmission_datetime",csTxnDateTime);
+		PutField_CString(hHeader, "tm_date",csLocalDate);
+		PutField_CString(hHeader, "tm_time", csLocalTime);
+	}
+
+
+	if (GetField_CString(hMyHash, "merchant_id", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: merchant_id [%s]\n", csTmp));
+                PutField_CString(hHeader, "merchant_id", csTmp);
+		PutField_CString(hRequest, "merchant_id", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "client_ip", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: client_ip [%s]\n", csTmp));
+                PutField_CString(hHeader, "ip_addr", csTmp);
+	}
+
+        if (GetField_CString(hMyHash, "service", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: service [%s]\n", csTmp));
+		PutField_CString(hHeader, "service_code", csTmp);
+		PutField_CString(hRequest, "service_code", csTmp);
+        }
+
+	if (GetField_CString(hMyHash, "country", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: country [%s]\n", csTmp));
+		PutField_CString(hDetail, "txn_country", csTmp);
+		PutField_CString(hRequest, "txn_country", csTmp);
+	}
+
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: ccy [%s]\n", csTmp));
+		PutField_CString(hHeader, "net_ccy", csTmp);
+		PutField_CString(hDetail, "txn_ccy", csTmp);
+
+		PutField_CString(hRequest, "txn_ccy", csTmp);
+	}
+
+	
+	if (GetField_Double(hMyHash, "amount", &dTmp)) {
+DEBUGLOG(("CreateNewRecord: request_amt [%d]\n", dTmp));
+		PutField_Double(hHeader, "txn_amt", dTmp);
+	}
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+
+	if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+		PutField_CString(hHeader, "create_datetime", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_datetime", &csTmp)) {
+		PutField_CString(hHeader, "update_datetime", csTmp);
+	}
+
+DEBUGLOG(("CreateNewRecord: DBTransaction Add\n"));
+	iRet = ml_Txn_Header_Add(hHeader);
+
+	if (iRet == PD_OK ) {
+DEBUGLOG(("CreateNewRecord: DBTransaction AddDetail\n"));
+		iRet = ml_Txn_Detail_AddDetail(hDetail);
+	}
+
+	if (iRet == PD_OK) {
+		iRet = mf_merchant_getmerchanttxninfo(hContext, hRequest);
+		if (iRet == SUCCESS) {
+			if (GetField_CString(hContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("CreateNewRecord: merchant_client_id [%s]\n", csTmp));
+			}
+		}
+	}
+
+
+        if (iRet == PD_OK) {
+                if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+                        PutField_CString(hHeader, "vnc_ref_num", csVNCRefNum);
+
+                        if (mf_UpdateHeaderVNCRef(hHeader) == PD_OK) {
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num succ!\n"));
+                        }
+                        else {  
+DEBUGLOG(("CreateNewRecord: updated vnc_ref_num fail!\n"));
+                                iRet = FAILURE; 
+                        }               
+                }
+        }
+
+
+
+        hash_destroy(hHeader);
+        FREE_ME(hHeader);
+
+        hash_destroy(hDetail);
+        FREE_ME(hDetail);
+
+	FREE_ME(csTxnSeq);
+
+	return iRet;	
+}
+
+
+
+
+int  process_deposit_reserved_approve(hash_t *hMyHash)
+{
+	int	iRet = SUCCESS;
+
+	char	*csTmp = NULL;
+	double	dTmp = 0.0;
+	//char	cTmp;
+	int	iTmp = PD_FALSE;
+
+	char	*csTxnCode = NULL;
+
+	hash_t	*hTxnElement;
+	hash_t	*hDetail;
+	hash_t	*hHeader;
+	hash_t 	*hMerchBalance;
+	
+	
+
+	hTxnElement= (hash_t *) malloc (sizeof(hash_t));
+	hash_init(hTxnElement, 0);
+
+	hDetail = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+	hHeader= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hMerchBalance = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchBalance, 0);
+
+	if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+		PutField_Int(hHeader, "db_commit", iTmp);
+	}
+
+	PutField_CString(hHeader, "add_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "add_user", PD_UPDATE_USER);
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+
+        if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+                PutField_Int(hHeader, "db_commit", iTmp);
+        }
+
+
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+		PutField_CString(hHeader, "approval_date", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_datetimestamp", &csTmp)) {
+		PutField_CString(hHeader, "approval_timestamp", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "post_datetime", &csTmp)) {
+		PutField_CString(hHeader, "create_datetime", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_datetime", &csTmp)) {
+		PutField_CString(hHeader, "update_datetime", csTmp);
+	}
+
+	PutField_CString(hHeader, "sub_status", PD_APPROVED);
+
+	if (GetField_CString(hMyHash, "txn_code", &csTxnCode)) {
+DEBUGLOG(("process_deposit_reserved_approve: txn_code [%s]\n", csTxnCode));
+		PutField_CString(hHeader, "txn_code", csTxnCode);
+	}
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: txn_seq [%s]\n", csTmp));
+		PutField_CString(hHeader, "txn_seq", csTmp);
+		PutField_CString(hDetail, "txn_seq", csTmp);
+
+		//PutField_CString(hTxnElement, "from_txn_seq", csTmp);
+		PutField_CString(hTxnElement, "org_txn_seq", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: ccy [%s]\n", csTmp));
+		PutField_CString(hDetail, "txn_ccy", csTmp);
+
+		PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+		PutField_CString(hTxnElement, "org_txn_fee_ccy", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "country", &csTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: country [%s]\n", csTmp));
+		PutField_CString(hDetail, "txn_country", csTmp);
+	}
+
+	iRet = HandleDepositReservedBalance(hMyHash, hMerchBalance);
+
+
+	if (iRet == SUCCESS)  {
+		if (GetField_Double(hMerchBalance, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: open_bal [%lf]\n", dTmp));
+			PutField_Double(hDetail, "open_bal", dTmp);
+		}
+		if (GetField_Double(hMerchBalance, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: open_bal_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "open_bal_settlement", dTmp);
+		}
+
+		if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: total_float [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_float", dTmp);
+		}
+
+		if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: current_bal [%lf]\n", dTmp));
+			PutField_Double(hDetail, "current_bal", dTmp);
+		}
+
+		if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: total_reserved_amount [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_reserved_amount", dTmp);
+		}
+		if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: total_hold [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_hold", dTmp);
+		}
+		if (GetField_Double(hMerchBalance, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: total_float_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_float_settlement", dTmp);
+		}
+
+		if (GetField_Double(hMerchBalance, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: current_bal_settlement[%lf]\n", dTmp));
+			PutField_Double(hDetail, "current_bal_settlement", dTmp);
+		}
+
+		if (GetField_Double(hMerchBalance, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: total_hold_settlement [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_hold_settlement", dTmp);
+		}
+		if (GetField_Double(hMerchBalance, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: total_float_after_payout [%lf]\n", dTmp));
+			PutField_Double(hDetail, "total_float_after_payout", dTmp);
+		}
+
+		if (GetField_Double(hMerchBalance, "fundin_payout", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: fundin_payout [%lf]\n", dTmp));
+			PutField_Double(hDetail, "fundin_payout", dTmp);
+		}
+		if (GetField_Double(hMerchBalance, "reserved_payout", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: reserved_payout [%lf]\n", dTmp));
+			PutField_Double(hDetail, "reserved_payout", dTmp);
+		}
+
+		if (GetField_Double(hMyHash, "net_amt", &dTmp)) {
+DEBUGLOG(("process_deposit_reserved_approve: net_amt [%lf]\n", dTmp));
+			PutField_Double(hHeader, "net_amt", dTmp);
+		}
+	}
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("CreateNewRecord: DBTransaction AddDetail\n"));
+		iRet = ml_Txn_Detail_AddDetail(hDetail);
+	}
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("CreateNewRecord: DBTransaction UpdateDetail\n"));
+		iRet = ml_Txn_Detail_UpdateDetail(hDetail);
+	}
+
+
+	if (iRet == SUCCESS) {
+		// Element Amt
+		if (GetField_Double(hMyHash, "amount", &dTmp)) {
+			PutField_Double(hHeader, "txn_amt", dTmp);
+			PutField_Double(hTxnElement, "reserve_amt", dTmp);
+			PutField_Char(hTxnElement, "party_type", PD_TYPE_MERCHANT);
+		}
+
+		PutField_CString(hTxnElement, "amount_type",  PD_DR);
+
+		iRet = migbo_AddReserveAmtElement(hTxnElement);
+	}
+
+    
+
+	if (iRet == SUCCESS) {
+
+		PutField_Char(hHeader, "status", PD_COMPLETE);
+		PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+
+		PutField_CString(hHeader, "process_type", "0000");
+		PutField_CString(hHeader, "process_code", "000000");
+
+
+		if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+			PutField_CString(hHeader, "client_id", csTmp);
+		}
+
+		if (GetField_CString(hMyHash, "service", &csTmp)) {
+			PutField_CString(hHeader, "service_code", csTmp);
+		}
+
+DEBUGLOG(("process_deposit_reserved_approve: DBTransaction Update\n"));
+		iRet = ml_Txn_Header_Update(hHeader);
+	}
+
+
+	hash_destroy(hTxnElement);
+	FREE_ME(hTxnElement);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hMerchBalance);
+	FREE_ME(hMerchBalance);
+
+
+	return iRet;
+}
+
+
+int  process_release_deposit_reserved(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+
+	char	*csTxnSeq;
+
+	char	*csTmp;
+	double  dTmp;
+	
+	int	iRecordExists = PD_FALSE;
+
+	int	iTmp = PD_FALSE;
+
+
+	hash_t 	*hHeader, *hTxnElement, *hMerchBalance, *hDetail;
+
+	hHeader= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hHeader, 0);
+
+	hTxnElement = (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hTxnElement, 0);
+
+	hMerchBalance= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hMerchBalance, 0);
+
+	hDetail= (hash_t *) malloc(sizeof(hash_t));
+	hash_init(hDetail, 0);
+
+        if (GetField_Int(hMyHash, "db_commit", &iTmp)) {
+                PutField_Int(hHeader, "db_commit", iTmp);
+        }
+
+
+	PutField_CString(hHeader, "add_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "add_user", PD_UPDATE_USER);
+
+	PutField_CString(hHeader, "update_user", PD_UPDATE_USER);
+	PutField_CString(hDetail, "update_user", PD_UPDATE_USER);
+
+
+	if (GetField_CString(hMyHash, "txn_seq", &csTxnSeq)) {
+		PutField_CString(hHeader, "txn_seq", csTxnSeq);
+
+		PutField_CString(hDetail, "txn_seq", csTxnSeq);
+		PutField_CString(hTxnElement, "from_txn_seq", csTxnSeq);
+		PutField_CString(hTxnElement, "org_txn_seq", csTxnSeq);
+	}
+
+	/*	
+	if (GetField_CString(hMyHash, "org_txn_id", &csTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: org_txn_seq [%s]\n", csTmp));
+		PutField_CString(hHeader, "org_txn_seq", csTmp);
+	}
+	*/
+
+	if (GetField_CString(hMyHash, "org_reserve_txn_seq", &csTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: org_reserve_txn_seq [%s]\n", csTmp));
+		PutField_CString(hHeader, "org_txn_seq", csTmp);
+	}
+
+
+	if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+		PutField_CString(hHeader, "approval_date", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_datetime", &csTmp)) {
+		PutField_CString(hHeader, "update_datetime", csTmp);
+	}
+
+	if (GetField_CString(hMyHash, "txn_datetimestamp", &csTmp)) {
+		PutField_CString(hHeader, "approval_timestamp", csTmp);
+	}
+
+
+	if (GetField_Int(hMyHash, "record_exists", &iRecordExists)) {
+DEBUGLOG(("process_release_deposit_reserved: RecordExists [%d]\n", iRecordExists));
+	}
+
+
+	if (iRecordExists == PD_TRUE) {
+DEBUGLOG(("process_release_deposit_reserved: Update Org Reserved Record !\n"));
+		hash_t 	*hOrgHeader;
+
+		hOrgHeader= (hash_t *) malloc(sizeof(hash_t));
+		hash_init(hOrgHeader, 0);
+
+		if (GetField_CString(hMyHash, "org_reserve_txn_seq", &csTmp)) {
+		//if (GetField_CString(hMyHash, "org_txn_id", &csTmp)) 
+DEBUGLOG(("process_release_deposit_reserved: org_txn_id [%s]\n", csTmp));
+			PutField_CString(hOrgHeader, "txn_seq", csTmp);
+		}
+
+		if (GetField_CString(hMyHash, "txn_date", &csTmp)) {
+			PutField_CString(hOrgHeader, "reserved_release_date", csTmp);
+DEBUGLOG(("process_release_deposit_reserved: release_date [%s]\n", csTmp));
+		}
+
+		if (GetField_CString(hMyHash, "txn_datetime", &csTmp)) {
+			PutField_CString(hOrgHeader, "update_datetime", csTmp);
+DEBUGLOG(("process_release_deposit_reserved: txn_datetime [%s]\n", csTmp));
+		}
+
+DEBUGLOG(("process_release_deposit_reserved: Update Org Record!\n"));
+		iRet = ml_Txn_Header_Update(hOrgHeader);
+
+		hash_destroy(hOrgHeader);
+		FREE_ME(hOrgHeader);
+
+	} else {
+DEBUGLOG(("process_release_reserved: previous record not exists!\n"));
+	}
+
+
+	PutField_Char(hHeader, "status", PD_COMPLETE);
+	PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+	PutField_CString(hHeader, "sub_status", PD_APPROVED);
+
+	PutField_Int(hMyHash, "void_flag", PD_TRUE);
+
+        if (GetField_CString(hMyHash, "ccy", &csTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: ccy [%s]\n", csTmp));
+                PutField_CString(hDetail, "txn_ccy", csTmp);
+                PutField_CString(hTxnElement, "org_txn_ccy", csTmp);
+                PutField_CString(hTxnElement, "org_txn_fee_ccy", csTmp);
+        }
+
+        if (GetField_CString(hMyHash, "country", &csTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: country [%s]\n", csTmp));
+                PutField_CString(hDetail, "txn_country", csTmp);
+        }
+
+        iRet = HandleDepositReservedBalance(hMyHash, hMerchBalance);
+
+
+	if (iRet == SUCCESS)  {
+                if (GetField_Double(hMerchBalance, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: open_bal [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "open_bal", dTmp);
+                }
+		if (GetField_Double(hMerchBalance, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: open_bal_settlement  [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "open_bal_settlement", dTmp);
+		}
+
+                if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: current_bal [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "current_bal", dTmp);
+                }
+
+                if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: total_float [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "total_float", dTmp);
+                }
+
+                if (GetField_Double(hMerchBalance, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: current_bal_settlement [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "current_bal_settlement", dTmp);
+                }
+
+                if (GetField_Double(hMerchBalance, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: total_float_settlement [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "total_float_settlement", dTmp);
+                }
+
+                if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: total_reserved_amount [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "total_reserved_amount", dTmp);
+                }
+                if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: total_hold [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "total_hold", dTmp);
+                }
+                if (GetField_Double(hMerchBalance, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: total_hold_settlement [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "total_hold_settlement", dTmp);
+                }
+                if (GetField_Double(hMerchBalance, "total_float_after_payout", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: total_float_after_payout [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "total_float_after_payout", dTmp);
+                }
+                if (GetField_Double(hMerchBalance, "fundin_payout", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: fundin_payout[%lf]\n", dTmp));
+                        PutField_Double(hDetail, "fundin_payout", dTmp);
+                }
+
+                if (GetField_Double(hMerchBalance, "reserved_payout", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: reserved_payout [%lf]\n", dTmp));
+                        PutField_Double(hDetail, "reserved_payout", dTmp);
+                }
+                if (GetField_Double(hMyHash, "net_amt", &dTmp)) {
+DEBUGLOG(("process_release_deposit_reserved: net_amt [%lf]\n", dTmp));
+                        PutField_Double(hHeader, "net_amt", dTmp);
+                }
+        }
+
+
+        if (iRet == SUCCESS) {
+DEBUGLOG(("process_release_deposit_reserved: DBTransaction AddDetail\n"));
+		iRet = ml_Txn_Detail_AddDetail(hDetail);
+        }
+
+        if (iRet == SUCCESS) {
+DEBUGLOG(("process_release_deposit_reserved: DBTransaction UpdateDetail\n"));
+		iRet = ml_Txn_Detail_UpdateDetail(hDetail);
+        }
+
+        if (iRet == SUCCESS) {
+                // Element Amt
+                if (GetField_Double(hMyHash, "amount", &dTmp)) {
+                        PutField_Double(hHeader, "txn_amt", dTmp);
+
+                        //PutField_Double(hTxnElement, "org_txn_amt", dTmp);
+                        PutField_Double(hTxnElement, "reserve_amt", dTmp);
+                        PutField_Char(hTxnElement, "party_type", PD_TYPE_MERCHANT);
+                }
+
+		PutField_CString(hTxnElement, "amount_type",  PD_CR);
+DEBUGLOG(("process_release_deposit_reserved: AddTxnAmtElement\n"));
+                iRet = migbo_AddReserveAmtElement(hTxnElement);
+        }
+
+
+        if (iRet == SUCCESS) {
+
+                PutField_Char(hHeader, "status", PD_COMPLETE);
+                PutField_Char(hHeader, "ar_ind", PD_ACCEPT);
+
+                PutField_CString(hHeader, "process_type", "0000");
+                PutField_CString(hHeader, "process_code", "000000");
+
+
+                if (GetField_CString(hMyHash, "merchant_client_id", &csTmp)) {
+                        PutField_CString(hHeader, "client_id", csTmp);
+                }
+
+                if (GetField_CString(hMyHash, "service", &csTmp)) {
+                        PutField_CString(hHeader, "service_code", csTmp);
+                }
+
+DEBUGLOG(("process_release_deposit_reserved: DBTransaction Update\n"));
+		iRet = ml_Txn_Header_Update(hHeader);
+        }
+
+	hash_destroy(hHeader);
+	FREE_ME(hHeader);
+
+	hash_destroy(hTxnElement);
+	FREE_ME(hTxnElement);
+
+	hash_destroy(hMerchBalance);
+	FREE_ME(hMerchBalance);
+
+	hash_destroy(hDetail);
+	FREE_ME(hDetail);
+
+	return iRet;
+}
+
+
+int	HandleDepositReservedBalance(hash_t *hMyHash, hash_t *hMerchBalance)
+{
+
+	int	iRet = SUCCESS;
+
+	char	*csTxnCode = NULL;
+	char	*csTxnStatus = NULL;
+	//char	cDCInd;
+
+	double	dAmt = 0.0;
+	//double	dFee = 0.0;
+	double	dNetAmt = 0.0;
+	double	dTmpNetAmt = 0.0;
+
+	char	*csMID;
+	char	*csCountry;
+	char	*csCcy;
+	char	*csService;
+	//char	*csUser;
+
+	double	dTmp = 0.0;
+	
+	int	iVoidFlag = PD_FALSE;	
+
+        //recordset_t     *rRecordSet;
+        //hash_t          *hRec;
+
+        //rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+        //recordset_init(rRecordSet, 0);
+
+	if (GetField_CString(hMyHash, "txn_code", &csTxnCode)) {
+DEBUGLOG(("HandleDepositReservedBalance: txn_code [%s]\n", csTxnCode));
+	}
+
+	if (GetField_CString(hMyHash, "txn_status", &csTxnStatus)) {
+DEBUGLOG(("HandleDepositReservedBalance: txn_status [%s]\n", csTxnStatus));
+	}
+
+
+        if (iRet == PD_OK) {
+                if (GetField_Double(hMyHash, "amount", &dAmt)) {
+DEBUGLOG(("HandleDepositReservedBalance: amount [%lf]\n", dAmt));
+                }
+
+		// !!!!! if reserved,  -> positive; else if release, -> negative
+		if (!strcmp(csTxnStatus, "MERCHANT_RESERVE_REVERSED")) {
+			dTmpNetAmt =  (-1) * dAmt;
+		} else {
+			dTmpNetAmt =  dAmt;
+		}
+
+		dNetAmt = dAmt;
+
+DEBUGLOG(("HandleDepositReservedBalance: net_amt[%lf]\n", dNetAmt));
+
+		PutField_Double(hMyHash, "net_amt", dNetAmt);
+		PutField_Double(hMerchBalance, "net_amt", dNetAmt);
+        }
+
+	if (iRet == PD_OK) {
+		if (GetField_Int(hMyHash, "void_flag", &iVoidFlag)) {
+DEBUGLOG(("HandleDepositReservedBalance: void_flag [%d]\n", iVoidFlag));
+		}
+		else {
+			iVoidFlag = PD_FALSE;
+		}
+
+		PutField_Int(hMerchBalance, "void_flag", iVoidFlag);
+
+		if (GetField_CString(hMyHash, "merchant_id", &csMID)) {
+DEBUGLOG(("HandleDepositReservedBalance: merchant_id [%s]\n", csMID));
+			PutField_CString(hMerchBalance, "merchant_id", csMID);
+		}
+	
+		if (GetField_CString(hMyHash, "country", &csCountry)) {
+DEBUGLOG(("HandleDepositReservedBalance: country [%s]\n", csCountry));
+			PutField_CString(hMerchBalance, "txn_country", csCountry);
+		}
+
+		if (GetField_CString(hMyHash, "ccy", &csCcy)) {
+DEBUGLOG(("HandleDepositReservedBalance: ccy [%s]\n", csCcy));
+			PutField_CString(hMerchBalance, "txn_ccy", csCcy);
+		}
+
+		if (GetField_CString(hMyHash, "service", &csService)) {
+DEBUGLOG(("HandleDepositReservedBalance: service [%s]\n", csService));
+			PutField_CString(hMerchBalance, "service_code", csService);
+		}
+
+		PutField_CString(hMerchBalance, "add_user", PD_UPDATE_USER);
+		
+		iRet = migbo_GetOpenBalanceForUpdate(hMerchBalance, csMID, csCcy, csCountry, csService);
+
+		if (iRet == SUCCESS) {
+			if (GetField_Double(hMerchBalance, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: merchant_open_bal [%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: merchant_open_bal_settlement [%lf]\n", dTmp));
+			}
+		}
+			
+	
+		if (iRet == SUCCESS) {	
+			iRet = migbo_UpdateReserved(csMID, csCountry, csCcy, csService, dTmpNetAmt, PD_UPDATE_USER);
+		}
+
+		if (iRet == SUCCESS) {
+			iRet = migbo_GetCurrentValues(csMID, csCcy, csCountry, csService, hMerchBalance);
+		}
+
+
+		if (iRet == SUCCESS) {	
+
+			if (GetField_Double(hMerchBalance, "current_bal", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: current_bal[%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "total_float", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: total_float[%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "current_bal_settlement", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: current_bal_settlement [%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "total_float_settlement", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: total_float_settlement [%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "total_reserved_amount", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: total_reserved_amount [%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "total_hold", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: total_hold [%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "total_hold_settlement", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: total_hold_settlement [%lf]\n", dTmp));
+			}
+			if (GetField_Double(hMerchBalance, "total_hold_after_payout", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: total_hold_after_payout [%lf]\n", dTmp));
+			}
+
+			if (GetField_Double(hMerchBalance, "fundin_payout", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: fundin_payout [%lf]\n", dTmp));
+			}
+			if (GetField_Double(hMerchBalance, "reserved_payout", &dTmp)) {
+DEBUGLOG(("HandleDepositReservedBalance: reserved_payout [%lf]\n", dTmp));
+			}
+
+		}
+
+	}
+
+
+
+        //RecordSet_Destroy(rRecordSet);
+        //FREE_ME(rRecordSet);
+
+        return iRet;
+}

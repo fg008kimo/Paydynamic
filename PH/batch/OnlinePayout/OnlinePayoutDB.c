@@ -1,0 +1,1418 @@
+
+/* Result Sets Interface */
+#ifndef SQL_CRSR
+#  define SQL_CRSR
+  struct sql_cursor
+  {
+    unsigned int curocn;
+    void *ptr1;
+    void *ptr2;
+    unsigned int magic;
+  };
+  typedef struct sql_cursor sql_cursor;
+  typedef struct sql_cursor SQL_CURSOR;
+#endif /* SQL_CRSR */
+
+/* Thread Safety */
+typedef void * sql_context;
+typedef void * SQL_CONTEXT;
+
+/* Object support */
+struct sqltvn
+{
+  unsigned char *tvnvsn; 
+  unsigned short tvnvsnl; 
+  unsigned char *tvnnm;
+  unsigned short tvnnml; 
+  unsigned char *tvnsnm;
+  unsigned short tvnsnml;
+};
+typedef struct sqltvn sqltvn;
+
+struct sqladts
+{
+  unsigned int adtvsn; 
+  unsigned short adtmode; 
+  unsigned short adtnum;  
+  sqltvn adttvn[1];       
+};
+typedef struct sqladts sqladts;
+
+static struct sqladts sqladt = {
+  1,1,0,
+};
+
+/* Binding to PL/SQL Records */
+struct sqltdss
+{
+  unsigned int tdsvsn; 
+  unsigned short tdsnum; 
+  unsigned char *tdsval[1]; 
+};
+typedef struct sqltdss sqltdss;
+static struct sqltdss sqltds =
+{
+  1,
+  0,
+};
+
+/* File name & Package Name */
+struct sqlcxp
+{
+  unsigned short fillen;
+           char  filnam[18];
+};
+static struct sqlcxp sqlfpn =
+{
+    17,
+    "OnlinePayoutDB.pc"
+};
+
+
+static unsigned int sqlctx = 10195499;
+
+
+static struct sqlexd {
+   unsigned long  sqlvsn;
+   unsigned int   arrsiz;
+   unsigned int   iters;
+   unsigned int   offset;
+   unsigned short selerr;
+   unsigned short sqlety;
+   unsigned int   occurs;
+            short *cud;
+   unsigned char  *sqlest;
+            char  *stmt;
+   sqladts *sqladtp;
+   sqltdss *sqltdsp;
+   unsigned char  **sqphsv;
+   unsigned long  *sqphsl;
+            int   *sqphss;
+            short **sqpind;
+            int   *sqpins;
+   unsigned long  *sqparm;
+   unsigned long  **sqparc;
+   unsigned short  *sqpadto;
+   unsigned short  *sqptdso;
+   unsigned int   sqlcmax;
+   unsigned int   sqlcmin;
+   unsigned int   sqlcincr;
+   unsigned int   sqlctimeout;
+   unsigned int   sqlcnowait;
+            int   sqfoff;
+   unsigned int   sqcmod;
+   unsigned int   sqfmod;
+   unsigned char  *sqhstv[1];
+   unsigned long  sqhstl[1];
+            int   sqhsts[1];
+            short *sqindv[1];
+            int   sqinds[1];
+   unsigned long  sqharm[1];
+   unsigned long  *sqharc[1];
+   unsigned short  sqadto[1];
+   unsigned short  sqtdso[1];
+} sqlstm = {12,1};
+
+/* SQLLIB Prototypes */
+extern sqlcxt ( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlcx2t( void **, unsigned int *,
+                   struct sqlexd *, struct sqlcxp * );
+extern sqlbuft( void **, char * );
+extern sqlgs2t( void **, char * );
+extern sqlorat( void **, unsigned int *, void * );
+
+/* Forms Interface */
+static int IAPSUCC = 0;
+static int IAPFAIL = 1403;
+static int IAPFTL  = 535;
+extern void sqliem( unsigned char *, signed int * );
+
+typedef struct { unsigned short len; unsigned char arr[1]; } VARCHAR;
+typedef struct { unsigned short len; unsigned char arr[1]; } varchar;
+
+/* CUD (Compilation Unit Data) Array */
+static short sqlcud0[] =
+{12,4130,871,0,0,
+};
+
+
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/09/06              LokMan Chow
+*/
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "queue_utility.h"
+#include "gateway.h"
+#include "internal.h"
+#include "OnlinePayout.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+
+#define	PD_TMP_TAG_LEN	25
+char    cDebug = 'Y';
+
+#define MY_TMP_TOKEN            "&"
+#define MY_TMP_FIELD_TOKEN      "="
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+char    cs_batch_id[PD_TXN_SEQ_LEN + 1];
+char    cs_queue_seq[PD_TXN_SEQ_LEN + 1];
+
+int process_header(hash_t* hContext, hash_t* hRequest);
+int process_txn(hash_t *hContext, hash_t* hRequest);
+int BatchOnlineWithdrawAll(hash_t* hContext,hash_t* hRequest);
+static int parse_arg(int argc,char **argv);
+
+int     AddWTBTxnLog(hash_t *hContext,
+                hash_t* hRequest);
+
+
+int batch_init(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+	iRet = parse_arg(argc,argv);
+        if (iRet != SUCCESS) {
+                printf("usage:  -b batch_id -s queue_seq\n");
+                return (iRet);
+        }
+
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[],hash_t *hContext,hash_t * hRequest)
+{
+
+        int     iRet;
+
+	iRet = process_header(hContext,hRequest);
+
+DEBUGLOG(("process_header iRet = [%d]\n",iRet));
+	return iRet;	
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int process_header(hash_t* hContext,hash_t* hRequest)
+{
+	int     iRet = PD_OK;
+	int     iTotalCnt = 0;
+	//int     iBatchCnt = 0;
+	int     i, iTmp;
+	char    csTag[PD_TMP_TAG_LEN +1];
+	char    *csPspId;
+	//char    csBatchId[PD_TXN_SEQ_LEN +1];
+	char    *csMerchId;
+	char    *csServiceCode;
+	char    *csTmp;
+	char    *csBatchId;
+	char    *csSeq;
+	char    cStatus;
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+
+	PutField_Int(hRequest,"total_record",iTotalCnt);
+
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutQueueHd","GetPayoutQueueHd");
+	if ((unsigned long)(*DBObjPtr)(PD_PROCESSING,rRecordSet) == PD_OK) {
+		i=0;
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+DEBUGLOG(("process_header GetPayoutQueueHd OK\n"));
+			if(GetField_CString(hRec,"batch_id",&csBatchId) &&
+			   GetField_CString(hRec,"queue_seq",&csSeq)){
+DEBUGLOG(("process_header csBatchId[%s],cs_batch_id[%s]\n",csBatchId,cs_batch_id));
+DEBUGLOG(("process_header csSeq[%s],cs_queue_seq[%s]\n",csSeq,cs_queue_seq));
+				if(!strcmp(csBatchId,cs_batch_id) &&
+				   !strcmp(csSeq,cs_queue_seq)){
+					sprintf(csTag,"batch_id_%d",i);
+					PutField_CString(hContext,csTag,csBatchId);
+					PutField_CString(hContext,"batch_id",csBatchId);
+					PutField_CString(hRequest,"batch_id",csBatchId);
+
+					PutField_CString(hContext,"queue_seq",cs_queue_seq);
+
+					if(GetField_CString(hRec,"psp_id",&csPspId)){
+						PutField_CString(hContext,"psp_id",csPspId);
+						PutField_CString(hContext,"org_psp_id",csPspId);
+
+						hash_t *hPsp;
+						hPsp = (hash_t*) malloc (sizeof(hash_t));
+						hash_init(hPsp,0);
+						DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetPspDetail");
+						if (!(*DBObjPtr)(csPspId, hPsp)) {
+							if (GetField_CString(hPsp,"client_id",&csTmp)) {
+								PutField_CString(hRequest,"client_id",csTmp);
+							}
+						}
+						FREE_ME(hPsp);
+
+					}
+					if(GetField_CString(hRec,"merchant_id",&csMerchId)){
+						PutField_CString(hContext,"merchant_id",csMerchId);
+						PutField_CString(hRequest,"merchant_id",csMerchId);
+					}
+					if(GetField_CString(hRec,"service_code",&csServiceCode)){
+						PutField_CString(hContext,"service_code",csServiceCode);
+						PutField_CString(hRequest,"service_code",csServiceCode);
+					}
+					if(GetField_Int(hRec,"num_of_record",&iTmp)){
+						PutField_Int(hContext,"num_of_record",iTmp);
+					}
+
+DEBUGLOG(("process_header call process_txn\n"));
+					iRet = process_txn(hContext,hRequest);
+					
+					i++;
+					PutField_Int(hRequest,"batch_cnt",i);
+				}
+			}
+			else{
+DEBUGLOG(("process_header no batch_id !!!\n"));
+			}
+
+			/*
+			if(GetField_CString(hRec,"psp_id",&csPspId)){
+				PutField_CString(hContext,"psp_id",csPspId);
+				PutField_CString(hContext,"org_psp_id",csPspId);
+				if(!strcmp(csPspId,PD_CHANNEL_TWV)){
+					sprintf(csTag,"batch_id_%d",i);
+					if(GetField_CString(hRec,"batch_id",&csBatchId)){
+						PutField_CString(hContext,csTag,csBatchId);
+						PutField_CString(hRequest,"batch_id",csBatchId);
+					}
+					sprintf(csTag,"merchant_id_%d",i);
+					if(GetField_CString(hRec,"merchant_id",&csMerchId)){
+						PutField_CString(hContext,csTag,csMerchId);
+						PutField_CString(hRequest,"merchant_id",csMerchId);
+					}
+					sprintf(csTag,"service_code_%d",i);
+					if(GetField_CString(hRec,"service_code",&csServiceCode)){
+						PutField_CString(hContext,csTag,csServiceCode);
+						PutField_CString(hContext,"service_code",csServiceCode);
+					}
+					sprintf(csTag,"num_of_record_%d",i);
+					if(GetField_Int(hRec,"num_of_record",&iTmp)){
+						PutField_Int(hContext,csTag,iTmp);
+					}
+
+					iRet = process_txn(hContext,hRequest);
+
+					i++;
+					PutField_Int(hRequest,"batch_cnt",i);
+				}
+			}
+			*/
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+	GetField_Int(hRequest,"total_record",&iTotalCnt);
+
+	if(iTotalCnt!=0){
+//DEBUGLOG(("send BatchOnlineWithdrawAll [%d]:Total Amt[%d]\n",iTotalCnt,iTotalAmt));
+		iRet = BatchOnlineWithdrawAll(hContext,hRequest);
+DEBUGLOG(("BatchOnlineWithdrawAll RET = [%d]\n",iRet));
+	}
+	else{
+		iRet = PD_SKIP_OK;
+	}
+
+	if(iRet == PD_OK){
+		cStatus = PD_TO_PSP;
+	}
+/*
+	if(iRet==PD_OK){
+		for(i=0;i<iBatchCnt;i++){
+			PutField_Char(hContext,"status",cStatus);
+
+			sprintf(csTag,"batch_id_%d",i);
+			GetField_CString(hContext,csTag,&csTmp);
+			PutField_CString(hContext,"batch_id",csTmp);
+
+// update header status to  'W' 
+			DBObjPtr = CreateObj(DBPtr,"DBPayoutQueueHd","UpdateStatus");
+			if((unsigned long)(*DBObjPtr)(hContext) == PD_OK){
+DEBUGLOG(("Update PayoutQueue Header Status Success: batch_id[%s]\n",csTmp));
+				iRet = PD_OK;
+			}
+			else{
+DEBUGLOG(("Update PayoutQueue Header Status Failed: batch_id[%s]\n",csTmp));
+			}
+		}
+	}
+*/
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+	return iRet;
+}
+
+int process_txn(hash_t *hContext,hash_t *hRequest)
+{               
+        int     iRet = PD_ERR;
+	int	iTotalCnt = 0;
+	//char	csAmt[PD_AMOUNT_LEN+1];
+	char	csTag[PD_TMP_TAG_LEN +1];
+	char	*csBatchId;
+	char	*csMerchId;
+	char	*csPspId;
+	int	iTmp;
+	char	*csTmp;
+	char    *csSeq;
+	double	dTmp;
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	if(GetField_CString(hRequest,"batch_id",&csBatchId)){
+DEBUGLOG(("process_txn::batch_id = [%s]\n",csBatchId));
+	}
+	if(GetField_CString(hContext,"queue_seq",&csSeq)){
+DEBUGLOG(("process_txn::queue_seq = [%s]\n",csSeq));
+	}
+	if(GetField_CString(hRequest,"merchant_id",&csMerchId)){
+DEBUGLOG(("process_txn::merchant_id = [%s]\n",csMerchId));
+	}
+	if(GetField_CString(hContext,"psp_id",&csPspId)){
+DEBUGLOG(("process_txn::psp_id = [%s]\n",csPspId));
+	}
+	GetField_Int(hRequest,"total_record",&iTotalCnt);	
+
+
+	DBObjPtr = CreateObj(DBPtr,"DBPayoutQueueDt","GetPayoutQueueDt");
+	if ((*DBObjPtr)(csBatchId,csSeq,rRecordSet) == PD_OK) {
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+/*seq_num*/
+			sprintf(csTag,"seq_num_%d",iTotalCnt);	
+			if(GetField_Int(hRec,"seq_num",&iTmp))
+				PutField_Int(hRequest,csTag,iTmp);
+
+/* merchant_id */
+			sprintf(csTag,"merchant_id_%d",iTotalCnt);	
+			PutField_CString(hRequest,csTag,csMerchId);
+
+			sprintf(csTag,"psp_id_%d",iTotalCnt);	
+			PutField_CString(hRequest,csTag,csPspId);
+
+/*txn_id*/
+			sprintf(csTag,"gen_txn_id_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"txn_id",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+
+/* merchant_ref */
+			sprintf(csTag,"reference_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"merchant_ref",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+
+/* pay_amount */
+			//sprintf(csTag,"pay_amount_%d",iTotalCnt);
+			sprintf(csTag,"psp_txn_amt_%d",iTotalCnt);
+			if(GetField_Double(hRec,"amount",&dTmp)){
+				//sprintf(csAmt,"%ld",double2long(dTmp));
+				//PutField_CString(hRequest,csTag,csAmt);
+				PutField_Double(hRequest,csTag,dTmp);
+				//PutField_Double(hContext,"org_dst_net_amt",dTmp);
+			}
+
+/* currency_code */
+			sprintf(csTag,"currency_code_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"payout_currency",&csTmp)){
+				PutField_CString(hRequest,csTag,csTmp);
+				PutField_CString(hRequest,"txn_ccy",csTmp);
+			}
+
+/* country */
+			sprintf(csTag,"country_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"country",&csTmp)){
+				PutField_CString(hRequest,csTag,csTmp);
+				PutField_CString(hRequest,"country",csTmp);
+			}
+
+/* bank_code */
+			sprintf(csTag,"bank_code_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"bank_code",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+/* bank_name */
+			sprintf(csTag,"bank_name_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"bank_name",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+
+/* branch */
+			sprintf(csTag,"branch_name_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"branch",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+/* account_id */
+			sprintf(csTag,"account_id_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"account_num",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+/* account_name */
+			sprintf(csTag,"account_name_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"account_name",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+/* identity_id */
+			sprintf(csTag,"identity_id_%d",iTotalCnt);	
+			if(GetField_CString(hRec,"identity_id",&csTmp))
+				PutField_CString(hRequest,csTag,csTmp);
+
+/* batch_id */
+			sprintf(csTag,"batch_id_%d",iTotalCnt);	
+			PutField_CString(hRequest,csTag,csBatchId);
+
+			iTotalCnt++;
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+
+	}
+	PutField_Int(hRequest,"total_record",iTotalCnt);
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+	return iRet;
+}
+
+
+int BatchOnlineWithdrawAll(hash_t* hContext,hash_t* hRequest) 
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	csTag[PD_TAG_LEN +1];
+	//char	*csMerchantId,*csMerchantRef;
+	//char    csTxnSeq[PD_TXN_SEQ_LEN +1];
+	char	csTmp[PD_TMP_BUF_LEN + 1];
+	char	csAction[PD_TMP_BUF_LEN + 1];
+	char	csLocalTxnDateTime[PD_DATETIME_LEN+1];
+	char	csTmDate[PD_DATE_LEN+1];
+	char	csTmTime[PD_TIME_LEN+1];
+	char	*csPspId;
+	char	*csURL;
+	double	dTmp;
+	double	dTxnAmt = 0.0;
+
+	char*	csCode;
+	char*	csValue;
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	recordset_t     *rKeySet;
+        rKeySet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rKeySet,0);
+
+	hash_t *hPspDetail, *hTxn;
+	hash_t  *hRec;
+	hash_t  *hKey;
+
+        hPspDetail = (hash_t*) malloc (sizeof(hash_t));
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+
+
+	int	iTotal,i;
+
+
+/* update context */
+
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetAllCodes");
+        if ((*DBObjPtr)(rRecordSet) == PD_OK) {
+DEBUGLOG(("UpdateContext: return \n"));
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        if (GetField_CString(hRec,"code",&csCode)) {
+                                if (GetField_CString(hRec,"value",&csValue)) {
+                                        if (!strcmp(csCode,"CTPHDATE")) {
+DEBUGLOG(("UpdateContext:Current Processor Hub Date= [%s]\n",csValue));
+                                                PutField_CString(hContext,"PHDATE",csValue);
+                                        }
+                                }
+                        }
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+        }
+        else {
+DEBUGLOG(("UpdateContext:NOT RECORD\n"));
+                iRet = PD_ERR;
+ERRLOG("Internal Error:WEB Channel:SystemControl Record Not Found\n");
+        }
+
+	//RecordSet_Destroy(rRecordSet);
+        //FREE_ME(rRecordSet);
+
+	PutField_CString(hContext,"process_type","0000");
+	PutField_CString(hContext,"process_code","000000");
+	PutField_CString(hContext,"txn_code", PD_PAYOUT_GENERATE);
+	PutField_CString(hContext,"channel_code","MGT");
+	PutField_Int(hContext,"do_logging",PD_TRUE);
+	PutField_Int(hContext,"db_commit",PD_FALSE);
+	GetField_Int(hRequest,"total_record",&iTotal);
+
+DEBUGLOG(("BatchOnlineWithdrawAll: total = [%d]\n",iTotal));
+
+
+	for (i = 0 ; i < iTotal; i++) {
+
+        	hash_init(hPspDetail,0);
+        	hash_init(hTxn,0);
+
+		//DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+		//strcpy(csTxnSeq,(*DBObjPtr)());
+
+		sprintf(csTag,"gen_txn_id_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: txn_seq = [%s]\n",csPtr));
+			PutField_CString(hContext,"txn_seq",csPtr);
+			PutField_CString(hTxn,"txn_seq",csPtr);
+			PutField_CString(hContext,csTag,csPtr);
+			PutField_CString(hPspDetail,"txn_seq",csPtr);
+		}
+
+		strcpy(csLocalTxnDateTime,getdatetime());
+		sprintf(csTmDate,"%.*s",PD_DATE_LEN,csLocalTxnDateTime);
+		PutField_CString(hContext,"local_tm_date",csTmDate);
+
+		sprintf(csTmTime,"%.*s",PD_TIME_LEN,&csLocalTxnDateTime[PD_DATE_LEN]);
+		PutField_CString(hContext,"local_tm_time",csTmTime);
+		
+
+		sprintf(csTag,"psp_id_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hPspDetail,"psp_id",csPtr);
+		}
+/*
+		sprintf(csTag,"reference_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hRequest,"merchant_ref",csPtr);
+		}
+*/
+/*
+		if (GetField_CString(hContext,"PHDATE",&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: transmission_datetime = [%s]\n",csPtr));
+			PutField_CString(hRequest,"transmission_datetime",csPtr);
+		}
+*/
+
+		sprintf(csTag,"psp_txn_amt_%d",i);
+		if (GetField_Double(hRequest,csTag,&dTxnAmt)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%lf]\n",csTag,dTxnAmt));
+			PutField_Double(hContext,"org_dst_net_amt",dTxnAmt);
+			PutField_Double(hPspDetail,"txn_amt",dTxnAmt);
+		}
+
+		sprintf(csTag,"currency_code_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hRequest,"txn_ccy",csPtr);
+			PutField_CString(hRequest,"net_ccy",csPtr);
+			PutField_CString(hPspDetail,"txn_ccy",csPtr);
+		}
+
+		sprintf(csTag,"country_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hRequest,"txn_country",csPtr);
+		}
+
+		sprintf(csTag,"bank_code_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hPspDetail,"bank_code",csPtr);
+		}
+
+
+		sprintf(csTag,"branch_name_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hPspDetail,"bank_branch",csPtr);
+		}
+
+		sprintf(csTag,"account_id_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hPspDetail,"account_no",csPtr);
+		}
+
+		sprintf(csTag,"account_name_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hPspDetail,"account_name",csPtr);
+		}
+
+/*
+		sprintf(csTag,"identity_id_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+			PutField_CString(hRequest,"identity_id",csPtr);
+		}
+
+		sprintf(csTag,"batch_id_%d",i);
+		if (GetField_CString(hRequest,csTag,&csPtr)) {
+DEBUGLOG(("BatchOnlineWithdrawAll: [%s] = [%s]\n",csTag,csPtr));
+		}
+
+*/
+/*
+DEBUGLOG(("BatchOnlineWithdrawAll: pay_method = [%s]\n","002"));
+		PutField_CString(hRequest,"pay_method","002");
+*/
+
+		if(iRet == PD_OK){
+DEBUGLOG(("BatchOnlineWithdrawAll call BOPsp CalPspCosts\n"));
+			PutField_Char(hContext,"txn_type",PD_TYPE_PAYOUT);
+			BOObjPtr = CreateObj(BOPtr,"BOPsp","CalPspCosts");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+DEBUGLOG(("BatchOnlineWithdrawAll BOPsp CalPspCosts() result = [%d]\n",iRet));
+			sprintf(csTag,"precal_fee_%d",i);
+			if(GetField_Double(hContext,"precal_fee",&dTmp)){
+				PutField_Double(hContext,csTag,dTmp);
+			}
+		}
+
+		RemoveField_CString(hRequest,"merchant_id");
+DEBUGLOG(("BatchOnlineWithdrawAll::Call MGTChannel:AddTxnLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"MGTChannel","AddTxnLog");
+		if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest))!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("BatchOnlineWithdrawAll::MGTChannel:AddTxnLog Failed\n"));
+		}
+
+		if(iRet==PD_OK){
+			PutField_Double(hTxn,"txn_amt",dTxnAmt);
+DEBUGLOG(("BatchOnlineWithdrawAll::Call DBTxnPspDetail:Add\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+DEBUGLOG(("BatchOnlineWithdrawAll::DBTxnPspDetail:Add Failed\n"));
+			}
+		}
+
+		if(iRet==PD_OK){
+			PutField_CString(hPspDetail,"desc","Payout (PSP)");
+DEBUGLOG(("BatchOnlineWithdrawAll::Call DBTxnPspDetail:Add\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Add");
+			if((unsigned long) ((*DBObjPtr)(hPspDetail))!=PD_OK){
+				iRet = INT_ERR;
+DEBUGLOG(("BatchOnlineWithdrawAll::DBTxnPspDetail:Add Failed\n"));
+			}
+		}
+
+	}
+	FREE_ME(hPspDetail);
+	FREE_ME(hTxn);
+
+	PutField_Int(hContext,"do_logging",PD_FALSE);
+
+        if (iRet == PD_OK) {
+
+DEBUGLOG(("BatchOnlineWithdrawAll: pay_method = [%s]\n","004"));
+		PutField_CString(hRequest,"pay_method","004");
+
+		if(GetField_CString(hContext,"psp_id",&csPspId)){
+DEBUGLOG(("BatchOnlineWithdrawAll: psp_id = [%s]\n",csPspId));
+		}
+		
+		DBObjPtr = CreateObj(DBPtr,"DBPspKeys","GetPspKey");
+                if (!(*DBObjPtr)(csPspId,PD_PTK_KEY_NAME,rKeySet)) {
+                        hKey = RecordSet_GetFirst(rKeySet);
+                        while(hKey){
+                                if (GetField_CString(hKey,"key_value",&csPtr)) {
+DEBUGLOG(("GetPspKey - psp_key = [%s]\n",csPtr));
+                                        PutField_CString(hContext,"psp_key",csPtr);
+					PutField_CString(hRequest,"access_key",csPtr);
+                                }
+				hKey = RecordSet_GetNext(rKeySet);
+			}
+		}
+		else{
+			iRet=INT_ERR;
+		}
+
+		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"DBPspUrl","GetPspUrl");
+			if (!(*DBObjPtr)(csPspId,hContext)) {
+				if (GetField_CString(hContext,"url",&csPtr)) {
+					PutField_CString(hContext,"psp_url",csPtr);
+					strcpy(csAction,csPtr);
+DEBUGLOG(("GetPspUrl - psp_url = [%s]\n",csPtr));
+				}
+				else {
+ERRLOG("BOPsp: GetTxnPSP - no such for [%s]\n",csPspId);
+					iRet = INT_ERR;
+				}
+			}
+		}
+
+		if (iRet == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr,"DBPspRequestTxnUrl","GetPspRequestTxnUrl");
+			if (!(*DBObjPtr)(csPspId,"POG","004", hContext)) {
+				if (GetField_CString(hContext,"request_function",&csPtr)) {
+					//PutField_CString(hContext,"request_function",csPtr);
+DEBUGLOG(("GetPspRequestTxnUrl - request_function = [%s]\n",csPtr));
+				}
+				else {
+ERRLOG("GetPspRequestTxnUrl - no such function url for [%s] [%s]\n",csPspId,"POG");
+					iRet = INT_ERR;
+				}
+				if (GetField_CString(hContext,"action",&csPtr)) {
+					strcat(csAction,"/");
+					strcat(csAction,csPtr);
+					PutField_CString(hRequest,"action",csAction);
+DEBUGLOG(("GetPspRequestTxnUrl - action = [%s]\n",csAction));
+				}
+
+			}
+		}
+
+
+/* psp Url */
+	        if (GetField_CString(hContext,"psp_url",&csURL)) {
+        	}
+/* request_function */
+        	if (GetField_CString(hContext,"request_function",&csPtr)) {
+			strcpy(csTmp,csURL);
+			strcat(csTmp,"/");
+			strcat(csTmp,csPtr);
+			PutField_CString(hRequest,"URL",csTmp);
+DEBUGLOG(("BatchOnlineWithdrawAll: URL = [%s]\n",csTmp));
+        	}
+
+/* action */
+        	if (GetField_CString(hContext,"action",&csPtr)) {
+			strcpy(csTmp,csURL);
+			strcat(csTmp,"/");
+			strcat(csTmp,csPtr);
+DEBUGLOG(("BatchOnlineWithdrawAll: URL = [%s]\n",csTmp));
+        	}
+
+		//iRet = AddWTBTxnLog(hContext,hRequest);
+
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+	RecordSet_Destroy(rKeySet);
+        FREE_ME(rKeySet);
+	return iRet;
+}
+
+
+
+int     AddWTBTxnLog(hash_t *hContext,
+                	hash_t* hRequest)
+
+{
+        int iRet = PD_OK;
+	int	iTotal,i;
+	int	iInternalErr = 0;
+
+        char    *csTmp = strdup("");
+	char	csTag[PD_TAG_LEN +1];
+        char	*csBatchId;
+	int	iSeqNum;
+	hash_t  *hTxn;
+	hash_t  *hDetail;
+        hash_t  *hPsp;
+	double	dTmp;
+
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+	hDetail= (hash_t*)  malloc (sizeof(hash_t));
+        hPsp= (hash_t*)  malloc (sizeof(hash_t));
+
+
+	GetField_Int(hRequest,"total_record",&iTotal);
+DEBUGLOG(("AddTxnLog:: total_record = [%d]\n",iTotal));
+
+	for (i = 0; i < iTotal; i++) {
+		hash_init(hTxn,0);
+		hash_init(hDetail,0);
+                hash_init(hPsp,0);
+
+		sprintf(csTag,"internal_error_%d",i);
+		GetField_Int(hRequest,csTag,&iInternalErr);
+DEBUGLOG(("AddTxnLog: %s = [%d]\n",csTag,iInternalErr));
+
+		if (iInternalErr == INT_DUP_MERCHANT_REF)
+			continue; //skip
+
+
+/*TxnHeader,TxnDetail,TxnPspDetail Add*/
+		sprintf(csTag,"txn_seq_%d",i);
+DEBUGLOG(("try to get %s\n",csTag));
+                if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_seq = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"txn_seq",csTmp);
+                        PutField_CString(hDetail,"txn_seq",csTmp);
+                        PutField_CString(hPsp,"txn_seq",csTmp);
+
+                        PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+                        PutField_CString(hDetail,"add_user",PD_UPDATE_USER);
+                        PutField_CString(hPsp,"add_user",PD_UPDATE_USER);
+
+                        if (GetField_CString(hContext,"channel_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: channel_code = [%s]\n",csTmp));
+                                PutField_CString(hTxn,"channel_code",csTmp);
+                        }
+                        if (GetField_CString(hContext,"txn_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_code = [%s]\n",csTmp));
+                                PutField_CString(hTxn,"txn_code",csTmp);
+                        }
+                        if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: host_posting_date = [%s]\n",csTmp));
+                                PutField_CString(hTxn,"host_posting_date",csTmp);
+                        }
+
+                        sprintf(csTag,"local_tm_date_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: local_tm_date = [%s]\n",csTmp));
+                                PutField_CString(hTxn,"local_tm_date",csTmp);
+                        }
+
+                        sprintf(csTag,"local_tm_time_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: local_tm_time = [%s]\n",csTmp));
+                                PutField_CString(hTxn,"local_tm_time",csTmp);
+                        }
+
+			PutField_CString(hTxn,"process_type","0000");
+			PutField_CString(hTxn,"process_code","000000");
+
+/* merchant no */
+                        sprintf(csTag,"merchant_id_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hTxn,"merchant_id",csTmp);
+                        }
+/* merchant ref */
+                        sprintf(csTag,"reference_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hTxn,"merchant_ref",csTmp);
+                        }
+/* client id  */
+                        sprintf(csTag,"merchant_client_id_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hTxn,"client_id",csTmp);
+                        }
+
+
+/* transmission_datetime */
+                        sprintf(csTag,"transaction_datetime_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hTxn,"transmission_datetime",csTmp);
+                                PutField_CString(hTxn,"tm_date",csTmp);
+                        }
+/* add to detail ********************************/
+
+/* txn ccy */
+                        sprintf(csTag,"txn_ccy_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"txn_ccy",csTmp);
+                        }
+
+/* txn country */
+                        sprintf(csTag,"country_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"txn_country",csTmp);
+                        }
+
+/* bank code */
+                        sprintf(csTag,"bank_code_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"bank_code",csTmp);
+                                PutField_CString(hPsp,"bank_code",csTmp);
+                        }
+/* bank name */
+                        sprintf(csTag,"bank_name_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"bank_name",csTmp);
+                        }
+/* branch_name */
+                        sprintf(csTag,"branch_name_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"branch_name",csTmp);
+                                PutField_CString(hPsp,"bank_branch",csTmp);
+                        }
+
+/* account_id */
+			sprintf(csTag,"account_id_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"account_id",csTmp);
+                                PutField_CString(hPsp,"account_no",csTmp);
+                        }
+/* account_name */
+                        sprintf(csTag,"account_name_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"account_name",csTmp);
+                                PutField_CString(hPsp,"account_name",csTmp);
+                        }
+/* identity_id */
+                        sprintf(csTag,"identity_id_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"identity_id",csTmp);
+                        }
+
+/* batch_id */
+                        sprintf(csTag,"batch_id_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"batch_id",csTmp);
+                        }
+/* add txn psp */
+/* psp id */
+                        if (GetField_CString(hContext,"psp_id",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: psp_id = [%s]\n",csTmp));
+                                PutField_CString(hPsp,"psp_id",csTmp);
+                        }
+/* txn_desc */
+                        if (GetField_CString(hContext,"txn_desc",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_desc = [%s]\n",csTmp));
+                                PutField_CString(hPsp,"desc",csTmp);
+                        }
+/* txn_ccy */
+                        sprintf(csTag,"currency_code_%d",i);
+                        if (GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%s]\n",csTag,csTmp));
+                                PutField_CString(hDetail,"txn_ccy",csTmp);
+                                PutField_CString(hPsp,"txn_ccy",csTmp);
+                        }
+/* txn_amt */
+                        sprintf(csTag,"txn_amt_%d",i);
+                        if (GetField_Double(hRequest,csTag,&dTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%f]\n",csTag,dTmp));
+                                PutField_Double(hTxn,"txn_amt",dTmp);
+                        }
+
+                        sprintf(csTag,"psp_txn_amt_%d",i);
+                        if (GetField_Double(hRequest,csTag,&dTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%f]\n",csTag,dTmp));
+                                PutField_Double(hPsp,"txn_amt",dTmp);
+                                PutField_Double(hContext,csTag,dTmp);
+                        }
+
+                        sprintf(csTag,"precal_fee_%d",i);
+                        if (GetField_Double(hContext,csTag,&dTmp)) {
+DEBUGLOG(("AddTxnLog:: %s = [%f]\n",csTag,dTmp));
+                                PutField_Double(hPsp,"service_fee",dTmp);
+                        }
+                        PutField_Char(hTxn,"status",PD_PROCESSING);
+
+                        DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+                        iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+
+			if (iRet == PD_OK ) {
+                                DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+                                iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+                        }
+                        if (iRet == PD_OK ) {
+                                DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Add");
+                                iRet = (unsigned long) ((*DBObjPtr)(hPsp));
+                        }
+
+                }
+                else
+                        iRet = PD_ERR;
+
+                hash_destroy(hTxn);
+                hash_destroy(hDetail);
+                hash_destroy(hPsp);
+		
+
+/* MerchantUploadFileDetail Update*/		
+
+		sprintf(csTag,"batch_id_%d",i);
+DEBUGLOG(("try to get %s\n",csTag));
+        	if (GetField_CString(hRequest,csTag,&csBatchId)) {
+DEBUGLOG(("AddTxnLog:: batch_id = [%s]\n",csBatchId));
+
+			sprintf(csTag,"seq_num_%d",i);
+			if (GetField_Int(hRequest,csTag,&iSeqNum)) {
+DEBUGLOG(("AddTxnLog:: seq_num = [%d]\n",iSeqNum));
+                        }
+                
+                	PutField_CString(hRequest,"add_user",PD_UPDATE_USER);
+
+                	PutField_Int(hRequest,"status",PAYOUT_MASTER_TRANSACTION_GENERATED);
+
+                        DBObjPtr = CreateObj(DBPtr,"DBMerchantUploadFileDetail","UpdateDetailByBatchId");
+                        iRet = (unsigned long) ((*DBObjPtr)(csBatchId,iSeqNum,hRequest));
+
+        	}
+        	else
+                	iRet = PD_ERR;
+
+
+	}
+
+        FREE_ME(csTmp);
+	FREE_ME(hTxn);
+        FREE_ME(hDetail);
+        FREE_ME(csTmp);
+DEBUGLOG(("AddTxnLog RET = [%d]\n",iRet));
+        return  iRet;
+
+}
+        
+int     UpdatePreTWVRespTxnLog(hash_t *hContext,
+			hash_t*	hRequest,
+                        hash_t* hResponse)
+
+{
+        int     iRet = PD_OK;
+        char    *csTmp;
+        char    csStatus[PD_TAG_LEN +1];
+	char	csTag[PD_TAG_LEN +1];
+	char	*csTxnId;
+	int	iTotal = 0,i;
+	int	iRejTotal = 0;
+	int	iStatus;
+	int	iBatchId;
+	double  dTmp;
+	long    lIntErr = 0l;
+	hash_t	*hRec;
+
+        hash_t  *hTxn;
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+/*
+        hash_t  *hUploadTxn;
+        hUploadTxn = (hash_t*)  malloc (sizeof(hash_t));
+*/
+        hash_t  *hPspDetail;
+        hPspDetail = (hash_t*)  malloc (sizeof(hash_t));
+
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+DEBUGLOG(("OnlinePayout::UpdateRespTxnLog()\n"));
+
+	if (GetField_Int(hResponse,"total_record",&iTotal)) {
+		for (i = 0 ; i < iTotal; i++) {
+			hash_init(hPspDetail,0);
+        		hash_init(hTxn,0);
+//        		hash_init(hUploadTxn,0);
+			iStatus = 0;
+			iBatchId = 0;
+/* txn_seq from response */
+			sprintf(csTag,"gen_txn_id_%d",i);
+	        	if (GetField_CString(hResponse,csTag,&csTxnId)) {
+DEBUGLOG(("UpdateTxnLog RESP:: %s = [%s]\n",csTag,csTxnId));
+				PutField_CString(hPspDetail,"txn_seq",csTxnId);
+       	         		PutField_CString(hTxn,"txn_seq",csTxnId);
+       	         		PutField_CString(hTxn,"txn_id",csTxnId);
+       			}
+/* tid*/
+			sprintf(csTag,"tid_%d",i);
+        		if (GetField_CString(hResponse,csTag,&csTmp)) {
+DEBUGLOG(("UpdateTxnLog RESP:: %s = [%s]\n",csTag,csTmp));
+                		PutField_CString(hTxn,"tid",csTmp);
+				PutField_CString(hPspDetail,"tid",csTmp);
+        		}
+
+/* status */    
+			sprintf(csTag,"record_status_%d",i);
+        		if (GetField_Int(hResponse,csTag,&iStatus)) {
+DEBUGLOG(("UpdateTxnLog RESP:: %s = [%d]\n",csTag,iStatus))
+				
+				sprintf(csStatus,"%d",iStatus);
+                		PutField_CString(hTxn,"resp_code",csStatus);
+				PutField_CString(hPspDetail,"status",csStatus);
+				if(iStatus!=1){
+					PutField_CString(hContext,"response_code",csStatus);
+					DBObjPtr = CreateObj(DBPtr,"DBMessages","c2i_po");
+					if ((*DBObjPtr)("TWV",&lIntErr,csStatus) == PD_OK){
+						PutField_Int(hContext,"internal_code",(int)lIntErr);
+DEBUGLOG(("UpdateTxnLog RESP:: [%s] error_code[%s]->internal_code[%d]\n","TWV",csStatus,(int)lIntErr));
+					}
+				}
+
+				sprintf(csTag,"pay_amount_%d",i);
+				if(GetField_Double(hRequest,csTag,&dTmp)){
+					PutField_Double(hTxn,"txn_amt",dTmp);
+				}
+
+				/////not update psp balance, until success response sent from psp
+/*
+				if(iStatus==1){
+
+					sprintf(csTag,"country_%d",i);
+					if(GetField_CString(hRequest,csTag,&csTmp)){
+						PutField_CString(hContext,"org_txn_country",csTmp);
+					}
+					sprintf(csTag,"currency_code_%d",i);
+					if(GetField_CString(hRequest,csTag,&csTmp)){
+						PutField_CString(hContext,"org_psp_txn_ccy",csTmp);
+					}
+
+					sprintf(csTag,"pay_amount_%d",i);
+					if(GetField_Double(hRequest,csTag,&dTmp)){
+						PutField_Double(hContext,"org_dst_net_amt",dTmp);
+						PutField_Double(hTxn,"txn_amt",dTmp);
+					}
+
+					sprintf(csTag,"precal_fee_%d",i);
+					if(GetField_Double(hContext,csTag,&dTmp)){
+						PutField_Double(hContext,"precal_fee",dTmp);
+					}
+				
+					PutField_Char(hContext,"party_type",PD_TYPE_PSP);
+					PutField_Char(hContext,"response_mode",PD_ACCEPT);
+					BOObjPtr = CreateObj(BOPtr,"BOBalance","UpdatePayoutAmount");
+                                        if((unsigned long)(*BOObjPtr)(hContext)==PD_OK){
+DEBUGLOG(("UpdateTxnLog RESP:: BOBalance::UpdatePayoutAmount Success\n"));
+						if (GetField_Double(hContext,"psp_balance",&dTmp)) {
+							PutField_Double(hPspDetail,"bal",dTmp);
+						}
+						if (GetField_Double(hContext,"psp_total_float",&dTmp)) {
+							PutField_Double(hPspDetail,"total_float",dTmp);
+						}
+						if (GetField_Double(hContext,"psp_total_hold",&dTmp)) {
+							PutField_Double(hPspDetail,"total_hold",dTmp);
+						}
+                                        }
+					else{
+DEBUGLOG(("UpdateTxnLog RESP:: BOBalance::UpdatePayoutAmount Failed\n"));
+                                                iRet = INT_ERR;
+					}
+
+				}
+*/
+
+				////////Void POA///////
+				if(iStatus!=1){
+					iRejTotal ++;
+					///void payout (merchant) txn
+					TxnObjPtr = CreateObj(TxnPtr,"TxnWebOnUsROG","Authorize");
+					iRet = (unsigned long)(*TxnObjPtr)(hContext,hTxn,hResponse);
+				}
+
+        		}
+
+/* batch_id */  
+        		if (GetField_Int(hResponse,"psp_batch_id",&iBatchId)) {
+DEBUGLOG(("UpdateTxnLog RESP:: psp_batch_id = [%d]\n",iBatchId))
+				sprintf(csTag,"%d",iBatchId);
+                		PutField_CString(hTxn,"psp_batch_id",csTag);
+				PutField_CString(hPspDetail,"batch_id",csTag);
+        		}
+                        /*if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: report_date (PH date) = [%s]\n",csTmp));
+                                PutField_CString(hPspDetail,"report_date",csTmp);
+                        }*/
+
+			if(iRet==PD_OK){
+				DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+				iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+				if (iRet == PD_OK) {
+					iRet = ctos((const unsigned char*)csStatus,strlen((const char*)csStatus));
+					if (iRet == 1)
+						iRet = PD_OK;
+					else
+						iRet = (int)lIntErr;
+						
+					PutField_Int(hTxn,"internal_code",iRet);
+					if (iStatus == 1) {
+						PutField_Char(hTxn,"status",PD_TO_PSP);
+					}
+					else {
+						PutField_CString(hTxn,"sub_status",PD_PSP_REJECT);
+						PutField_Char(hTxn,"status",PD_COMPLETE);
+						PutField_Char(hTxn,"ar_ind",PD_REJECT);
+					}
+					PutField_CString(hTxn,"response_code",csStatus);
+					DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+					iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("UpdateTxnLog RESP::  iRet = [%d]\n",iRet));
+				}
+			}
+
+			if(iRet == PD_OK){
+				if(iStatus != 1){
+					PutField_Char(hTxn,"status",PD_REJECT);
+				}
+				else{
+					PutField_Char(hTxn,"status",PD_TO_PSP);
+				}
+                		DBObjPtr = CreateObj(DBPtr,"DBPayoutQueueDt","UpdateStatus");
+                		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("UpdateTxnLog RESP::DBPayoutQueueDt:UpdateStatus iRet = [%d]\n",iRet));
+        		}
+			if(iRet == PD_OK){
+				if(iStatus != 1){
+					PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_REJECT);
+				}
+				else{
+					PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_SENT);
+				}
+                		DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileDT","UpdateByGenId");
+                		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("UpdateTxnLog RESP::DBPayoutGeneratedFileDT:UpdateByGenId iRet = [%d]\n",iRet));
+        		}
+
+/*
+///////do not update org upload txn sub-status yet
+
+			if(iRet == PD_OK){
+DEBUGLOG(("Call DBPayoutGeneratedFileDT:GetDetailByGenId\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileDT","GetDetailByGenId");
+				if((unsigned long)(*DBObjPtr)(csTxnId,rRecordSet)==PD_OK) {
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while (hRec) {
+						if(GetField_CString(hRec,"file_id",&csTmp)){
+							PutField_CString(hTxn,"file_id",csTmp);
+DEBUGLOG(("GetDetailByGenId: file_id = [%s]\n",csTmp));
+						}
+						if(GetField_CString(hRec,"batch_id",&csTmp)){
+							PutField_CString(hTxn,"batch_id",csTmp);
+DEBUGLOG(("GetDetailByGenId: batch_id = [%s]\n",csTmp));
+						}
+						if(GetField_CString(hRec,"upload_txn_id",&csTmp)){
+							PutField_CString(hUploadTxn,"txn_seq",csTmp);
+							PutField_CString(hUploadTxn,"sub_status",PD_APPROVED_AND_SENT);
+DEBUGLOG(("Call DBTransaction:Update (UploadTxn)\n"));
+							DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+							if((unsigned long) ((*DBObjPtr)(hUploadTxn))!=PD_OK){
+DEBUGLOG(("DBTransaction:Update Failed [%s]\n",csTmp));
+							}
+DEBUGLOG(("GetDetailByGenId: upload_txn_id = [%s]\n",csTmp));
+						}
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+				}
+			}
+
+*/
+        		hash_destroy(hPspDetail);
+		}
+	}
+        FREE_ME(hPspDetail);
+
+	if(iRet == PD_OK){
+DEBUGLOG(("Call DBPayoutGeneratedFileDT:GetDetailByGenId\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileDT","GetDetailByGenId");
+		if((unsigned long)(*DBObjPtr)(csTxnId,rRecordSet)==PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"file_id",&csTmp)){
+					PutField_CString(hTxn,"file_id",csTmp);
+					PutField_CString(hTxn,"queue_seq",csTmp);
+DEBUGLOG(("GetDetailByGenId: file_id = [%s]\n",csTmp));
+				}
+				if(GetField_CString(hRec,"batch_id",&csTmp)){
+					PutField_CString(hTxn,"batch_id",csTmp);
+DEBUGLOG(("GetDetailByGenId: batch_id = [%s]\n",csTmp));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+
+	if(iRejTotal==iTotal){
+		PutField_Char(hTxn,"status",PD_COMPLETE);
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutQueueHd","UpdateStatus");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("UpdateTxnLog RESP::DBPayoutQueueDt:UpdateStatus iRet = [%d]\n",iRet));
+
+		PutField_Int(hTxn,"status",PD_PAYOUTFILE_APPROVE_BY_PSP);
+	}
+	else{
+		PutField_Char(hTxn,"status",PD_TO_PSP);
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutQueueHd","UpdateStatus");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("UpdateTxnLog RESP::DBPayoutQueueDt:UpdateStatus iRet = [%d]\n",iRet));
+
+		PutField_Int(hTxn,"status",PD_PAYOUTFILE_SENT);
+	}
+
+	if(iRet==PD_OK){
+		RemoveField_Double(hTxn,"txn_amt");
+		DBObjPtr = CreateObj(DBPtr,"DBPayoutGeneratedFileHD","Update");
+		iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("UpdateTxnLog RESP::DBPayoutGeneratedFileHD:Update iRet = [%d]\n",iRet));
+	}
+
+DEBUGLOG(("UpdateRespTxnLog Exit [%d]\n",iRet));
+        FREE_ME(hTxn);
+        //FREE_ME(hUploadTxn);
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        return iRet;
+}
+
+static int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_batch_id,"");
+        strcpy(cs_queue_seq,"");
+
+        while ((c = getopt(argc,argv,"b:s:")) != EOF) {
+                switch (c) {
+                        case 'b':
+                                strcpy(cs_batch_id, optarg);
+                                break;
+                        case 's':
+                                strcpy(cs_queue_seq, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_batch_id,"") || !strcmp(cs_queue_seq,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+

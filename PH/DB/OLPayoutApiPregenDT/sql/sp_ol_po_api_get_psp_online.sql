@@ -1,0 +1,41 @@
+CREATE OR REPLACE FUNCTION sp_ol_po_api_get_psp_online(
+  in_action_id			ol_payout_api_pregen_hd.oap_action_id%type,
+  out_cursor            out     sys_refcursor)
+
+RETURN NUMBER Is
+Begin
+	OPEN out_cursor for
+	select	oag_psp_id,
+               	opd_currency_id,
+               	opb_country_id,
+             	cnt,
+             	amount
+      	from    (select oag_psp_id,
+                       	count(oag_txn_id) cnt,
+                       	sum(opr_payout_amount) amount
+               	from    ol_payout_api_pregen_hd,
+			ol_payout_api_pregen_dt,
+                       	ol_payout_request
+              	where   oap_action_id = in_action_id
+		and   	oag_batch_id = oap_batch_id
+               	and     oag_txn_id = opr_txn_id
+		and	(opr_psp_payout_grp = oap_payout_group or opr_psp_payout_grp is NULL)
+               	group by oag_psp_id),
+              	(select opb_country_id,
+                     	opd_currency_id,
+                       	opd_psp_id
+              	from	ol_pid_bal,
+                      	ol_psp_detail
+               	where   opb_pid = opd_psp_id
+              	group by opb_country_id,opd_currency_id,opd_psp_id)
+       	where   opd_psp_id = oag_psp_id
+       	order by oag_psp_id;
+
+        return 0;
+
+exception
+   WHEN OTHERS THEN
+     RETURN 9;
+END sp_ol_po_api_get_psp_online;
+/
+

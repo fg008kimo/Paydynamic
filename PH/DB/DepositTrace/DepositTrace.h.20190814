@@ -1,0 +1,31 @@
+#ifndef _DEPOSIT_TRACE_H_
+#define _DEPOSIT_TRACE_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
+int GetTrace(const char* csTxnId, 
+	     const char  cPartyType,
+	     const int   iSeq,
+	     hash_t* hRec);
+
+int UpdateTraceStatus(const char* csTxnId,
+		      const char  cPartyType,
+		      const int   iSeq,
+		      const char  cStatus);
+
+int UpdateTrace(const char* csTxnId,
+		const char  cPartyType,
+		const int   iSeq,
+		hash_t*     hIn);
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

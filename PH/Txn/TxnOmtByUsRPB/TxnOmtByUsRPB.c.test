@@ -1,0 +1,504 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/06/17              [MSN]
+Update Debug Log                                   2021/06/02              [WMC]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsRPB.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+#define	IN_FILE_EXT	"xls"
+#define	OUT_FILE_EXT	"csv"
+#define PD_DETAIL_TAG   "dt"
+
+void TxnOmtByUsRPB(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int     iBatchId= 0;
+        int     iCnt = 0;
+        int     i = 0;
+	int     iErrCnt = 0;
+
+	char    cAction = 'X';
+	
+	char	*csTmp;
+	char	*csFileName;
+	char	*csFilePath;
+	char	*csPHDATE;
+	char	*csUser;
+	char    *csUploadTxnId;
+        char    *csBatchId;
+	char    *csExtension;
+
+	csBatchId = (char*) malloc (PD_TXN_SEQ_LEN+1);
+	
+	char	csInPayoutFile[PD_MAX_FILE_LEN+1];
+	char	csOutPayoutFile[PD_MAX_FILE_LEN+1];
+	char	csNewInPayoutFile[PD_MAX_FILE_LEN+1];
+	char	csNewOutPayoutFile[PD_MAX_FILE_LEN+1];
+	char	csTag[PD_TAG_LEN+1];
+	char	csCmd[PD_TMP_BUF_LEN+1];
+	char	csTmpUploadId[PD_TXN_SEQ_LEN+1];
+	char    csFullName[PD_MAX_FILE_LEN+1];
+
+	FILE    *fp;
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+DEBUGLOG(("TxnOmtByUsRPB: Authroize()\n"));
+
+/* action */
+	if(GetField_CString(hRequest,"action",&csTmp)){
+		cAction = csTmp[0];
+DEBUGLOG(("action [%c]\n",cAction));
+	}
+
+	if(cAction==PD_UPLOAD_RETURN_PAYOUT){
+/* file_path */
+		if(GetField_CString(hRequest,"filepath",&csFilePath)){
+DEBUGLOG(("filepath[%s]\n",csFilePath));
+		}
+		else{
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("filepath is missing!!!!\n"));
+		}
+
+		if(GetField_CString(hRequest,"ext",&csExtension)){
+DEBUGLOG(("file extension[%s]\n",csExtension));
+                }
+                else{
+                        iRet = INT_ERR;
+                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("file extension is missing!!!!\n"));
+                }
+
+/* file_name */
+		if(GetField_CString(hRequest,"filename",&csFileName)){
+			sprintf(csInPayoutFile,"%s/%s.%s",csFilePath,csFileName,csExtension);
+			sprintf(csOutPayoutFile,"%s/%s.%s",csFilePath,csFileName,OUT_FILE_EXT);
+			sprintf(csFullName,"%s.%s",csFileName,csExtension);
+DEBUGLOG(("filename[%s]\n",csFileName));
+DEBUGLOG(("in_filename[%s]\n",csInPayoutFile));
+		}
+		else{
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("filename is missing!!!!\n"));
+		}
+
+/* user */
+		if(GetField_CString(hRequest,"add_user",&csUser)){
+			PutField_CString(hContext,"update_user",csUser);
+DEBUGLOG(("add_user[%s]\n",csUser));
+		}
+		else{
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("add_user is missing!!!!\n"));
+		}
+
+
+		if(iRet == PD_OK){
+			fp = fopen(csInPayoutFile, "r");
+			if (fp == NULL) {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("input payout file cannot be opened!!!!\n"));
+			}
+			else{
+				if(!strcmp(csExtension,IN_FILE_EXT)){
+					//sprintf(csCmd,"xls2csv -x %s -b GB2312 -c %s -a UTF-8",csInPayoutFile,csOutPayoutFile);
+					sprintf(csCmd,"xls2txt %s > %s",csInPayoutFile,csOutPayoutFile);
+					system(csCmd);
+					sprintf(csCmd,"sed -i 's/\t/,/g' %s",csOutPayoutFile);
+					system(csCmd);
+					fclose(fp);
+				}
+				else{
+                                        iRet = INT_ERR;
+                                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("input payout file extension invalid!!!!\n"));
+                                }
+			}
+		}
+
+		if(iRet == PD_OK){
+DEBUGLOG(("Call DBOLPayoutReturnBatchHd: GetNextBatchId\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchHd","GetNextBatchId");
+			if((unsigned long) ((*DBObjPtr)(&iBatchId))!=PD_OK){
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLPayoutReturnBatchHd: GetNextId Failed\n"));
+			}
+			else{
+DEBUGLOG(("GetNextBatchId: batch_id = [%d]\n",iBatchId));
+				PutField_Int(hTxn,"batch_id",iBatchId);
+				sprintf(csBatchId,"%d",iBatchId);
+				PutField_CString(hResponse,"batch_id",csBatchId);
+			}
+		}
+		sprintf(csNewInPayoutFile,"%s/%d-%s.%s",(char*)csFilePath,iBatchId,csFileName,csExtension);
+		sprintf(csNewOutPayoutFile,"%s/%d-%s.%s",(char*)csFilePath,iBatchId,csFileName,OUT_FILE_EXT);
+
+		if(iRet == PD_OK){
+			PutField_CString(hTxn,"filename",csFullName);
+			PutField_CString(hTxn,"add_user",csUser);
+			PutField_Int(hTxn,"status",PD_PAYOUTFILE_PROCESSING);
+DEBUGLOG(("Call DBOLPayoutReturnBatchHd: Add\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchHd","Add");
+			iRet = (unsigned long)(*DBObjPtr)(hTxn);
+			if(iRet!=PD_OK){
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLPayoutReturnBatchHd: Add Failed\n"));
+			}
+
+		}
+
+		if(iRet == PD_OK){
+			fp = fopen(csOutPayoutFile, "r");
+			if (fp == NULL) {
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("converted payout file cannot be opened!!!!\n"));
+			}
+			else{
+				PutField_Int(hContext,"return_batch_id",iBatchId);
+DEBUGLOG(("Call BOOLPayout: CheckReturnPayoutFile\n"));
+				BOObjPtr = CreateObj(BOPtr,"BOOLPayout","CheckReturnPayoutFile");
+				iRet = (unsigned long)(*BOObjPtr)(fp,hContext,hRequest);
+				if(iRet!=PD_OK){
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call BOOLPayout: CheckReturnPayoutFile Failed\n"));
+				}
+				fclose(fp);
+			}
+
+		}
+		
+		if(iRet == PD_OK){
+DEBUGLOG(("Call BOOLPayout: CheckReturnSplitRecord\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOOLPayout","CheckReturnSplitRecord");
+			if((unsigned long)(*BOObjPtr)(hContext, hRequest) != PD_OK){
+DEBUGLOG(("Call BOOLPayout: CheckReturnSplitRecord: Failed\n"));
+			}
+
+		}
+
+		if(GetField_Int(hContext,"return_count",&iCnt)){
+			PutField_Int(hTxn,"record_count",iCnt);
+DEBUGLOG(("record_count = [%d]\n", iCnt));
+		}
+		if(!iCnt){
+			if(iRet != INT_ERR){
+DEBUGLOG(("no valid records!!!!\n"));
+				iRet = INT_NOT_RECORD;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+		}
+
+		if(iRet == PD_OK){
+			PutField_Int(hTxn,"status",PD_PAYOUTFILE_UPLOADED);
+		}
+		else{
+			PutField_Int(hTxn,"status",PD_PAYOUTFILE_DECLINED);
+		}	
+		
+		if(GetField_Int(hContext,"error_count",&iErrCnt)){
+DEBUGLOG(("error_count = [%d]\n", iErrCnt));
+		}
+		for(i=0; i<iErrCnt; i++){
+			if(iRet != INT_ERR){
+				//Add to error table
+				sprintf(csTag,"error_msg_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					PutField_CString(hTxn,"error_msg",csTmp);
+				}
+DEBUGLOG(("[%d]Call DBOLPayoutReturnBatchError: Add\n", i));
+				DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchError","Add");
+				if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+					iRet = INT_ERR;
+					PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("[%d]Call DBOLPayoutReturnBatchError: Add Failed\n", i));
+				}
+			}
+		}
+
+		if(iRet != INT_ERR){
+DEBUGLOG(("Authorize:: Update header\n"));
+			PutField_CString(hTxn,"update_user",csUser);
+DEBUGLOG(("Call DBOLPayoutReturnBatchHd: Update\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchHd","Update");
+			if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+				iRet = INT_ERR;
+				PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLPayoutReturnBatchHd: Update Failed\n"));
+			}
+		}
+
+		if(!rename(csInPayoutFile,csNewInPayoutFile) && !remove(csOutPayoutFile)){
+DEBUGLOG(("payout file renamed\n"));
+		}
+		else{
+DEBUGLOG(("payout file cannot be renamed!!!!\n"));
+		}
+
+	}
+
+	else if(cAction==PD_CONFIRM_RETURN_PAYOUT){
+		int	iTmp;
+		unsigned char   csTmpTxnSeq[PD_TXN_SEQ_LEN +1];
+		csTmpTxnSeq[0]='\0';
+
+		hash_t  *hRec;
+		recordset_t     *rRecordSet;
+		rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(rRecordSet,0);
+
+/* PHDATE */
+		if(GetField_CString(hContext,"PHDATE",&csPHDATE)){
+DEBUGLOG(("PHDATE [%s]\n",csPHDATE));
+		}
+
+/* psp_date */
+		if(GetField_CString(hRequest,"psp_date",&csTmp)){
+DEBUGLOG(("psp_date [%s]\n",csTmp));
+		}
+		else{
+			PutField_CString(hRequest,"psp_date",csPHDATE);
+		}
+
+/* report_date */
+		if(GetField_CString(hRequest,"report_date",&csTmp)){
+DEBUGLOG(("report_date [%s]\n",csTmp));
+		}
+		else{
+			PutField_CString(hRequest,"report_date",csPHDATE);
+		}
+
+/* user */
+		if(GetField_CString(hRequest,"add_user",&csUser)){
+DEBUGLOG(("add_user [%s]\n",csUser));
+		}
+		else{
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("add_user is missing!!!!\n"));
+		}
+
+/* total_cnt */
+                if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("total_cnt (Return Payout Count) [%d]\n",iCnt));
+                }
+                else {
+DEBUGLOG(("total_cnt not found\n"));
+ERRLOG("TxnOmtByUsRPB::Authorize::total_cnt not found\n");
+                        iRet = INT_ERR;
+                        PutField_Int(hContext,"internal_error",iRet);
+                }
+
+		if (iRet == PD_OK) {
+			csTmpUploadId[0]='\0';
+			for (i = 0; i < iCnt; i++) {
+				hash_init(hTxn,0);
+
+				sprintf(csTag, "%s_txnid_%d", PD_DETAIL_TAG, i+1);
+				if (GetField_CString(hRequest, csTag, &csUploadTxnId)){
+					PutField_CString(hRequest,"org_txn_seq", csUploadTxnId);
+DEBUGLOG(("[%s] = [%s]\n", csTag, csUploadTxnId));
+
+DEBUGLOG(("Call DBOLTransaction: IsPayoutAPITxn\n"));
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","IsPayoutAPITxn");
+					if((unsigned long) ((*DBObjPtr)(csUploadTxnId))==PD_TRUE){
+						//GetReturnDetailByStatus_API_ForUpdate
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: GetReturnDetailByStatus_API_ForUpdate\n"));
+						DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchDt","GetReturnDetailByStatus_API_ForUpdate");
+					}
+					else{
+						//GetReturnDetailByStatus_ForUpdate
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: GetReturnDetailByStatus_ForUpdate\n"));
+						DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchDt","GetReturnDetailByStatus_ForUpdate");
+					}
+
+
+					recordset_init(rRecordSet,0);
+					if((unsigned long) ((*DBObjPtr)(csUploadTxnId,PAYOUT_MASTER_TRANSACTION_UPLOADED,rRecordSet))==PD_OK){
+						hRec = RecordSet_GetFirst(rRecordSet);
+						while (hRec) {
+							if(GetField_Int(hRec,"batch_id",&iTmp)){
+								PutField_Int(hTxn,"batch_id",iTmp);
+							}
+							if(GetField_Int(hRec,"seq",&iTmp)){
+								PutField_Int(hTxn,"seq",iTmp);
+							}
+							PutField_CString(hTxn,"update_user",csUser);
+							PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_CONFIRMED);
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: Update\n"));
+							DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchDt","Update");
+							if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: Update Failed\n"));
+								iRet = INT_ERR;
+								PutField_Int(hContext,"internal_error",iRet);
+								break;
+							}
+
+							if(GetField_CString(hRec,"ccy",&csTmp)){
+								PutField_CString(hRequest,"txn_ccy", csTmp);
+							}
+							if(GetField_CString(hRec,"country",&csTmp)){
+								PutField_CString(hRequest,"txn_country", csTmp);
+							}
+							if(GetField_CString(hRec,"reason",&csTmp)){
+								PutField_CString(hRequest,"remark", csTmp);
+							}
+
+							if(strcmp(csUploadTxnId,csTmpUploadId)){
+								//Check Status
+DEBUGLOG(("Call DBOLTransaction: MatchRespTxnStatus\n"));
+								DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "MatchRespTxnStatus");
+								if ((unsigned long)(*DBObjPtr)(csUploadTxnId,PD_COMPLETE,PD_ACCEPT)!=PD_FOUND){
+DEBUGLOG(("Call DBOLTransaction: MatchRespTxnStatus Not Found\n"));
+									//cancel return
+									PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_CANCELLED);
+									PutField_CString(hTxn,"desc","Transaction already returned");
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: Update\n"));
+									DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchDt","Update");
+									if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+										iRet = INT_ERR;
+										PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: Update Failed\n"));
+										break;
+									}
+									hRec = RecordSet_GetNext(rRecordSet);
+									continue;
+								}
+
+								sprintf(csTmpUploadId,"%s",csUploadTxnId);
+
+								DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextOmtTxnSeq");
+								strcpy((char*)csTmpTxnSeq,(*DBObjPtr)());
+								PutField_CString(hContext,"txn_seq", (const char*)csTmpTxnSeq);
+								PutField_Int(hContext,"do_logging",PD_ADD_LOG);
+								PutField_CString(hContext,"process_code","000000");
+								PutField_CString(hContext,"process_type","0000");
+								PutField_CString(hContext,"txn_code",PD_VOID_TXN_CODE);
+DEBUGLOG(("Call OMTChannel: AddTxnLog\n"));
+								ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","AddTxnLog");
+								iRet = (unsigned long)(*ChannelObjPtr)(hContext,hRequest);
+								if(iRet != PD_OK){
+DEBUGLOG(("Call OMTChannel: AddTxnLog Failed\n"));
+									PutField_Int(hContext,"internal_error",iRet);
+									PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_CANCELLED);
+									PutField_CString(hTxn,"desc","Add Return Transaction Log Failed");
+
+									sprintf(csTag,"%s_status",csTmpUploadId);
+									PutField_Int(hTxn,csTag,PAYOUT_MASTER_TRANSACTION_CANCELLED);
+									sprintf(csTag,"%s_desc",csTmpUploadId);
+									PutField_CString(hTxn,csTag,"Add Return Transaction Log Failed");
+								}
+								else{
+									//default not return merchant fee
+									PutField_Int(hRequest,"return_mfee",PD_FALSE);
+									PutField_Int(hRequest,"return_pspfee",PD_TRUE);
+DEBUGLOG(("Call TxnOmtByUsVOT: Authorize\n"));
+									TxnObjPtr = CreateObj(TxnPtr,"TxnOmtByUsVOT","Authorize");
+									iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+									if(iRet!=PD_OK){
+DEBUGLOG(("Call TxnOmtByUsVOT: Authorize Failed\n"));
+										PutField_Int(hContext,"internal_error",iRet);
+										PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_CANCELLED);
+										PutField_CString(hTxn,"desc","Return Payout Failed");
+
+										sprintf(csTag,"%s_status",csTmpUploadId);
+										PutField_Int(hTxn,csTag,PAYOUT_MASTER_TRANSACTION_CANCELLED);
+										sprintf(csTag,"%s_desc",csTmpUploadId);
+										PutField_CString(hTxn,csTag,"Return Payout Failed");
+									}
+									else{
+										PutField_Int(hTxn,"status",PAYOUT_MASTER_TRANSACTION_APPROVED);
+										sprintf(csTag,"%s_status",csTmpUploadId);
+										PutField_Int(hTxn,csTag,PAYOUT_MASTER_TRANSACTION_APPROVED);
+									}
+								}
+							}
+							else{
+								sprintf(csTag,"%s_status",csTmpUploadId);
+								if(GetField_Int(hTxn,csTag,&iTmp)){
+									PutField_Int(hTxn,"status",iTmp);
+								}
+
+								sprintf(csTag,"%s_desc",csTmpUploadId);
+								if(GetField_CString(hTxn,csTag,&csTmp)){
+									PutField_CString(hTxn,"desc",csTmp);
+								}
+							}
+
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: Update\n"));
+							DBObjPtr = CreateObj(DBPtr,"DBOLPayoutReturnBatchDt","Update");
+							if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+DEBUGLOG(("Call DBOLPayoutReturnBatchDt: Update Failed\n"));
+								iRet = INT_ERR;
+								PutField_Int(hContext,"internal_error",iRet);
+								break;
+							}
+							hRec = RecordSet_GetNext(rRecordSet);
+						}
+
+					}
+				}
+				else{
+DEBUGLOG(("[%s] not found\n", csTag));
+					iRet = INT_ERR;
+					break;
+				}
+			}
+		}
+		RecordSet_Destroy(rRecordSet);
+		FREE_ME(rRecordSet);
+
+	}
+	else{
+		iRet = INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("action is invalid!!!!\n"));
+
+	}
+
+	FREE_ME(hTxn);
+	FREE_ME(csBatchId);
+
+DEBUGLOG(("TxnOmtByUsRPB: Authorize() iRet = [%d]\n",iRet));
+        return iRet;
+}

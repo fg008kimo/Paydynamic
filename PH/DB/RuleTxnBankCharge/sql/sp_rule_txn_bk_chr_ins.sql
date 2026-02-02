@@ -1,0 +1,55 @@
+CREATE OR REPLACE FUNCTION sp_rule_txn_bk_chr_ins(
+	in_bank_code                  rule_txn_bank_charge.rtbc_bank_code%Type,
+  	in_country                    rule_txn_bank_charge.rtbc_country%Type,
+  	in_ccy                        rule_txn_bank_charge.rtbc_ccy%Type,
+  	in_channel_code               rule_txn_bank_charge.rtbc_channel_code%Type,
+  	in_txn_code                   rule_txn_bank_charge.rtbc_txn_code%Type,
+  	in_amount_id                  rule_txn_bank_charge.rtbc_amount_id%Type,
+  	in_min_value                  rule_txn_bank_charge.rtbc_min_value%Type,
+  	in_max_value                  rule_txn_bank_charge.rtbc_max_value%Type,
+  	in_effect_date                rule_txn_bank_charge.rtbc_effect_date%Type,
+  	in_disabled                   rule_txn_bank_charge.rtbc_disabled%Type,
+	in_create_user		      rule_txn_bank_charge.rtbc_create_user%type
+)
+return number is
+begin
+		insert into rule_txn_bank_charge
+			(rtbc_bank_code,
+			 rtbc_country,
+			 rtbc_ccy,
+			 rtbc_channel_code,
+			 rtbc_txn_code,
+			 rtbc_amount_id,
+			 rtbc_min_value,
+			 rtbc_max_value,
+			 rtbc_effect_date,
+			 rtbc_disabled,
+			 rtbc_create_timestamp,
+			 rtbc_create_user,
+			 rtbc_update_timestamp,
+			 rtbc_update_user)
+		values(in_bank_code,
+			in_country,
+			in_ccy,
+			in_channel_code,
+			in_txn_code,
+			in_amount_id,
+			in_min_value,
+			in_max_value,
+			in_effect_date,
+			in_disabled,
+			sysdate,
+			in_create_user,
+			sysdate,
+			in_create_user);
+		if SQL%ROWCOUNT = 0 THEN
+			return 1;
+		else
+			return 0;
+		end if;
+
+exception
+ when others then
+ return 9;
+end sp_rule_txn_bk_chr_ins;
+/

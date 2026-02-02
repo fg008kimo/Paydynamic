@@ -1,0 +1,203 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/06/10              David Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char cDebug = 'Y';
+
+char cs_deposit_period[PD_DATE_LEN + 1];
+char cs_statement_period[PD_DATE_LEN + 1];
+
+OBJPTR(DB);
+int parse_arg(int argc, char **argv);
+int process_txn();
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc != 5) {
+		printf("usage: -d depost_period [minutes] -s statement_period [minutes]\n");
+		return FAILURE;
+	} else
+		return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = SUCCESS;
+
+	iRet = parse_arg(argc, argv);
+
+	if (iRet != SUCCESS) {
+		printf("usage: -d depost_period [minutes] -s statement_period [minutes]\n");
+		return iRet;
+	}
+
+	iRet = process_txn();
+
+	return iRet;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int process_txn()
+{
+	int iRet = SUCCESS;
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		int hv_deposit_period;
+		int hv_statement_period;
+
+		varchar v_int_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar v_bank_acct_num[PD_BANK_ACCT_NUM_LEN + 1];
+		varchar v_bank_name[PD_BANK_NAME_LEN + 1];
+		varchar v_owner_name[PD_NAME_LEN + 1];
+		int v_deposit_cnt;
+		int v_statement_cnt;
+
+		short ind_int_bank_code = -1;
+		short ind_bank_acct_num = -1;
+		short ind_bank_name = -1;
+		short ind_owner_name = -1;
+		short ind_deposit_cnt = -1;
+		short ind_statement_cnt = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	hv_deposit_period = atoi(cs_deposit_period);
+	hv_statement_period = atoi(cs_statement_period);
+
+	EXEC SQL DECLARE c_cursor_get_deposit_txn CURSOR FOR
+		select otd_bank_code, otd_bank_acct_num, bank_name, ob_owner_name, count(1)
+		from ol_txn_header, ol_txn_detail, bank_desc, ol_bank_accts
+		where oth_txn_code = 'ODI'
+		and oth_txn_id = otd_txn_id
+		and oth_create_timestamp >= sysdate - (:hv_deposit_period/24/60)
+		and otd_bank_code is not null
+		and otd_bank_acct_num is not null
+		and otd_bank_code = internal_bank_code
+		and otd_bank_code = ob_int_bank_code
+		and otd_bank_acct_num = ob_bank_acct_num
+		group by otd_bank_code, otd_bank_acct_num, bank_name, ob_owner_name;
+
+		EXEC SQL OPEN c_cursor_get_deposit_txn;
+		do {
+			EXEC SQL FETCH c_cursor_get_deposit_txn
+			INTO :v_int_bank_code:ind_int_bank_code,
+					:v_bank_acct_num:ind_bank_acct_num,
+					:v_bank_name:ind_bank_name,
+					:v_owner_name:ind_owner_name,
+					:v_deposit_cnt:ind_deposit_cnt;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			v_int_bank_code.arr[v_int_bank_code.len] = '\0';
+			v_bank_acct_num.arr[v_bank_acct_num.len] = '\0';
+			v_bank_name.arr[v_bank_name.len] = '\0';
+			v_owner_name.arr[v_owner_name.len] = '\0';
+
+DEBUGLOG(("process_txn :: found [%d] deposit request in recent [%d] minutes for bank code [%s] account number [%s]\n", v_deposit_cnt, hv_deposit_period, (char*)v_int_bank_code.arr, (char*)v_bank_acct_num.arr));
+
+			EXEC SQL DECLARE c_cursor_get_statement_txn CURSOR FOR
+				select count(1)
+				from ol_statement_detail
+				where olsd_create_timestamp >= sysdate - (:hv_statement_period/24/60)
+				and olsd_int_bank_code = :v_int_bank_code:ind_int_bank_code
+				and olsd_bank_acct_num = :v_bank_acct_num:ind_bank_acct_num
+				and rownum = 1;
+
+			EXEC SQL OPEN c_cursor_get_statement_txn;
+			do {
+				EXEC SQL FETCH c_cursor_get_statement_txn
+				INTO :v_statement_cnt:ind_statement_cnt;
+
+				if (SQLCODE == SQL_NOT_FOUND) {
+					break;
+				}
+
+DEBUGLOG(("process_txn :: found [%d] bank statement record in recent [%d] minutes for bank code [%s] account number [%s]\n", v_statement_cnt, hv_statement_period, (char*)v_int_bank_code.arr, (char*)v_bank_acct_num.arr));
+
+				if (v_statement_cnt == 0) {
+DEBUGLOG(("process_txn :: deposit request found but bank statement record not found for bank code [%s] account number [%s]\n", (char*)v_int_bank_code.arr, (char*)v_bank_acct_num.arr));
+printf("<tr><td>%.*s</td>", v_bank_name.len, v_bank_name.arr);
+printf("<td>%.*s</td>", v_bank_acct_num.len, v_bank_acct_num.arr);
+printf("<td>%.*s</td>", v_owner_name.len, v_owner_name.arr);
+printf("<td>%d</td>", v_deposit_cnt);
+printf("<td>%d</td></tr>", v_statement_cnt);
+					iRet = FOUND;
+				} else {
+DEBUGLOG(("process_txn :: both deposit request and bank statement record found for bank code [%s] account number [%s]\n", (char*)v_int_bank_code.arr, (char*)v_bank_acct_num.arr));
+				}
+			} while (PD_TRUE);
+			EXEC SQL CLOSE c_cursor_get_statement_txn;
+		} while(PD_TRUE);
+		EXEC SQL CLOSE c_cursor_get_deposit_txn;
+
+DEBUGLOG(("process_txn :: return [%d]\n", iRet));
+		return iRet;
+sql_error:
+DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_get_deposit_txn;
+	EXEC SQL CLOSE c_cursor_get_statement_txn;
+	return FAILURE;
+}
+
+
+int parse_arg(int argc, char **argv)
+{
+	char c;
+
+	while ((c = getopt(argc, argv, "d:s:")) != EOF) {
+		switch (c) {
+			case 'd':
+				strcpy(cs_deposit_period, optarg);
+				cs_deposit_period[strlen(cs_deposit_period)] = '\0';
+				break;
+			case 's':
+				strcpy(cs_statement_period, optarg);
+				cs_statement_period[strlen(cs_statement_period)] = '\0';
+				break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_deposit_period, "") || !strcmp(cs_statement_period, ""))
+		return FAILURE;
+
+	return SUCCESS;
+}

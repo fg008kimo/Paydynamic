@@ -1,0 +1,35 @@
+#ifndef _YPY_TO_CMS_H
+#define _YPY_TO_CMS_H
+#include "common.h"
+
+
+
+/*#define	IMPORT_MAX_FIELD		14*/
+#define	IMPORT_MAX_FIELD		23
+#define	IMPORT_FIELD_LEN		50
+
+/*
+#define	IDX_TXN_DATE			1
+#define	IDX_TXN_TIME			2
+*/
+#define	IDX_TXN_DATETIME		1
+#define	IDX_TXN_AMOUNT			4	
+#define	IDX_SERVICE_FEE			6
+#define	IDX_BILL_NO			2	
+#define	IDX_TXN_STATUS			7
+
+#define IDX_YEAR                        0
+#define IDX_MONTH                       1
+#define IDX_DAY                         2
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+
+#endif

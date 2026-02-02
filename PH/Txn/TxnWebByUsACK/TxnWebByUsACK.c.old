@@ -1,0 +1,519 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/10/22              Cody Chan
+encrypt type not hard code			   2011/01/27		   LokMan Chow
+Add Fee and Pay Method				   2011/11/28		   Cody Chan
+Add checking for ignore_nack			   2013/01/30		   LokMan Chow 
+Add Customer Id					   2013/08/22		   David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnWebByUsACK.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+#define PD_ACK_RESEND   "resend_web_rck.sh"
+char cDebug;
+
+#define	POSTOFFICE_ATM	"B081010"
+#define	POSTOFFICE_ATM_METHOD	"031"
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Msg);
+void TxnWebByUsACK(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int	iTmp;
+	long	lKey;
+	long	lRspKey;
+	double	dTmp;
+        char    *csValue = strdup("");
+        char    *csChannelCode = strdup("");
+	char	csTmpChannelCode[PD_CHANNEL_CODE_LEN *2  +1];
+	//char	csDateTime[PD_DATETIME_LEN +1];
+	char*	csPtr = NULL;
+	char*	csOrgTxnSeq;
+	//char	cPtr;
+	char*	csBatchTxnSeq;
+	char	*csPayMethod;
+	char	*csOrgProcessType;
+	char	*csOrgProcessCode;
+	char	*csMerchantId;
+	char	cArInd;
+	char*	csMagicNum;
+	char*	csMagicWord;
+	char*	csClientId;
+	int	iIgnore = PD_FALSE;
+ 	struct msg_t* msg;
+ 	//struct msg_t* rMsg;
+	hash_t  *hRec;
+	hash_t  *hDtl;
+	hex_t   *h_msg;
+	
+	hash_t  *hRsp, *hAck;
+	recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	recordset_t     *rMerchantSet;
+        rMerchantSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rMerchantSet,0);
+	
+        hRsp = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRsp,0);
+        hAck = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hAck,0);
+
+
+DEBUGLOG(("TxnWebByUsACK Authorize()\n"));
+	if (GetField_CString(hContext,"org_txn_seq",&csOrgTxnSeq)) {
+
+/* ACK LOG  */
+		PutField_CString(hAck,"org_txn_seq",csOrgTxnSeq);
+		if (GetField_CString(hRequest,"add_user",&csPtr)) {
+			PutField_CString(hAck,"add_user",csPtr);
+		}
+		else {
+			PutField_CString(hAck,"add_user",PD_UPDATE_USER);
+		}
+		PutField_Char(hAck,"status",PD_TO_PSP);
+
+		if (GetField_CString(hContext,"batch_txn_seq",&csBatchTxnSeq)) {
+        		PutField_CString(hAck,"txn_seq",csBatchTxnSeq);
+DEBUGLOG(("TxnWebByUsACK batch_txn_seq = [%s]\n",csBatchTxnSeq));
+		}
+		else {
+			char	csTxnSeq[PD_TXN_SEQ_LEN +1];
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMgtTxnSeq");
+        		strcpy(csTxnSeq,(*DBObjPtr)());
+			csBatchTxnSeq = csTxnSeq;
+        		PutField_CString(hAck,"txn_seq",csTxnSeq);
+DEBUGLOG(("TxnWebByUsACK new_txn_seq = [%s]\n",csTxnSeq));
+		}
+/* end ack log */
+
+/* hard code for xpay*/
+		PutField_CString(hRsp,"currency_code","100");
+		PutField_CString(hRsp,"language","GB");
+		PutField_CString(hRsp,"remark","");
+
+		PutField_CString(hRsp,"txn_seq",csOrgTxnSeq);
+DEBUGLOG(("TxnWebByUsACK org_txn_seq = [%s]\n",csOrgTxnSeq));
+        	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnHeader");
+        	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("TxnWebByUsACK found record = [%s]\n",csOrgTxnSeq));
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                       	 	if (GetField_CString(hRec,"process_type",&csOrgProcessType)) {
+DEBUGLOG(("TxnWebByUsACK:process_type= [%s]\n",csOrgProcessType));
+					if(!strcmp(csOrgProcessType,PD_PROCESS_TYPE_DSP))
+						PutField_CString(hRsp,"process_type",PD_PROCESS_TYPE_ACK);
+					else
+						PutField_CString(hRsp,"process_type",csOrgProcessType);
+				}
+                       	 	if (GetField_CString(hRec,"process_code",&csOrgProcessCode)) {
+DEBUGLOG(("TxnWebByUsACK:process_code= [%s]\n",csOrgProcessCode));
+					if(!strcmp(csOrgProcessCode,PD_PROCESS_CODE_DSP))
+						PutField_CString(hRsp,"process_code",PD_PROCESS_CODE_ACK);
+					else
+						PutField_CString(hRsp,"process_type",csOrgProcessCode);
+				}
+                       	 	if (GetField_CString(hRec,"response_code",&csPtr)) {
+DEBUGLOG(("TxnWebByUsACK:response_code= [%s]\n",csPtr));
+					PutField_CString(hRsp,"response_code",csPtr);
+				}
+
+                       	 	if (GetField_Char(hRec,"ar_ind",&cArInd)) {
+DEBUGLOG(("TxnWebByUsACK:ar_ind= [%c]\n",cArInd));
+					PutField_Char(hRsp,"ar_ind",cArInd);
+				}
+                       	 	if (GetField_CString(hRec,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("TxnWebByUsACK:merchant_id= [%s]\n",csMerchantId));
+					PutField_CString(hRsp,"merchant_id",csMerchantId);
+                        	}
+                       	 	if (GetField_CString(hRec,"merchant_ref",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:merchant_id= [%s]\n",csValue));
+					PutField_CString(hRsp,"merchant_ref",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"transmission_datetime",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:transmission_datetime= [%s]\n",csValue));
+					PutField_CString(hRsp,"transmission_datetime",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"local_transmission_datetime",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:local_transmission_datetime= [%s]\n",csValue));
+					PutField_CString(hRsp,"local_transmission_datetime",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"channel_code",&csChannelCode)) {
+DEBUGLOG(("TxnWebByUsACK:channel_code= [%s]\n",csChannelCode));
+                        	}
+                       	 	if (GetField_Double(hRec,"net_amt",&dTmp)) {
+DEBUGLOG(("TxnWebByUsACK:net_amt= [%f]\n",dTmp));
+					PutField_Double(hRsp,"net_amt",dTmp);
+                        	}
+                       	 	if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("TxnWebByUsACK:txn_amt= [%f]\n",dTmp));
+					PutField_Double(hRsp,"txn_amt",dTmp);
+                        	}
+                       	 	if (GetField_Int(hRec,"internal_error",&iTmp)) {
+DEBUGLOG(("TxnWebByUsACK:internal_error= [%d]\n",iTmp));
+					PutField_Int(hRsp,"internal_error",iTmp);
+                        	}
+/*
+                       	 	if (GetField_Double(hRec,"fee",&dTmp)) {
+DEBUGLOG(("TxnWebByUsACK:fee= [%f]\n",dTmp));
+					PutField_Double(hRsp,"service_fee",dTmp);
+                        	}
+*/
+				if (GetField_CString(hRec,"client_id",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:client_id= [%s]\n",csValue));
+					PutField_CString(hRsp,"client_id",csValue);
+				}
+
+                        	hRec = RecordSet_GetNext(rRecordSet);
+
+/////check return nack or not
+				if(cArInd != PD_ACCEPT){
+					DBObjPtr = CreateObj(DBPtr,"DBMerchDetail","GetMerchant");
+					if ((*DBObjPtr)(csMerchantId,
+							rMerchantSet) == PD_OK){
+						hDtl = RecordSet_GetFirst(rMerchantSet);
+						while (hDtl) {
+							if (GetField_Int(hDtl,"ignore_nack",&iIgnore)) {
+DEBUGLOG(("BOMerchant::GetMerchantTxnInfo() GetMerchantDetail - ignore_nack = [%d]\n",iIgnore));
+							}
+							if(iIgnore){
+								iRet = INT_MERCHANT_IGNORE_NACK;
+							}
+							hDtl = RecordSet_GetNext(rMerchantSet);
+						}
+					}
+				}
+
+                	}
+        	}
+		else {
+DEBUGLOG(("TxnWebByUsACK not found record for [%s]\n",csOrgTxnSeq));
+			iRet = INT_ORG_TXN_NOT_FOUND;
+		}
+
+/* fee charge detail */
+		if (iRet == PD_OK) {
+                	recordset_init(rRecordSet,0);
+        		DBObjPtr = CreateObj(DBPtr,"DBTxnElements","GetFeeChgDetailByType");
+        		if ((*DBObjPtr)(csOrgTxnSeq,PD_ELEMENT_TXN_FEE,PD_TYPE_MERCHANT,rRecordSet) == PD_OK) {
+               			hRec = RecordSet_GetFirst(rRecordSet);
+                		while (hRec) {
+                       	 		if (GetField_Double(hRec,"amount",&dTmp)) {
+DEBUGLOG(("TxnWebByUsACK:fee= [%f]\n",dTmp));
+						PutField_Double(hRsp,"service_fee",dTmp);
+					}
+
+                        		hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+		}
+	}
+	else 	
+		iRet = INT_ERR;
+	
+        if ( iRet == PD_OK) {
+/* Check Merchant */
+                BOObjPtr = CreateObj(BOPtr,"BOMerchant","GetMerchantDetail");
+                iRet = (unsigned long)(*BOObjPtr)(hContext,hRsp);
+DEBUGLOG(("BOMerchant->GetMerchantDetail = [%d]\n",iRet));
+
+        }
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext,"merchant_key",&csPtr)) {
+DEBUGLOG(("BPMerchant: GetMerchantDetail - merchant_key = [%s]\n",csPtr));
+                	PutField_CString(hRsp,"merchant_key",csPtr);
+                 }
+	}
+	if (iRet == PD_OK ) {
+        	recordset_init(rRecordSet,0);
+        	DBObjPtr = CreateObj(DBPtr,"DBTransaction","GetTxnDetail");
+        	if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+               		hRec = RecordSet_GetFirst(rRecordSet);
+                	while (hRec) {
+                       	 	if (GetField_CString(hRec,"success_url",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:success_url= [%s]\n",csValue));
+					PutField_CString(hRsp,"success_url",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"success_callback_url",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:success_callback_url= [%s]\n",csValue));
+					PutField_CString(hRsp,"success_callback_url",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"failure_url",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:failure_url= [%s]\n",csValue));
+					PutField_CString(hRsp,"failure_url",csValue);
+                        	}
+                       	 	if (GetField_CString(hRec,"failure_callback_url",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:failure_callback_url= [%s]\n",csValue));
+					PutField_CString(hRsp,"failure_callback_url",csValue);
+                        	}
+				if(GetField_CString(hRec,"encrypt_type",&csValue)){
+DEBUGLOG(("TxnWebByUsACK:encrypt_type= [%s]\n",csValue));
+                                        PutField_CString(hRsp,"encrypt_type",csValue);
+                                }
+                                else{
+DEBUGLOG(("TxnWebByUsACK:use default encrypt_type= [01]\n"));
+                                        PutField_CString(hRsp,"encrypt_type","01");
+                                }
+/* remark */
+                       	 	if (GetField_CString(hRec,"remark",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:remark= [%s]\n",csValue));
+					PutField_CString(hRsp,"remark",csValue);
+                        	}
+/* txn_ccy */
+                       	 	if (GetField_CString(hRec,"txn_ccy",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:txn_ccy= [%s]\n",csValue));
+					PutField_CString(hRsp,"txn_ccy",csValue);
+					PutField_CString(hRsp,"net_ccy",csValue);
+					PutField_CString(hRsp,"service_fee_ccy",csValue);
+                        	}
+/* pay_method */
+                       	 	if (GetField_CString(hRec,"selected_pay_method",&csPayMethod)) {
+DEBUGLOG(("TxnWebByUsACK:pay_method= [%s]\n",csPayMethod));
+					PutField_CString(hRsp,"pay_method",csPayMethod);
+                        	}
+                       	 	else if (GetField_CString(hRec,"pay_method",&csPayMethod)) {
+DEBUGLOG(("TxnWebByUsACK:pay_method= [%s]\n",csPayMethod));
+					PutField_CString(hRsp,"pay_method",csPayMethod);
+                        	}
+				else {
+DEBUGLOG(("TxnWebByUsACK:pay_method is missing!!!\n"));
+				}
+/* bank code */
+				if (GetField_CString(hRec,"bank_code",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:bank_code= [%s]\n",csValue));
+					if (!strcmp(csPayMethod,PD_ATM_PAYMENT) && !strcmp(csValue,POSTOFFICE_ATM)) {
+						PutField_CString(hRsp,"pay_method",POSTOFFICE_ATM_METHOD);
+					}
+				}
+/* magic num & magic word */
+				if (GetField_CString(hRec,"magic_num",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:magic_num= [%s]\n",csValue));
+					PutField_CString(hRsp,"magic_num",csValue);
+					if (GetField_CString(hRec,"magic_word",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:magic_word= [%s]\n",csValue));
+						PutField_CString(hRsp,"magic_word",csValue);
+					}
+				}
+
+                       		hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+
+	if (iRet == PD_OK ) {
+                recordset_init(rRecordSet,0);
+                DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","GetTxnPspDetail");
+                if ((*DBObjPtr)(csOrgTxnSeq,rRecordSet) == PD_OK) {
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+                                if (GetField_CString(hRec,"tid",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:tid= [%s]\n",csValue));
+                                        PutField_CString(hRsp,"tid",csValue);
+                                }
+                                if (GetField_CString(hRec,"fundin_date",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:fundin_date= [%s]\n",csValue));
+                                        PutField_CString(hRsp,"fundin_date",csValue);
+                                }
+                                if (GetField_CString(hRec,"txn_date",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:txn_date= [%s]\n",csValue));
+                                        PutField_CString(hRsp,"txn_date",csValue);
+                                }
+                                if (GetField_CString(hRec,"notice_status",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:notice_status= [%s]\n",csValue));
+                                        PutField_CString(hRsp,"notice_status",csValue);
+                                }
+                                if (GetField_CString(hRec,"error_code",&csValue)) {
+DEBUGLOG(("TxnWebByUsACK:error_code= [%s]\n",csValue));
+                                        PutField_CString(hRsp,"error_code",csValue);
+                                }
+                                hRec = RecordSet_GetNext(rRecordSet);
+                        }
+                }
+        }
+
+/* Get cust_id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hRsp,"magic_num",&csMagicNum)) {
+DEBUGLOG(("TxnWebByUsACK:magic_num= [%s]\n",csMagicNum));
+			if (GetField_CString(hRsp,"magic_word",&csMagicWord)) {
+DEBUGLOG(("TxnWebByUsACK:magic_word= [%s]\n",csMagicWord));
+				if (GetField_CString(hRsp,"client_id",&csClientId)) {
+DEBUGLOG(("TxnWebByUsACK:client_id= [%s]\n",csClientId));
+
+					char csTmp[PD_MAGIC_CUST_ID_LEN+1];
+					DBObjPtr = CreateObj(DBPtr,"DBClientMagic","GetCustomerIdByMagic");
+					if ((*DBObjPtr)(csClientId,csMagicNum,csMagicWord,csTmp) != PD_OK) {
+DEBUGLOG(("cust_id not found for client id [%s] magic num [%s] magic word [%s]\n",csClientId,csMagicNum,csMagicWord));
+ERRLOG("cust_id not found for client id [%s] magic num [%s] magic word [%s]\n",csClientId,csMagicNum,csMagicWord);
+						iRet = PD_ERR;
+					} else {
+						PutField_CString(hRsp,"customer_id",csTmp);
+DEBUGLOG(("TxnWebByUsACK:customer_id found [%s]\n",csTmp));
+						RemoveField_CString(hRsp,"merchant_ref");
+						RemoveField_CString(hRsp,"transmission_datetime");
+					}
+				}
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if (!strcmp(csChannelCode,PD_CHANNEL_XPAY)) {
+	 		MsgObjPtr = CreateObj(MsgPtr,"XpyMsg","BuildData");
+        		if ((*MsgObjPtr)(hRsp) == PD_OK) {
+                                if (GetField_CString(hRsp,"plainttext_data",&csPtr)) {
+DEBUGLOG(("TxnWebByUsACK:BUILD plainttext_data= [%s]\n",csPtr));
+				}
+			}
+			else 
+				iRet = PD_ERR;
+		}
+		else {
+DEBUGLOG(("TxnWebByUsACK:BUILD AckAuthData\n"));
+	 		MsgObjPtr = CreateObj(MsgPtr,"WebMsg","BuildAckAuthData");
+        		iRet = (unsigned long)(*MsgObjPtr)(hRsp);
+		}
+	}
+
+	if (iRet == PD_OK) {
+/* Check Merchant Sign*/
+		if (!strcmp(csChannelCode,PD_CHANNEL_XPAY)) {
+                	BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateXpaySign");
+                	iRet = (unsigned long)(*BOObjPtr)(hContext,hRsp);
+DEBUGLOG(("BOSecurity->GenerateXpaySign = [%d]\n",iRet));
+		}
+		else {
+                	BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateMac");
+                	iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hRsp);
+DEBUGLOG(("BOSecurity->GenerateMac = [%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK) {
+		sprintf(csTmpChannelCode,"%c%c%cMsg",csChannelCode[0],tolower(csChannelCode[1]),tolower(csChannelCode[2]));
+DEBUGLOG(("TxnWebByUsACK Calling [%s]->[FormatAckMsg]\n",csTmpChannelCode));
+	 	MsgObjPtr = CreateObj(MsgPtr,csTmpChannelCode,"FormatAckMsg");
+        	h_msg = (hex_t*) malloc (sizeof(hex_t));
+        	if ((*MsgObjPtr)(hRsp,h_msg->msg,&h_msg->len) == PD_OK) {
+DEBUGLOG(("h_msg->len = [%d]\n",h_msg->len));
+			lKey = GetMQKey((unsigned char*)"ACKQ");
+			lRspKey = GetMQKey((unsigned char*)"ACKRSPQ");
+       	         	msg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+                       	msg->mtype  = ctol((const unsigned char *)csOrgTxnSeq,strlen(csOrgTxnSeq));
+                	memset(msg->mtext,0,sizeof(msg->mtext));
+                        MQ_build_header((unsigned char*)msg->mtext,
+                       		 MQ_REQ,
+                        	"ACK",
+				0,
+				"ACKRSPQ",
+				0);
+                		memcpy(&msg->mtext[MQ_HEADER_LEN],h_msg->msg,h_msg->len);
+                		msg->mtext[MQ_HEADER_LEN + h_msg->len] = '\0';
+DEBUGLOG(("send len = [%d]\n",MQ_HEADER_LEN + h_msg->len));
+
+/* set batch txn id to remote reply queue name without 'G' */
+			memcpy(&msg->mtext[MQ_REMOTE_REPLY_QUEUE_ID_OS],&csBatchTxnSeq[1],PD_TXN_SEQ_LEN - 1);
+                
+                	iRet = MQSend(lKey,msg,MQ_HEADER_LEN + h_msg->len);
+
+			if(iRet == PD_OK){
+				DBObjPtr = CreateObj(DBPtr,"DBTxnAckLog","Add");
+				if ((*DBObjPtr)(hAck) != PD_OK) {
+DEBUGLOG(("DBTxnAckLog: Add Failed\n"));
+					iRet = INT_ERR;
+				}
+
+/*
+				rMsg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+                        	rMsg->mtype  = ctol((const unsigned char *)csOrgTxnSeq,strlen(csOrgTxnSeq));
+				int iRecvLen = 0;
+				int iBufLen = 0;
+				char    outBuf[PD_TMP_MSG_BUF_LEN +1];
+				char	cStatus;
+	
+DEBUGLOG(("TxnWebByAck: try to recv from ACKRSPQ [%ld][%ld]\n",lRspKey,rMsg->mtype));
+                		iRet = MQRecv(lRspKey,rMsg,&iRecvLen,10);
+				if (iRet == PD_OK) {
+					memcpy(outBuf,&rMsg->mtext[MQ_HEADER_LEN],iRecvLen - MQ_HEADER_LEN);
+                                	iBufLen = iRecvLen - MQ_HEADER_LEN;
+					outBuf[iBufLen] = '\0';
+DEBUGLOG(("TxnWebByUsACK: Responsed from ACK GW = [%s]\n",outBuf));
+					iRet = outBuf[0] - '0';
+DEBUGLOG(("TxnWebByUsACK: Responsed from ACK GW = [%d]\n",iRet));
+					if (iRet == PD_OK) 
+						cStatus = PD_COMPLETE;
+					else 
+						cStatus = PD_REJECT;
+
+				}
+				else {
+					cStatus = PD_REJECT;
+DEBUGLOG(("TxnWebByUsACK: Recv timeout\n"));
+					
+				}
+
+				if (cStatus == PD_REJECT) {
+					char    csCmd[PD_MAX_FILE_LEN +1];
+					sprintf(csCmd,"%s %s",PD_ACK_RESEND,csOrgTxnSeq);
+                        		system(csCmd);	
+				}
+				PutField_Char(hAck,"status",cStatus);
+				PutField_Int(hAck,"internal_error",iRet);
+				DBObjPtr = CreateObj(DBPtr,"DBTxnAckLog","Update");
+				if ((*DBObjPtr)(hAck) != PD_OK) {
+DEBUGLOG(("DBTxnAckLog: Update Failed\n"));
+					iRet = INT_ERR;
+				}
+*/
+			}
+			else {
+				PutField_Char(hAck,"status",PD_REJECT);
+				PutField_Int(hAck,"internal_erro",iRet);
+				DBObjPtr = CreateObj(DBPtr,"DBTxnAckLog","Add");
+				if ((*DBObjPtr)(hAck) != PD_OK) {
+DEBUGLOG(("DBTxnAckLog: Add Failed\n"));
+					iRet = INT_ERR;
+				}
+			}
+			TxnCommit();
+		}
+		FREE_ME(h_msg);
+	}
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        RecordSet_Destroy(rMerchantSet);
+        FREE_ME(rMerchantSet);
+	FREE_ME(hRsp);
+	FREE_ME(csPtr);
+        FREE_ME(csValue);
+
+DEBUGLOG(("TxnWebByUsACK Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

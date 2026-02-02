@@ -1,0 +1,786 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/10/07              Cody Chan
+Check Duplicate					   2012/02/22		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <string.h>
+#include <ctype.h>
+#include "queue_utility.h"
+#include "MMSChannel.h"
+#include "utilitys.h"
+#include "common.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "mydb.h"
+#include "mq_db.h"
+#include "dbutility.h"
+#include "langconvert.h"
+
+char	cDebug;
+
+OBJPTR(DB);
+OBJPTR(Msg);
+OBJPTR(Txn);
+OBJPTR(BO);
+
+void MMSChannel(char	cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int     AddTxnLog(hash_t *hContext,
+                const hash_t* hRequest);
+int     UpdateContext(hash_t* hContext);
+int     UpdateTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse);
+
+int     process_input_txn(hash_t *hContext,
+                                const hash_t *Request,
+                                hash_t *Response);
+
+int	process_txn(hash_t *hContext,
+			   	const hex_t* inMsg,
+				hex_t *outMsg)
+{
+	hash_t	*hRequest,*hResponse;
+	hex_t   *h_msg;
+	struct msg_t* msg;
+	long	lResponseQueueMtype;
+	long 	lKey;
+	int	iRet = INT_NO_ERR;
+
+	char*   csProcessType;
+        char*   csProcessCode;
+	char*	csChannelCode;
+	char*   csTxnDesc;
+	char*	csTxnCode;
+	char	csTxnSeq[PD_TXN_SEQ_LEN +1];
+	int     iInternalErr = 0;
+	char*	csBuf;
+	
+DEBUGLOG(("process_txn\n"));
+
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hResponse = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRequest,0);
+	hash_init(hResponse,0);
+
+	csTxnCode = (char*) malloc (PD_TXN_CODE_LEN +1 );
+        csTxnDesc = (char*) malloc (PD_DESC_LEN + 1);
+
+	if (GetField_Long(hContext,"response_queue_mtype",&lResponseQueueMtype)) {
+DEBUGLOG(("response queue mtype = [%ld]\n",lResponseQueueMtype));
+	}
+	else  {
+DEBUGLOG(("unable to get response queue mtype\n"));
+		iRet = PD_ERR;
+	}
+	if (GetField_CString(hContext,"channel_code",&csChannelCode)) {
+DEBUGLOG(("channel code = [%s]\n",csChannelCode));
+	}
+	else  {
+DEBUGLOG(("unable to get channel code queue mtype\n"));
+		iRet = PD_ERR;
+	}
+
+
+DEBUGLOG(("Call MmsMsg\n"));
+	MsgObjPtr = CreateObj(MsgPtr,"MmsMsg","BreakDownMsg");
+	if ((*MsgObjPtr)(hRequest,inMsg->msg,inMsg->len) != PD_OK)  {
+		iRet = INT_BREAKDOWN_ERR;
+		PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("BreakDown MmsMsg Error\n");
+DEBUGLOG(("process_txn:BreakDown MmsMsg Error\n"));
+	}
+	else {
+		char*	csPtr;
+		if (GetField_CString(hRequest,"add_user",&csPtr))
+			PutField_CString(hContext,"add_user",csPtr);
+	}
+
+	if (iRet == PD_OK) {
+		iRet  = (UpdateContext(hContext));
+	}
+
+
+	
+        if (iRet == PD_OK) {
+		//txn seq 
+		DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMmsTxnSeq");
+                strcpy(csTxnSeq,(*DBObjPtr)());
+                PutField_CString(hContext,"txn_seq",csTxnSeq);
+
+		//PutField_CString(hResponse, "client_ref", csTxnSeq);
+DEBUGLOG(("process_txn:txn_seq = [%s]\n",csTxnSeq));
+/* Find Txn Code */
+                if (GetField_CString(hRequest,"process_type",&csProcessType)) {
+DEBUGLOG(("process_txn:process_type = [%s]\n",csProcessType));
+                }
+                if (!GetField_CString(hRequest,"process_code",&csProcessCode)) {
+                        csProcessCode = strdup(PD_PROCESS_CODE_DEF);
+                }
+DEBUGLOG(("process_txn:process_code = [%s]\n",csProcessCode));
+
+                DBObjPtr = CreateObj(DBPtr,"DBMmsTxnCode","FindTxnCode");
+                if (!(*DBObjPtr)(csTxnCode,
+                                 csTxnDesc,
+                                        csProcessType,
+                                        csProcessCode)) {
+                        iRet = INT_INVALID_TXN;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_TXN);
+DEBUGLOG(("process_txn:Can't Find TxnCode\n"));
+ERRLOG("MMSChannel:Unsupported transaction [%s][%s]\n",csProcessType,csProcessCode);
+                }
+                else {
+                        PutField_CString(hContext,"txn_code",csTxnCode);
+                        PutField_CString(hContext,"txn_desc",csTxnDesc);
+                        PutField_CString(hResponse,"txn_code",csTxnCode);
+DEBUGLOG(("process_txn:TxnCode = [%s]\n",csTxnCode));
+DEBUGLOG(("process_txn:TxnDesc = [%s]\n",csTxnDesc));
+                }
+//Response Process Type
+                csProcessType[PD_PROCESS_TYPE_LEN-1] = PD_PROCESS_TYPE_RESP_CODE;
+                PutField_CString(hResponse,"process_type",csProcessType);
+        }
+
+//get host ref and host dtl ref
+//check duplicate
+	if(iRet == PD_OK){
+
+		char *csHostRef = strdup("");
+		char *csHostDtlRef = strdup("");
+		char csMatchHostRef[PD_MERCHANT_REF_LEN+1];
+
+		if(GetField_CString(hRequest,"host_ref",&csHostRef)){
+DEBUGLOG(("process_txn: host_ref = [%s]\n",csHostRef));
+		}
+		else{
+			csHostRef = strdup("M000");
+		}
+		if(GetField_CString(hRequest,"host_dtl_ref",&csHostDtlRef)){
+DEBUGLOG(("process_txn: host_dtl_ref = [%s]\n",csHostDtlRef));
+		}
+		else{
+			csHostDtlRef = strdup("000");
+		}
+
+		sprintf(csMatchHostRef,"%sm%s",csHostRef,csHostDtlRef);
+		PutField_CString(hContext,"th_host_ref",csMatchHostRef);
+
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchHostRef");
+		if ((unsigned long)(DBObjPtr)(csChannelCode,csMatchHostRef) == PD_FOUND) {
+
+			// Not in VMS
+			if (strcmp(csTxnCode, PD_MONEY_MOVE_AUTO_REV)) {
+				iRet = INT_DUP_HOST_REF;
+				PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("Channel:[MMS] - [%s][%s]Duplicate Host Ref\n",csHostRef,csHostDtlRef);
+DEBUGLOG(("Channel:[MMS] - [%s][%s]Duplicate Merchant Ref\n",csHostRef,csHostDtlRef));
+			}
+
+		}
+
+		FREE_ME(csHostRef);
+		FREE_ME(csHostDtlRef);
+	}
+
+
+
+	if(iRet==PD_OK){
+//init txn or not
+		int iInitTxn = PD_FALSE;
+		DBObjPtr = CreateObj(DBPtr,"DBMmsTxnSupported","IsInitTxn");
+		iInitTxn = (unsigned long)(*DBObjPtr)(csChannelCode,csTxnCode);
+DEBUGLOG(("MMSChannel::init_txn = [%d]\n",iInitTxn));
+		if(iInitTxn)
+			PutField_Char(hContext,"isd_ind",PD_MMS_ISD_IND_INIT);
+
+		//do logging or not
+		int iDoLog = PD_NO_LOG;
+		DBObjPtr = CreateObj(DBPtr,"DBMmsTxnSupported","IsDoLogging");
+		iDoLog = (unsigned long)(*DBObjPtr)(csChannelCode,csTxnCode);
+DEBUGLOG(("MMSChannel::do_logging = [%d]\n",iDoLog));
+		PutField_Int(hContext,"do_logging",iDoLog);
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBMmsTxnSupported","FindMmsTxnSupported");
+		if (GetField_CString(hRequest,"txn_code",&csTxnCode)) {
+DEBUGLOG(("process_txn:txn_code = [%s]\n",csTxnCode));
+		}
+		if ((*DBObjPtr)(csChannelCode,
+				csTxnCode) != PD_OK) {
+                        iRet = INT_INVALID_TXN;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_TXN);
+DEBUGLOG(("process_txn:Can't Find TxnCode\n"));
+ERRLOG("MMSChannel:Unsupported transaction [%s][%s]\n",csChannelCode,csTxnCode);
+                }
+		else {
+			PutField_CString(hContext,"txn_code",csTxnCode);
+		}
+	}
+
+/* get mms key */
+	if (iRet == PD_OK) {
+		char*	csNodeId;
+		char*	csValue;
+		if (GetField_CString(hRequest,"mms_node_id",&csNodeId)) {
+DEBUGLOG(("MMSChannel:process_txn mms_node_id  = [%s]\n",csNodeId));
+			hash_t  *hRec;
+			recordset_t     *rRecordSet;    
+			rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+			recordset_init(rRecordSet,0);
+
+                        DBObjPtr = CreateObj(DBPtr,"DBMmsKeys","GetMmsClientKey");
+                        if ((unsigned long)(*DBObjPtr)(csNodeId, rRecordSet) == PD_OK){
+                       		iRet = INT_ERR;
+                                hRec = RecordSet_GetFirst(rRecordSet);
+                                while (hRec) {
+                               		if (GetField_CString(hRec, "mms_key", &csValue)) {
+DEBUGLOG(("mms key = [%s]\n",csValue));
+                                        	PutField_CString(hContext, "mms_key", csValue);
+                                      		iRet=PD_OK;
+                                                break;
+                                        }
+                                        hRec = RecordSet_GetNext(rRecordSet);
+                             	}
+                 	}
+			RecordSet_Destroy(rRecordSet);
+        		FREE_ME(rRecordSet);   	
+		}
+		else {
+DEBUGLOG(("MMSChannel:process_txn mms_node_id not found\n"));
+ERRLOG("MMSChannel:process_txn mms_node_is not found\n");
+		}
+	}
+/* verify mac */
+	if (iRet == PD_OK) {
+		char*   csMac;
+                char*   csAuthData;
+                if (GetField_CString(hRequest,"mac",&csMac) &&
+		    GetField_CString(hRequest,"auth_data",&csAuthData))
+                {
+DEBUGLOG(("process_txn mac =[%s]\n",csMac));
+DEBUGLOG(("process_txn auth_data =[%s]\n",csAuthData));
+DEBUGLOG(("process_txn try to VerifyMMSMac()\n"));
+                        BOObjPtr = CreateObj(BOPtr,"BOSecurity","VerifyMMSMac");
+                        iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+                        if (iRet != PD_OK) {
+DEBUGLOG(("MMSChannel:process_txn Invalid MAC, txn id [%s] dropped\n",csTxnSeq));
+ERRLOG("MMSChannel:process_txn Invalid MAC, txn id [%s] dropped\n",csTxnSeq);
+                        }
+                }
+                else{
+                        iRet = INT_MAC_NOT_FOUND;
+                        PutField_Int(hContext,"internal_error",INT_MAC_NOT_FOUND);
+DEBUGLOG(("process_txn mac not found\n"));
+ERRLOG(("MMSChannel::process_txn mac not found\n"));
+                }
+	}
+	if (iRet == PD_OK ) {
+		iRet = AddTxnLog(hContext,hRequest);
+	}
+
+	if (iRet == PD_OK) {
+       		MsgObjPtr = CreateObj(MsgPtr,"MmsMsg","initReplyFromRequest");
+               iRet = (unsigned long)(*MsgObjPtr)(hRequest,hResponse);
+DEBUGLOG(("process_txn:RET = [%d] from initReply\n",iRet));
+     	}
+
+	if (iRet == PD_OK) {
+		iRet = process_input_txn(hContext,hRequest,hResponse);
+	}
+
+	if (iRet == PD_OK || GetField_Int(hContext,"internal_error",&iInternalErr))  {
+		csBuf = (char*) malloc (128);
+		sprintf(csBuf,"%d",iInternalErr);
+		PutField_CString(hResponse,"response_code",csBuf);
+DEBUGLOG(("Result_Code = %s\n",csBuf));
+		FREE_ME(csBuf);
+	
+
+		if (iInternalErr != 0 ) {
+DEBUGLOG(("*****Format Out Reject Message\n"));
+                	PutField_Char(hContext,"status",PD_COMPLETE);
+                        PutField_Char(hContext,"ar_ind",PD_REJECT);
+                }
+                else{
+                	PutField_Char(hContext,"status",PD_MMS_PENDING);
+
+			//PutField_Char(hContext, "dtl_status", PD_COMPLETE);
+			//PutField_Char(hContext, "dtl_ar_ind", PD_ACCEPT);
+
+			if(!strcmp(csTxnCode,PD_REVERS_MONEY_MOVEMENT)){
+                		PutField_Char(hContext,"status",PD_COMPLETE);
+                        	PutField_Char(hContext,"ar_ind",PD_ACCEPT);
+			}
+                        iInternalErr = INT_NO_ERR;
+		}
+
+                PutField_Int(hContext,"internal_code",iInternalErr);
+
+DEBUGLOG(("Created Msg Object\n"));
+		MsgObjPtr = CreateObj(MsgPtr,"MmsMsg","FormatMsg");
+                h_msg = (hex_t*) malloc (sizeof(hex_t));
+                iRet = (unsigned long)(*MsgObjPtr)(hResponse,h_msg->msg,&h_msg->len);
+		if (iRet == PD_OK) {
+                       	iRet = UpdateTxnLog(hContext,hRequest,hResponse);
+                }
+		if (iRet == PD_OK) {
+DEBUGLOG(("Preparing to [%s]send back\n",csChannelCode));
+
+DEBUGLOG(("h_msg->len = [%d]\n",h_msg->len));           
+                       GetField_Long(hContext,"queue_key",&lKey);
+                       msg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+                       msg->mtype  = lResponseQueueMtype;
+                       long    lRemoteKey = 0l;
+                       GetField_Long(hContext,"remote_reply_key",&lRemoteKey);
+                       memset(msg->mtext,0,sizeof(msg->mtext));
+                       MQ_build_header((unsigned char*)msg->mtext,
+                       		MQ_RESP,        
+                                csChannelCode,  
+                                0,              
+                                NULL,
+                                lRemoteKey);
+                       memcpy(&msg->mtext[MQ_HEADER_LEN],h_msg->msg,h_msg->len);
+                        msg->mtext[MQ_HEADER_LEN + h_msg->len] = '\0';
+DEBUGLOG(("send len = [%d]\n",MQ_HEADER_LEN + h_msg->len));
+
+
+                        iRet = MQSend(lKey,msg,h_msg->len + MQ_HEADER_LEN);
+                        FREE_ME(msg);
+			if (iRet  != MQ_OK ) {
+DEBUGLOG(("Can't send Message\n"));
+                                PutField_Int(hContext,"internal_code",iInternalErr);
+                                iRet = PD_ERR;
+                        }
+			else {
+DEBUGLOG(("Message Sent\n"));
+				iRet = PD_OK;
+			}
+		}
+                FREE_ME(h_msg);
+	}
+	
+DEBUGLOG(("Normal RET = [%d]\n",iRet));
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+	FREE_ME(csTxnCode);
+	FREE_ME(csTxnDesc);
+DEBUGLOG(("process_txn RET =[%d]\n",iRet));
+	return iRet;
+}
+
+
+int     UpdateContext(hash_t* hContext)
+{
+        int     iRet = PD_OK;
+        long    lKey;
+        hash_t  *hRec;
+        char    *csCode = strdup("");
+        char    *csValue = strdup("");
+        char*   csQueueName = strdup("");
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        if (GetField_CString(hContext,"reply_queue",&csQueueName)) {
+DEBUGLOG(("UpdateContext:reply queue = [%s]\n",csQueueName));
+                lKey = GetMQKey((unsigned char*)csQueueName);
+                PutField_Long(hContext,"queue_key",lKey);
+DEBUGLOG(("UpdateContext:reply queue key = [%ld]\n",lKey));
+        }
+
+
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetAllCodes");
+        if ((*DBObjPtr)(rRecordSet) == PD_OK) {
+DEBUGLOG(("UpdateContext: return \n"));
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        if (GetField_CString(hRec,"code",&csCode)) {
+                                if (GetField_CString(hRec,"value",&csValue)) {
+                                        if (!strcmp(csCode,"CTPHDATE")) {
+DEBUGLOG(("UpdateContext:Current Processor Hub Date= [%s]\n",csValue));
+                                                PutField_CString(hContext,"PHDATE",csValue);
+                                        }
+                                }
+                        }
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+        }
+        else {
+DEBUGLOG(("UpdateContext:NOT RECORD\n"));
+                iRet = PD_ERR;
+ERRLOG("MMSChannel::Internal Error SystemControl Record Not Found\n");
+        }
+
+        if (iRet == PD_OK) {
+                DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+                if ((unsigned long)(DBObjPtr)(PD_BASED_CCY,csValue) == FOUND) {
+DEBUGLOG(("based ccy  = [%s]\n",csValue));
+                        PutField_CString(hContext,"based_ccy",csValue);
+                }
+                else {
+                        iRet = INT_ERR;
+ERRLOG("MMSChannel::Unable to find based ccy\n");
+                }
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(csCode);
+        FREE_ME(csValue);
+        FREE_ME(csQueueName);
+
+        return iRet;
+}
+int     process_input_txn(hash_t *hContext,
+                                const hash_t *Request,
+                                hash_t *Response)
+{
+	int	iRet = PD_OK;
+	char*	csTxnCode = strdup("");
+	char*	csHandler;
+DEBUGLOG(("process_input\n"));
+	if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("process_input_txn:txn_code = [%s]\n",csTxnCode));
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("process_input_txn:txn_code not found\n"));
+	}
+
+	
+
+        if (iRet == PD_OK) {
+                TxnObjPtr = CreateObj(TxnPtr,"TxnMmsByUsCOM","Authorize");
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,Request,Response);
+        }
+
+
+
+	if(iRet == PD_OK){
+		char cTmp = PD_SOURCE;
+		int  iTmp = 0;
+		if(GetField_Char(hContext,"isd_ind",&cTmp)){
+			//if(iTmp==PD_TRUE){
+			//	cTmp = PD_MMS_ISD_IND_INIT;
+			//}
+DEBUGLOG(("process_input_txn txn init_ind [%d]\n",iTmp));
+		}
+
+		/*no further action for init txn*/
+		if(cTmp != PD_MMS_ISD_IND_INIT){
+                	csHandler = (char*) malloc (20);
+                	sprintf(csHandler,"TxnMmsByUs%s",csTxnCode);
+DEBUGLOG(("process_input_txn Create Txn Object [%s]\n",csHandler));
+               		TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+               		FREE_ME(csHandler);
+
+               		iRet = (unsigned long)(*TxnObjPtr)(hContext,Request,Response);
+DEBUGLOG(("iRet = [%d]\n",iRet));
+		}
+	}
+
+	FREE_ME(csTxnCode);
+	return iRet;
+}
+
+int     AddTxnLog(hash_t *hContext,
+                const hash_t* hRequest)
+{
+	hash_t  *hTxn;
+        char    *csTmp;
+        char    cTmp;
+        int 	iRet = PD_OK;
+	int	iTmp;
+
+	if(GetField_Int(hContext,"do_logging",&iTmp)){
+		if(iTmp!=PD_ADD_LOG)
+			return iRet;
+	}
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+        if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_seq = [%s]\n",csTmp));
+		PutField_CString(hTxn,"txn_seq",csTmp);
+
+                PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+
+                if (GetField_CString(hContext,"org_txn_seq",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: org_txn_seq = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"org_txn_seq",csTmp);
+                }
+
+                if (GetField_CString(hContext,"channel_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: channel_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"channel_code",csTmp);
+                }
+                if (GetField_CString(hContext,"txn_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"txn_code",csTmp);
+                }
+                if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: host_posting_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"host_posting_date",csTmp);
+                }
+                if (GetField_CString(hContext,"local_tm_date",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: local_tm_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"local_tm_date",csTmp);
+                }
+                if (GetField_CString(hContext,"local_tm_time",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: local_tm_time = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"local_tm_time",csTmp);
+                }
+
+/**** From Request */
+
+                if (GetField_CString(hRequest,"process_type",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: process_type = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"process_type",csTmp);
+                }
+
+                if (GetField_CString(hRequest,"process_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: process_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"process_code",csTmp);
+                }
+/* client_ref */
+                if (GetField_CString(hRequest,"client_ref",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: client_ref = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"client_ref",csTmp);
+                }
+
+/* mmc_node_id */
+                if (GetField_CString(hRequest,"mms_node_id",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: mmc_node_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"mmc_node_id",csTmp);
+			PutField_CString(hTxn, "party_node_id", csTmp);
+                }
+
+                if (GetField_CString(hRequest,"transmission_datetime",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: transmission_datetime = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"transmission_datetime",csTmp);
+                }
+
+                if (GetField_CString(hRequest,"tm_date",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: tm_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"tm_date",csTmp);
+                }
+                if (GetField_CString(hRequest,"tm_time",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: tm_time = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"tm_time",csTmp);
+                }
+/* psp id */
+                if (GetField_CString(hRequest,"psp_id",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: psp_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"psp_id",csTmp);
+                }
+/* merchant id */
+                if (GetField_CString(hRequest,"merchant_id",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: merchant_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"merchant_id",csTmp);
+                }
+/* encrypt_type  */
+                if (GetField_CString(hRequest,"encrypt_type",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: encrypt_type = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"encrypt_type",csTmp);
+                }
+/* version_no  */
+                if (GetField_CString(hRequest,"version_no",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: version_no = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"version_no",csTmp);
+                }
+
+/* service code */
+                if (GetField_CString(hRequest,"service_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: service_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"service_code",csTmp);
+                }
+/* txn_ccy */
+                if (GetField_CString(hRequest,"txn_ccy",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_ccy = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"txn_ccy",csTmp);
+                }
+
+/* init channel */
+		if (GetField_CString(hRequest, "init_channel", &csTmp)) {
+DEBUGLOG(("AddTxnLog:: init_channel = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"init_channel",csTmp);
+		}
+
+		if(GetField_Char(hContext,"isd_ind",&cTmp)){
+DEBUGLOG(("AddTxnLog:: isd_ind = [%c]\n",cTmp));
+			PutField_Char(hTxn,"isd_ind",cTmp);
+		}
+		
+/* dc_ind */
+/*
+DEBUGLOG(("AddTxnLog:: dc_ind = [%s]\n",PD_MMS_DR));
+                        PutField_CString(hTxn,"dc_ind",PD_MMS_DR);
+*/
+
+/* carry_forward_ind */
+		if (GetField_Int(hRequest, "carry_forward_ind", &iTmp)) {
+DEBUGLOG(("AddTxnLog:: carry_forward_ind = [%d]\n",iTmp));
+			PutField_Int(hTxn,"carry_forward_ind",iTmp);
+		}
+
+                PutField_Char(hTxn,"status",PD_PROCESSING);
+                //PutField_Char(hTxn,"init_ind",PD_MMS_ISD_IND_INIT);
+		
+                DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","AddHeader");
+                iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+
+		if (iRet == PD_OK) {
+			/*
+			char    csTxnDetailSeq[PD_TXN_SEQ_LEN +1];
+			DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextMmsTxnRunningSeq");
+                	strcpy(csTxnDetailSeq,(*DBObjPtr)());
+                	PutField_CString(hTxn,"dtl_txn_seq",csTxnDetailSeq);
+                	PutField_CString(hContext,"dtl_txn_seq",csTxnDetailSeq);
+DEBUGLOG(("AddTxnLog:: dtl_txn_seq = [%s]\n",csTxnDetailSeq));
+			*/
+
+                	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","AddDetail");
+                	iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+
+			if (GetField_CString(hTxn, "dtl_txn_seq", &csTmp)) {
+                		PutField_CString(hContext,"dtl_txn_seq",csTmp);
+DEBUGLOG(("AddTxnLog:: dtl_txn_seq = [%s]\n",csTmp));
+			}
+		}
+	}
+	else
+                iRet = PD_ERR;
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+DEBUGLOG(("AddTxnLog RET = [%d]\n",iRet));
+        return  iRet;
+
+}
+
+
+
+int     UpdateTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse)
+{
+        hash_t  *hTxn;
+        char    *csTmp = strdup("");
+        char    *csTxnSeq = strdup("");
+        char    *csTag;
+        char    *csTxnCode;
+        double  dTmp;
+	char	cTmp;
+	int	iTmp;
+        int     iRet = PD_OK;
+
+	if(GetField_Int(hContext,"do_logging",&iTmp)){
+		if(iTmp==PD_NO_LOG)
+			return iRet;
+	}
+
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+        csTag = (char*) malloc (PD_TMP_BUF_LEN +1);
+
+
+        if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("UpdateTxnLog:: txn_code = [%s]\n",csTxnCode));
+        }
+        if (!strcmp(csTxnCode,PD_INITIAL_REQ_TXN_CODE)) {
+                strcpy(csTag,"from_txn_seq");
+        }
+        else {
+                strcpy(csTag,"txn_seq");
+        }
+
+        if (GetField_CString(hContext,csTag,&csTxnSeq)) {
+DEBUGLOG(("UpdateTxnLog:: txn_seq = [%s]\n",csTxnSeq));
+                PutField_CString(hTxn,"txn_seq",csTxnSeq);
+
+		if (GetField_CString(hContext,"dtl_txn_seq",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: dtl_txn_seq = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"dtl_txn_seq",csTmp);
+                }
+
+                PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+/* Context */
+                if (GetField_CString(hContext,"org_txn_seq",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: org_txn_seq = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"org_txn_seq",csTmp);
+                }
+                if (GetField_Char(hContext,"status",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: status = [%c]\n",cTmp));
+                        PutField_Char(hTxn,"status",cTmp);
+                }
+
+                if (GetField_Char(hContext,"ar_ind",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: ar_ind = [%c]\n",cTmp));
+                        PutField_Char(hTxn,"ar_ind",cTmp);
+                }
+
+                if (GetField_Int(hContext,"internal_code",&iTmp)) {
+DEBUGLOG(("UpdateTxnLog:: internal_code = [%d]\n",iTmp));
+                        PutField_Int(hTxn,"internal_code",iTmp);
+                }
+
+
+		if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"txn_amt",dTmp);
+                }
+/* Response */
+                if (GetField_CString(hResponse,"response_code",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: response_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"response_code",csTmp);
+                }
+
+		if (iRet == PD_OK) {
+                        DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","UpdateHeader");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }
+		if (iRet == PD_OK) {
+
+			/*
+                	if (GetField_Char(hContext,"dtl_status",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: dtl_status = [%c]\n",cTmp));
+	                        PutField_Char(hTxn,"status",cTmp);
+			}
+
+                	if (GetField_Char(hContext,"dtl_ar_ind",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: dtl_ar_ind = [%c]\n",cTmp));
+	                        PutField_Char(hTxn,"ar_ind",cTmp);
+			}
+			*/
+
+                        DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","UpdateDetail");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }
+	}
+        else
+                iRet = PD_ERR;
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+
+        FREE_ME(csTmp);
+        FREE_ME(csTxnSeq);
+        FREE_ME(csTag);
+        return  iRet;
+}

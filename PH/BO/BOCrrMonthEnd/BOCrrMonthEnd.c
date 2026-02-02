@@ -1,0 +1,78 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/07/22              Samson Fung
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOCrrMonthEnd.h"
+
+#define	PD_PREFIX	"org"
+char    cDebug;
+OBJPTR(DB);
+
+void BOCrrMonthEnd(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int PostJournal(hash_t *hContext, const hash_t *hRequest)
+{
+	int iRet = 0;
+	char	*csTbYear;
+	char	*csTbMonth;
+	char	*csPostUser;
+	int iClosed = 1;
+	int iDisabled = 0;
+	
+		// tb_year //
+	if (GetField_CString(hRequest,"tb_year",&csTbYear)) {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): tb_year = [%s]\n",csTbYear));
+	}
+
+		// tb_month //
+	if (GetField_CString(hRequest,"tb_month",&csTbMonth)) {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): tb_month = [%s]\n",csTbMonth));
+	}
+	
+		// post_user //
+	if (GetField_CString(hRequest,"post_user",&csPostUser)) {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): post_user = [%s]\n",csPostUser));
+	}	
+
+	// Add closing month
+	DBObjPtr = CreateObj(DBPtr,"DBCrrMonthEnd","Add");
+	iRet = (unsigned long)(*DBObjPtr)(csTbYear, csTbMonth, iClosed, iDisabled, csPostUser);	
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): Adding closing month succeed\n"));
+		
+		// Book the journal for closing month
+		DBObjPtr = CreateObj(DBPtr,"DBCrrJnlHeader","UpdateMonthEnd");
+		iRet = (unsigned long)(*DBObjPtr)(csTbYear, csTbMonth, csPostUser);	
+		
+		if (iRet == PD_OK) {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): MonthEnd Posting succeed\n"));
+		} else {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): Error on MonthEnd Posting\n"));
+		}
+	} else {
+DEBUGLOG(("BOCrrMonthEnd::PostJournal(): Error adding closing month\n"));
+	}
+		
+DEBUGLOG(("BOCrrMonthEnd exit = [%d]\n",iRet));
+	return iRet;
+}
+

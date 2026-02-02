@@ -1,0 +1,299 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/10/22              Cody Chan
+*/
+
+
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "batchcommon.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char	cDebug;
+int CurrentStatus(const char* csJobID);
+int CheckDependence(const char* csJobID);
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 1)
+        return FAILURE;
+    else
+        return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+
+        char    cHoldJob;
+        int iRet = PD_ERR;
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_code[PD_CODE_LEN];
+                varchar         hv_script_name[PD_EOD_JOB_SCRIPT_NAME_LEN];
+
+
+                varchar         v_value[PD_VALUE_LEN];
+                varchar         v_eod_id[PD_EOD_ID_LEN + 1];
+                char            v_type;
+                char            v_holdable;
+
+                short           ind_value = -1;
+                short           ind_eod_id = -1;
+                short           ind_type = -1;
+                short           ind_holdable = -1;
+        EXEC SQL END DECLARE SECTION;
+        hv_code.len = strlen(PD_HOLDJOB_CODE);
+        memcpy(hv_code.arr,PD_HOLDJOB_CODE,hv_code.len);
+
+        hv_script_name.len = strlen(argv[1]);
+        memcpy(hv_script_name.arr,argv[1],hv_script_name.len);
+
+        EXEC SQL DECLARE c_cursor_system_control CURSOR FOR
+                select Sys_Val
+                  from system_control
+                 Where sys_code = :hv_code;
+
+        EXEC SQL DECLARE c_cursor_eod_job CURSOR FOR
+                select ej_id,
+                        ej_type,
+                        ej_holdable
+                 from eod_jobs
+                Where ej_script_name = :hv_script_name;
+
+        EXEC SQL OPEN c_cursor_system_control;
+        do {
+                EXEC SQL FETCH c_cursor_system_control
+                into
+                        :v_value:ind_value;
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                if (ind_value >= 0) {
+                        cHoldJob = v_value.arr[0];
+                }
+        }
+        while(PD_TRUE);
+        EXEC SQL CLOSE c_cursor_system_control;
+
+        iRet = PD_EOD_JOB_ID_NOT_FOUND;
+        EXEC SQL OPEN c_cursor_eod_job;
+        do {
+                EXEC SQL FETCH c_cursor_eod_job
+                INTO
+                        :v_eod_id:ind_eod_id,
+                        :v_type:ind_type,
+                        :v_holdable:ind_holdable;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                iRet = SUCCESS;
+                if (ind_eod_id >= 0) {
+                        v_eod_id.arr[v_eod_id.len] = '\0';
+                }
+                else
+                        v_eod_id.arr[0] = '\0';
+
+                if (ind_type < 0) {
+                        v_type = ' ';
+                }
+
+                if (ind_holdable < 0) {
+                        v_holdable = ' ';
+                }
+
+                if (v_holdable ==  PD_EOD_HOLD && cHoldJob == PD_EOD_HOLD) {
+                        iRet = PD_EOD_JOB_HOLDED;
+                }
+        }
+        while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_eod_job;
+
+        if (iRet == SUCCESS ) {
+                iRet = CurrentStatus((const char*)v_eod_id.arr);
+        }
+        if (iRet == SUCCESS) {
+                iRet = CheckDependence((const char*)v_eod_id.arr);
+        }
+
+        return iRet;
+sql_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_system_control;
+    EXEC SQL CLOSE c_cursor_eod_job;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+    return SUCCESS;
+}
+
+
+
+int CurrentStatus(const char* csJobID)
+{
+
+        int iRet = PD_ERR;
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_job_id[PD_EOD_ID_LEN];
+
+                char            v_status;
+		char		v_rerunable;
+
+                short           ind_status = -1;
+                short           ind_rerunable = -1;
+        EXEC SQL END DECLARE SECTION;
+
+        hv_job_id.len = strlen(csJobID);
+        memcpy(hv_job_id.arr,csJobID,hv_job_id.len);
+
+
+
+        EXEC SQL DECLARE c_cursor_eod_job_status CURSOR FOR
+                Select	es_status,
+			ej_rerunable
+                From	eod_jobs_status,
+			eod_jobs
+                Where	es_job_id = :hv_job_id
+		and	es_job_id = ej_id;
+
+
+        iRet = FAILURE;
+        EXEC SQL OPEN c_cursor_eod_job_status;
+        do {
+                EXEC SQL FETCH c_cursor_eod_job_status
+                INTO
+                        :v_status:ind_status,
+			:v_rerunable:ind_rerunable;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                iRet = SUCCESS;
+
+                if (ind_status < 0) {
+                        v_status = ' ';
+                }
+
+                if (ind_rerunable< 0) {
+                        v_rerunable = ' ';
+                }
+                if ((v_status == PD_EOD_COMPLETED) && (v_rerunable!=PD_YES) ) {
+                        iRet = PD_EOD_ALREADY_RUN;
+                }
+                else if (v_status == PD_EOD_PROCESSING) {
+                        iRet = PD_EOD_JOB_RUNNING;
+                }
+/*
+                else if (v_status == PD_EOD_FAILURE){
+                        iRet = PD_EOD_JOB_RUN_FALIED;
+                }
+*/
+        }
+        while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_eod_job_status;
+
+        return iRet;
+sql_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_eod_job_status;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+
+
+int CheckDependence(const char* csJobID)
+{
+
+        int iRet = PD_ERR;
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_job_id[PD_EOD_ID_LEN];
+                
+                varchar         v_wait_for[PD_EOD_ID_LEN + 1];
+                char            v_status;
+                
+                short           ind_wait_for;
+                short           ind_status = -1;
+        EXEC SQL END DECLARE SECTION;
+        
+        hv_job_id.len = strlen(csJobID);
+        memcpy(hv_job_id.arr,csJobID,hv_job_id.len);
+
+        
+        EXEC SQL DECLARE c_cursor_eod_job_depen CURSOR FOR
+                select b.es_job_id,
+                        b.es_status
+                 from eod_job_dependence a,
+                        eod_jobs_status b
+                Where a.ed_wait_for = b.es_job_id
+                 And a.ed_job_id = :hv_job_id;
+        
+        iRet = SUCCESS;
+        EXEC SQL OPEN c_cursor_eod_job_depen;
+        do {    
+                EXEC SQL FETCH c_cursor_eod_job_depen
+                INTO    
+                        :v_wait_for:ind_wait_for,
+                        :v_status:ind_status;
+                
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+                iRet = SUCCESS;
+                
+                if (ind_status < 0) {
+                        v_status = ' ';
+                }
+                
+                if (v_status == PD_EOD_NEW_CYCLE) {
+                        iRet = PD_EOD_DEPENDING_JOB_NOT_RUN;
+                }
+                else if (v_status == PD_EOD_PROCESSING) {
+                        iRet = PD_EOD_DEPENDING_RUNNING;
+                }
+                else if (v_status == PD_EOD_FAILURE){
+                        iRet = PD_EOD_DEPENDING_FAILED;
+                }
+        }
+        while(PD_TRUE && iRet == SUCCESS);
+        EXEC SQL CLOSE c_cursor_eod_job_depen;
+        
+        return iRet;
+sql_error:
+    DEBUGLOG(("get_error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_eod_job_depen;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}

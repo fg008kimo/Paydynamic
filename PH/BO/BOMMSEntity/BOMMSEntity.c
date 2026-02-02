@@ -1,0 +1,210 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/06/12              Cody Chan
+Add Add(), Update()				   2015/06/25		   Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOMMSEntity.h"
+
+char    cDebug;
+
+OBJPTR(DB);
+
+void BOMMSEntity(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int GetPspEntityId(hash_t* hContext,
+		const hash_t* hData)
+{
+	int iRet = PD_OK;
+	char	*csNodeId;
+	char	*csClientId;
+	char	*csPspId;
+	char	*csBAID;
+	char	csEntityId[PD_MMS_ENTITY_ID_LEN +1];
+	char	csNatureId[PD_NATURE_ID_LEN +1];
+
+DEBUGLOG(("GetPspEntityId() \n"));
+
+/* req_node_id */
+	if (GetField_CString(hData,"req_node_id",&csNodeId)) {
+DEBUGLOG(("GetPspEntityId() node id = [%s]\n",csNodeId));
+	}
+	else {
+DEBUGLOG(("node_id not found\n"));
+ERRLOG("BOMMSEntity::GetEntityPSP() node_id not found\n");
+		iRet = INT_MMS_NODE_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+
+/* client_id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hData,"client_id",&csClientId)) {
+DEBUGLOG(("GetPspEntityId() client_id = [%s]\n",csClientId));
+		}
+		else {
+DEBUGLOG(("client_id not found\n"));
+ERRLOG("BOMMSEntity::GetEntityPSP() client_id not found\n");
+			iRet = INT_CLIENT_ID_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* psp_id */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hData,"psp_id",&csPspId)) {
+DEBUGLOG(("GetPspEntityId() psp_id = [%s]\n",csPspId));
+		}
+		else {
+DEBUGLOG(("psp_id not found\n"));
+ERRLOG("BOMMSEntity::GetEntityPSP() psp_id not found\n");
+			iRet = INT_PSP_ID_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* BAID */
+	if (iRet == PD_OK) {
+		if (GetField_CString(hData,"baid",&csBAID)) {
+DEBUGLOG(("GetPspEntityId() baid = [%s]\n",csBAID));
+		}
+		else {
+DEBUGLOG(("BAID not found\n"));
+ERRLOG("BOMMSEntity::GetEntityPSP() BAID not found\n");
+			iRet = INT_INVALID_BAID;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBMmsEntityPsp","GetPspEntityId");
+		
+		if ((unsigned long)(*DBObjPtr)(csNodeId,
+                                 csClientId,
+                                 csPspId,
+                                 csBAID,	
+				 csEntityId,
+				 csNatureId) == PD_FOUND) {
+			PutField_CString(hContext,"entity_id",csEntityId);
+DEBUGLOG(("Entity id for [%s] [%s] [%s] [%s] = [%s]\n",csNodeId,csClientId,csPspId,csBAID,csEntityId));
+			if (strlen(csNatureId) == 0 ) {
+				iRet = INT_MMS_DEFAULT_NATURE_ID_NOT_FOUND;
+DEBUGLOG(("Entity ID not found\n"));
+ERRLOG("Default Nature Id for [%s] [%s] [%s] [%s] not found\n",csNodeId,csClientId,csPspId,csBAID);
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			else {
+				PutField_CString(hContext,"nature_id",csNatureId);
+DEBUGLOG(("Default Nature Id for [%s] [%s] [%s] [%s] = [%s]\n",csNodeId,csClientId,csPspId,csBAID,csNatureId));
+			}
+		}
+		else {
+			iRet = INT_MMS_ENTITY_ID_NOT_FOUND;
+DEBUGLOG(("Entity ID not found\n"));
+ERRLOG(("BOMMSEntity::GetEntityPSP() Entity ID not found\n"));
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+DEBUGLOG(("GetPspEntityId() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int GetEntityId(const char* csEntityId, hash_t* hReq)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	hash_t*	hData;
+DEBUGLOG(("CheckEntityId ()\n"));
+
+	hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+DEBUGLOG(("CheckEntityId () entity id = [%s]\n",csEntityId));
+
+	DBObjPtr = CreateObj(DBPtr,"DBMmsEntity","GetEntityId");
+	iRet = (unsigned long)((DBObjPtr)(csEntityId,hData));
+
+DEBUGLOG(("CheckEntityId () iRet = [%d] from MmsEntity:GetEntityId\n",iRet));
+	if (iRet != PD_FOUND) {
+		iRet = PD_ERR;
+	}
+	else {
+		iRet = PD_OK;
+		if (GetField_CString(hData,"desc",&csPtr)) {
+DEBUGLOG(("CheckEntityId () desc = [%s]\n",csPtr));
+			PutField_CString(hReq,"desc",csPtr);
+		}
+		if (GetField_CString(hData,"entity_type",&csPtr)) {
+DEBUGLOG(("CheckEntityId () entity_type = [%s]\n",csPtr));
+			PutField_CString(hReq,"entity_type",csPtr);
+		}
+		if (GetField_CString(hData,"client_id",&csPtr)) {
+DEBUGLOG(("CheckEntityId () client_id = [%s]\n",csPtr));
+			PutField_CString(hReq,"entity_client_id",csPtr);
+		}
+	}
+	hash_destroy(hData);
+	FREE_ME(hData);
+
+DEBUGLOG(("CheckEntityId () Normal Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int AddRecord(hash_t* hData)
+{
+	int	iRet = PD_OK;
+	char	csEntityId[PD_MMS_ENTITY_ID_LEN +1];
+
+DEBUGLOG(("AddRecord() Start!\n"));
+	
+	//Get Entity ID
+DEBUGLOG(("Call DBMmsEntityID::GetNextEntityID\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBMmsEntityID", "GetNextEntityID");
+	strcpy(csEntityId,(*DBObjPtr)());
+DEBUGLOG(("DBMmsEntityID::GetNextEntityID: new Entity ID [%s]\n",csEntityId));
+	PutField_CString(hData,"entity_id",csEntityId);
+
+	//Add Entity
+DEBUGLOG(("Authorize: Call DBMmsEntity::Add\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBMmsEntity","Add");
+	iRet = (unsigned long) (*DBObjPtr)(hData);
+DEBUGLOG(("Authorize: iRet = [%d] return from MMS Entity Add\n",iRet));
+
+
+DEBUGLOG(("Add() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int UpdateRecord(hash_t* hData)
+{
+	int	iRet = PD_OK;
+
+DEBUGLOG(("UpdateRecord() Start!\n"));
+
+	//Update Entity
+DEBUGLOG(("Authorize: Call DBMmsEntity::Update\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBMmsEntity","Update");
+	iRet = (unsigned long) (*DBObjPtr)(hData);
+DEBUGLOG(("Authorize: iRet = [%d] return from MMS Entity Update\n",iRet));
+
+
+DEBUGLOG(("Update() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}

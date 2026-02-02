@@ -1,0 +1,974 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/01/27              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsATF.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+int	GetTxnInfo(const unsigned char *csTxnSeq, hash_t *hTxn, hash_t *hReq);
+
+
+void TxnOmtByUsATF(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int	iTmpRet = PD_OK;
+
+	char	*csTmp;
+	double	dTmp;
+
+	char	*csTxnSeq;
+	char	*csTxnSeqTo;
+
+	double	dTotalSrcFee = 0.0;
+	double	dTotalDstFee = 0.0;
+
+	double	dDstTxnAmt = 0.0;
+
+	double	dSrcNetAmt = 0.0;
+	double	dDstNetAmt = 0.0;
+
+	char	*csFromMid;
+	char	*csFromCcy;
+	char	*csFromCountry;
+	char	*csFromService;
+
+	char	*csToMid;
+	char	*csToCcy;
+	char	*csToCountry;
+	char	*csToService;
+
+	double	dFromAvaPOBal = 0.0;
+
+	double	dRemainTxnAmt = 0.0;
+	double	dRemainTxnFee = 0.0;
+
+	double	dDeductFundin = 0.0, dDeductResvPO = 0.0, dDeductPrevFt = 0.0;
+	double	dOrgDeductFundin = 0.0, dOrgDeductResvPO = 0.0, dOrgDeductPrevFt = 0.0;
+
+	double  dAddFundin = 0.0, dAddResvPO = 0.0, dAddPrevFt = 0.0;
+	double  dOrgAddFundin = 0.0, dOrgAddResvPO = 0.0, dOrgAddPrevFt = 0.0;
+
+	double	dExRate = 0.0;
+	double 	dInterRate = 0.0;
+	
+	double	dMarkupAmt = 0.0;
+	char    *csMarkupCcy = NULL;
+	char	*csDstNetCcy = NULL;
+
+	char	*csClientID = NULL;
+
+	int     iInternalErr = 0;
+
+	hash_t	*hFrContext, *hToContext;
+	hash_t	*hFrReq, *hToReq;
+
+	hFrContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hFrContext, 0);
+
+	hToContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hToContext, 0);
+  
+	hFrReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hFrReq, 0);
+
+	hToReq = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hToReq, 0);
+
+DEBUGLOG(("Authorize::()\n"));
+
+
+	if (GetField_CString(hRequest, "org_txn_seq", &csTxnSeq)) {
+DEBUGLOG(("Authorize:: txn_seq = [%s]\n", csTxnSeq));
+		PutField_CString(hFrContext, "txn_seq", csTxnSeq);
+		PutField_CString(hContext, "txn_seq", csTxnSeq);
+
+	}
+	else {
+		iRet = INT_TXN_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() txn_seq is missing\n"));
+ERRLOG("TxnOmtByUsATF:Authorize() txn seq is missing\n");
+        }
+
+	if (GetField_CString(hRequest, "org_txn_seq_to", &csTxnSeqTo)) {
+DEBUGLOG(("Authorize:: txn_seq_to = [%s]\n", csTxnSeqTo));
+		PutField_CString(hToContext, "txn_seq", csTxnSeqTo);
+	}
+	else {
+		iRet = INT_TXN_ID_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() txn_seq_to is missing\n"));
+ERRLOG("TxnOmtByUsATF:Authorize() txn seq to is missing\n");
+	}
+
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hContext,"update_user",csTmp);
+DEBUGLOG(("Authorize::update_user= [%s]\n",csTmp));
+
+		PutField_CString(hFrContext, "update_user", csTmp);
+		PutField_CString(hToContext, "update_user", csTmp);
+	}
+
+	// From GetTxnInfo
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::(FROM) GetTxnInfo\n"));
+		iRet = GetTxnInfo((const unsigned char*) csTxnSeq, hFrContext, hFrReq);
+
+		if (iRet != PD_OK) {
+			PutField_Int(hContext,"internal_error",iRet);
+			if(iRet== INT_INVALID_TXN || iRet == INT_ALREADY_APPROVED){
+DEBUGLOG(("Authorize::GetTxnInfo (From party) iRet = [%d]\n"));
+			}
+DEBUGLOG(("Authorize::GetTxnInfo (From party) Failed!\n"));
+		} else if(iRet == PD_OK){
+			if (GetField_CString(hFrContext, "net_ccy", &csTmp)) {
+				PutField_CString(hFrReq,"txn_ccy",csTmp); 
+			}
+
+			if (GetField_CString(hFrContext, "service_code", &csFromService)) {
+DEBUGLOG(("Authorize::GetTxnInfo (From party) service_code [%s]\n", csFromService));
+			}
+		}
+	}
+	// Check Merchant Account - From
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() (FROM) BOOLMerchant->GetMerchantTxnInfo\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOOLMerchant","GetMerchantTxnInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hFrContext,hFrReq);
+DEBUGLOG(("Authorize() (FROM) BOOLMerchant->GetMerchantTxnInfo = [%d]\n",iRet));
+
+		if (iRet != PD_OK) {
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() (FROM) Merchant GetMerchantTxnInfo FAILED\n"));
+ERRLOG("TxnOmtByUsATF:Authorize() (FROM) Merchant GetMerchantTxnInfo FAILED\n");
+
+		}
+		else {
+			if (GetField_CString(hFrContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("Authorize() (FROM) merchant_client_id [%s]\n", csTmp))
+			}
+		}
+		
+
+	}
+
+	// To GetTxnInfo
+	if (iRet == PD_OK) { 	
+DEBUGLOG(("Authorize::(TO) GetTxnInfo\n"));
+		iRet = GetTxnInfo((const unsigned char*) csTxnSeqTo, hToContext, hToReq);
+
+		if (iRet != PD_OK) {
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::GetTxnInfo (To party) Failed!\n"));
+		}
+		else {
+			if (GetField_CString(hToContext, "txn_ccy", &csTmp)) {
+				PutField_CString(hToReq,"txn_ccy",csTmp); 
+			}
+			if (GetField_CString(hToContext, "net_ccy", &csTmp)) {
+				PutField_CString(hToReq,"dst_txn_ccy",csTmp); 
+			}
+
+			if (GetField_CString(hToContext, "service_code", &csToService)) {
+DEBUGLOG(("Authorize::GetTxnInfo (TO) service_code [%s]\n", csToService));
+			}
+		}
+	}
+	// Check Merchant Account - To
+	if (iRet == PD_OK) {
+
+		if (GetField_CString(hToContext, "net_ccy", &csTmp)) {
+			PutField_CString(hToReq,"txn_ccy",csTmp);
+		} else {
+			if (GetField_CString(hToContext, "txn_ccy", &csTmp)) {
+				PutField_CString(hToReq,"txn_ccy",csTmp);
+			}
+
+		}
+
+DEBUGLOG(("Authorize() (TO) BOOLMerchant->GetMerchantTxnInfo\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOOLMerchant","GetMerchantTxnInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hToContext,hToReq);
+DEBUGLOG(("Authorize() (TO) BOOLMerchant->GetMerchantTxnInfo = [%d]\n",iRet));
+
+		if (iRet != PD_OK) {
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() (TO) Merchant GetMerchantTxnInfo FAILED\n"));
+ERRLOG("TxnOmtByUsATF:Authorize() (TO) Merchant GetMerchantTxnInfo FAILED\n");
+
+		} 
+		else {
+			if (GetField_CString(hFrContext, "merchant_client_id", &csTmp)) {
+DEBUGLOG(("Authorize() (TO) merchant_client_id [%s]\n", csTmp))
+			}
+		}
+		
+	}
+	
+
+	// Chk the inputted txn_seq is a pair
+	if (iRet == PD_OK) {
+		if (GetField_CString(hToContext, "org_txn_id", &csTmp)) {
+			if (strcmp(csTmp, csTxnSeq)) {
+				iRet = INT_RECORD_MISMATCH;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize::() the inputted seq is not in a pair\n"));
+ERRLOG("TxnOmtByUsATF:Authorize() the inpuuted seq is not in a pair\n");
+			}
+		}
+		else {
+			iRet = INT_TXN_ID_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::() org_txn_id is missing on TO information\n"));
+ERRLOG("TxnOmtByUsATF:Authorize() org_txn_idis missing on TO information\n");
+		}
+	}
+
+
+
+
+	// Get FROM TxnFee
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize() (FROM) GetTxnFee\n",iRet));
+
+		PutField_CString(hFrContext, "txn_code", PD_OFL_AVA_PAYOUT_REQ_TF_FROM);
+		PutField_CString(hFrContext, "channel_code",PD_CHANNEL_OMT);
+
+
+		BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+		iRet = (unsigned long)(*BOObjPtr)(hFrContext,hFrReq);
+DEBUGLOG(("Authorize() (FROM) GetTxnFee [%d]\n",iRet));
+	}
+
+	if (iRet == PD_OK) {
+		GetField_Double(hFrContext,"total_src_txn_fee",&dTotalSrcFee);
+DEBUGLOG(("Authorize total fee = [%lf]\n",dTotalSrcFee));
+		PutField_Double(hFrContext, "actual_txn_fee", dTotalSrcFee);
+		
+		if (GetField_CString(hFrContext, "src_txn_fee_ccy", &csTmp)) {
+DEBUGLOG(("Authorize fee ccy (from Fee) = [%s]\n",csTmp));
+			PutField_CString(hFrContext, "actual_txn_fee_ccy", csTmp);
+		}
+		
+		if (GetField_Double(hFrContext,"net_amt",&dSrcNetAmt)) {
+DEBUGLOG(("Authorize net amount (from Fee) = [%lf]\n",dSrcNetAmt));
+		}
+	}
+
+	// Get To TxnFee 
+	if (iRet == PD_OK) {
+		PutField_CString(hToContext, "txn_code", PD_OFL_AVA_PAYOUT_REQ_TF_TO);
+		//PutField_CString(hToContext, "txn_code", PD_OFL_AVA_PAYOUT_REQ_TF_FROM);
+		PutField_CString(hToContext, "channel_code",PD_CHANNEL_OMT);
+
+		if (GetField_CString(hToContext, "txn_ccy", &csTmp)) {
+			PutField_CString(hToContext,"txn_ccy",csTmp);
+			PutField_CString(hToReq,"txn_ccy",csTmp);
+		}
+
+		if (GetField_CString(hToContext, "net_ccy", &csTmp)) {
+			PutField_CString(hToContext,"dst_txn_ccy",csTmp);
+		} 
+	
+		/* GetExchangeInfo */
+DEBUGLOG(("Authorize:: (TO) Call Exchange\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOExchange","GetExchangeInfo");
+		iRet = (unsigned long)(*BOObjPtr)(hToContext, hToReq);
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo = [%d]\n",iRet));
+
+		if (iRet == PD_OK) {	
+			if (GetField_Double(hToContext, "dst_txn_amt", &dDstTxnAmt)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo dst_txn_amt [%f]\n", dDstTxnAmt));
+			}
+
+			if (GetField_Double(hToContext, "ex_rate", &dExRate)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo ex_rate[%f]\n", dExRate));
+			}
+
+			if (GetField_Double(hToContext, "inter_rate", &dInterRate)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo inter_rate[%f]\n", dInterRate));
+			}
+
+			/*************** Markup **************/
+			if (GetField_Double(hToContext, "markup_rate", &dTmp)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo markup_rate [%f]\n", dTmp));
+			}
+
+			if (GetField_Double(hToContext, "markup_amt", &dMarkupAmt)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo markup_amt [%f]\n", dMarkupAmt));
+			}
+
+			if (GetField_CString(hToContext, "markup_ccy", &csMarkupCcy)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo markup_ccy[%s]\n", csMarkupCcy));
+
+				GetField_CString(hToContext, "net_ccy", &csDstNetCcy);
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo dst_net_ccy [%s]\n", csDstNetCcy));
+
+				if (dMarkupAmt > 0.0) {
+					if (strcmp(csMarkupCcy, csDstNetCcy)) {
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo convert markup!\n"));
+						dMarkupAmt = dMarkupAmt * dExRate;
+DEBUGLOG(("Authorize() BOExchange->GetExchangeInfo markup amt [%lf] ccy [%s]!\n", dMarkupAmt, csDstNetCcy));
+
+						PutField_Double(hToContext, "markup_amt", dMarkupAmt);
+						PutField_CString(hToContext, "markup_ccy", csDstNetCcy);
+					}
+				}
+
+			}
+		}
+
+		/*
+		if (GetField_CString(hToContext, "net_ccy", &csTmp)) {
+			PutField_CString(hToReq,"txn_ccy",csTmp);
+		}
+		*/
+
+		if (iRet == PD_OK) {
+			// Get Fee by From Txn_code
+			PutField_CString(hToContext, "txn_code", PD_OFL_AVA_PAYOUT_REQ_TF_FROM);
+
+			if (GetField_CString(hFrContext, "merchant_id", &csTmp)) {
+				PutField_CString(hToReq, "merchant_id", csTmp);
+			}
+
+			if (GetField_CString(hToContext, "merchant_client_id", &csClientID)) {
+DEBUGLOG(("Authorize() (TO) Org Clinet ID [%s]\n", csClientID)); 
+
+				if (GetField_CString(hFrContext, "merchant_client_id", &csTmp)) {
+					PutField_CString(hToContext, "merchant_client_id", csTmp);
+				}
+			}
+
+			PutField_CString(hToReq, "service_code", csFromService);
+
+DEBUGLOG(("Authorize() (TO) GetTxnFee\n")); 
+			BOObjPtr = CreateObj(BOPtr,"BOFee","GetTxnFee");
+			iRet = (unsigned long)(*BOObjPtr)(hToContext,hToReq);
+DEBUGLOG(("Authorize() (TO) GetTxnFee [%d]\n",iRet));
+
+			if (GetField_CString(hToContext, "merchant_id", &csTmp)) {
+				PutField_CString(hToReq, "merchant_id", csTmp);
+			}
+
+			PutField_CString(hToContext, "merchant_client_id", csClientID);
+			PutField_CString(hToReq, "service_code", csToService);
+
+			PutField_CString(hToContext, "txn_code", PD_OFL_AVA_PAYOUT_REQ_TF_TO);
+		}
+
+		if (iRet == PD_OK) {
+			GetField_Double(hToContext,"total_dst_txn_fee",&dTotalDstFee);
+DEBUGLOG(("Authorize total fee (to) = [%lf]\n",dTotalDstFee));
+			PutField_Double(hToContext, "actual_txn_fee", dTotalDstFee);
+
+			if (GetField_CString(hToContext, "dst_txn_fee_ccy", &csTmp)) {
+DEBUGLOG(("Authorize fee ccy (To Fee) = [%s]\n",csTmp));
+				PutField_CString(hToContext, "actual_txn_fee_ccy", csTmp);
+			}
+		
+			if (GetField_Double(hToContext,"net_amt",&dDstNetAmt)) {
+DEBUGLOG(("Authorize net amount (to Fee) = [%lf]\n",dDstNetAmt));
+			}
+
+		}
+	}
+
+
+	/***** START to handle balance *****/
+	// Get From Merchant Account Available Payout Balance
+	if (iRet == PD_OK) {
+		if (GetField_CString(hFrContext, "merchant_id", &csFromMid)) {
+DEBUGLOG(("Authorize From Merchant [%s]\n", csFromMid));
+		}
+		if (GetField_CString(hFrContext, "net_ccy", &csFromCcy)) {
+DEBUGLOG(("Authorize From Ccy [%s]\n", csFromCcy));
+		}
+		if (GetField_CString(hFrContext, "txn_country", &csFromCountry)) {
+DEBUGLOG(("Authorize From Country [%s]\n", csFromCountry));
+		}
+		if (GetField_CString(hFrContext, "service_code", &csFromService)) {
+DEBUGLOG(("Authorize From Service [%s]\n", csFromService));
+		}
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchantBalance","GetOpenBalanceForUpdate");
+		iRet = (unsigned long)(*DBObjPtr)(hFrContext,
+							csFromMid,
+                                                        csFromCcy,
+                                                        csFromCountry,
+                                                        csFromService);
+		if (iRet == PD_OK) {
+			if (GetField_Double(hFrContext, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("Authorize From merchant_open_bal = [%lf]\n",dTmp));
+			}
+			if (GetField_Double(hFrContext, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("Authorize From merchant_open_bal_settlement = [%lf]\n",dTmp));
+			}
+		} else {
+DEBUGLOG(("Authorize From GetOpenBalanceForUpdate FAILED!\n"));
+ERRLOG("TxnOmtByUsATF::Authorize From GetOpenBalanceForUpdate FAILED\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchantBalance","GetRemainPOBalance");
+		iRet = (unsigned long)(*DBObjPtr)(hFrContext,
+							csFromMid,
+                                                        csFromCcy,
+                                                        csFromCountry,
+                                                        csFromService,
+                                                        &dTmp);
+		if (iRet == PD_OK) {
+			if (GetField_Double(hFrContext, "merchant_aval_po", &dFromAvaPOBal)) {
+DEBUGLOG(("Authorize merchant_aval_po = [%lf]\n",dFromAvaPOBal));
+			}
+		}
+		else {
+DEBUGLOG(("Authorize (FROM) GetRemainPOBalance FAILED!\n"));
+ERRLOG("TxnOmtByUsATF::Authorize (FROM) GetRemainPOBalance FAILED\n");
+		}
+
+		if (iRet == PD_OK) {
+			if (dSrcNetAmt > dFromAvaPOBal) {
+				iRet = INT_INSUFFICIENT_FUND;
+				PutField_Int(hContext,"internal_error",iRet);
+				PutField_CString(hFrContext,"remark","Insufficient Availiable For Payout Amount");
+
+DEBUGLOG(("Authorize insufficient fund [%s] [%s] [%s] [%lf] [%lf]\n", csFromMid, csFromCcy,csFromService, dFromAvaPOBal, dSrcNetAmt));
+ERRLOG("TxnOmtByUsATF::Authorize insufficient fund [%s] [%s] [%s] [%lf] [%lf]\n",csFromMid,csFromCcy,csFromService,dFromAvaPOBal, dSrcNetAmt);
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {	
+		if (GetField_Double(hFrContext, "merchant_net_float", &dTmp)) {
+			if (dTmp < 0.0) {
+DEBUGLOG(("Authorize merchant_net_float problem [%lf]\n", dTmp));
+				iRet = INT_ERR;
+			}
+		}
+	}
+
+	// Cal the deduct_fundin, deduct_reserved_po, deduct_previous_float	
+	if (iRet == PD_OK) {
+
+		if (GetField_Double(hFrContext, "merchant_fundin_po", &dTmp)) {
+			if (dSrcNetAmt >= dTmp) {
+				dDeductFundin = dTmp;
+				dRemainTxnAmt = dSrcNetAmt - dTmp;
+			} else {
+				dDeductFundin = dSrcNetAmt;
+				dRemainTxnAmt = 0.0;
+			}
+		}
+
+		if (GetField_Double(hFrContext, "merchant_reserved_po", &dTmp)) {
+			if (dRemainTxnAmt > 0.0) {
+				if (dRemainTxnAmt >= dTmp) {
+					dDeductResvPO = dTmp;
+					dRemainTxnAmt = dRemainTxnAmt - dTmp;
+				} else {
+					dDeductResvPO = dRemainTxnAmt;
+					dRemainTxnAmt = 0.0;	
+				}
+			} else {
+				dDeductResvPO = 0.0;
+			}
+		}
+
+		if (dRemainTxnAmt > 0.0) {
+			dDeductPrevFt = dRemainTxnAmt;
+		} else {
+			dDeductPrevFt = 0.0;
+		}
+
+
+		// Get Org Amt
+		dRemainTxnFee = dTotalSrcFee;
+
+		if (dDeductPrevFt > 0.0) {	
+			if (dRemainTxnFee > 0.0) {
+				if (dDeductPrevFt >= dRemainTxnFee) {
+					dOrgDeductPrevFt = dDeductPrevFt - dRemainTxnFee; 
+					dRemainTxnFee = 0.0;
+				} else {
+					dOrgDeductPrevFt = 0.0;
+					dRemainTxnFee = dRemainTxnFee - dDeductPrevFt;
+				}
+			} else {
+				dOrgDeductPrevFt = dDeductPrevFt;
+			}
+		} 
+
+		if (dDeductResvPO > 0.0) {
+			if (dRemainTxnFee > 0.0) {
+				if (dDeductResvPO >= dRemainTxnFee) {
+					dOrgDeductResvPO = dDeductResvPO - dRemainTxnFee;
+					dRemainTxnFee = 0.0;
+				} else {
+					dOrgDeductResvPO = 0.0;
+					dRemainTxnFee = dRemainTxnFee - dDeductResvPO;
+				}
+			} else {
+				dOrgDeductResvPO = dDeductResvPO;
+			}
+		} 
+
+		if (dDeductFundin > 0.0) {
+			if (dRemainTxnFee > 0.0) {
+				dOrgDeductFundin = dDeductFundin - dRemainTxnFee;
+				dRemainTxnFee = 0.0;
+			} else {
+				dOrgDeductFundin = dDeductFundin;
+			}
+		}
+
+		PutField_Double(hFrContext, "actual_fundin", dDeductFundin);
+		PutField_Double(hFrContext, "actual_resv_po", dDeductResvPO);
+		PutField_Double(hFrContext, "actual_prev_ft", dDeductPrevFt);
+
+		PutField_Double(hFrContext, "actual_net_amt", dSrcNetAmt);
+
+		PutField_Double(hFrContext, "org_actual_fundin", dOrgDeductFundin);
+		PutField_Double(hFrContext, "org_actual_resv_po", dOrgDeductResvPO);
+		PutField_Double(hFrContext, "org_actual_prev_ft", dOrgDeductPrevFt);
+
+DEBUGLOG(("Authorize (FROM) deduct [%lf] [%lf] [%lf] total [%lf]\n", dDeductFundin, dDeductResvPO, dDeductPrevFt, dSrcNetAmt));
+DEBUGLOG(("Authorize (FROM)org deduct [%lf] [%lf] [%lf] fee [%lf]\n", dOrgDeductFundin, dOrgDeductResvPO, dOrgDeductPrevFt, dTotalSrcFee));
+
+		dTmp = dDeductFundin + dDeductResvPO + dDeductPrevFt;
+		PutField_Double(hFrContext, "net_amt", dTmp);
+
+DEBUGLOG(("Authorize (FROM) net_amt [%lf]\n", dTmp));
+
+	}
+	
+	if (iRet == PD_OK) {
+		// Balance handling
+		// Get Balance Result
+		
+		PutField_Char(hFrContext, "dc_type", PD_IND_DEBIT);
+DEBUGLOG(("Authorize() (FROM) BOOLBalance.ProcessTransferAvaPO\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOOLBalance","ProcessTransferAvaPayout");
+		iRet = (unsigned long)(*BOObjPtr)(hFrContext);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize() (FROM) BOOLBalance.ProcessTransferAvaPO FAILED\n"));
+ERRLOG("TxnOmtByUsATF: Authorize() (FROM) BOOLBalance.ProcessTransferAvaPO FAILED\n");
+		}
+	
+	}
+
+	if (iRet == PD_OK) {
+		// Update Detail Balance
+DEBUGLOG(("Authorize() (FROM) OMTChannel.UpdateTxnDetailLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnDetailLog");
+		iRet = (unsigned long)(*ChannelObjPtr)(hFrContext,hFrReq,hResponse);
+	}
+	
+	if (iRet == INT_INSUFFICIENT_FUND) {
+		// Update Detail Remark 
+DEBUGLOG(("Authorize() (FROM) OMTChannel.UpdateTxnDetailLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnDetailLog");
+		if((unsigned long)(*ChannelObjPtr)(hFrContext,hFrReq,hResponse)!=PD_OK){
+DEBUGLOG(("Authorize() (FROM) OMTChannel.UpdateTxnDetailLog update remark failed\n"));
+		}
+	}
+	
+	
+        // Get To Merchant Account Available Payout Balance
+	if (iRet == PD_OK) {
+		if (GetField_CString(hToContext, "merchant_id", &csToMid)) {
+DEBUGLOG(("Authorize To Merchant [%s]\n", csToMid));
+		}
+
+        	if (GetField_CString(hToContext, "net_ccy", &csToCcy)) {
+DEBUGLOG(("Authorize To Ccy [%s]\n", csToCcy));
+		}
+
+		if (GetField_CString(hToContext, "txn_country", &csToCountry)) {
+DEBUGLOG(("Authorize To Country [%s]\n", csToCountry));
+		}
+
+		if (GetField_CString(hToContext, "service_code", &csToService)) {
+DEBUGLOG(("Authorize To Service [%s]\n", csToService));
+		}
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLMerchantBalance","GetOpenBalanceForUpdate");
+		iRet = (unsigned long)(*DBObjPtr)(hToContext,
+							csToMid,
+							csToCcy,
+							csToCountry,
+							csToService);
+		if (iRet == PD_OK) {
+			if (GetField_Double(hToContext, "merchant_open_bal", &dTmp)) {
+DEBUGLOG(("Authorize To merchant_open_bal = [%lf]\n",dTmp));
+			}
+			if (GetField_Double(hToContext, "merchant_open_bal_settlement", &dTmp)) {
+DEBUGLOG(("Authorize To merchant_open_bal_settlement = [%lf]\n",dTmp));
+			}
+		} else {
+DEBUGLOG(("Authorize To GetOpenBalanceForUpdate FAILED!\n"));
+ERRLOG("TxnOmtByUsATF::Authorize To GetOpenBalanceForUpdate FAILED\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+
+		GetField_Double(hFrContext, "org_actual_fundin", &dOrgDeductFundin);
+		GetField_Double(hFrContext, "org_actual_resv_po", &dOrgDeductResvPO);
+		GetField_Double(hFrContext, "org_actual_prev_ft", &dOrgDeductPrevFt);
+
+		if (!GetField_Double(hToContext, "ex_rate", &dExRate)) {
+			dExRate = 1.0;
+		}
+
+		if (!GetField_Double(hToContext, "inter_rate", &dInterRate)) {
+			dInterRate = 1.0;
+		}
+
+		dOrgAddFundin = dOrgDeductFundin * dExRate;
+		dOrgAddResvPO = dOrgDeductResvPO * dExRate;
+		dOrgAddPrevFt = dOrgDeductPrevFt * dExRate;
+
+DEBUGLOG(("Authorize (TO) !! Add [%lf] [%lf] [%lf] total [%lf] rate [%lf]\n", dOrgAddFundin, dOrgAddResvPO, dOrgAddPrevFt, (dOrgAddFundin + dOrgAddResvPO + dOrgAddPrevFt), dExRate));
+
+		dRemainTxnFee = dTotalDstFee + dMarkupAmt;
+
+DEBUGLOG(("Authorize (TO) !! dRemainTxnFee [%lf]\n", dRemainTxnFee));
+
+		if (dOrgAddPrevFt > 0.0) {
+			if (dRemainTxnFee > 0.0) {
+				if (dOrgAddPrevFt >= dRemainTxnFee) {
+					dAddPrevFt = dOrgAddPrevFt - dRemainTxnFee;
+					dRemainTxnFee = 0.0;
+				} else {
+					dAddPrevFt = 0.0;
+					dRemainTxnFee = dRemainTxnFee - dOrgAddPrevFt;
+				}
+			} else {
+				dAddPrevFt = dOrgAddPrevFt;			
+			}
+		}
+
+		if (dOrgAddResvPO > 0.0) {
+			if (dRemainTxnFee > 0.0) {
+				if (dOrgAddResvPO >= dRemainTxnFee) {
+					dAddResvPO = dOrgAddResvPO - dRemainTxnFee;
+					dRemainTxnFee = 0.0;
+				} else {
+					dAddResvPO = 0.0;
+					dRemainTxnFee = dRemainTxnFee - dOrgAddResvPO;
+				}
+			} else {
+				dAddResvPO = dOrgAddResvPO;
+			}
+			
+		}
+
+		if (dOrgAddFundin > 0.0) {
+			if (dRemainTxnFee > 0.0) {
+				dAddFundin = dOrgAddFundin - dRemainTxnFee;
+				dRemainTxnFee = 0.0;
+			} else {
+				dAddFundin = dOrgAddFundin;
+			}
+		}
+
+		PutField_Double(hToContext, "actual_fundin",  dAddFundin);
+		PutField_Double(hToContext, "actual_resv_po", dAddResvPO);
+		PutField_Double(hToContext, "actual_prev_ft", dAddPrevFt);
+
+		dTmp = dAddFundin + dAddResvPO + dAddPrevFt; // include fee
+		PutField_Double(hToContext, "actual_net_amt", dTmp);
+
+		PutField_Double(hToContext, "org_actual_fundin",  dOrgAddFundin);
+		PutField_Double(hToContext, "org_actual_resv_po", dOrgAddResvPO);
+		PutField_Double(hToContext, "org_actual_prev_ft", dOrgAddPrevFt);
+
+DEBUGLOG(("Authorize (TO) add [%lf] [%lf] [%lf] total [%lf]\n", dAddFundin, dAddResvPO, dAddPrevFt, dTmp));
+DEBUGLOG(("Authorize (TO)org add [%lf] [%lf] [%lf] fee [%lf] markup [%lf]\n", dOrgAddFundin, dOrgAddResvPO, dOrgAddPrevFt, dTotalDstFee, dMarkupAmt));
+
+		dTmp = dAddFundin + dAddResvPO + dAddPrevFt; // include fee and markup
+		PutField_Double(hToContext, "net_amt", dTmp);
+DEBUGLOG(("Authorize (TO) net_amt [%lf] \n", dTmp));
+
+	}
+
+        if (iRet == PD_OK) {
+                // Balance handling
+		// Get Balance Result
+		//
+                PutField_Char(hToContext, "dc_type", PD_IND_CREDIT);
+
+		GetField_CString(hToContext, "net_ccy", &csTmp);
+		PutField_CString(hToContext, "txn_ccy", csTmp);	
+
+DEBUGLOG(("Authorize() (FROM) BOOLBalance.ProcessTransferAvaPO\n"));
+		BOObjPtr = CreateObj(BOPtr,"BOOLBalance","ProcessTransferAvaPayout");
+		iRet = (unsigned long)(*BOObjPtr)(hToContext);
+
+                if (iRet != PD_OK) {
+DEBUGLOG(("Authorize() (FROM) BOOLBalance.ProcessTransferAvaPO FAILED\n"));
+ERRLOG("TxnOmtByUsATF: Authorize() (FROM) BOOLBalance.ProcessTransferAvaPO FAILED\n");
+		}
+	}
+
+	if (iRet == PD_OK) {
+		// Update Detail Balance
+	
+DEBUGLOG(("Authorize() (TO) OMTChannel.UpdateTxnDetailLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnDetailLog");
+		iRet = (unsigned long)(*ChannelObjPtr)(hToContext,hToReq,hResponse);
+
+	}
+
+
+	if (iRet == PD_OK || GetField_Int(hToContext,"internal_error",&iInternalErr)) {
+		char* csBuf = (char*) malloc (128);
+		sprintf(csBuf,"%d",iInternalErr);
+
+		PutField_CString(hToContext,"response_code",csBuf);
+		PutField_Int(hToContext,"internal_code",iInternalErr);
+DEBUGLOG(("Result_Code = %s\n",csBuf));
+		FREE_ME(csBuf);
+
+		PutField_CString(hToContext,"sub_status",PD_APPROVED);
+		PutField_CString(hContext,"sub_status",PD_APPROVED);
+
+		if (iInternalErr != 0 ) {
+			PutField_Char(hToContext,"status",PD_COMPLETE);
+			PutField_Char(hToContext,"ar_ind",PD_REJECT);
+
+			//PutField_Int(hFrContext, "internal_code", iInternalErr);
+		} 
+		else {
+			PutField_Char(hToContext, "status", PD_COMPLETE);
+			PutField_Char(hToContext, "ar_ind", PD_ACCEPT);
+		}
+
+		//GetField_CString(hContext,"PHDATE", &csTmp);
+		//PutField_CString(hToContext,"approval_date", csTmp);
+
+DEBUGLOG(("Authorize() (TO) OMTChannel.UpdateTxnLog\n"));
+		ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnLog");
+		iTmpRet = (unsigned long)(*ChannelObjPtr)(hToContext,hToReq,hResponse);
+
+		if (iTmpRet != PD_OK) {
+			iRet = PD_ERR;
+		}
+	}
+
+	if (GetField_Int(hContext, "internal_error", &iInternalErr) && 
+		iRet!=INT_INVALID_TXN &&
+		iRet!=INT_ALREADY_APPROVED) {
+		// as "from" transaction error, assign to "to" transaction aslo
+		char* csBuf = (char*) malloc (128);
+                sprintf(csBuf,"%d",iInternalErr);
+
+                PutField_CString(hToContext,"response_code",csBuf);
+                PutField_Int(hToContext,"internal_code",iInternalErr);
+DEBUGLOG(("Assigned TO Result_Code = %s\n",csBuf));
+                FREE_ME(csBuf);
+
+		if (iInternalErr != 0) {
+			PutField_Char(hToContext,"status",PD_COMPLETE);
+			PutField_Char(hToContext,"ar_ind",PD_REJECT);
+
+			//GetField_CString(hContext,"PHDATE", &csTmp);
+			//PutField_CString(hToContext,"approval_date", csTmp);
+			
+			RemoveField_Double(hToContext, "net_amt");
+
+DEBUGLOG(("Authorize() (TO) OMTChannel.UpdateTxnLog (as FROM error)\n"));
+			ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnLog");
+			iTmpRet = (unsigned long)(*ChannelObjPtr)(hToContext,hToReq,hResponse);	
+			if (iTmpRet != PD_OK) {
+				iRet = PD_ERR;
+			}
+		}
+	}
+
+	if (iRet == PD_OK) {
+		if(GetField_CString(hFrContext,"approval_date", &csTmp)){
+			PutField_CString(hContext,"approval_date", csTmp);
+		}
+		if(GetField_CString(hFrContext,"approval_timestamp", &csTmp)){
+			PutField_CString(hContext,"approval_timestamp", csTmp);
+		}
+
+		if (GetField_Double(hFrContext, "net_amt", &dTmp)) {
+			PutField_Double(hContext, "net_amt", dTmp);
+		}
+
+		RemoveField_CString(hResponse, "org_txn_seq");
+	}
+
+	hash_destroy(hFrContext);
+	FREE_ME(hFrContext);
+	hash_destroy(hFrReq);
+	FREE_ME(hFrReq);
+
+	hash_destroy(hToContext);
+	FREE_ME(hToContext);
+	hash_destroy(hToReq);
+	FREE_ME(hToReq);
+
+DEBUGLOG(("TxnOmtByUsATF Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+
+int	GetTxnInfo(const unsigned char *csTxnSeq, hash_t *hTxn, hash_t *hReq)
+{
+	int	iRet = PD_OK;
+	
+	char	*csTmp;
+	double	dTmp;
+	char	cTmp;
+
+	hash_t	*hRec;
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+
+
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet,0);
+
+DEBUGLOG(("GetTxnInfo::Call DBOLTransaction:GetTxnHeader\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+
+DEBUGLOG(("GetTxnHeader::found record = [%s]\n",csTxnSeq));
+                        hRec = RecordSet_GetFirst(rRecordSet);
+                        while (hRec) {
+				if (GetField_CString(hRec, "org_txn_id", &csTmp)) {
+					PutField_CString(hTxn, "org_txn_id", csTmp);
+DEBUGLOG(("GetTxnHeader::org_txn_id = [%s]\n",csTmp));
+				}
+
+                        	if (GetField_CString(hRec,"txn_code",&csTmp)) {
+					PutField_CString(hTxn,"org_txn_code",csTmp);
+DEBUGLOG(("GetTxnHeader::txn_code = [%s]\n",csTmp));
+                        	}
+
+				if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+					PutField_CString(hTxn, "merchant_id", csTmp);
+					PutField_CString(hReq, "merchant_id", csTmp);
+DEBUGLOG(("GetTxnHeader::merchant_id = [%s]\n",csTmp));
+				}
+
+				if (GetField_CString(hRec,"service_code",&csTmp)) {
+					PutField_CString(hTxn,"service_code",csTmp);
+					PutField_CString(hReq,"service_code",csTmp);
+DEBUGLOG(("GetTxnHeader::service_code= [%s]\n",csTmp));
+				}
+
+				if (GetField_Double(hRec, "txn_amt", &dTmp)) {
+					PutField_Double(hTxn,"txn_amt",dTmp);
+DEBUGLOG(("GetTxnHeader::txn_amt = [%lf]\n",dTmp));
+				}		
+
+				if (GetField_CString(hRec, "net_ccy", &csTmp)) {
+					PutField_CString(hTxn,"net_ccy",csTmp);
+
+					//PutField_CString(hReq,"txn_ccy",csTmp); // net_ccy is actual one
+DEBUGLOG(("GetTxnHeader::net_ccy = [%s]\n",csTmp));
+				}		
+
+				if (GetField_Char(hRec, "status", &cTmp)) {
+DEBUGLOG(("GetTxnHeader::status = [%c]\n",cTmp));
+
+					if (cTmp != PD_PROCESSING) {
+						if(cTmp == PD_COMPLETE)
+							iRet = INT_ALREADY_APPROVED;
+						else
+							iRet = INT_INVALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid status[%c]\n",cTmp));
+ERRLOG("TxnOmtByUsATF:GetTxnHeader::Invalid status!!\n");
+					} 
+					else {
+						if (GetField_Char(hRec, "ar_ind", &cTmp)) {
+							iRet = INT_INVALID_TXN;
+DEBUGLOG(("GetTxnHeader::Invalid ar_ind [%c]\n",cTmp));
+ERRLOG("TxnOmtByUsATF:GetTxnHeader::Invalid ar_ind!!\n");
+						}
+					}
+				}		
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else {
+DEBUGLOG(("GetTxnHeader:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnOmtByUsATF:Authorize::GetTxnHeader::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+                RecordSet_Destroy(rRecordSet);
+	}
+
+	if (iRet == PD_OK) {
+		recordset_init(rRecordSet,0);	
+DEBUGLOG(("GetTxnInfo::Call DBOLTransaction:GetTxnDetail\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnDetail");
+		if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnInfo::GetTxnDetail::found record = [%s]\n",csTxnSeq));
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec,"txn_ccy",&csTmp)) {
+					PutField_CString(hTxn,"txn_ccy",csTmp);
+DEBUGLOG(("GetTxnInfo::GetTxnDetail::txn_ccy = [%s]\n",csTmp));
+				}
+
+				if (GetField_CString(hRec,"txn_country",&csTmp)) {
+					PutField_CString(hTxn,"txn_country",csTmp);
+					PutField_CString(hReq,"txn_country",csTmp);
+DEBUGLOG(("GetTxnInfo::GetTxnDetail::txn_country = [%s]\n",csTmp));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+DEBUGLOG(("GetTxnInfo::GetTxnDetail:: not found record for [%s]\n",csTxnSeq));
+ERRLOG("TxnOmtByUsATF::GetTxnInfo::GetTxnDetail::not found record!!\n");
+			iRet=INT_NOT_RECORD;
+		}
+                RecordSet_Destroy(rRecordSet);
+	}
+
+	return iRet;
+}
+

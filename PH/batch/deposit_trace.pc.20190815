@@ -1,0 +1,681 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2018/09/27              LokMan Chow
+Change Request                                     2018/11/08              David Wong
+Add overriding by PID setting                      2019/03/22              David Wong
+Put aes_key into hRequest                          2019/04/29              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_TRACE_TO_PSP 'T'
+#define PD_PSP_RE_PENDING 'W'
+#define PD_PSP_RE_SUCCESS 'A'
+#define PD_PSP_RE_FAILED 'R'
+
+char	cs_txn_id[PD_TXN_SEQ_LEN + 1];
+char	cs_psp_id[PD_PSP_ID_LEN + 1];
+char	cs_psp_channel[PD_PSP_CHANNEL_CODE_LEN + 1];
+int	i_seq;
+char	c_party;
+int	i_timeout;
+
+static char cDebug = 'Y';
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Msg);
+
+
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 5) {
+        printf("usage: -c psp_channel -p psp_id -t txn_id -s seq -i party[A / M] -o timeout\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = PD_OK;
+	char	*csPtr, *csPtr2;
+	double	dPtr;
+	char    csTmpChannelCode[PD_CHANNEL_CODE_LEN + 1];
+	int	iTimeout = PD_MQ_RECV_TIMEOUT*3 ;
+	char	cMode = 'S';
+	char	cStatus = 'x';
+	hex_t   *h_msg;
+	struct msg_t *msg;
+	int     iSendLen,iRecvLen;
+	long    lKey,lRspKey;
+	hash_t *hRec;
+
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS) {
+		printf(" usage: -c psp_channel -p psp_id -t txn_id -s seq -i party[A / M] -o timeout\n");
+                return (iRet);
+        }
+
+	hash_t  *hRequest;
+        hRequest = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRequest,0);
+
+	hash_t  *hContext;
+        hContext = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hContext,0);
+
+	hash_t  *hResponse;
+        hResponse = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hResponse,0);
+
+	hash_t *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn, 0);
+
+
+DEBUGLOG(("deposit_trace start\n"));
+
+	if(iRet == SUCCESS){
+		PutField_CString(hContext, "psp_channel_code", cs_psp_channel);
+		PutField_CString(hRequest, "psp_id", cs_psp_id);
+		PutField_CString(hRequest, "txn_seq", cs_txn_id);
+		PutField_Int(hRequest, "trace_seq", i_seq);
+DEBUGLOG(("psp_channel_code = [%s]\n", cs_psp_channel));
+DEBUGLOG(("psp_id = [%s]\n", cs_psp_id));
+DEBUGLOG(("txn_id = [%s]\n", cs_txn_id));
+DEBUGLOG(("trace_seq = [%d]\n", i_seq));
+DEBUGLOG(("party = [%s]\n", (c_party == PD_TYPE_ADMIN)? "Admin" : "Merchant"));
+
+		//The sign parameters is different from deposit request. XxxMsg:BuildAuthData need to handle separately.
+		PutField_Int(hRequest, "for_enquiry_use", PD_TRUE);
+	}
+
+
+//get trace status 
+	if(iRet == SUCCESS){
+		DBObjPtr = CreateObj(DBPtr,"DBDepositTrace","GetTrace");
+		if ((*DBObjPtr)(cs_txn_id, c_party, i_seq, hTxn) == PD_OK) {
+			if (GetField_Char(hTxn, "enquiry_status", &cStatus)) {
+DEBUGLOG((" current enquiry_status = [%c]\n", cStatus));
+
+				if(cStatus == PD_ACCEPT || cStatus == PD_REJECT){
+					iRet = FAILURE;
+DEBUGLOG(("The enquiry already sent to PSP and returned [%s]\n", (cStatus == PD_ACCEPT)? "Success" : "Failed"));
+				}
+			}
+		}
+		else{
+			iRet = FAILURE;
+DEBUGLOG(("DBDepositTrace:GetTrace FAILED\n"));
+		}
+
+		hash_destroy(hTxn);
+	}
+
+	if(iRet == SUCCESS){
+
+		if(i_timeout == 0){
+		//get timeout
+			char*   csTimeout;
+			csTimeout = (char*) malloc (PD_TMP_BUF_LEN);
+			DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+			if ((unsigned long)(*DBObjPtr)("CONSOLE_PSPREQGW_TIMEOUT", csTimeout) == PD_FOUND) {
+				iTimeout = atoi(csTimeout);
+DEBUGLOG((" deposit_trace_timeout (config) = [%d]\n", iTimeout));
+			}
+			else{
+DEBUGLOG((" deposit_trace_timeout (default) = [%d]\n", iTimeout));
+			}
+			FREE_ME(csTimeout);
+		}
+		else{
+			iTimeout = i_timeout;
+DEBUGLOG((" deposit_trace_timeout (input) = [%d]\n", iTimeout));
+		}
+
+
+//get deposit trace config
+		hash_init(hTxn, 0);
+		DBObjPtr = CreateObj(DBPtr,"DBPspDepositTrace","GetDetail");
+		if ((*DBObjPtr)(cs_psp_channel, cs_psp_id, hTxn) == PD_OK) {
+			if (GetField_Char(hTxn, "mode", &cMode)) {
+DEBUGLOG((" mode = [%c]\n", cMode));
+			}
+			if (GetField_CString(hTxn, "url", &csPtr)) {
+				PutField_CString(hRequest, "psp_url", csPtr);
+DEBUGLOG((" url = [%s]\n", csPtr));
+			}
+			if (GetField_CString(hTxn, "request_function", &csPtr)) {
+				PutField_CString(hRequest, "request_function", csPtr);
+DEBUGLOG((" request_function = [%s]\n", csPtr));
+			}
+			if (GetField_CString(hTxn, "action", &csPtr)) {
+				PutField_CString(hRequest, "action", csPtr);
+DEBUGLOG((" action = [%s]\n", csPtr));
+			}
+			if (GetField_CString(hTxn, "url_method", &csPtr)) {
+				PutField_CString(hRequest, "url_method", csPtr);
+DEBUGLOG((" url_method = [%s]\n", csPtr));
+			}
+		}
+		else{
+			iRet = FAILURE;
+DEBUGLOG(("DBPspDepositTrace:GetDetail FAILED\n"));
+		}
+
+
+		hash_destroy(hTxn);
+	}
+
+
+//get psp info
+	if(iRet == SUCCESS){
+		hash_init(hTxn, 0);
+		DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetPspDetail");
+		if ((*DBObjPtr)(cs_psp_id, hTxn) == PD_OK) {
+			if (GetField_CString(hTxn, "psp_merchant_id", &csPtr)) {
+				PutField_CString(hRequest, "psp_merchant_id", csPtr);
+DEBUGLOG((" psp_merchant_id = [%s]\n", csPtr));
+			}
+			if (GetField_CString(hTxn, "overrided_bank_code_channel", &csPtr)) {
+				PutField_CString(hRequest, "overrided_bank_code_channel", csPtr);
+DEBUGLOG((" overrided_bank_code_channel = [%s]\n", csPtr));
+			}
+		}
+		else{
+			iRet = FAILURE;
+DEBUGLOG(("DBPspDetail:GetPspDetail FAILED\n"));
+		}
+
+		hash_destroy(hTxn);
+	}
+
+//get psp keys
+	if(iRet == SUCCESS){
+		recordset_t     *rKeySet;
+		rKeySet = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(rKeySet,0);
+
+//PTK
+		recordset_init(rKeySet, 0);
+		DBObjPtr = CreateObj(DBPtr, "DBPspKeys", "GetPspKey");
+		if ((*DBObjPtr)(cs_psp_id, PD_PTK_KEY_NAME, rKeySet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rKeySet);
+			while(hRec){
+				if (GetField_CString(hRec,"key_value",&csPtr)) {
+DEBUGLOG(("- psp_key = [%s]\n",csPtr));
+					PutField_CString(hContext,"psp_key",csPtr);
+					PutField_CString(hRequest,"psp_key",csPtr);
+				}
+				if (GetField_CString(hRec,"key_id",&csPtr)) {
+DEBUGLOG(("- psp_key_id= [%s]\n",csPtr));
+                                        PutField_CString(hContext,"psp_key_id",csPtr);
+					PutField_CString(hRequest,"psp_key_id",csPtr);
+                                }
+                                if (GetField_CString(hRec,"key_uid",&csPtr)) {
+DEBUGLOG(("- psp_key_uid= [%s]\n",csPtr));
+                                        PutField_CString(hContext,"psp_key_uid",csPtr);
+					PutField_CString(hRequest,"psp_key_uid",csPtr);
+                                }
+                                if (GetField_CString(hRec,"privatepem",&csPtr)) {
+DEBUGLOG(("- psp_privatepem= [%s]\n",csPtr));
+                                        PutField_CString(hContext,"psp_privatepem",csPtr);
+					PutField_CString(hContext,"rsa_privatepem",csPtr);
+					PutField_CString(hRequest,"psp_privatepem",csPtr);
+                                }
+                                if (GetField_CString(hRec,"publiccert",&csPtr)) {
+DEBUGLOG(("- psp_publiccert= [%s]\n",csPtr));
+                                        PutField_CString(hContext,"psp_publiccert",csPtr);
+					PutField_CString(hRequest,"psp_publiccert",csPtr);
+                                }
+                                if (GetField_CString(hRec,"passphrase",&csPtr)) {
+DEBUGLOG(("- psp_passphrase= [%s]\n",csPtr));
+                                        PutField_CString(hContext,"psp_passphrase",csPtr);
+					PutField_CString(hRequest,"psp_passphrase",csPtr);
+                                }
+				hRec = RecordSet_GetNext(rKeySet);
+			}
+		}
+		RecordSet_Destroy(rKeySet);
+
+//AES
+		recordset_init(rKeySet, 0);
+		DBObjPtr = CreateObj(DBPtr, "DBPspKeys", "GetPspKey");
+		if ((*DBObjPtr)(cs_psp_id, PD_AES_KEY_NAME, rKeySet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rKeySet);
+			while(hRec){
+				if (GetField_CString(hRec,"key_value",&csPtr)) {
+DEBUGLOG(("- aes_key = [%s]\n",csPtr));
+					PutField_CString(hContext,"aes_key",csPtr);
+					PutField_CString(hRequest,"aes_key",csPtr);
+				}
+				hRec = RecordSet_GetNext(rKeySet);
+			}
+		}
+		RecordSet_Destroy(rKeySet);
+
+
+//RSA
+		recordset_init(rKeySet, 0);
+		DBObjPtr = CreateObj(DBPtr, "DBPspKeys", "GetPspKey");
+		if ((*DBObjPtr)(cs_psp_id, PD_RSA_KEY_NAME, rKeySet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rKeySet);
+			while(hRec){
+				if (GetField_CString(hRec,"privatepem",&csPtr)) {
+DEBUGLOG(("- rsa_key = [%s]\n",csPtr));
+					PutField_CString(hContext,"rsa_key",csPtr);
+				}
+				hRec = RecordSet_GetNext(rKeySet);
+			}
+		}
+		RecordSet_Destroy(rKeySet);
+
+//PUK
+		recordset_init(rKeySet, 0);
+		DBObjPtr = CreateObj(DBPtr, "DBPspKeys", "GetPspKey");
+		if ((*DBObjPtr)(cs_psp_id, PD_PUK_KEY_NAME, rKeySet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rKeySet);
+			while(hRec){
+				if (GetField_CString(hRec,"privatepem",&csPtr)) {
+DEBUGLOG(("- puk_key = [%s]\n",csPtr));
+					PutField_CString(hContext,"puk_key",csPtr);
+				}
+				hRec = RecordSet_GetNext(rKeySet);
+			}
+		}
+		RecordSet_Destroy(rKeySet);
+
+
+		FREE_ME(rKeySet);
+	}
+
+
+//get txn info
+	if(iRet == SUCCESS){
+		recordset_t     *rRecordSet;
+		rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(rRecordSet, 0);
+
+		char    csOrgDateTime[PD_DATETIME_LEN +1];
+		char	*csDate;
+
+		DBObjPtr = CreateObj(DBPtr, "DBTransaction", "GetTxnHeader");
+		if ((DBObjPtr)(cs_txn_id, rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec, "local_tm_date", &csDate)) {
+					strcpy(csOrgDateTime, csDate);
+					PutField_CString(hRequest, "txn_date", csDate);
+DEBUGLOG((" txn_date = [%s]\n", csDate));
+
+					if (GetField_CString(hRec, "local_tm_time", &csPtr)) {
+						memcpy(&csOrgDateTime[PD_DATE_LEN], csPtr, PD_TIME_LEN);
+						csOrgDateTime[PD_DATETIME_LEN] = '\0';
+						PutField_CString(hRequest, "txn_datetime", csOrgDateTime);
+DEBUGLOG((" txn_datetime = [%s]\n", csOrgDateTime));
+					}
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+		}
+		else{
+			iRet = FAILURE;
+DEBUGLOG(("DBTransaction:GetTxnHeader FAILED\n"));
+		}
+
+
+		recordset_init(rRecordSet, 0);
+		DBObjPtr = CreateObj(DBPtr, "DBTxnPspDetail", "GetTxnPspDetail");
+		if ((DBObjPtr)(cs_txn_id, rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_Double(hRec, "txn_amt", &dPtr)) {
+					PutField_Double(hRequest, "txn_amt", dPtr);
+DEBUGLOG((" txn_amt = [%lf]\n", dPtr));
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+		else{
+			iRet = FAILURE;
+DEBUGLOG(("DBTxnPspDetail:GetTxnPspDetail FAILED\n"));
+		}
+
+		RecordSet_Destroy(rRecordSet);
+		FREE_ME(rRecordSet);
+	}
+
+
+//enquiry time
+	if(iRet == SUCCESS){
+		char csEnquiryTime[PD_DATETIME_LEN + 1];
+		csEnquiryTime[0] = '\0';
+		strcpy(csEnquiryTime, getdatetime());
+		PutField_CString(hRequest, "enquiry_time", csEnquiryTime);
+DEBUGLOG((" enquiry_time = [%s]\n", csEnquiryTime));
+	}
+
+
+//generate sign
+	if(iRet == SUCCESS){
+		BOObjPtr = CreateObj(BOPtr,"BOSecurity","GeneratePspSign");
+		if ((*BOObjPtr)(hContext, hRequest, hRequest) == PD_OK) {
+DEBUGLOG(("BOSecurity:GeneratePspSign OK\n"));
+		}
+		else{
+			iRet = FAILURE;
+DEBUGLOG(("BOSecurity:GeneratePspSign FAILED\n"));
+		}
+	}
+
+
+
+//FormatMsg and send to queue
+	if(iRet == SUCCESS){
+		if (!strcmp(cs_psp_channel, PD_CHANNEL_ESKY)) {
+			strcpy(csTmpChannelCode, "ESkyMsg");
+		} else {
+			sprintf(csTmpChannelCode, "%c%c%cMsg", cs_psp_channel[0], tolower(cs_psp_channel[1]), tolower(cs_psp_channel[2]));
+		}
+DEBUGLOG(("Call %s:FormatInqMsg\n", csTmpChannelCode));
+		MsgObjPtr = CreateObj(MsgPtr, csTmpChannelCode, "FormatInqMsg");
+		h_msg = (hex_t*) malloc (sizeof(hex_t));
+		if ((*MsgObjPtr)(hRequest, h_msg->msg, &h_msg->len) == PD_OK) {
+			DBObjPtr = CreateObj(DBPtr, "DBDepositTrace", "UpdateTraceStatus");
+			if ((*DBObjPtr)(cs_txn_id, c_party, i_seq, PD_TRACE_TO_PSP) != PD_OK) {
+DEBUGLOG(("DBDepositTrace:UpdateTraceStatus FAILED\n"));
+			}
+			else {
+				TxnCommit();
+			}
+
+			lKey = GetMQKey((const unsigned char *)"PSPPREQQ");
+			lRspKey = GetMQKey((const unsigned char *)"PSPPRSPQ");
+
+			msg = (struct msg_t*)malloc(sizeof(struct msg_t) + MAX_MSG_SIZE);
+			msg->mtype  = ctol((const unsigned char *)cs_txn_id, strlen(cs_txn_id));
+			memset(msg->mtext, 0, sizeof(msg->mtext));
+			MQ_build_header((unsigned char*)msg->mtext,
+					MQ_RESP,
+					"WEB",
+					0,
+					NULL,
+					0);
+			memcpy(&msg->mtext[MQ_HEADER_LEN], h_msg->msg, h_msg->len);
+			msg->mtext[MQ_HEADER_LEN + h_msg->len] = '\0';
+			iSendLen = MQ_HEADER_LEN + h_msg->len;
+DEBUGLOG(("send msg = [%s] send len = [%d]\n", msg->mtext, iSendLen));
+DEBUGLOG(("rspkey = [%ld][%ld]\n", lRspKey, msg->mtype));
+
+
+			if (MQSend(lKey, msg, iSendLen) != MQ_OK ) {
+DEBUGLOG(("Sent Error\n"));
+				iRet = FAILURE;
+			}
+			else{
+
+				if(cMode == 'S'){
+					memset(msg->mtext, 0, sizeof(msg->mtext));
+					//wait for timeout + 2 sec
+					if (MQRecv(lRspKey, msg, &iRecvLen, iTimeout + 2) != MQ_OK ) {
+DEBUGLOG(("recv Error\n"));
+DEBUGLOG((" after process_resp_err_txn iret = [%d]\n", iRet));
+					}
+					else {
+						msg->mtext[iRecvLen] = '\0';
+DEBUGLOG((" recv len = [%d]\n", iRecvLen));
+DEBUGLOG((" recv = [%s]\n", &msg->mtext[MQ_HEADER_LEN], iRecvLen - MQ_HEADER_LEN));
+						memcpy(h_msg->msg, &msg->mtext[MQ_HEADER_LEN], iRecvLen - MQ_HEADER_LEN);
+
+						hash_t *hMsg;
+						hMsg = (hash_t*) malloc (sizeof(hash_t));
+						hash_init(hMsg, 0);
+						int iTmpRet = 0;
+
+						/*
+							1. call XxxMsg.BreakDownInqRspMsg()
+							2. call BOSecurity.VerifyPspSign (if sign exists)
+								- call XxxMsg.BuildRspAuthData
+									- call XxxMsg.BuildInqRspAuthData (if necessary)
+								- call corresponding verify sign function
+							3. call BOSecurity.GeneratePspSign (if txn_seq & txn_amt exists)
+								- call XxxMsg.BuildAuthData
+									- call XxxMsg.BuildCallbackAuthData
+								- call corresponding generate sign function
+							4. call XxxMsg.FormatCallbackMsg (if txn_seq & txn_amt exists)
+							5. send to WEBChannel (if txn_seq & txn_amt exists)
+						*/
+
+						PutField_Int(hMsg, "for_enquiry_rsp_use", PD_TRUE);
+						PutField_CString(hContext, "return_psp_channel", cs_psp_channel);
+
+DEBUGLOG(("Call %s:BreakDownInqRspMsg\n", csTmpChannelCode));
+						MsgObjPtr = CreateObj(MsgPtr, csTmpChannelCode, "BreakDownInqRspMsg");
+						iTmpRet = (unsigned long)(*MsgObjPtr)(hContext, hMsg, h_msg->msg, h_msg->len);
+
+						if (iTmpRet == PD_OK) {
+							if (GetField_CString(hMsg, "sign", &csPtr)) {
+DEBUGLOG(("Call BOSecurity:VerifyPspSign\n"));
+								BOObjPtr = CreateObj(BOPtr, "BOSecurity", "VerifyPspSign");
+								iTmpRet = (unsigned long)(*BOObjPtr)(hContext, hMsg, hMsg);
+							}
+						}
+
+						if (iTmpRet == PD_OK) {
+DEBUGLOG(("begin update enquiry status\n"));
+							hash_init(hTxn, 0);
+
+							char cEnquiryStatus;
+							if (GetField_CString(hMsg, "status", &csPtr)) {
+								int iResult;
+								DBObjPtr = CreateObj(DBPtr, "DBMessages", "c2i");
+								iTmpRet = (unsigned long)(*DBObjPtr)(cs_psp_channel, &iResult, csPtr);
+
+								if (iResult == INT_DEPOSIT_PROCESSING) {
+									cEnquiryStatus = PD_PSP_RE_PENDING;
+								} else if (iResult == INT_NO_ERR) {
+									cEnquiryStatus = PD_PSP_RE_SUCCESS;
+								} else {
+									cEnquiryStatus = PD_PSP_RE_FAILED;
+								}
+							} else {
+								cEnquiryStatus = PD_PSP_RE_FAILED;
+							}
+
+DEBUGLOG(("enquiry_status = [%c]\n", cEnquiryStatus));
+							PutField_Char(hTxn, "enquiry_status", cEnquiryStatus);
+
+							if (cEnquiryStatus == PD_PSP_RE_FAILED) {
+								if (GetField_CString(hMsg, "fail_reason", &csPtr)) {
+DEBUGLOG(("status_msg = [%s]\n", csPtr));
+									PutField_CString(hTxn, "fail_reason", csPtr);
+								}
+							}
+
+							DBObjPtr = CreateObj(DBPtr, "DBDepositTrace", "UpdateTrace");
+							if ((*DBObjPtr)(cs_txn_id, c_party, i_seq, hTxn) != PD_OK) {
+DEBUGLOG(("DBDepositTrace:UpdateTraceStatus FAILED\n"));
+							}
+
+							hash_destroy(hTxn);
+
+							hash_init(hTxn, 0);
+
+							PutField_CString(hTxn, "txn_seq", cs_txn_id);
+							PutField_CString(hTxn, "update_user", PD_UPDATE_USER);
+							DBObjPtr = CreateObj(DBPtr, "DBTransaction", "Update");
+							if ((*DBObjPtr)(hTxn) != PD_OK) {
+DEBUGLOG(("DBTransaction:Update FAILED\n"));
+							}
+							DBObjPtr = CreateObj(DBPtr, "DBTransaction", "UpdateDetail");
+							if ((*DBObjPtr)(hTxn) != PD_OK) {
+DEBUGLOG(("DBTransaction:UpdateDetail FAILED\n"));
+							}
+
+							hash_destroy(hTxn);
+
+							if (cEnquiryStatus == PD_PSP_RE_FAILED) {
+								if (!GetField_CString(hMsg, "txn_seq", &csPtr) || !GetField_CString(hMsg, "txn_amt", &csPtr2))
+									iTmpRet = PD_ERR;
+							}
+						}
+
+						if (iTmpRet == PD_OK) {
+DEBUGLOG(("Call BOSecurity:GeneratePspSign\n"));
+							BOObjPtr = CreateObj(BOPtr, "BOSecurity", "GeneratePspSign");
+							iTmpRet = (unsigned long)(*BOObjPtr)(hContext, hMsg, hMsg);
+						}
+
+						if (iTmpRet == PD_OK) {
+DEBUGLOG(("Call %s:FormatCallbackMsg\n", csTmpChannelCode));
+							MsgObjPtr = CreateObj(MsgPtr, csTmpChannelCode, "FormatCallbackMsg");
+							iTmpRet = (unsigned long)(*MsgObjPtr)(hContext, hMsg, h_msg->msg, &h_msg->len);
+						}
+
+						if (iTmpRet == PD_OK) {
+							// send to WEBChannel
+							MQ_build_header((unsigned char*)msg->mtext,
+									MQ_RESP,
+									cs_psp_channel,
+									0,
+									NULL,
+									0);
+							MQ_build_header2((unsigned char*)msg->mtext,
+									0,
+									"DUMPQ");
+
+							memcpy(&msg->mtext[MQ_HEADER_LEN], h_msg->msg, h_msg->len);
+							iSendLen = MQ_HEADER_LEN + h_msg->len;
+							msg->mtext[iSendLen] = '\0';
+
+							lKey = GetMQKey((const unsigned char *)"SYSIQ");
+							if (MQSend(lKey, msg, iSendLen) != MQ_OK) {
+DEBUGLOG(("Sent to SYSIQ Error\n"));
+								iTmpRet = FAILURE;
+							}
+							else {
+DEBUGLOG(("Send to SYSINQ\n"));
+								lRspKey = GetMQKey((const unsigned char *)"DUMPQ");
+								iTmpRet = MQRecv(lRspKey, msg, &iRecvLen, 2);
+							}
+						}
+
+						hash_destroy(hMsg);
+						FREE_ME(hMsg);
+
+DEBUGLOG((" after process_resp_txn iret = [%d]\n", iTmpRet));
+					}
+				}
+				else{
+DEBUGLOG(("Sent Success\n"));
+				}
+			}
+		}
+		else {
+			iRet = FAILURE;
+DEBUGLOG(("%s:FormatInqMsg FAILED\n", csTmpChannelCode));
+		}
+		FREE_ME(msg);
+		FREE_ME(h_msg);
+	}
+
+	hash_destroy(hRequest);
+	FREE_ME(hRequest);
+	hash_destroy(hContext);
+	FREE_ME(hContext);
+	hash_destroy(hResponse);
+        FREE_ME(hResponse);
+
+        FREE_ME(hTxn);
+
+DEBUGLOG(("deposit_trace Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_psp_channel,"");
+        strcpy(cs_psp_id,"");
+        strcpy(cs_txn_id,"");
+	i_seq = -1;
+	c_party = PD_TYPE_ADMIN;
+	i_timeout = 0;
+
+        while ((c = getopt(argc,argv,"c:p:t:s:i:o:")) != EOF) {
+                switch (c) {
+                        case 'c':
+                                strcpy(cs_psp_channel, optarg);
+                                break;
+                        case 'p':
+                                strcpy(cs_psp_id, optarg);
+				break;
+			case 't':
+                                strcpy(cs_txn_id, optarg);
+                                break;
+			case 's':
+				if(is_numeric(optarg)){
+					i_seq = atoi(optarg);
+				}
+                                break;
+			case 'i':
+                                c_party = optarg[0];
+                                break;
+			case 'o':
+				if(is_numeric(optarg)){
+					i_timeout = atoi(optarg);
+				}
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_psp_channel,"") || !strcmp(cs_psp_id,"") || !strcmp(cs_txn_id,"") || i_seq < 0 || !(c_party == PD_TYPE_ADMIN || c_party == PD_TYPE_MERCHANT))
+                return FAILURE;
+
+        return SUCCESS;
+}

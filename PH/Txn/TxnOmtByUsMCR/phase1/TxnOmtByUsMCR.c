@@ -1,0 +1,576 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/09/10              LokMan Chow
+Add Auto Expired Days and Mins Setting             2014/01/20		   Virginia Yun
+Add Merch Key record				   2014/02/12              Virginia Yun
+Add address					   2014/10/03		   Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsMCR.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#include "sha1.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+
+void TxnOmtByUsMCR(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+
+	char	*csTmp = NULL;	
+	char	*csKeyType = strdup(""); 
+	char	csKeyValue[PD_MD5_KEY_LEN + 1];
+
+        char csDateTime[PD_DATETIME_LEN + 1];
+
+	int	iTmp;
+	double	dTmp = 0.0;
+
+	char	*csMid = strdup("");
+	//char	cType;
+	char	cAction;
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn, 0);
+
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	memset(csKeyValue, 0, sizeof(csKeyValue));
+	memset(csDateTime, 0, sizeof(csDateTime));
+
+
+DEBUGLOG(("TxnOmtByUsMCR::Authorize\n"));
+
+/* Action */
+	if (GetField_CString(hRequest, "action", &csTmp)) {
+		cAction = csTmp[0];
+		// not support delete
+		if (cAction != PD_ACTION_ADD && cAction != PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize::action [%d] not accepted!!\n", cAction));
+ERRLOG("TxnOmtByUsMCR::Authorize::action not found!!\n");
+			iRet=INT_ACTION_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	} 
+	else {
+DEBUGLOG(("Authorize::action not found!!\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::action not found!!\n");
+                iRet=INT_ACTION_NOT_FOUND;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	// Merchant ID is expected input also!
+	if (GetField_CString(hRequest, "newmid", &csMid)){
+		PutField_CString(hTxn, "merchant_id", csMid);
+		PutField_Char(hTxn, "party_type", 'M');
+		PutField_CString(hTxn, "party_id", csMid);
+DEBUGLOG(("Authorize::merhant_id = [%s]\n",csMid));
+DEBUGLOG(("Authorize::party_type = [%c]\n",'M'));
+DEBUGLOG(("Authorize::party_id = [%s]\n",csMid));
+	}
+	else {
+DEBUGLOG(("Authorize::merchant_id not found!!\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::merchant_id not found!!\n");
+		iRet=INT_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* add_user */
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"create_user",csTmp);
+		PutField_CString(hTxn, "update_user", csTmp);
+        }
+
+
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+			//check merchant_detail and ol_merchant_detail
+DEBUGLOG(("Authorize::Call DBMerchDetail:ChkMerchIDExist\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBMerchDetail","ChkMerchIDExist");
+			if ((unsigned long)(*DBObjPtr)(csMid) != PD_FOUND) {
+DEBUGLOG(("Authorize::DBMerchDetail:ChkMerchIDExist NOT FOUND (OK for add)\n"));
+			} else {
+DEBUGLOG(("Authorize::DBMerchDetail:ChkMerchIDExist FOUND\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::DBMerchDetail:ChkMerchIDExist FOUND for action Add\n");
+				iRet = INT_INVALID_MERCH_ID;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+			if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call DBOLMerchDetail:ChkOLMerchIDExist\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBOLMerchDetail","ChkOLMerchIDExist");
+				if ((unsigned long)(*DBObjPtr)(csMid) != PD_FOUND) {
+DEBUGLOG(("Authorize::DBOLMerchDetail:ChkOLMerchIDExist NOT FOUND (OK for add)\n"));
+				} else {
+DEBUGLOG(("Authorize::DBOLMerchDetail:ChkOLMerchIDExist FOUND\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::DBOLMerchDetail:ChkOLMerchIDExist FOUND for action Add\n");
+					iRet = INT_INVALID_MERCH_ID;
+					PutField_Int(hContext,"internal_error",iRet);
+				}
+			}
+		}
+	}
+
+
+
+
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+			/* name */
+			if(GetField_CString(hRequest,"name",&csTmp)){
+				PutField_CString(hTxn, "name", csTmp);
+DEBUGLOG(("Authorize::name = [%s]\n",csTmp));
+			}
+			else {
+DEBUGLOG(("Authorize::name not found!!\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::name not found!!\n");
+				iRet=INT_MERCHANT_NAME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+			/*short_name*/
+			if(GetField_CString(hRequest, "short_name", &csTmp)) {
+				PutField_CString(hTxn, "short_name",csTmp);
+DEBUGLOG(("Authorize::short_name = [%s]\n",csTmp));
+			}
+			else {
+DEBUGLOG(("Authorize::short name not found!!\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::short name not found!!\n");
+				iRet=INT_MERCHANT_NAME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+			/*brand_name*/
+			if(GetField_CString(hRequest, "brand_name", &csTmp)) {
+				PutField_CString(hTxn, "brand_name",csTmp);
+DEBUGLOG(("Authorize::brand_name = [%s]\n",csTmp));
+			}
+			else {
+DEBUGLOG(("Authorize::brand name not found!!\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::brand name not found!!\n");
+				iRet=INT_MERCHANT_NAME_NOT_FOUND;
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+
+                        /* approximate_fee_rate */
+                        if(GetField_CString(hRequest,"fee_rate",&csTmp)){
+                                dTmp = string2double((const unsigned char *)csTmp);
+                                PutField_Double(hTxn,"approximate_fee_rate",dTmp);
+DEBUGLOG(("Authorize() approximate_fee_rate = [%f]\n",dTmp));
+                        }
+                        else {
+                                dTmp = 0.0;
+DEBUGLOG(("Authorize() approximate_fee_rate (default) = [%f]\n",dTmp));
+                                PutField_Double(hTxn, "approximate_fee_rate", dTmp);
+                        }
+
+			/* status */
+			if (GetField_CString(hRequest, "status", &csTmp)) {
+DEBUGLOG(("Authorize() status = [%s]\n",csTmp));
+				PutField_CString(hTxn, "status", csTmp);
+
+			} else {
+DEBUGLOG(("Authorize() status (default) = [%s]\n",PD_ACC_OPEN));
+				PutField_CString(hTxn, "status", PD_ACC_OPEN);
+			}
+
+			/* allow_payout_dup_merch_ref */
+			if (GetField_CString(hRequest, "allow_po_dup_merch_ref", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "allow_payout_dup_merch_ref", iTmp);
+DEBUGLOG(("Authorize() allow_po_dup_merch_ref = [%d]\n",iTmp));
+
+			} else {
+				PutField_Int(hTxn, "allow_payout_dup_merch_ref", PD_TRUE);
+DEBUGLOG(("Authorize() allow_po_dup_merch_ref (default) = [%d]\n",PD_TRUE));
+			}
+
+			/* settlement_process_period */
+			if (GetField_CString(hRequest, "sett_proc_period", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "settlement_process_period", iTmp);
+DEBUGLOG(("Authorize() settlement_process_period = [%d]\n",iTmp));
+
+			} else {
+				PutField_Int(hTxn, "settlement_process_period", 0);
+DEBUGLOG(("Authorize() settlement_process_period (default) = [%d]\n", 0));
+
+			}
+
+			/* ignore_nack */
+			if (GetField_CString(hRequest, "ignore_nack", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "ignore_nack", iTmp);
+DEBUGLOG(("Authorize() ignore_nack = [%d]\n",iTmp));
+
+			} else {
+				PutField_Int(hTxn, "ignore_nack", PD_FALSE);
+DEBUGLOG(("Authorize() ignore_nack (default) = [%d]\n",PD_FALSE));
+			}
+
+			/* payout_fe_display */
+			if (GetField_CString(hRequest, "payout_fe_display", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "payout_fe_display", iTmp);
+DEBUGLOG(("Authorize() payout_fe_display = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "payout_fe_display", PD_FALSE);
+DEBUGLOG(("Authorize() payout_fe_display (default) = [%d]\n", PD_FALSE));
+			}
+
+			/* deposit_req_ver */
+			if (GetField_CString(hRequest, "deposit_req_ver", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "deposit_req_ver", iTmp);
+DEBUGLOG(("Authorize() deposit_req_ver = [%d]\n",iTmp));
+			} else {
+				PutField_Int(hTxn, "deposit_req_ver", 1);
+DEBUGLOG(("Authorize() deposit_req_ver (default) = [%d]\n",1));
+			}
+
+			/* display_other_bank */
+			if (GetField_CString(hRequest, "display_other_bank", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "display_other_bank", iTmp);
+DEBUGLOG(("Authorize() display_other_bank = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "display_other_bank", 1);
+DEBUGLOG(("Authorize() display_other_bank (default) = [%d]\n", 1));
+			}
+
+			/* is_more_restricted */
+			if (GetField_CString(hRequest, "is_more_restricted", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "is_more_restricted", iTmp);
+DEBUGLOG(("Authorize() is_more_restricted = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "is_more_restricted", 0);
+DEBUGLOG(("Authorize() is_more_restricted (default) = [%d]\n", 0));
+			}
+
+			/* support_payout_grp */
+			if (GetField_CString(hRequest, "support_pogrp", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "support_payout_grp", iTmp);
+DEBUGLOG(("Authorize() support_payout_grp = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "support_payout_grp", 1);
+DEBUGLOG(("Authorize() support_payout_grp (default) = [%d]\n", 1));
+			}
+
+			/* txn_auto_expired_days */
+			if (GetField_CString(hRequest, "txn_auto_expired_days", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "txn_auto_expired_days", iTmp);
+DEBUGLOG(("Authorize() txn_auto_expired_days = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "txn_auto_expired_days", 0);
+DEBUGLOG(("Authorize() txn_auto_expired_days (default) = [%d]\n", 0));
+			}
+			
+			/* txn_auto_expired_mins */
+			if (GetField_CString(hRequest, "txn_auto_expired_mins", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "txn_auto_expired_mins", iTmp);
+DEBUGLOG(("Authorize() txn_auto_expired_mins = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "txn_auto_expired_mins", 0);
+DEBUGLOG(("Authorize() txn_auto_expired_mins (default) = [%d]\n", 0));
+			}
+
+			/* stmt_auto_expired_days */
+			if (GetField_CString(hRequest, "stmt_auto_expired_days", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "stmt_auto_expired_days", iTmp);
+DEBUGLOG(("Authorize() stmt_auto_expired_days = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "stmt_auto_expired_days", 0);
+DEBUGLOG(("Authorize() stmt_auto_expired_days (default) = [%d]\n", 0));
+			}
+
+			/* stmt_auto_expired_mins */
+			if (GetField_CString(hRequest, "stmt_auto_expired_mins", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "stmt_auto_expired_mins", iTmp);
+DEBUGLOG(("Authorize() stmt_auto_expired_mins = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "stmt_auto_expired_mins", 0);
+DEBUGLOG(("Authorize() stmt_auto_expired_mins (default) = [%d]\n", 0));
+			}
+
+			/* po_checksum */
+			if (GetField_CString(hRequest, "po_checksum", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "po_checksum", iTmp);
+DEBUGLOG(("Authorize() payout_checksum = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "po_checksum", PD_TRUE);
+DEBUGLOG(("Authorize() payout_checksum (default) = [%d]\n", PD_TRUE));
+			}
+
+			/* client_id */
+			if(GetField_CString(hRequest,"client_id",&csTmp)){
+				PutField_CString(hTxn, "client_id", csTmp);
+DEBUGLOG(("Authorize::client_id = [%s]\n",csTmp));
+			}
+			else {
+DEBUGLOG(("Authorize::client_id not found!!\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::client_id not found!!\n");
+				iRet=INT_CLIENT_ID_NOT_FOUND;
+
+				PutField_Int(hContext,"internal_error",iRet);
+			}
+
+			/* disabled */
+			if (GetField_CString(hRequest, "disabled", &csTmp)) {
+				iTmp = atoi(csTmp);
+DEBUGLOG(("Authorize::disabled = [%d]\n",iTmp));
+				PutField_Int(hTxn, "disabled", iTmp);
+			}
+			else {
+DEBUGLOG(("Authorize::disabled not found!!\n"));
+				PutField_Int(hTxn, "disabled", PD_FALSE);
+			}
+
+			/* address */
+			if (GetField_CString(hRequest, "address", &csTmp)) {
+				PutField_CString(hTxn, "address", csTmp);
+DEBUGLOG(("Authorize::address = [%s]\n", csTmp));
+			}
+
+		}
+		else if (cAction == PD_ACTION_UPDATE){
+			/* name */
+			if(GetField_CString(hRequest,"name",&csTmp)){
+				PutField_CString(hTxn, "name", csTmp);
+DEBUGLOG(("Authorize::name = [%s]\n",csTmp));
+			}
+
+			/*short_name*/
+			if(GetField_CString(hRequest, "short_name", &csTmp)) {
+				PutField_CString(hTxn, "short_name",csTmp);
+DEBUGLOG(("Authorize::short_name = [%s]\n",csTmp));
+			}
+
+			/* brand_name */
+			if(GetField_CString(hRequest, "brand_name", &csTmp)) {
+				PutField_CString(hTxn, "brand_name",csTmp);
+DEBUGLOG(("Authorize::brand_name = [%s]\n",csTmp));
+			}
+
+                        /* approximate_fee_rate */
+                        if(GetField_CString(hRequest,"fee_rate",&csTmp)){
+                                dTmp = string2double((const unsigned char *)csTmp);
+                                PutField_Double(hTxn,"approximate_fee_rate",dTmp);
+DEBUGLOG(("Authorize() approximate_fee_rate = [%f]\n",dTmp));
+                        }
+
+			/* status */
+			if (GetField_CString(hRequest, "status", &csTmp)) {
+DEBUGLOG(("Authorize() status = [%s]\n",csTmp));
+				PutField_CString(hTxn, "status", csTmp);
+			}
+
+			/* allow_payout_dup_merch_ref */
+			if (GetField_CString(hRequest, "allow_po_dup_merch_ref", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "allow_payout_dup_merch_ref", iTmp);
+DEBUGLOG(("Authorize() allow_po_dup_merch_ref = [%d]\n",iTmp));
+			}
+
+			/* settlement_process_period */
+			if (GetField_CString(hRequest, "sett_proc_period", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "settlement_process_period", iTmp);
+DEBUGLOG(("Authorize() settlement_process_period = [%d]\n",iTmp));
+			}
+
+			/* ignore_nack */
+			if (GetField_CString(hRequest, "ignore_nack", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "ignore_nack", iTmp);
+DEBUGLOG(("Authorize() ignore_nack = [%d]\n",iTmp));
+			}
+
+			/* payout_fe_display */
+			if (GetField_CString(hRequest, "payout_fe_display", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "payout_fe_display", iTmp);
+DEBUGLOG(("Authorize() payout_fe_display = [%d]\n", iTmp));
+			}
+
+			/* deposit_req_ver */
+			if (GetField_CString(hRequest, "deposit_req_ver", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "deposit_req_ver", iTmp);
+DEBUGLOG(("Authorize() deposit_req_ver = [%d]\n",iTmp));
+			}
+
+			/* display_other_bank */
+			if (GetField_CString(hRequest, "display_other_bank", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "display_other_bank", iTmp);
+DEBUGLOG(("Authorize() display_other_bank = [%d]\n", iTmp));
+			}
+
+			/* is_more_restricted */
+			if (GetField_CString(hRequest, "is_more_restricted", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "is_more_restricted", iTmp);
+DEBUGLOG(("Authorize() is_more_restricted = [%d]\n", iTmp));
+			}
+
+			/* support_payout_grp */
+			if (GetField_CString(hRequest, "support_pogrp", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "support_payout_grp", iTmp);
+DEBUGLOG(("Authorize() support_payout_grp = [%d]\n", iTmp));
+			}
+
+			/* txn_auto_expired_days */
+			if (GetField_CString(hRequest, "txn_auto_expired_days", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "txn_auto_expired_days", iTmp);
+DEBUGLOG(("Authorize() txn_auto_expired_days = [%d]\n", iTmp));
+			}
+
+			/* txn_auto_expired_mins */
+			if (GetField_CString(hRequest, "txn_auto_expired_mins", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "txn_auto_expired_mins", iTmp);
+DEBUGLOG(("Authorize() txn_auto_expired_mins = [%d]\n", iTmp));
+			}
+
+			/* stmt_auto_expired_days */
+			if (GetField_CString(hRequest, "stmt_auto_expired_days", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "stmt_auto_expired_days", iTmp);
+DEBUGLOG(("Authorize() stmt_auto_expired_days = [%d]\n", iTmp));
+			}
+
+			/* stmt_auto_expired_mins */
+			if (GetField_CString(hRequest, "stmt_auto_expired_mins", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "stmt_auto_expired_mins", iTmp);
+DEBUGLOG(("Authorize() stmt_auto_expired_mins = [%d]\n", iTmp));
+			}
+
+			/* po_checksum */
+			if (GetField_CString(hRequest, "po_checksum", &csTmp)) {
+				iTmp = atoi(csTmp);
+				PutField_Int(hTxn, "po_checksum", iTmp);
+DEBUGLOG(("Authorize() payout_checksum = [%d]\n", iTmp));
+			} else {
+				PutField_Int(hTxn, "po_checksum", PD_TRUE);
+DEBUGLOG(("Authorize() payout_checksum (default) = [%d]\n", PD_TRUE));
+			}
+
+			/* address */
+			if (GetField_CString(hRequest, "address", &csTmp)) {
+				PutField_CString(hTxn, "address", csTmp);
+DEBUGLOG(("Authorize::address = [%s]\n", csTmp));
+			}
+		}
+
+	}
+
+	/* Merch Detail */
+        if (iRet == PD_OK) {
+ 		if (cAction == PD_ACTION_ADD) {
+DEBUGLOG(("Authorize::Call DBOLMerchDetail:Add\n"));
+                	DBObjPtr = CreateObj(DBPtr,"DBOLMerchDetail","Add");
+	                if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBOLMerchDetail:Add Failed\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::DBOLMerchDetail:Add Failed\n");
+       	                 iRet = INT_ERR;
+			}
+			else {
+DEBUGLOG(("Authorize::DBMerchDetail:Add Succ\n"));
+			}
+		} else if (cAction == PD_ACTION_UPDATE) {
+DEBUGLOG(("Authorize::Call DBOLMerchDetail:Update\n"));
+	               	DBObjPtr = CreateObj(DBPtr,"DBOLMerchDetail","Update");
+			if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBOLMerchDetail:Update Failed\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::DBOLMerchDetail:Update Failed\n");
+				iRet = INT_ERR;
+			}
+			else {
+DEBUGLOG(("Authorize::DBOLMerchDetail:Update Succ\n"));
+			}	
+		}
+
+	}
+
+
+	/* Add Keys */
+	if (iRet == PD_OK) {
+		if (cAction == PD_ACTION_ADD) {
+			PutField_CString(hTxn, "key", PD_PTK_KEY_NAME);
+			PutField_CString(hTxn, "key_value", "9zfYgBtKA8MZNT2715DtrsoFZeuWfYUgqt8qORyQiVfL918Ttm9cHO5qk0YcrxFCEFJ4ulJAgNkwm3f860DSzRy1NrgySw9Lp3gUHe8h3YVUDjdHu06QKMnMrrGdfvHK");
+
+			if (GetField_CString(hContext, "PHDATE", &csTmp)) {
+				PutField_CString(hTxn, "effect_date", csTmp);
+			}
+
+DEBUGLOG(("Authorize::Call DBMerchKeys:Add\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBMerchKeys","Add");
+			if((unsigned long)((*DBObjPtr)(hTxn) != PD_OK)){
+DEBUGLOG(("Authorize::DBMerchKeys:Add Failed\n"));
+ERRLOG("TxnOmtByUsMCR::Authorize::DBMerchKeys:Add Failed\n");
+				iRet = INT_ERR;
+			}
+			else {
+DEBUGLOG(("Authorize::DBMerchKeys:Add Succ\n"));
+			}
+		}
+	}
+
+
+	if (iRet == PD_OK) {
+		PutField_CString(hResponse, "merchant_id", csMid);
+		//PutField_CString(hResponse, "key_value", csKeyValue);
+	}
+
+	FREE_ME(csMid);
+	FREE_ME(csKeyType);
+
+	hash_destroy(hTxn);
+	FREE_ME(hTxn);
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+DEBUGLOG(("TxnOmtByUsMCR Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}
+

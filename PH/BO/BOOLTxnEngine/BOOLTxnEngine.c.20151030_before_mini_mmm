@@ -1,0 +1,3020 @@
+/*
+Partnerdelight (c)2014. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/12/09              LokMan Chow
+Add fields for batch_txn_relation		   2015/05/15		   LokMan Chow
+update check unknown txn function
+	check txncode when post txn		   2015/06/23		   LokMan Chow
+Add check manual_hold_recon in DoAction()	   2015/09/08		   Elvis Wong
+Add Update DBOLBAIDTxn in DoPostTxn()		   2015/09/18		   Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "dbutility.h"
+#include "BOOLTxnEngine.h"
+#include "myrecordset.h"
+#include "myhash.h"
+#include "math.h"
+#include <time.h>
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+
+void BOOLTxnEngine(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int	DoAction(hash_t* hContext);
+int	GetTxnDetail(const char* csLevel, const char* csTxnId, hash_t* hTxn, const int iIsPostedTxn);
+void	ConvertHash(const hash_t* hIn, hash_t* hOut, const int iIdx, const char* csMode);
+int	DoPostTxn(hash_t* hContext,hash_t* hRequest);
+int	DoUpdateTxn(hash_t* hContext,hash_t* hRequest);
+int	CheckBeforeStatus(const int iRuleId, const char *csLevel,const char *csTxnId, const char *csTriggerType);
+int     DoLinkage(const int iAction, const char *csLevel, const int iLinkRule, hash_t* hContext);
+
+int	DoAction(hash_t* hContext)
+{
+	int iRet = PD_OK;
+
+	int  i = 0;
+	int  iTxnCnt = 0;
+	int  iBaidTxnCnt = 0;
+	int  iLoopCnt = 0;
+	int  iRunRule = PD_FALSE;
+	int  iTotalCnt = 0;
+	int  iNextAction = PD_FALSE;
+	int  iTmp = 0;
+	int  iTxnAction = 0;
+	int  iActDtId = 0;
+	int  iManualHoldRecon = PD_MANUAL_UNHOLD_RECON_DEFAULT;
+	char *csTmp= NULL;
+	char *csTxnCode= NULL;
+	char *csBaidTxnCode= NULL;
+	char *csActionLevel= NULL;
+	char  csTag[PD_TAG_LEN+1];
+	int  iUsePF = PD_FALSE;
+	int  iIncludeBankCharge = PD_FALSE;
+	int  iIncludeInterest = PD_FALSE;
+	double dTmp = 0.0;
+	char *csFrBankAcctType = NULL;
+	char *csToBankAcctType = NULL;
+	char *csBankAcctType = NULL;
+	char cTmp;
+	int iLinkRule = 0;
+	char *csLinkTxnId = NULL;
+	char *csLinkBaidTxnId = NULL;
+	char *csReconType = NULL;
+	char *csBankStmtType = NULL;
+	char *csTriggerType = NULL;
+	double dTotalAmt = 0.0;
+	double dTotalBaidAmt = 0.0;
+
+	double dTmpTotalAmt = 0.0;
+	double dTmpTotalBaidAmt = 0.0;
+
+	hash_t          *hRec;
+	hash_t          *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	hash_t          *hDetail;
+	hDetail = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hDetail,0);
+
+	hash_t          *hCheck;
+	hCheck = (hash_t*) malloc (sizeof(hash_t));
+
+	hash_t	*hRel;
+	hRel = (hash_t*) malloc (sizeof(hash_t));
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	//get activity
+	if(GetField_CString(hContext,"activity",&csTmp)){
+		PutField_CString(hTxn,"activity",csTmp);
+DEBUGLOG(("DoAction:: activity = [%s]\n", csTmp));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("DoAction:: activity is missing!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction:: activity is missing!!!\n");
+	}
+	
+	//get bank stmt type
+	if(GetField_CString(hContext,"bank_stmt_type",&csBankStmtType)){
+		PutField_CString(hTxn,"bank_stmt_type",csBankStmtType);
+DEBUGLOG(("DoAction:: bank_stmt_type = [%s]\n", csBankStmtType));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("DoAction:: bank_stmt_type is missing!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction:: bank_stmt_type is missing!!!\n");
+	}
+	
+	//get trigger_type (system, manual)
+	if(GetField_CString(hContext,"trigger_type",&csTriggerType)){
+		PutField_CString(hTxn,"trigger_type",csTriggerType);
+DEBUGLOG(("DoAction:: trigger_type = [%s]\n", csTriggerType));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("DoAction:: trigger_type is missing!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction:: trigger_type is missing!!!\n");
+	}
+
+	//input_channel (SMS,OMT)
+	if(GetField_CString(hContext,"input_channel",&csTmp)){
+		PutField_CString(hTxn,"channel",csTmp);
+DEBUGLOG(("DoAction:: input_channel = [%s]\n", csTmp));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("DoAction:: input_channel is missing!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction:: input_channel is missing!!!\n");
+	}
+
+	//recon_type (SAME,CROSS,RETURN)
+	if(GetField_CString(hContext,"recon_type",&csReconType)){
+		PutField_CString(hTxn,"recon_type",csReconType);
+DEBUGLOG(("DoAction:: recon_type = [%s]\n", csReconType));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("DoAction:: recon_type is missing!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction:: recon_type is missing!!!\n");
+	}
+
+	if(GetField_Int(hContext,"use_pending_fund",&iUsePF)){
+		PutField_Int(hTxn,"use_pending_fund",iUsePF);
+DEBUGLOG(("DoAction:: use_pending_fund = [%d]\n",iUsePF));
+	}
+	else{
+DEBUGLOG(("DoAction:: use_pending_fund = [%d] (default)\n",iUsePF));
+	}
+
+	PutField_Double(hTxn,"bank_charge",0.0);
+	if(GetField_Int(hContext,"include_bank_charge",&iIncludeBankCharge)){
+		PutField_Int(hTxn,"include_bank_charge",iIncludeBankCharge);
+DEBUGLOG(("DoAction:: include_bank_charge = [%d]\n",iIncludeBankCharge));
+
+		if(iIncludeBankCharge){
+			if(GetField_Double(hContext,"bank_charge",&dTmp)){
+				PutField_Double(hTxn,"bank_charge",dTmp);
+DEBUGLOG(("DoAction:: bank_charge = [%lf]\n",dTmp));
+			}
+		}
+	}
+	else{
+DEBUGLOG(("DoAction:: include_bank_charge = [%d] (default)\n",iIncludeBankCharge));
+	}
+
+	PutField_Double(hTxn,"interest",0.0);
+	if(GetField_Int(hContext,"include_interest",&iIncludeInterest)){
+		PutField_Int(hTxn,"include_interest",iIncludeInterest);
+DEBUGLOG(("DoAction:: include_interest = [%d]\n",iIncludeInterest));
+
+		if(iIncludeInterest){
+			if(GetField_Double(hContext,"interest",&dTmp)){
+				PutField_Double(hTxn,"interest",dTmp);
+DEBUGLOG(("DoAction:: interest = [%lf]\n",dTmp));
+			}
+		}
+	}
+	else{
+DEBUGLOG(("DoAction:: include_interest = [%d] (default)\n",iIncludeInterest));
+	}
+
+	if(GetField_CString(hContext,"add_user",&csTmp)){
+		PutField_CString(hTxn,"add_user",csTmp);
+	}
+	else{
+		PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+	}
+
+	if (iRet == PD_OK) {
+		//get txn details for all input txn_id, baid_id 
+		if(GetField_Int(hContext, "txn_cnt", &iTxnCnt)) {
+			PutField_Int(hTxn,"txn_cnt",iTxnCnt);
+DEBUGLOG(("DoAction:: txn_cnt = [%d]\n", iTxnCnt));
+		}
+		if(GetField_Int(hContext, "baid_txn_cnt", &iBaidTxnCnt)) {
+			PutField_Int(hTxn,"baid_txn_cnt",iBaidTxnCnt);
+
+			if(iBaidTxnCnt==0)
+				PutField_Double(hTxn,"baid_txn_amt", 0.0);
+DEBUGLOG(("DoAction:: baid_txn_cnt = [%d]\n", iBaidTxnCnt));
+		}
+
+		if(iBaidTxnCnt>iTxnCnt)
+			iTotalCnt = iBaidTxnCnt;
+		else
+			iTotalCnt = iTxnCnt;
+
+		for(i=0; i<iTxnCnt; i++){
+			hash_init(hDetail,0);
+			sprintf(csTag,"txn_id_%d",i);
+			if(GetField_CString(hContext,csTag,&csTmp)){
+				if(GetTxnDetail(PD_TXN_HEADER_LEVEL,csTmp,hDetail,PD_FALSE)!=PD_OK){
+					iRet = INT_ERR;
+				}
+				else{
+					ConvertHash(hDetail,hTxn,i,PD_SINGLE_TO_MULTIPLE);
+					ConvertHash(hDetail,hContext,i,PD_SINGLE_TO_MULTIPLE);
+			
+					//check manual_hold_recon
+					if(GetField_Int(hDetail,"manual_hold_recon",&iManualHoldRecon)){
+                                                if ((iManualHoldRecon == PD_MANUAL_HOLD_RECON)
+                                                    || ((iManualHoldRecon == PD_MANUAL_UNHOLD_RECON) && (!strcmp(csTriggerType,PD_TRIGGER_SYSTEM)))
+                                                )
+                                                {
+                                                        iRet = INT_BAID_MANUAL_HOLD_RECON;
+DEBUGLOG(("DoAction:: Check Manual Hold Recon Error!!!\n"));
+                                                }
+                                        }
+
+					//for comparing total txn_amt with total baid_txn_amt
+					if(GetField_Double(hDetail,"tmp_txn_amt",&dTmp)){
+						dTotalAmt += dTmp;
+					}
+
+					//set the first txn_id to org_txn_id
+					if(i==0)
+						PutField_CString(hTxn,"org_txn_id",csTmp);
+					
+				}
+			}
+			hash_destroy(hDetail);
+		}
+
+		for(i=0; i<iBaidTxnCnt; i++){
+			hash_init(hDetail,0);
+			sprintf(csTag,"baid_txn_id_%d",i);
+			if(GetField_CString(hContext,csTag,&csTmp)){
+				if(GetTxnDetail(PD_BAID_TXN_LEVEL,csTmp,hDetail,PD_FALSE)!=PD_OK){
+					iRet = INT_ERR;
+				}
+				else{
+					//set the first txn_id to org_baid_txn_id
+					if(i==0)
+						PutField_CString(hTxn,"org_baid_txn_id",csTmp);
+
+					ConvertHash(hDetail,hTxn,i,PD_SINGLE_TO_MULTIPLE);
+					ConvertHash(hDetail,hContext,i,PD_SINGLE_TO_MULTIPLE);
+
+					//check manual_hold_recon
+					if(GetField_Int(hDetail,"manual_hold_recon",&iManualHoldRecon)){
+						if ((iManualHoldRecon == PD_MANUAL_HOLD_RECON)	
+						    || ((iManualHoldRecon == PD_MANUAL_UNHOLD_RECON) && (!strcmp(csTriggerType,PD_TRIGGER_SYSTEM)))
+						)
+						{
+							iRet = INT_BAID_MANUAL_HOLD_RECON;
+DEBUGLOG(("DoAction:: Check Manual Hold Recon Error!!!\n"));
+						} 
+                                        }
+
+					if(GetField_Double(hDetail,"tmp_baid_txn_amt",&dTmp)){
+						dTotalBaidAmt += dTmp;
+					}
+
+					if(GetField_CString(hDetail,"to_bank_acct_type",&csTmp)){
+						PutField_CString(hTxn,"to_bank_acct_type",csTmp);
+					}
+					if(GetField_CString(hDetail,"fr_bank_acct_type",&csTmp)){
+						PutField_CString(hTxn,"fr_bank_acct_type",csTmp);
+					}
+
+					if(!strcmp(csReconType,PD_ENGINE_RECON_RETURN) ||
+					   !strcmp(csReconType,PD_ENGINE_RECON_RETURN_DSP)){
+						if(GetField_CString(hDetail,"baid_bank_acct_num",&csTmp)){
+							sprintf(csTag,"return_acct_num_%d",i+1);
+							PutField_CString(hTxn,csTag,csTmp);
+						}
+					}
+
+				}
+			}
+			hash_destroy(hDetail);
+		}
+
+		//if stmt amount >= txn amount, pending fund may be created when processing
+DEBUGLOG(("DoAction:: Total Txn Amt[%f], Total Baid Txn Amt[%f]\n", dTotalAmt,dTotalBaidAmt));
+		if(dTotalAmt>0.0 && dTotalBaidAmt>0.0 && newround(dTotalBaidAmt, PD_DECIMAL_LEN)>=newround(dTotalAmt, PD_DECIMAL_LEN)){
+			PutField_Int(hTxn,"use_pending_fund",PD_TRUE);
+		}
+
+
+	}
+
+	if (iRet == PD_OK) {
+		iNextAction = PD_TRUE;
+
+		//get action batch seq
+		unsigned char csTmpBatchSeq[PD_TXN_SEQ_LEN +1];
+		csTmpBatchSeq[0]='\0';
+		DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextActionBatchSeq");
+		strcpy((char*)csTmpBatchSeq,(*DBObjPtr)());
+		PutField_CString(hTxn,"act_batch_id", (const char*)csTmpBatchSeq);
+		PutField_CString(hContext,"act_batch_id", (const char*)csTmpBatchSeq);
+DEBUGLOG(("DoAction:: >>>>action batch id [%s] assigned<<<<\n", csTmpBatchSeq));
+	}
+
+	//start loop
+	iLoopCnt = 0;
+	while(iNextAction){
+		if(iLoopCnt<iTotalCnt){
+DEBUGLOG(("DoAction:: ===========Loop #[%d]===========\n",iLoopCnt));
+
+			//RemoveField_CString(hTxn,"txn_code");
+			RemoveField_CString(hTxn,"bank_acct_type");
+
+			PutField_Int(hTxn,"loop_cnt",iLoopCnt+1);
+
+			ConvertHash(hTxn,hTxn,iLoopCnt,PD_MULTIPLE_TO_SINGLE);
+
+			if(GetField_CString(hTxn,"txn_id",&csLinkTxnId)){
+				PutField_CString(hTxn,"link_txn_id",csLinkTxnId);//for linkage
+DEBUGLOG(("DoAction::txn_id[%s]\n",csLinkTxnId));
+
+				//add to ol_batch_txn_relation
+				hash_init(hRel,0);
+				if(GetField_CString(hContext,"act_batch_id",&csTmp))
+					PutField_CString(hRel,"batch_id",csTmp);
+				if(GetField_CString(hTxn,"add_user",&csTmp))
+					PutField_CString(hRel,"create_user",csTmp);
+				PutField_Char(hRel,"txn_level",PD_TXN_LEVEL);
+				PutField_Char(hRel,"batch_type",PD_GENERAL);
+				PutField_CString(hRel,"txn_id", csLinkTxnId);
+				PutField_Char(hRel,"batch_sub_type",PD_GENERAL_RECON);
+				PutField_Int(hRel,"is_input_txn",PD_TRUE);
+				PutField_Int(hRel,"is_regen_txn",PD_FALSE);
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRel)!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DoAction() Add Action Batch Relation failed!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction() Add Action Batch Relation failed!!!\n");
+				}
+				hash_destroy(hRel);
+			}
+			if(GetField_CString(hTxn,"baid_txn_id",&csLinkBaidTxnId)){
+				PutField_CString(hTxn,"link_baid_txn_id",csLinkBaidTxnId);//for linkage
+DEBUGLOG(("DoAction::baid_txn_id[%s]\n",csLinkBaidTxnId));
+
+				//add to ol_batch_txn_relation
+				hash_init(hRel,0);
+				if(GetField_CString(hContext,"act_batch_id",&csTmp))
+					PutField_CString(hRel,"batch_id",csTmp);
+				if(GetField_CString(hTxn,"add_user",&csTmp))
+					PutField_CString(hRel,"create_user",csTmp);
+				PutField_Char(hRel,"txn_level",PD_STMT_LEVEL);
+				PutField_Char(hRel,"batch_type",PD_GENERAL);
+				PutField_CString(hRel,"txn_id", csLinkBaidTxnId);
+				PutField_Char(hRel,"batch_sub_type",PD_GENERAL_RECON);
+				PutField_Int(hRel,"is_input_txn",PD_TRUE);
+				PutField_Int(hRel,"is_regen_txn",PD_FALSE);
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRel)!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DoAction() Add Action Batch Relation failed!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction() Add Action Batch Relation failed!!!\n");
+				}
+				hash_destroy(hRel);
+			}
+			/*if(GetField_CString(hTxn,"posted_txn_id",&csTmp)){
+DEBUGLOG(("DoAction::posted_txn_id[%s]\n",csTmp));
+			}
+			if(GetField_CString(hTxn,"posted_baid_txn_id",&csTmp)){
+DEBUGLOG(("DoAction::posted_baid_txn_id[%s]\n",csTmp));
+			}*/
+
+			//txn_code 
+			if(GetField_CString(hTxn,"baid_txn_code",&csTxnCode) && 
+			   GetField_CString(hTxn,"baid_txn_code",&csBaidTxnCode)){
+DEBUGLOG(("DoAction:: baid_txn_code = [%s]\n",csBaidTxnCode));
+			}
+			if(GetField_CString(hTxn,"txn_code",&csTxnCode)){ 
+DEBUGLOG(("DoAction:: txn_code = [%s]\n", csTxnCode));
+			}
+
+			//bank_acct_type
+			if(!GetField_CString(hTxn,"bank_acct_type",&csBankAcctType)){
+DEBUGLOG(("DoAction:: bank_acct_type not found!!!\n"));
+ERRLOG("BOOLTxnEngine: DoAction:: bank_acct_type not found!!!\n");
+				iRet=INT_ERR;
+			}
+			else{
+DEBUGLOG(("DoAction:: psp_txn bank_acct_type = [%s]\n", csBankAcctType));
+			}
+
+			//assign from/to bank acct type
+			if(GetField_CString(hTxn,"fr_bank_acct_type",&csFrBankAcctType) &&
+			   GetField_CString(hTxn,"to_bank_acct_type",&csToBankAcctType)){
+DEBUGLOG(("DoAction:: baid_txn bank_acct_type: from[%s] to[%s]\n", csFrBankAcctType,csToBankAcctType));
+			}
+			else if(GetField_CString(hTxn,"fr_bank_acct_type",&csFrBankAcctType) &&
+				!GetField_CString(hTxn,"to_bank_acct_type",&csTmp)){
+				PutField_CString(hTxn,"to_bank_acct_type",csFrBankAcctType);
+DEBUGLOG(("DoAction:: baid_txn bank_acct_type: from[%s] to[%s]\n", csFrBankAcctType,csFrBankAcctType));
+			}
+			else if(!GetField_CString(hTxn,"fr_bank_acct_type",&csTmp) &&
+				GetField_CString(hTxn,"to_bank_acct_type",&csToBankAcctType)){
+				PutField_CString(hTxn,"fr_bank_acct_type",csToBankAcctType);
+DEBUGLOG(("DoAction:: baid_txn bank_acct_type: from[%s] to[%s]\n", csToBankAcctType,csToBankAcctType));
+			}
+			else{
+				PutField_CString(hTxn,"fr_bank_acct_type",csBankAcctType);
+				PutField_CString(hTxn,"to_bank_acct_type",csBankAcctType);
+DEBUGLOG(("DoAction:: baid_txn bank_acct_type: from[%s] to[%s]\n", csBankAcctType,csBankAcctType));
+			}
+
+			if (iRet == PD_OK) {
+				hash_init(hRel,0);
+				hash_init(hCheck,0);
+				recordset_init(rRecordSet,0);
+				DBObjPtr = CreateObj(DBPtr,"DBOLTxnEngine","GetTxnEngine");
+				if ((unsigned long)(*DBObjPtr)(hTxn,rRecordSet) == PD_OK) {
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while (hRec) {
+						if(GetField_Int(hRec,"action_id",&iTmp)){
+							PutField_Int(hRel,"action_id",iTmp);
+
+							if(GetField_CString(hContext,"act_batch_id",&csTmp))
+								PutField_CString(hRel,"batch_id",csTmp);
+
+							if(GetField_Int(hContext,"use_pending_fund",&iTmp))
+								PutField_Int(hRel,"use_pending_fund",iTmp);
+
+							if(GetField_Double(hContext,"interest",&dTmp))
+								PutField_Double(hRel,"interest",dTmp);
+
+							if(GetField_Double(hContext,"bank_charge",&dTmp))
+								PutField_Double(hRel,"bank_charge",dTmp);
+
+							if(GetField_CString(hContext,"add_user",&csTmp))
+								PutField_CString(hRel,"create_user",csTmp);
+							else
+								PutField_CString(hRel,"create_user",PD_UPDATE_USER);
+
+						}
+
+						if(GetField_Int(hRec,"action_seq",&iTmp)){
+DEBUGLOG(("DoAction() GetPspTxnEngine: Action Seq ####[%d]####\n",iTmp));
+						}
+
+						iRunRule = PD_TRUE;
+
+						if(GetField_Int(hCheck,"prev_act_succ",&iTmp)){
+							PutField_Int(hTxn,"prev_act_succ",iTmp);
+						}
+
+						//check txn cnt
+						if(GetField_Char(hRec,"input_bank_stmt",&cTmp)){
+							if(cTmp==PD_MANDATORY && iBaidTxnCnt==0){
+								iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction:: Bank Statement record is missing!!!!\n"));
+							}
+						}
+						if(GetField_Char(hRec,"input_system_txn",&cTmp)){
+							if(cTmp==PD_MANDATORY && iTxnCnt==0){
+								iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction:: PSP Transaction record is missing!!!!\n"));
+							}
+						}
+
+						if(GetField_Int(hCheck,"allow_stmt_partial",&iTmp) &&
+						   strcmp(csReconType,PD_ENGINE_RECON_RETURN) &&
+						   strcmp(csReconType,PD_ENGINE_RECON_RETURN_DSP)){
+							if(!iTmp && dTotalAmt>0.0 && dTotalBaidAmt>0.0 && dTotalBaidAmt>dTotalAmt){
+								iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction:: Total bank stmt amt should not greater than the total txn amt!!!!\n"));
+							}
+						}
+
+						if(GetField_Int(hCheck,"allow_txn_partial",&iTmp) &&
+						   strcmp(csReconType,PD_ENGINE_RECON_RETURN) &&
+						   strcmp(csReconType,PD_ENGINE_RECON_RETURN_DSP)){
+							if(!iTmp && dTotalAmt>0.0 && dTotalBaidAmt>0.0 && dTotalBaidAmt<dTotalAmt){
+								iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction:: Total bank stmt amt should not smaller than the total txn amt!!!!\n"));
+							}
+						}
+
+						if (iRet == PD_OK) {
+							if(GetField_Int(hRec,"allow_stmt_partial",&iTmp) &&
+							   !strcmp(csReconType, PD_ENGINE_RECON_RETURN_DSP)) {
+								if (!iTmp) {
+DEBUGLOG(("DoAction:: Return Deposit Check Case (NOT allow_stmt_partial)!\n"));
+									dTmpTotalAmt = newround(dTotalAmt * 2, PD_DECIMAL_LEN);
+									dTmpTotalBaidAmt = newround(dTotalBaidAmt, PD_DECIMAL_LEN);
+DEBUGLOG(("DoAction:: Return Deposit Check Case Total Amt [%lf] BaidAmt [%lf]\n", dTmpTotalAmt, dTmpTotalBaidAmt));
+
+									if (dTmpTotalBaidAmt > dTmpTotalAmt){
+										iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction:: (Return Deposit) Total bank stmt amt should not greater than the total txn amt!!!!\n"));
+									}
+								}
+							}
+						}
+
+						if (iRet == PD_OK) {
+							if(GetField_Int(hRec,"allow_txn_partial",&iTmp) &&
+							   !strcmp(csReconType, PD_ENGINE_RECON_RETURN_DSP)) {
+								if (!iTmp) {
+DEBUGLOG(("DoAction:: Return Deposit Check Case (NOT allow_stmt_partial)!\n"));
+									dTmpTotalAmt = newround(dTotalAmt * 2, PD_DECIMAL_LEN);
+									dTmpTotalBaidAmt = newround(dTotalBaidAmt, PD_DECIMAL_LEN);
+DEBUGLOG(("DoAction:: Return Deposit Check Case Total Amt [%lf] BaidAmt [%lf]\n", dTmpTotalAmt, dTmpTotalBaidAmt));
+
+									if (dTmpTotalBaidAmt < dTmpTotalAmt){
+										iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction:: (Return Deposit) Total bank stmt amt should not smaller than the total txn amt!!!!\n"));
+									}
+								}
+							}
+						}
+
+
+						if(GetField_CString(hRec,"action_level",&csActionLevel)){
+						}
+
+						//get special rule and run it
+						if(iRet==PD_OK && GetField_Int(hRec,"spc_action",&iTmp)){
+							BOObjPtr = CreateObj(BOPtr,"BOOLTxnEngineSpc","RunSpecialAction");
+							iRet = (unsigned long)(*BOObjPtr)(iTmp,hTxn);
+							GetField_Int(hTxn,"result",&iRunRule);
+DEBUGLOG(("DoAction() GetPspTxnEngine: Special Action iRet [%d], is_run_rule [%d]\n",iRet,iRunRule));
+						}
+
+						PutField_Int(hCheck,"prev_act_succ",PD_FALSE);
+
+						//check status
+						if(iRet==PD_OK && iRunRule==PD_TRUE){
+							if(GetField_Int(hRec,"bf_status_rule_id",&iTmp) &&
+							   GetField_CString(hRec,"action_level",&csActionLevel)){
+
+								char *csTxnId = NULL;
+								if(!strcmp(csActionLevel,PD_TXN_HEADER_LEVEL)){
+									GetField_CString(hTxn,"txn_id",&csTxnId);
+								}
+								else if(!strcmp(csActionLevel,PD_POST_TXN_HEADER_LEVEL)){
+									GetField_CString(hTxn,"posted_txn_id",&csTxnId);
+								}
+								else if(!strcmp(csActionLevel,PD_BAID_TXN_LEVEL)){
+									GetField_CString(hTxn,"baid_txn_id",&csTxnId);
+								}
+								else if(!strcmp(csActionLevel,PD_POST_BAID_TXN_LEVEL)){
+									GetField_CString(hTxn,"posted_baid_txn_id",&csTxnId);
+								}
+DEBUGLOG(("DoAction::bf_status_rule_id[%d], action_level[%s], txn_id[%s]\n",iTmp,csActionLevel,csTxnId));
+
+								if(csTxnId){
+DEBUGLOG(("DoAction::CheckBeforeStatus\n"));
+									iRet = CheckBeforeStatus(iTmp,csActionLevel,csTxnId,csTriggerType);
+									if(iRet!=PD_OK){
+										iRunRule = PD_FALSE;
+DEBUGLOG(("DoAction::status checking failed!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction::status checking failed!!!!!\n");
+									}
+								}
+								else{
+									iRet = INT_ERR;
+									iRunRule = PD_FALSE;
+DEBUGLOG(("DoAction::txn_id is missing!!!!!\n"));
+								}
+							}
+						}
+
+						//if no special action or special action result = TRUE, get rule parameters and run the rule
+						if(iRet==PD_OK && iRunRule==PD_TRUE){
+
+							iActDtId = 0;
+							if(GetField_Int(hRec,"action_detail_id",&iActDtId)){
+DEBUGLOG(("DoAction() GetPspTxnEngine: Action Detail ID [%d]\n",iActDtId));
+							}
+							if(GetField_CString(hRec,"action_desc",&csTmp)){
+DEBUGLOG(("DoAction() GetPspTxnEngine: Action Detail Desc [%s]\n",csTmp));
+							}
+						
+							iTxnAction = 0;
+							GetField_Int(hRec,"action_type",&iTxnAction);
+
+							if(iTxnAction==PD_ENGINE_ACTION_POST_TXN){
+								
+								if(GetField_CString(hTxn,"fr_bank_acct_type",&csFrBankAcctType) &&
+								   GetField_CString(hTxn,"to_bank_acct_type",&csToBankAcctType)){
+									DBObjPtr = CreateObj(DBPtr,"DBOLTxnEngineTxnCodeMap","GetNewTxnCode");
+									if ((unsigned long)(*DBObjPtr)(iActDtId,
+											csFrBankAcctType,
+											csToBankAcctType,
+											csTxnCode,
+											hTxn) == PD_OK) {
+
+										if(GetField_CString(hTxn,"new_txn_code",&csTmp)){
+
+											DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxnCode", "IsUnknownTxn");
+											if((unsigned long)(*DBObjPtr)(csTmp)==PD_FALSE){
+												if(DoPostTxn(hTxn,hRec)!=PD_OK){
+													iRet = INT_ERR;
+DEBUGLOG(("DoAction() DoPostTxn Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() DoPostTxn Failed!!!\n");
+												}
+											}
+											else{
+												iRet = INT_INVALID_TXN;
+DEBUGLOG(("DoAction() DoPostTxn Try To Post Unknown Txn Code. Stop Process!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() DoPostTxn Try To Post Unknown Txn Code. Stop Process!!!\n");
+											}
+										}
+										else{
+											iRet = INT_ERR;
+DEBUGLOG(("DoAction() DBOLTxnEngineTxnCodeMap: GetNewTxnCode Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() GetNewTxnCode Failed!!!\n");
+										}
+									}
+									else{
+										iRet = INT_ERR;
+DEBUGLOG(("DoAction() DBOLTxnEngineTxnCodeMap: GetNewTxnCode Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() GetNewTxnCode Failed!!!\n");
+									}
+								}
+								else{
+									iRet = INT_ERR;
+DEBUGLOG(("DoAction() fr_bank_acct_type/to_bank_acct_type is missing!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() fr_bank_acct_type/to_bank_acct_type is missing!!!\n");
+								}
+							}
+							else if(iTxnAction==PD_ENGINE_ACTION_UPDATE_TXN){
+								if(DoUpdateTxn(hTxn,hRec)!=PD_OK){
+									iRet = INT_ERR;
+DEBUGLOG(("DoAction() DoUpdateTxn Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() DoUpdateTxn Failed!!!\n");
+								}
+							}
+
+							if(iRet==PD_OK){
+								/*program special handle*/
+								//for return deposit, update the otp_txn_hold_ind of = 1 for OBD psp_txn
+								if(!strcmp(csBankStmtType,PD_RETURN_DEPOSIT) &&
+								   !strcmp(csTxnCode,PD_BANK_DEPOSIT_TXN_CODE)){
+									//update ol_txn_psp_detail
+									hash_t          *hUpd;
+									hUpd = (hash_t*) malloc (sizeof(hash_t));
+									hash_init(hUpd,0);
+									char	*csStatTxnId;
+
+									PutField_CString(hUpd,"txn_seq", csLinkTxnId);
+									PutField_Int(hUpd,"txn_hold_ind", PD_TRUE);
+									if(GetField_CString(hTxn,"add_user",&csTmp))
+										PutField_CString(hUpd,"update_user",csTmp);
+									
+									DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Update");
+									iRet = (unsigned long)(*DBObjPtr)(hUpd);
+DEBUGLOG(("DoAction() update [%s] otp_txn_hold_ind = 1, iRet = [%d]\n",csLinkTxnId,iRet));
+
+
+									if (GetField_CString(hTxn, "stat_txn_id", &csStatTxnId)) {
+										PutField_CString(hUpd, "stat_txn_id", csStatTxnId);
+									}
+
+									PutField_CString(hUpd, "remark", "System Hold");
+									DBObjPtr = CreateObj(DBPtr, "DBOLTxnDepositHoldLog", "Add");
+									iRet = (unsigned long)(*DBObjPtr)(hUpd);
+DEBUGLOG(("DoAction() Add TxnDepositHoldLog Add [%s] [%s], iRet = [%d]\n",csLinkTxnId, csStatTxnId, iRet));
+
+									hash_destroy(hUpd);	
+									FREE_ME(hUpd);
+
+								}
+							}
+
+							if(iRet!=PD_OK){
+								iNextAction = PD_FALSE;
+								break;
+							}
+							else{
+								PutField_Int(hCheck,"prev_act_succ",PD_TRUE);
+
+
+								//Do the linkage
+								if(GetField_Int(hRec,"linkage",&iLinkRule)){
+									if(DoLinkage(iTxnAction,csActionLevel,iLinkRule,hTxn)!=PD_OK){
+										iRet = INT_ERR;
+DEBUGLOG(("DoAction() DoLinkage Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() DoLinkage Failed!!!\n");
+									}
+								}
+							}
+
+						}
+
+						if(iRet != PD_OK){
+							break;
+						}
+
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+
+					if(iRet==PD_OK){
+						//Add OLBatchEngineActionLog
+						DBObjPtr = CreateObj(DBPtr, "DBOLBatchEngineActionLog", "Add");
+						iRet = (unsigned long)(*DBObjPtr)(hRel);
+DEBUGLOG(("DoAction() DBOLBatchEngineActionLog::Add iRet = [%d]\n",iRet));
+					}
+				}
+				else{
+					iNextAction = PD_FALSE;
+					iRet = INT_ERR;
+DEBUGLOG(("DoAction() TxnEngine Rule Not found!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoAction() TxnEngine Rule Not found!!!\n");
+				}
+				hash_destroy(hCheck);
+				hash_destroy(hRel);
+			}
+			else{
+				iNextAction = PD_FALSE;
+				break;
+			}
+
+DEBUGLOG(("DoAction:: ===========End Loop #[%d]===========\n",iLoopCnt));
+			iLoopCnt ++;
+		}
+		else{
+			iNextAction = PD_FALSE;
+DEBUGLOG(("DoAction() Loop End\n"));
+		}
+
+	}//while iNextAction
+
+	if(iRet==PD_OK){
+		if(iBaidTxnCnt==2 && iTxnCnt==0){
+			hash_t	*hDel;
+			hDel = (hash_t*) malloc (sizeof(hash_t));
+			hash_init(hDel, 0);
+			for(i=0; i<iBaidTxnCnt; i++){
+				sprintf(csTag,"baid_txn_id_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					sprintf(csTag,"baid_txn_id_%d",i+1);
+					PutField_CString(hDel,csTag,csTmp);
+				}
+			}
+
+DEBUGLOG(("Authorize:: call DBOLWaitReconCfmList::DeleteSingle()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLWaitReconCfmList", "DeleteSingle");
+			iRet = (unsigned long)(*DBObjPtr)(hDel);
+DEBUGLOG(("Authorize:: DBOLWaitReconCfmList::DeleteSingle() iRet=[%d]\n",iRet));
+
+			FREE_ME(hDel);
+		}
+	}
+
+	if(iRet!=PD_OK){
+		if(!strcmp(csTriggerType,PD_TRIGGER_MANUAL))
+			TxnAbort();
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	FREE_ME(hTxn);
+	FREE_ME(hDetail);
+	FREE_ME(hCheck);
+	FREE_ME(hRel);
+
+DEBUGLOG(("DoAction() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+void	ConvertHash(const hash_t* hIn, hash_t* hOut, const int iIdx, const char* csMode)
+{
+	char	csTag[PD_TAG_LEN+1];
+	char	*csTmp = NULL;
+	char	*csBaidCat = NULL;
+	double	dTmp = 0.0;
+	int	iTmp = 0;
+
+	//txn_id, txn_code, CR/DR, acct type, baid_type, txn_amt
+	if(!strcmp(csMode,PD_MULTIPLE_TO_SINGLE)){
+		sprintf(csTag,"txn_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"txn_id",csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_txn_id",csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_txn_id",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid_txn_id",csTmp);
+		}
+
+		sprintf(csTag,"baid_category_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csBaidCat)){
+			PutField_CString(hOut,"baid_category",csBaidCat);
+
+			sprintf(csTag,"%s_psp_id_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_psp_id",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"%s_baid_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_baid",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+
+			sprintf(csTag,"%s_posted_psp_id_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_posted_psp_id",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"%s_posted_baid_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_posted_baid",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+		}
+
+		sprintf(csTag,"baid_baid_category_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csBaidCat)){
+			PutField_CString(hOut,"baid_baid_category",csBaidCat);
+
+			sprintf(csTag,"baid_%s_psp_id_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_psp_id",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"baid_%s_baid_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_baid",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+
+			sprintf(csTag,"baid_%s_posted_psp_id_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_posted_psp_id",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"baid_%s_posted_baid_%d",csBaidCat,iIdx);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_posted_baid",csBaidCat);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+		}
+
+		sprintf(csTag,"psp_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"psp_id",csTmp);
+		}
+
+		sprintf(csTag,"baid_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid",csTmp);
+		}
+
+		sprintf(csTag,"baid_baid_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_baid",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_baid_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid_baid",csTmp);
+		}
+
+		sprintf(csTag,"txn_code_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"org_txn_code",csTmp);
+			PutField_CString(hOut,"txn_code",csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_code_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_txn_code",csTmp);
+			//PutField_CString(hOut,"txn_code",csTmp); //override txn_code
+		}
+
+		sprintf(csTag,"posted_txn_code_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_txn_code",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_code_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid_txn_code",csTmp);
+		}
+
+		sprintf(csTag,"txn_country_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"txn_country",csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_country_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_txn_country",csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_country_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_txn_country",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_country_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid_txn_country",csTmp);
+		}
+
+		sprintf(csTag,"txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"txn_ccy",csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_txn_ccy",csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_txn_ccy",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid_txn_ccy",csTmp);
+		}
+
+		sprintf(csTag,"cr_dr_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"cr_dr",csTmp);
+		}
+
+		sprintf(csTag,"bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"org_bank_acct_type",csTmp);
+			PutField_CString(hOut,"bank_acct_type",csTmp);
+		}
+
+		sprintf(csTag,"baid_bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_bank_acct_type",csTmp);
+			PutField_CString(hOut,"bank_acct_type",csTmp); //override bank_acct_type
+		}
+
+		sprintf(csTag,"posted_bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_bank_acct_type",csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"posted_baid_bank_acct_type",csTmp);
+		}
+
+		sprintf(csTag,"baid_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_type",csTmp);
+		}
+
+		sprintf(csTag,"txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"txn_amt",dTmp);
+			PutField_Double(hOut,"psp_txn_amt",dTmp);
+		}
+
+		sprintf(csTag,"baid_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"baid_txn_amt",dTmp);
+		}
+
+		sprintf(csTag,"posted_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"posted_txn_amt",dTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"posted_baid_txn_amt",dTmp);
+		}
+
+		sprintf(csTag,"baid_bank_code_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_bank_code",csTmp);
+		}
+
+		sprintf(csTag,"baid_bank_acct_num_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_bank_acct_num",csTmp);
+		}
+
+		sprintf(csTag,"baid_statement_date_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_statement_date",csTmp);
+		}
+
+		sprintf(csTag,"baid_statement_time_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_statement_time",csTmp);
+		}
+
+		sprintf(csTag,"txn_hold_ind_%d",iIdx);
+		if(GetField_Int(hIn,csTag,&iTmp)){
+			PutField_Int(hOut,"txn_hold_ind",iTmp);
+		}
+
+		sprintf(csTag,"sys_match_ind_%d",iIdx);
+		if(GetField_Int(hIn,csTag,&iTmp)){
+			PutField_Int(hOut,"sys_match_ind",iTmp);
+		}
+
+		sprintf(csTag,"manual_hold_recon_%d",iIdx);
+		if(GetField_Int(hIn,csTag,&iTmp)){
+			PutField_Int(hOut,"manual_hold_recon",iTmp);
+		}
+
+		sprintf(csTag,"stat_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"stat_txn_id",csTmp);
+		}
+
+		sprintf(csTag,"unknown_txn_%d",iIdx);
+		if(GetField_Int(hIn,csTag,&iTmp)){
+			PutField_Int(hOut,"unknown_txn",iTmp);
+		}
+
+		sprintf(csTag,"baid_amt_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"baid_amt_type",csTmp);
+		}
+
+		sprintf(csTag,"org_client_id_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"org_client_id",csTmp);
+		}
+
+		sprintf(csTag,"org_merchant_ref_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"org_merchant_ref",csTmp);
+		}
+
+		sprintf(csTag,"org_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"org_txn_amt",dTmp);
+		}
+
+		sprintf(csTag,"org_net_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"org_net_amt",dTmp);
+		}
+
+		sprintf(csTag,"org_display_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"org_display_amt",dTmp);
+		}
+		sprintf(csTag,"org_deposit_amt_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"org_deposit_amt",dTmp);
+		}
+
+		sprintf(csTag,"txn_amt_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"txn_amt_type",csTmp);
+		}
+
+		sprintf(csTag,"element_type_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"element_type",csTmp);
+		}
+
+		sprintf(csTag,"est_net_amount_%d",iIdx);
+		if(GetField_Double(hIn,csTag,&dTmp)){
+			PutField_Double(hOut,"est_net_amount",dTmp);
+		}
+
+		sprintf(csTag,"grp_tracking_txn_seq_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"grp_tracking_txn_seq",csTmp);
+		}
+
+		sprintf(csTag,"tracking_txn_seq_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"tracking_txn_seq",csTmp);
+		}
+
+		sprintf(csTag,"report_date_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"report_date",csTmp);
+		}
+
+		sprintf(csTag,"settlement_date_%d",iIdx);
+		if(GetField_CString(hIn,csTag,&csTmp)){
+			PutField_CString(hOut,"settlement_date",csTmp);
+		}
+
+	}
+
+	else if(!strcmp(csMode,PD_SINGLE_TO_MULTIPLE)){
+		sprintf(csTag,"txn_id_%d",iIdx);
+		if(GetField_CString(hIn,"txn_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,"baid_txn_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,"posted_txn_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid_txn_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_category_%d",iIdx);
+		if(GetField_CString(hIn,"baid_category",&csBaidCat)){
+			PutField_CString(hOut,csTag,csBaidCat);
+
+			sprintf(csTag,"%s_psp_id",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_psp_id_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"%s_baid",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_baid_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+
+			sprintf(csTag,"%s_posted_psp_id",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_posted_psp_id_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"%s_posted_baid",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"%s_posted_baid_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+		}
+
+		sprintf(csTag,"baid_baid_category_%d",iIdx);
+		if(GetField_CString(hIn,"baid_baid_category",&csBaidCat)){
+			PutField_CString(hOut,csTag,csBaidCat);
+
+			sprintf(csTag,"baid_%s_psp_id",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_psp_id_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"baid_%s_baid",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_baid_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+
+			sprintf(csTag,"baid_%s_posted_psp_id",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_posted_psp_id_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+			sprintf(csTag,"baid_%s_posted_baid",csBaidCat);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				sprintf(csTag,"baid_%s_posted_baid_%d",csBaidCat,iIdx);
+				PutField_CString(hOut,csTag,csTmp);
+			}
+		}
+
+		sprintf(csTag,"psp_id_%d",iIdx);
+		if(GetField_CString(hIn,"psp_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_%d",iIdx);
+		if(GetField_CString(hIn,"baid",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_baid_%d",iIdx);
+		if(GetField_CString(hIn,"baid_baid",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_baid_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid_baid",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"txn_code_%d",iIdx);
+		if(GetField_CString(hIn,"txn_code",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_code_%d",iIdx);
+		if(GetField_CString(hIn,"baid_txn_code",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_code_%d",iIdx);
+		if(GetField_CString(hIn,"posted_txn_code",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_code_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid_txn_code",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"txn_country_%d",iIdx);
+		if(GetField_CString(hIn,"txn_country",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_country_%d",iIdx);
+		if(GetField_CString(hIn,"baid_txn_country",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_country_%d",iIdx);
+		if(GetField_CString(hIn,"posted_txn_country",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_country_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid_txn_country",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,"txn_ccy",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,"baid_txn_ccy",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,"posted_txn_ccy",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_ccy_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid_txn_ccy",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"cr_dr_%d",iIdx);
+		if(GetField_CString(hIn,"cr_dr",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,"bank_acct_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,"baid_bank_acct_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,"posted_bank_acct_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"posted_baid_bank_acct_type_%d",iIdx);
+		if(GetField_CString(hIn,"posted_baid_bank_acct_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_type_%d",iIdx);
+		if(GetField_CString(hIn,"baid_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,"txn_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"baid_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,"baid_txn_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"posted_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,"posted_txn_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"posted_baid_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,"posted_baid_txn_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"baid_bank_code_%d",iIdx);
+		if(GetField_CString(hIn,"baid_bank_code",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_bank_acct_num_%d",iIdx);
+		if(GetField_CString(hIn,"baid_bank_acct_num",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_statement_date_%d",iIdx);
+		if(GetField_CString(hIn,"baid_statement_date",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"baid_statement_time_%d",iIdx);
+		if(GetField_CString(hIn,"baid_statement_time",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"txn_hold_ind_%d",iIdx);
+		if(GetField_Int(hIn,"txn_hold_ind",&iTmp)){
+			PutField_Int(hOut,csTag,iTmp);
+		}
+
+		sprintf(csTag,"sys_match_ind_%d",iIdx);
+		if(GetField_Int(hIn,"sys_match_ind",&iTmp)){
+			PutField_Int(hOut,csTag,iTmp);
+		}
+
+		sprintf(csTag,"manual_hold_recon_%d",iIdx);
+		if(GetField_Int(hIn,"manual_hold_recon",&iTmp)){
+			PutField_Int(hOut,csTag,iTmp);
+		}
+
+		sprintf(csTag,"stat_txn_id_%d",iIdx);
+		if(GetField_CString(hIn,"stat_txn_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"unknown_txn_%d",iIdx);
+		if(GetField_Int(hIn,"unknown_txn",&iTmp)){
+			PutField_Int(hOut,csTag,iTmp);
+		}
+
+		sprintf(csTag,"baid_amt_type_%d",iIdx);
+		if(GetField_CString(hIn,"baid_amt_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"org_client_id_%d",iIdx);
+		if(GetField_CString(hIn,"org_client_id",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"org_merchant_ref_%d",iIdx);
+		if(GetField_CString(hIn,"org_merchant_ref",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"org_txn_amt_%d",iIdx);
+		if(GetField_Double(hIn,"org_txn_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"org_net_amt_%d",iIdx);
+		if(GetField_Double(hIn,"org_net_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"org_display_amt_%d",iIdx);
+		if(GetField_Double(hIn,"org_display_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+		sprintf(csTag,"org_deposit_amt_%d",iIdx);
+		if(GetField_Double(hIn,"org_deposit_amt",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"txn_amt_type_%d",iIdx);
+		if(GetField_CString(hIn,"txn_amt_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"element_type_%d",iIdx);
+		if(GetField_CString(hIn,"element_type",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"est_net_amount_%d",iIdx);
+		if(GetField_Double(hIn,"est_net_amount",&dTmp)){
+			PutField_Double(hOut,csTag,dTmp);
+		}
+
+		sprintf(csTag,"grp_tracking_txn_seq_%d",iIdx);
+		if(GetField_CString(hIn,"grp_tracking_txn_seq",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"tracking_txn_seq_%d",iIdx);
+		if(GetField_CString(hIn,"tracking_txn_seq",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"report_date_%d",iIdx);
+		if(GetField_CString(hIn,"report_date",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+
+		sprintf(csTag,"settlement_date_%d",iIdx);
+		if(GetField_CString(hIn,"settlement_date",&csTmp)){
+			PutField_CString(hOut,csTag,csTmp);
+		}
+	}
+
+	else{
+		//do nothing
+	}
+
+}
+
+
+
+int	GetTxnDetail(const char* csLevel, const char* csTxnId, hash_t* hTxn, const int iIsPostedTxn)
+{
+	int	iRet = PD_OK;
+	char	*csTmp;
+	char	*csPspId;
+	char	*csBaid;
+	char	*csTxnCode;
+	char	*csBankAcctType;
+	char	*csAmtType;
+	char	*csAcctNum;
+	char	csTag[PD_TAG_LEN+1];
+	double	dTmp = 0.0;
+	int	iTmp = 0;
+	double	dAmt = 0.0;
+
+	hash_t	*hRec;
+	recordset_t	*rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	hash_t	*hTmp;
+	hTmp = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTmp, 0);
+
+	hash_t	*hBaidTxn;
+	hBaidTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBaidTxn, 0);
+
+	if(!strcmp(csLevel,PD_TXN_HEADER_LEVEL)){
+
+		if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_id",csTxnId);
+		else             PutField_CString(hTxn,"txn_id",csTxnId);
+
+DEBUGLOG(("GetTxnDetail:: [%s] in [%s] Level\n",csTxnId,csLevel));
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnHeader");
+		if ((*DBObjPtr)(csTxnId,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"txn_code",&csTmp)){
+					if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_code",csTmp);
+					else		 PutField_CString(hTxn,"txn_code",csTmp);
+DEBUGLOG(("GetTxnDetail:: txn_code [%s]\n",csTmp));
+				}
+				if(GetField_CString(hRec,"client_id",&csTmp)){
+					PutField_CString(hTxn,"org_client_id",csTmp);
+DEBUGLOG(("GetTxnDetail:: client_id [%s]\n",csTmp));
+				}
+				if(GetField_CString(hRec,"merchant_ref",&csTmp)){
+					PutField_CString(hTxn,"org_merchant_ref",csTmp);
+DEBUGLOG(("GetTxnDetail:: merchant_ref [%s]\n",csTmp));
+				}
+				if(GetField_Double(hRec,"display_amt",&dTmp)){
+					PutField_Double(hTxn,"org_display_amt",dTmp);
+DEBUGLOG(("GetTxnDetail:: display_amt [%lf]\n",dTmp));
+					if(iIsPostedTxn) PutField_Double(hTxn,"posted_txn_amt",dTmp);
+					else		 PutField_Double(hTxn,"txn_amt",dTmp);
+
+					PutField_Double(hTxn,"tmp_txn_amt",dTmp);
+				}
+
+				if(GetField_Double(hRec,"txn_amt",&dTmp)){
+					PutField_Double(hTxn,"org_txn_amt",dTmp);
+DEBUGLOG(("GetTxnDetail:: txn_amt [%lf]\n",dTmp));
+				}
+
+				if(GetField_Double(hRec,"net_amt",&dTmp)){
+					PutField_Double(hTxn,"org_net_amt",dTmp);
+DEBUGLOG(("GetTxnDetail:: net_amt [%lf]\n",dTmp));
+				}
+				if(GetField_Double(hRec,"deposit_amt",&dTmp)){
+					PutField_Double(hTxn,"org_deposit_amt",dTmp);
+DEBUGLOG(("GetTxnDetail:: deposit_amt [%lf]\n",dTmp));
+				}
+
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+		}
+/*
+		recordset_init(rRecordSet,0);
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnDetail");
+		if ((*DBObjPtr)(csTxnId,rRecordSet) == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"txn_country",&csTmp)){
+					if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_country",csTmp);
+					else		 PutField_CString(hTxn,"txn_country",csTmp);
+DEBUGLOG(("GetTxnDetail:: txn_country [%s]\n",csTmp));
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+*/
+		DBObjPtr = CreateObj(DBPtr,"DBOLTxnPspDetail","GetTxnPspDetail");
+		if ((*DBObjPtr)(csTxnId,hTmp) == PD_OK) {
+			if(GetField_CString(hTmp,"psp_id",&csPspId)){
+				PutField_CString(hTxn,"psp_id",csPspId);
+DEBUGLOG(("GetTxnDetail:: psp_id [%s]\n",csPspId));
+				DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+				if((unsigned long)(*DBObjPtr)(csPspId, hTmp)==PD_OK){
+					if(GetField_CString(hTmp,"bank_acct_type",&csBankAcctType)){
+						if(iIsPostedTxn) PutField_CString(hTxn,"posted_bank_acct_type",csBankAcctType);
+						else		 PutField_CString(hTxn,"bank_acct_type",csBankAcctType);
+DEBUGLOG(("GetTxnDetail:: bank_acct_type [%s]\n",csBankAcctType));
+					}
+				}
+			}
+			if(GetField_CString(hTmp,"baid",&csBaid)){
+				if(iIsPostedTxn) PutField_CString(hTxn,"posted_baid",csBaid);
+				else		 PutField_CString(hTxn,"baid",csBaid);
+DEBUGLOG(("GetTxnDetail:: baid [%s]\n",csBaid));
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdDtl");
+				if((unsigned long)(*DBObjPtr)(csBaid, hTmp)==PD_OK){
+					if(GetField_CString(hTmp,"category",&csTmp)){
+						PutField_CString(hTxn,"baid_category",csTmp);
+DEBUGLOG(("GetTxnDetail:: baid_category [%s]\n",csTmp));
+
+						if(iIsPostedTxn) sprintf(csTag,"%s_posted_baid",csTmp);
+						else		 sprintf(csTag,"%s_baid",csTmp);
+						PutField_CString(hTxn,csTag,csBaid);
+
+						if(iIsPostedTxn) sprintf(csTag,"%s_posted_psp_id",csTmp);
+						else		 sprintf(csTag,"%s_psp_id",csTmp);
+						PutField_CString(hTxn,csTag,csPspId);
+DEBUGLOG(("GetTxnDetail:: pid [%s]\n",csPspId));
+					}
+				}
+			}
+			if(GetField_CString(hTmp,"txn_ccy",&csTmp)){
+				if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_ccy",csTmp);
+				else		 PutField_CString(hTxn,"txn_ccy",csTmp);
+DEBUGLOG(("GetTxnDetail:: txn_ccy [%s]\n",csTmp));
+			}
+			if(GetField_Double(hTmp,"txn_amount",&dAmt)){
+DEBUGLOG(("GetTxnDetail:: psp_txn_amt[%lf]\n",dAmt));
+			}
+
+			if (GetField_CString(hTmp, "grp_tracking_txn_seq", &csTmp)) {
+				PutField_CString(hTxn, "grp_tracking_txn_seq", csTmp);
+DEBUGLOG(("GetTxnDetail:: grp_tracking_txn_seq [%s]\n",csTmp));
+			}
+			if (GetField_CString(hTmp, "tracking_txn_seq", &csTmp)) {
+				PutField_CString(hTxn, "tracking_txn_seq", csTmp);
+DEBUGLOG(("GetTxnDetail:: tracking_txn_seq [%s]\n",csTmp));
+			}
+			if (GetField_CString(hTmp, "report_date", &csTmp)) {
+				PutField_CString(hTxn, "report_date", csTmp);
+DEBUGLOG(("GetTxnDetail:: report_date [%s]\n",csTmp));
+			}
+			if (GetField_CString(hTmp, "settlement_date", &csTmp)) {
+				PutField_CString(hTxn, "settlement_date", csTmp);
+DEBUGLOG(("GetTxnDetail:: settlement_date [%s]\n",csTmp));
+			}
+			if (GetField_Int(hTmp, "manual_hold_recon", &iTmp)) {
+                                PutField_Int(hTxn, "manual_hold_recon", iTmp);
+DEBUGLOG(("GetTxnDetail:: manual_hold_recon [%d]\n",iTmp));
+                        }
+
+			/*
+			if(GetField_CString(hTmp,"bank_code",&csTmp)){
+				char csTxnCountry[PD_COUNTRY_LEN + 1];
+				DBObjPtr = CreateObj(DBPtr, "DBBankDesc", "GetBankCountry");
+				if((unsigned long)(*DBObjPtr)(csTmp, csTxnCountry)){
+					if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_country",csTxnCountry);
+					else		 PutField_CString(hTxn,"txn_country",csTxnCountry);
+DEBUGLOG(("GetTxnDetail:: txn_country [%s]\n",csTxnCountry));
+				}
+			}
+			*/
+DEBUGLOG(("GetTxnDetail:: Call DBOLBankAcctId:GetBankAcctIdCountry\n"));
+			char csTxnCountry[PD_COUNTRY_LEN + 1];
+			DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdCountry");
+                        if ((unsigned long)(*DBObjPtr)(csBaid,csTxnCountry) == FOUND) {
+				if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_country",csTxnCountry);
+				else		 PutField_CString(hTxn,"txn_country",csTxnCountry);
+DEBUGLOG(("GetTxnDetail:: txn_country [%s]\n",csTxnCountry));
+			}
+		}
+
+		DBObjPtr = CreateObj(DBPtr,"DBOLTxnElements","GetElementTypeByAmt");
+		if ((unsigned long)(*DBObjPtr)(csTxnId,dAmt,hTmp) == PD_OK) {
+			if(GetField_CString(hTmp,"txn_element_type",&csTmp)){
+				PutField_CString(hTxn,"element_type",csTmp);
+DEBUGLOG(("GetTxnDetail:: element_type [%s]\n",csTmp));
+			}
+			if(GetField_CString(hTmp,"amt_type",&csTmp)){
+				PutField_CString(hTxn,"txn_amt_type",csTmp);
+DEBUGLOG(("GetTxnDetail:: txn_amt_type [%s]\n",csTmp));
+			}
+		}
+
+	}
+
+	else if(!strcmp(csLevel,PD_BAID_TXN_LEVEL)){
+
+		if(iIsPostedTxn) PutField_CString(hTxn,"posted_baid_txn_id",csTxnId);
+		else             PutField_CString(hTxn,"baid_txn_id",csTxnId);
+
+DEBUGLOG(("GetTxnDetail:: [%s] in [%s] Level\n",csTxnId,csLevel));
+
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+                if((unsigned long)(*DBObjPtr)(csTxnId, hBaidTxn)==PD_OK){
+			if(GetField_CString(hBaidTxn,"txn_code",&csTxnCode)){
+				if(iIsPostedTxn) PutField_CString(hTxn,"posted_baid_txn_code",csTxnCode);
+				else		 PutField_CString(hTxn,"baid_txn_code",csTxnCode);
+DEBUGLOG(("GetTxnDetail:: baid_txn_code [%s]\n",csTxnCode));
+			}
+			if(GetField_CString(hBaidTxn,"txn_ccy",&csTmp)){
+				if(iIsPostedTxn) PutField_CString(hTxn,"posted_txn_ccy",csTmp);
+				else		 PutField_CString(hTxn,"txn_ccy",csTmp);
+DEBUGLOG(("GetTxnDetail:: baid_txn_ccy [%s]\n",csTmp));
+			}
+			if(GetField_CString(hBaidTxn,"pid",&csPspId)){
+				hash_init(hTmp, 0);
+				PutField_CString(hTxn,"psp_id",csPspId);
+				DBObjPtr = CreateObj(DBPtr, "DBOLPspDetail", "GetPspDetail");
+				if((unsigned long)(*DBObjPtr)(csPspId, hTmp)==PD_OK){
+					if(GetField_CString(hTmp,"bank_acct_type",&csBankAcctType)){
+						if(iIsPostedTxn) PutField_CString(hTxn,"posted_baid_bank_acct_type",csBankAcctType);
+						else		 PutField_CString(hTxn,"baid_bank_acct_type",csBankAcctType);
+DEBUGLOG(("GetTxnDetail:: baid_bank_acct_type [%s]\n",csBankAcctType));
+					}
+				}
+			}
+			if(GetField_CString(hBaidTxn,"baid",&csBaid)){
+				if(iIsPostedTxn) PutField_CString(hTxn,"posted_baid_baid",csBaid);
+				else		 PutField_CString(hTxn,"baid_baid",csBaid);
+DEBUGLOG(("GetTxnDetail:: baid_baid [%s]\n",csBaid));
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBankAcctIdDtl");
+				if((unsigned long)(*DBObjPtr)(csBaid, hTmp)==PD_OK){
+					if(GetField_CString(hTmp,"category",&csTmp)){
+						PutField_CString(hTxn,"baid_baid_category",csTmp);
+DEBUGLOG(("GetTxnDetail:: baid_baid_category [%s]\n",csTmp));
+
+						if(iIsPostedTxn) sprintf(csTag,"baid_%s_posted_baid",csTmp);
+						else		 sprintf(csTag,"baid_%s_baid",csTmp);
+						PutField_CString(hTxn,csTag,csBaid);
+
+						if(iIsPostedTxn) sprintf(csTag,"baid_%s_posted_psp_id",csTmp);
+						else		 sprintf(csTag,"baid_%s_psp_id",csTmp);
+						PutField_CString(hTxn,csTag,csPspId);
+					}
+					if(GetField_CString(hTmp,"int_bank_code",&csTmp)){
+						char csTxnCountry[PD_COUNTRY_LEN + 1];
+						DBObjPtr = CreateObj(DBPtr, "DBBankDesc", "GetBankCountry");
+						if((unsigned long)(*DBObjPtr)(csTmp, csTxnCountry)){
+							PutField_CString(hTxn,"txn_country",csTxnCountry);
+DEBUGLOG(("GetTxnDetail:: baid_txn_country [%s]\n",csTxnCountry));
+						}
+					}
+				}
+			}
+			if(GetField_Double(hBaidTxn,"txn_amt",&dTmp)){
+				if(iIsPostedTxn) PutField_Double(hTxn,"posted_baid_txn_amt",dTmp);
+				else		 PutField_Double(hTxn,"baid_txn_amt",dTmp);
+
+				PutField_Double(hTxn,"tmp_baid_txn_amt",dTmp);
+DEBUGLOG(("GetTxnDetail:: baid_txn_amt [%lf]\n",dTmp));
+			}
+
+			if(GetField_Int(hBaidTxn,"pid_sys_match_ind",&iTmp)){
+				PutField_Int(hTxn,"sys_match_ind",iTmp);
+			}
+			if(GetField_Int(hBaidTxn,"pid_txn_hold_ind",&iTmp)){
+				PutField_Int(hTxn,"txn_hold_ind",iTmp);
+			}
+			if(GetField_CString(hBaidTxn,"stat_txn_id",&csTmp)){
+				PutField_CString(hTxn,"stat_txn_id",csTmp);
+			}
+			if(GetField_Double(hBaidTxn,"est_net_amount", &dTmp)){
+				PutField_Double(hTxn, "est_net_amount", dTmp);
+			}
+			if(GetField_Int(hBaidTxn,"manual_hold_recon",&iTmp)){
+DEBUGLOG(("GetTxnDetail:: manual_hold_recon [%d]\n",iTmp));
+				PutField_Int(hTxn, "manual_hold_recon", iTmp);
+                        }
+
+		}
+		hash_destroy(hBaidTxn);
+
+		hash_init(hBaidTxn, 0);
+		DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtlByBAIDTxnId");
+                if((unsigned long)(*DBObjPtr)(csTxnId, hBaidTxn)==PD_OK){
+			if(GetField_CString(hBaidTxn,"int_bank_code",&csTmp)){
+				PutField_CString(hTxn,"baid_bank_code",csTmp);
+DEBUGLOG(("GetTxnDetail:: baid_bank_code[%s]\n",csTmp));
+			}
+			if(GetField_CString(hBaidTxn,"bank_acct_num",&csAcctNum)){
+				PutField_CString(hTxn,"baid_bank_acct_num",csAcctNum);
+DEBUGLOG(("GetTxnDetail:: baid_bank_acct_num[%s]\n",csAcctNum));
+			}
+			if(GetField_CString(hBaidTxn,"statement_date",&csTmp)){
+				PutField_CString(hTxn,"baid_statement_date",csTmp);
+DEBUGLOG(("GetTxnDetail:: baid_statement_date[%s]\n",csTmp));
+			}
+			if(GetField_CString(hBaidTxn,"statement_time",&csTmp)){
+				PutField_CString(hTxn,"baid_statement_time",csTmp);
+DEBUGLOG(("GetTxnDetail:: baid_statement_time[%s]\n",csTmp));
+			}
+			if(GetField_CString(hBaidTxn,"amt_type",&csAmtType)){
+				PutField_CString(hTxn,"baid_amt_type",csAmtType);
+DEBUGLOG(("GetTxnDetail:: baid_amt_type[%s]\n",csAmtType));
+			}
+			
+		}
+		hash_destroy(hBaidTxn);
+
+		//is unknown txn
+		int iIsUnknown = PD_FALSE;
+		DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxnCode", "IsUnknownTxn");
+		iIsUnknown = (unsigned long)(*DBObjPtr)(csTxnCode);
+                if(iIsUnknown!=PD_ERR){
+			PutField_Int(hTxn,"unknown_txn",iIsUnknown);
+DEBUGLOG(("GetTxnDetail:: [%s] is unknown txn[%d]\n",csTxnCode,iIsUnknown));
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("GetTxnDetail() Check Unknown Txn Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: GetTxnDetail() Check Unknown Txn Failed!!!\n");
+		}
+
+		if(!strcmp(csAmtType,PD_CR)){
+			sprintf(csTag,"to_bank_acct_type");
+			PutField_CString(hTxn,csTag,csBankAcctType);
+		}
+		else{
+			sprintf(csTag,"fr_bank_acct_type");
+			PutField_CString(hTxn,csTag,csBankAcctType);
+		}
+	}
+
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("GetTxnDetail() invalid parameter!!!\n"));
+ERRLOG("BOOLTxnEngine:: GetTxnDetail() invalid parameter!!!\n");
+	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(hBaidTxn);
+        FREE_ME(hTmp);
+DEBUGLOG(("GetTxnDetail() exit iRet = [%d]\n", iRet));
+	return iRet;
+}
+
+
+int	DoPostTxn(hash_t* hContext,hash_t* hRequest)
+{
+	int iRet = PD_OK;
+	int iTmp = 0;
+	double	dAmt = 0.0;
+	double	dTmp = 0.0;
+	char *csActionLevel;
+	char *csToPostTxnCode;
+	char *csTmp;
+	char *csUser;
+	char *csCcy;
+	char *csCountry;
+	char *csBalType;
+	char *csElmType;
+	char *csAmtType;
+	char *csBaidCat;
+	char *csTmpBaidCat;
+	char cAmtType;
+	char csTag[PD_TAG_LEN+1];
+	int  iUploadChannel = 1;
+	char cTmp;
+	int  iIsOffset = PD_FALSE;
+	char *csApproveDate;
+	char *csApproveTimestamp;
+
+	char	*csOrgPspId = NULL;
+
+	unsigned char csTmpTxnSeq[PD_TXN_SEQ_LEN +1];
+	char csLocalTxnDateTime[PD_DATETIME_LEN+1];
+	char csTmDate[PD_DATE_LEN+1];
+	char csTmTime[PD_TIME_LEN+1];
+	char csTmpDate[PD_DATETIME_LEN +1];
+
+	hash_t          *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	hash_t          *hTxnHold;
+        hTxnHold = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxnHold,0);
+
+	hash_t	*hRel;
+	hRel = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRel,0);
+
+DEBUGLOG(("DoPostTxn()\n"));
+
+	if(GetField_CString(hRequest,"txn_amt_tag",&csTmp)){
+		if(GetField_Double(hContext,csTmp,&dAmt)){
+DEBUGLOG(("DoPostTxn() post amount[%lf]\n",dAmt));
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() post amount[%s] not found!!!!!\n",csTmp));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() post amount[%s] not found!!!!!\n",csTmp);
+		}
+	}
+	else{
+		iRet = INT_TXN_ENGINE_CONFIG_MISSING;
+DEBUGLOG(("DoPostTxn() txn_amt_tag is missing!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() txn_amt_tag is missing!!!!!\n");
+	}
+	if(dAmt<=0.0){
+		iRet = PD_SKIP_OK;
+DEBUGLOG(("DoPostTxn() amount = [%lf], Skip to Post\n",dAmt));
+	}
+	
+
+	if(GetField_CString(hRequest,"action_level",&csActionLevel)){
+DEBUGLOG(("DoPostTxn() Action level [%s]\n",csActionLevel));
+	}
+	if(GetField_CString(hContext,"new_txn_code",&csToPostTxnCode)){
+		PutField_CString(hTxn,"txn_code",csToPostTxnCode);
+DEBUGLOG(("DoPostTxn() New txn_code [%s]\n",csToPostTxnCode));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() To post txn_code is missing!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() To post txn_code is missing!!!!!\n");
+	}
+	if(GetField_Int(hContext,"is_offset",&iIsOffset)){
+DEBUGLOG(("DoPostTxn() is_offset [%d]\n",iIsOffset));
+	}
+
+	if(GetField_CString(hContext,"channel",&csTmp)){
+		if(!strcmp(csTmp,PD_CHANNEL_SMS)){
+			PutField_CString(hTxn,"channel_code",PD_CHANNEL_OMT);
+			iUploadChannel = 0;
+		}
+		else{
+			PutField_CString(hTxn,"channel_code",csTmp);
+			iUploadChannel = 1;
+		}
+	}
+
+	DBObjPtr = CreateObj(DBPtr,"DBSystemControl","FindCode");
+	if ((unsigned long)(*DBObjPtr)("CTPHDATE",csTmpDate) != FOUND) {
+		iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() current date not found!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() current date not found!!!!!\n");
+	}
+
+	if(GetField_CString(hContext,"txn_ccy",&csCcy)){
+		PutField_CString(hTxn,"txn_ccy",csCcy);
+DEBUGLOG(("DoPostTxn() txn_ccy[%s]\n",csCcy));
+	}
+
+	if(GetField_CString(hContext,"txn_country",&csCountry)){
+		PutField_CString(hTxn,"txn_country",csCountry);
+DEBUGLOG(("DoPostTxn() txn_country[%s]\n",csCountry));
+	}
+
+	if(GetField_CString(hContext,"add_user",&csUser)){
+		PutField_CString(hTxn,"add_user",csUser);
+DEBUGLOG(("DoPostTxn() add_user[%s]\n",csUser));
+	}
+
+	if(iRet == PD_OK){
+		if(!strcmp(csActionLevel,PD_TXN_HEADER_LEVEL)){
+
+			csTmpTxnSeq[0]='\0';
+			csLocalTxnDateTime[0]='\0';
+			DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextOmtTxnSeq");
+			strcpy((char*)csTmpTxnSeq,(*DBObjPtr)());
+			PutField_CString(hTxn,"txn_seq", (const char*)csTmpTxnSeq);
+			PutField_Int(hTxn,"do_logging",PD_ADD_LOG);
+			PutField_Int(hTxn,"db_commit",PD_FALSE);
+			PutField_CString(hTxn,"process_code","000000");
+			PutField_CString(hTxn,"process_type","0000");
+			PutField_CString(hTxn,"PHDATE",csTmpDate);
+
+			strcpy(csLocalTxnDateTime,getdatetime());
+			sprintf(csTmDate,"%.*s",PD_DATE_LEN,csLocalTxnDateTime);
+			PutField_CString(hTxn,"local_tm_date",csTmDate);
+			sprintf(csTmTime,"%.*s",PD_TIME_LEN,&csLocalTxnDateTime[PD_DATE_LEN]);
+			PutField_CString(hTxn,"local_tm_time",csTmTime);
+
+DEBUGLOG(("DoPostTxn() POST [%s]\n",csTmpTxnSeq));
+			if(iRet==PD_OK){
+				ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","AddTxnLog");
+				iRet = (unsigned long)(*ChannelObjPtr)(hTxn,hTxn);
+DEBUGLOG(("DoPostTxn() POST iRet [%d]\n",iRet));
+			}
+
+			if(iRet==PD_OK && GetField_Int(hRequest,"bal_rule_id",&iTmp)){
+DEBUGLOG(("DoPostTxn() do update balance\n"));
+				//get balance rule
+				hash_init(hTxn,0);
+				PutField_CString(hTxn,"txn_seq",(const char*)csTmpTxnSeq);
+				PutField_Double(hTxn,"txn_amt",dAmt);
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineBalanceRule", "GetBalRule");
+				if((unsigned long)(*DBObjPtr)(iTmp, hTxn)==PD_OK){
+					if(GetField_CString(hTxn,"balance_type",&csBalType))
+DEBUGLOG(("DoPostTxn() balance_type[%s]\n",csBalType));
+					if(GetField_CString(hTxn,"element_type",&csElmType))
+DEBUGLOG(("DoPostTxn() element_type[%s]\n",csElmType));
+					if(GetField_CString(hTxn,"amt_type",&csAmtType))
+DEBUGLOG(("DoPostTxn() amt_type[%s]\n",csAmtType));
+					if(GetField_CString(hTxn,"baid_category",&csBaidCat))
+DEBUGLOG(("DoPostTxn() baid_category[%s]\n",csBaidCat));
+					
+					//do update balance
+					if(GetField_CString(hTxn,"balance_type",&csBalType) &&
+					   GetField_CString(hTxn,"element_type",&csElmType) &&
+					   GetField_CString(hTxn,"amt_type",&csAmtType) &&
+					   GetField_CString(hTxn,"baid_category",&csBaidCat)){
+
+						int iFind = PD_OK;
+						if(GetField_CString(hContext,"baid_category",&csTmpBaidCat)){
+DEBUGLOG(("DoPostTxn() txn: rule[%s] org[%s]\n",csBaidCat,csTmpBaidCat));
+							if(!strcmp(csBaidCat,csTmpBaidCat)){
+								sprintf(csTag,"%s_baid",csTmpBaidCat);
+								if(GetField_CString(hContext,csTag,&csTmp)){
+									PutField_CString(hTxn,"baid",csTmp);
+DEBUGLOG(("DoPostTxn() baid: [%s]\n",csTmp));
+								}
+								sprintf(csTag,"%s_psp_id",csTmpBaidCat);
+								if(GetField_CString(hContext,csTag,&csTmp)){
+									PutField_CString(hTxn,"psp_id",csTmp);
+DEBUGLOG(("DoPostTxn() psp_id: [%s]\n",csTmp));
+								}
+								iFind = PD_SKIP_OK;
+							}
+						}
+						if(!iIsOffset){
+							if(GetField_CString(hContext,"baid_baid_category",&csTmpBaidCat)){
+DEBUGLOG(("DoPostTxn() baid_txn: rule[%s] org[%s]\n",csBaidCat,csTmpBaidCat));
+								if(!strcmp(csBaidCat,csTmpBaidCat)){
+									sprintf(csTag,"baid_%s_baid",csTmpBaidCat);
+									if(GetField_CString(hContext,csTag,&csTmp)){
+										PutField_CString(hTxn,"baid",csTmp);
+DEBUGLOG(("DoPostTxn() baid: [%s]\n",csTmp));
+									}
+									sprintf(csTag,"baid_%s_psp_id",csTmpBaidCat);
+									if(GetField_CString(hContext,csTag,&csTmp)){
+										PutField_CString(hTxn,"psp_id",csTmp);
+DEBUGLOG(("DoPostTxn() psp_id: [%s]\n",csTmp));
+									}
+									iFind = PD_SKIP_OK;
+								}
+							}
+						}
+						if(iFind==PD_OK){
+							if(GetField_CString(hContext,"psp_id",&csTmp)){
+								PutField_CString(hTxn,"psp_id",csTmp);
+								//use psp_id, baid_category =>get baid
+DEBUGLOG(("DoPostTxn() psp_id[%s] category[%s] -> baid\n",csTmp,csBaidCat));
+								DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBaidByPspCategory");
+								iRet = (unsigned long)(*DBObjPtr)(csTmp,csBaidCat,hTxn);
+
+								if(iRet!=PD_OK){
+									//use provider, baid_category =>get baid
+									DBObjPtr = CreateObj(DBPtr, "DBOLBankAcctId", "GetBaidByProviderCategory");
+									iRet = (unsigned long)(*DBObjPtr)(csTmp,csBaidCat,hTxn);
+								}
+							}
+						}
+
+						if(!strcmp(csAmtType,PD_CR))
+							cAmtType = PD_IND_CREDIT;
+						else
+							cAmtType = PD_IND_DEBIT;
+
+						if(iRet == PD_OK){
+							PutField_Char(hTxn,"amt_type",cAmtType);
+							PutField_CString(hTxn,"pool",csBalType);
+							PutField_CString(hTxn,"txn_ccy",csCcy);
+							PutField_CString(hTxn,"txn_country",csCountry);
+							BOObjPtr = CreateObj(BOPtr, "BOOLBalance", "UpdateAmount");
+							iRet = (unsigned long)(*BOObjPtr)(hTxn);
+DEBUGLOG(("DoPostTxn() BOOLBalance:UpdateAmount iRet=[%d]\n",iRet));
+						}
+						if(iRet == PD_OK){
+							//add+update ol_txn_psp_detail
+							PutField_Double(hTxn,"txn_amount",dAmt);
+							PutField_CString(hTxn,"add_user",csUser);
+
+							if(GetField_CString(hTxn,"approval_date",&csTmp)){
+								PutField_CString(hContext,"approval_date",csTmp);
+							}
+							if(GetField_CString(hTxn,"approval_timestamp",&csTmp)){
+								PutField_CString(hContext,"approval_timestamp",csTmp);
+							}
+
+							if(!iIsOffset){
+								if(GetField_CString(hContext,"baid_bank_code",&csTmp))
+									PutField_CString(hTxn,"bank_code",csTmp);
+								if(GetField_CString(hContext,"baid_bank_acct_num",&csTmp))
+									PutField_CString(hTxn,"bank_acct_num",csTmp);
+								if(GetField_CString(hContext,"baid_statement_date",&csTmp))
+									PutField_CString(hTxn,"txn_date",csTmp);
+								else	
+									PutField_CString(hTxn,"txn_date",csTmDate);
+								if(GetField_CString(hContext,"baid_statement_time",&csTmp))
+									PutField_CString(hTxn,"txn_time",csTmp);
+								else	
+									PutField_CString(hTxn,"txn_time",csTmTime);
+								if(GetField_Int(hContext,"txn_hold_ind",&iTmp))
+									PutField_Int(hTxn,"txn_hold_ind",iTmp);
+								if(GetField_Int(hContext,"sys_match_ind",&iTmp))
+									PutField_Int(hTxn,"sys_match_ind",iTmp);
+							}
+							else{
+								PutField_CString(hTxn,"txn_date",csTmDate);
+								PutField_CString(hTxn,"txn_time",csTmTime);
+							}
+
+							if (GetField_CString(hContext, "grp_tracking_txn_seq", &csTmp)) {
+								PutField_CString(hTxn, "grp_tracking_txn_seq", csTmp);
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail: grp_tracking_txn_seq [%s]\n", csTmp));
+							}
+							if (GetField_CString(hContext, "tracking_txn_seq", &csTmp)) {
+								PutField_CString(hTxn, "tracking_txn_seq", csTmp);
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail: tracking_txn_seq [%s]\n", csTmp));
+							}
+							if (GetField_CString(hContext, "report_date", &csTmp)) {
+								PutField_CString(hTxn, "report_date", csTmp);
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail: report_date [%s]\n", csTmp));
+							}
+							if (GetField_CString(hContext, "settlement_date", &csTmp)) {
+								PutField_CString(hTxn, "settlement_date", csTmp);
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail: settlement_date [%s]\n", csTmp));
+							}
+
+
+							if (GetField_CString(hTxn, "new_cat_psp_id", &csTmp)) {
+								if (GetField_CString(hTxn, "psp_id", &csOrgPspId)) {
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail: Replace psp_id from [%s] to [%s]\n", csOrgPspId, csTmp));
+									PutField_CString(hTxn, "psp_id", csTmp);
+								}
+							}
+
+							DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Add");
+							iRet = (unsigned long)(*DBObjPtr)(hTxn);
+							if(iRet==PD_OK){
+								DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Update");
+								iRet = (unsigned long)(*DBObjPtr)(hTxn);
+							}
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail:Add/Update iRet=[%d]\n",iRet));
+
+							if (GetField_CString(hTxn, "new_cat_psp_id", &csTmp)) {
+								if (GetField_CString(hTxn, "psp_id", &csTmp)) {
+DEBUGLOG(("DoPostTxn() DBOLTxnPspDetail: Resume psp_id from[%s] to [%s]\n", csTmp, csOrgPspId));
+									PutField_CString(hTxn, "psp_id", csOrgPspId);
+								}
+							}
+						}
+						if(iRet == PD_OK){
+							//update ol_txn_elements
+							PutField_CString(hTxn,"txn_element_type",csElmType);
+							PutField_CString(hTxn,"amount_type",csAmtType);
+							BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","AddPspTxnElement");
+							iRet = (unsigned long)(*BOObjPtr)(hTxn);
+DEBUGLOG(("DoPostTxn() DBOLTxnElements:AddPspTxnElement iRet=[%d]\n",iRet));
+						}
+					}
+				}
+			}
+
+			if(iRet==PD_OK && GetField_Int(hRequest,"af_status_rule_id",&iTmp)){
+DEBUGLOG(("DoPostTxn() do update status\n"));
+				//get status rule
+				hash_init(hTxn,0);
+				PutField_CString(hTxn,"txn_seq",(const char*)csTmpTxnSeq);
+
+				if(!iIsOffset){
+DEBUGLOG(("DoPostTxn() set NOT Offset Information\n"));
+					PutField_Double(hTxn,"txn_amt",dAmt);
+					PutField_Double(hTxn,"net_amt",dAmt);
+					PutField_Double(hTxn,"display_amt",dAmt);
+					PutField_Double(hTxn,"deposit_amt",dAmt);
+
+					if(GetField_CString(hContext,"org_merchant_ref",&csTmp))
+						PutField_CString(hTxn,"merchant_ref",csTmp);
+
+				}
+				else{
+DEBUGLOG(("DoPostTxn() set Offset Information\n"));
+					if(GetField_Double(hContext,"org_txn_amt",&dTmp)) {
+						//PutField_Double(hTxn,"txn_amt",dTmp);
+						PutField_Double(hTxn,"txn_amt",dAmt);
+					}
+					if(GetField_Double(hContext,"org_net_amt",&dTmp)) {
+						//PutField_Double(hTxn,"net_amt",dTmp);
+						PutField_Double(hTxn,"net_amt",dAmt);
+					}
+					if(GetField_Double(hContext,"org_display_amt",&dTmp)) {
+						//PutField_Double(hTxn,"display_amt",dTmp);
+						PutField_Double(hTxn,"display_amt",dAmt);
+					}
+					if(GetField_Double(hContext,"org_deposit_amt",&dTmp)) {
+						//PutField_Double(hTxn,"deposit_amt",dTmp);
+						PutField_Double(hTxn,"deposit_amt",dAmt);
+					}
+					if(GetField_CString(hContext,"org_client_id",&csTmp))
+						PutField_CString(hTxn,"client_id",csTmp);
+					if(GetField_CString(hContext,"org_merchant_ref",&csTmp))
+						PutField_CString(hTxn,"merchant_ref",csTmp);
+				}
+				PutField_Double(hTxn,"ex_rate",1.0);
+				PutField_Char(hTxn,"ex_supplier",PD_INT_EX);
+				PutField_CString(hTxn,"net_ccy",csCcy);
+				PutField_Int(hTxn,"internal_code",0);
+				PutField_CString(hTxn,"response_code","0");
+				PutField_CString(hTxn,"tm_time",csTmTime);
+				PutField_Int(hTxn,"upload_channel",iUploadChannel);
+				PutField_Int(hTxn,"multi_match_ind",0);
+				if(!GetField_CString(hContext,"approval_date",&csApproveDate) || 
+				   !GetField_CString(hContext,"approval_timestamp",&csApproveTimestamp)){
+					DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "GetApprovalDT");
+					(*DBObjPtr)(hTxn);
+				}
+				else{
+					PutField_CString(hTxn,"approval_date",csApproveDate);
+					PutField_CString(hTxn,"approval_timestamp",csApproveTimestamp);
+				}
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineStatusRule", "GetStatusRule");
+				if((unsigned long)(*DBObjPtr)(iTmp, hTxn)==PD_OK){
+					//do update status
+					if(GetField_Char(hTxn,"recon_status",&cTmp)){
+						if(cTmp==PD_RECONCILED){
+							PutField_CString(hTxn,"recon_date",csTmDate);
+							PutField_CString(hTxn,"recon_time",csTmTime);
+						}
+					}
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+					if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() update status failed\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() update status failed!!!\n");
+					}
+				}
+				else{
+					iRet = INT_TXN_ENGINE_CONFIG_MISSING;
+DEBUGLOG(("DoPostTxn() status rule not found\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() status rule not found!!!\n");
+				}
+			}
+
+			if(iRet==PD_OK){
+				//add to ol_batch_txn_relation
+				if(GetField_CString(hContext,"act_batch_id",&csTmp))
+					PutField_CString(hRel,"batch_id",csTmp);
+				if(GetField_CString(hContext,"add_user",&csTmp))
+					PutField_CString(hRel,"create_user",csTmp);
+				PutField_Char(hRel,"txn_level",PD_TXN_LEVEL);
+				PutField_Char(hRel,"batch_type",PD_GENERAL);
+				PutField_CString(hRel,"txn_id", (const char*)csTmpTxnSeq);
+				PutField_Char(hRel,"batch_sub_type",PD_GENERAL_RECON);
+				PutField_Int(hRel,"is_input_txn",PD_FALSE);
+				PutField_Int(hRel,"is_regen_txn",PD_FALSE);
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRel)!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() Add Action Batch Relation failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() Add Action Batch Relation failed!!!\n");
+				}
+			}
+
+			PutField_Int(hContext,"posted_txn_cnt",1);
+			PutField_CString(hContext,"posted_txn_id",(const char*)csTmpTxnSeq);
+		}
+
+		else if(!strcmp(csActionLevel,PD_BAID_TXN_LEVEL)){
+
+			if(GetField_Int(hRequest,"af_status_rule_id",&iTmp)){
+				//get status rule
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineStatusRule", "GetStatusRule");
+				if((unsigned long)(*DBObjPtr)(iTmp, hTxn)!=PD_OK){
+					iRet = INT_TXN_ENGINE_CONFIG_MISSING;
+DEBUGLOG(("DoPostTxn() status rule not found\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() status rule not found\n");
+				}
+			}
+			else{
+				iRet = INT_TXN_ENGINE_CONFIG_MISSING;
+DEBUGLOG(("DoPostTxn() no status rule in the action\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() no status rule in the action\n");
+			}
+
+			if(iRet==PD_OK){
+				csTmpTxnSeq[0]='\0';
+				csLocalTxnDateTime[0]='\0';
+
+				DBObjPtr = CreateObj(DBPtr,"DBOLTxnSeq","GetNextBaidTxnSeq");
+				strcpy((char*)csTmpTxnSeq,(*DBObjPtr)());
+				PutField_CString(hTxn,"txn_seq", (const char*)csTmpTxnSeq);
+
+				strcpy(csLocalTxnDateTime,getdatetime());
+				PutField_CString(hTxn,"transmission_datetime",csLocalTxnDateTime);
+				PutField_CString(hTxn,"posting_date",csTmpDate);
+				PutField_Int(hTxn,"db_commit",PD_FALSE);
+				PutField_Double(hTxn,"txn_amt",dAmt);
+				DBObjPtr = CreateObj(DBPtr, "DBSystemControl", "GetApprovalDT");
+				(*DBObjPtr)(hTxn);
+				if(GetField_CString(hContext,"baid_txn_id",&csTmp))
+					PutField_CString(hTxn,"org_txn_seq",csTmp);
+				if(GetField_CString(hContext,"stat_txn_id",&csTmp))
+					PutField_CString(hTxn,"stat_txn_id",csTmp);
+				if(GetField_CString(hContext,"baid_bank_code",&csTmp))
+					PutField_CString(hTxn,"bank_code",csTmp);
+				if(GetField_CString(hContext,"baid_bank_acct_num",&csTmp))
+					PutField_CString(hTxn,"bank_acct_num",csTmp);
+
+				if(GetField_Double(hContext,"est_net_amount",&dTmp))
+					PutField_Double(hTxn,"est_net_amount",dTmp);
+
+				if(GetField_Int(hContext,"manual_hold_recon",&iTmp))
+					PutField_Int(hTxn,"manual_hold_recon",iTmp);
+
+				if(GetField_CString(hContext,"baid_baid_category",&csTmpBaidCat)) {
+DEBUGLOG(("DoPostTxn() baid_category: [%s]\n",csTmpBaidCat));
+					sprintf(csTag,"baid_%s_baid",csTmpBaidCat);
+                                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                                PutField_CString(hTxn,"baid",csTmp);
+DEBUGLOG(("DoPostTxn() baid: [%s]\n",csTmp));
+                                        }
+                                        sprintf(csTag,"baid_%s_psp_id",csTmpBaidCat);
+                                        if(GetField_CString(hContext,csTag,&csTmp)){
+                                                PutField_CString(hTxn,"pid",csTmp);
+DEBUGLOG(("DoPostTxn() psp_id: [%s]\n",csTmp));
+                                        }
+				} else {
+DEBUGLOG(("DoPostTxn() baid_category_default: [%s]\n",PD_BAID_CATEGORY_DEFAULT));
+					sprintf(csTag,"baid_%s_baid",PD_BAID_CATEGORY_DEFAULT);
+					if(GetField_CString(hContext,csTag,&csTmp)){
+						PutField_CString(hTxn,"baid",csTmp);
+DEBUGLOG(("DoPostTxn() baid: [%s]\n",csTmp));
+					}
+					sprintf(csTag,"baid_%s_psp_id",PD_BAID_CATEGORY_DEFAULT);
+					if(GetField_CString(hContext,csTag,&csTmp)){
+						PutField_CString(hTxn,"pid",csTmp);
+DEBUGLOG(("DoPostTxn() psp_id: [%s]\n",csTmp));
+					}
+				}
+
+				//do post BAID Txn
+				DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Add");
+				if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() Add BAID Txn failed\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() Add BAID Txn failed\n");
+				} else {
+
+					if(GetField_CString(hTxn,"txn_seq",&csTmp)) {
+DEBUGLOG(("DoPostTxn() baid_txn_id: [%s]\n",csTmp));
+                                                PutField_CString(hTxnHold,"txn_seq",csTmp);
+                                        }
+
+					if(GetField_Int(hTxn,"manual_hold_recon",&iTmp)) {
+DEBUGLOG(("DoPostTxn() manual_hold_recon: [%d]\n",iTmp));
+						PutField_Int(hTxnHold,"manual_hold_recon",iTmp);
+                                	}	
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+					if((unsigned long)(*DBObjPtr)(hTxnHold)!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() Update BAID Txn failed\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() Update BAID Txn failed\n");
+					}
+				}
+
+				if(iRet==PD_OK){
+					//add to ol_batch_txn_relation
+					if(GetField_CString(hContext,"act_batch_id",&csTmp))
+						PutField_CString(hRel,"batch_id",csTmp);
+					if(GetField_CString(hContext,"add_user",&csTmp))
+						PutField_CString(hRel,"create_user",csTmp);
+					PutField_Char(hRel,"txn_level",PD_STMT_LEVEL);
+					PutField_Char(hRel,"batch_type",PD_GENERAL);
+					PutField_CString(hRel,"txn_id", (const char*)csTmpTxnSeq);
+					PutField_Char(hRel,"batch_sub_type",PD_GENERAL_RECON);
+					PutField_Int(hRel,"is_input_txn",PD_FALSE);
+					PutField_Int(hRel,"is_regen_txn",PD_FALSE);
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+					if((unsigned long)(*DBObjPtr)(hRel)!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("DoPostTxn() Add Action Batch Relation failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() Add Action Batch Relation failed!!!\n");
+					}
+				}
+			}
+
+			PutField_Int(hContext,"posted_baid_txn_cnt",1);
+			PutField_CString(hContext,"posted_baid_txn_id",(const char*)csTmpTxnSeq);
+
+		}
+	}
+
+	if(iRet == PD_SKIP_OK){
+		iRet = PD_OK;
+	}
+	
+	RemoveField_CString(hContext,"approval_date");
+	RemoveField_CString(hContext,"approval_timestamp");
+	FREE_ME(hTxn);
+	FREE_ME(hRel);
+DEBUGLOG(("DoPostTxn() exit iRet = [%d]\n", iRet));
+	return iRet; 
+}
+
+
+int	DoUpdateTxn(hash_t* hContext,hash_t* hRequest)
+{
+	int iRet = PD_OK;
+	int iTmp = 0;
+	//char *csTmp;
+	char *csTxnId;
+	char *csUser;
+	char csLevel[PD_ENGINE_TYPE_LEN+1];
+	char *csActionLevel;
+	char cTmp;
+
+	char *csBAID = NULL;
+	char *csCcy = NULL;
+	char *csCountry = NULL;
+	double dAmt = 0.0;
+
+	char *csBalType;
+	char *csElmType;
+	char *csAmtType;
+	char  cAmtType;
+
+	char csLocalTxnDateTime[PD_DATETIME_LEN+1];
+	char csTmDate[PD_DATE_LEN+1];
+	char csTmTime[PD_TIME_LEN+1];
+
+	char csSubStatus[PD_SUB_STATUS_LEN];
+	sprintf(csSubStatus,PD_DEFAULT_SUB_STATUS);
+
+	hash_t          *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	hash_t	*hRel;
+	hRel = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRel,0);
+
+DEBUGLOG(("DoUpdateTxn()\n"));
+
+	//psp_txn? baid_txn? posted_psp_txn? posted_baid_txn?
+	if(GetField_CString(hRequest,"action_level",&csActionLevel)){
+DEBUGLOG(("DoUpdateTxn() Action level [%s]\n",csActionLevel));
+	}
+
+	if(!strcmp(csActionLevel,PD_BAID_TXN_LEVEL)){
+		if(GetField_CString(hContext,"baid_txn_id",&csTxnId)){
+			sprintf(csLevel,"%s",PD_BAID_TXN_LEVEL);
+			GetField_Double(hContext,"baid_amt",&dAmt);
+			GetField_CString(hContext,"baid_baid",&csBAID);
+			GetField_CString(hContext,"baid_txn_ccy",&csCcy);
+			GetField_CString(hContext,"baid_txn_ccountry",&csCountry);
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() baid_txn_id missing!!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() baid_txn_id missing!!!!!!\n");
+		}
+	}
+	else if(!strcmp(csActionLevel,PD_TXN_HEADER_LEVEL)){
+		if(GetField_CString(hContext,"txn_id",&csTxnId)){
+			sprintf(csLevel,"%s",PD_TXN_HEADER_LEVEL);
+			GetField_Double(hContext,"amt",&dAmt);
+			GetField_CString(hContext,"baid",&csBAID);
+			GetField_CString(hContext,"txn_ccy",&csCcy);
+			GetField_CString(hContext,"txn_ccountry",&csCountry);
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() txn_id id missing!!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() txn_id missing!!!!!!\n");
+		}
+	}
+	else if(!strcmp(csActionLevel,PD_POST_BAID_TXN_LEVEL)){
+		if(GetField_CString(hContext,"posted_baid_txn_id",&csTxnId)){
+			sprintf(csLevel,"%s",PD_BAID_TXN_LEVEL);
+			GetField_Double(hContext,"posted_baid_amt",&dAmt);
+			GetField_CString(hContext,"posted_baid_baid",&csBAID);
+			GetField_CString(hContext,"posted_baid_txn_ccy",&csCcy);
+			GetField_CString(hContext,"posted_baid_txn_ccountry",&csCountry);
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() posted_baid_txn_id !!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() posted_baid_txn_id missing!!!!!!\n");
+		}
+	}
+	else if(!strcmp(csActionLevel,PD_POST_TXN_HEADER_LEVEL)){
+		if(GetField_CString(hContext,"posted_txn_id",&csTxnId)){
+			sprintf(csLevel,"%s",PD_TXN_HEADER_LEVEL);
+			GetField_Double(hContext,"posted_amt",&dAmt);
+			GetField_CString(hContext,"posted_baid",&csBAID);
+			GetField_CString(hContext,"posted_txn_ccy",&csCcy);
+			GetField_CString(hContext,"posted_txn_ccountry",&csCountry);
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() posted_txn_id missing!!!!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() posted_txn_id missing!!!!!!\n");
+		}
+	}
+	else{
+DEBUGLOG(("DoUpdateTxn() do nothing\n"));
+		iRet = PD_SKIP_OK;
+	}
+
+	if(GetField_CString(hContext,"add_user",&csUser)){
+		PutField_CString(hTxn,"update_user",csUser);
+	}
+
+	//start update (balance, status) if any rule defined
+	if(iRet==PD_OK){
+		if(!strcmp(csLevel,PD_TXN_HEADER_LEVEL)){
+DEBUGLOG(("DoUpdateTxn() [%s][%s]\n",csLevel,csTxnId));
+			PutField_CString(hTxn,"org_txn_seq",csTxnId);
+
+			if(iRet==PD_OK && GetField_Int(hRequest,"af_status_rule_id",&iTmp)){
+DEBUGLOG(("DoUpdateTxn() do update status\n"));
+				//get status rule
+				hash_init(hTxn,0);
+				PutField_CString(hTxn,"txn_seq",csTxnId);
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineStatusRule", "GetStatusRule");
+				if((unsigned long)(*DBObjPtr)(iTmp, hTxn)==PD_OK){
+					//do update status
+					if(GetField_Char(hTxn,"recon_status",&cTmp)){
+						if(cTmp==PD_RECONCILED){
+							strcpy(csLocalTxnDateTime,getdatetime());
+							sprintf(csTmDate,"%.*s",PD_DATE_LEN,csLocalTxnDateTime);
+							PutField_CString(hTxn,"recon_date",csTmDate);
+							sprintf(csTmTime,"%.*s",PD_TIME_LEN,&csLocalTxnDateTime[PD_DATE_LEN]);
+							PutField_CString(hTxn,"recon_time",csTmTime);
+						}
+					}
+
+					DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "Update");
+					if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() update status failed\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() update status failed!!!!\n");
+					}
+				}
+				else{
+					iRet = INT_TXN_ENGINE_CONFIG_MISSING;
+DEBUGLOG(("DoUpdateTxn() status rule not found\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() status rule not found!!!!\n");
+				}
+			}
+
+			if(iRet==PD_OK && dAmt>0.0 && GetField_Int(hRequest,"bal_rule_id",&iTmp)){
+DEBUGLOG(("DoUpdateTxn() do update balance\n"));
+				//get balance rule
+				hash_init(hTxn,0);
+				PutField_CString(hTxn,"txn_seq",csTxnId);
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineBalanceRule", "GetBalRule");
+				if((unsigned long)(*DBObjPtr)(iTmp, hTxn)==PD_OK){
+					//do update balance
+					if(GetField_CString(hTxn,"balance_type",&csBalType) &&
+					   GetField_CString(hTxn,"element_type",&csElmType) &&
+					   GetField_CString(hTxn,"amt_type",&csAmtType)){
+						if(!strcmp(csAmtType,PD_CR))
+							cAmtType = PD_IND_CREDIT;
+						else
+							cAmtType = PD_IND_DEBIT;
+
+						PutField_Char(hTxn,"amt_type",cAmtType);
+						PutField_CString(hTxn,"pool",csBalType);
+						PutField_CString(hTxn,"baid",csBAID);
+						PutField_CString(hTxn,"txn_ccy",csCcy);
+						PutField_CString(hTxn,"txn_country",csCountry);
+						BOObjPtr = CreateObj(BOPtr, "BOOLBalance", "UpdateAmount");
+						iRet = (unsigned long)(*DBObjPtr)(hTxn);
+DEBUGLOG(("DoUpdateTxn() BOOLBalance:UpdateAmount iRet=[%d]\n",iRet));
+						if(iRet == PD_OK){
+							//update ol_txn_psp_detail
+							DBObjPtr = CreateObj(DBPtr, "DBOLTxnPspDetail", "Update");
+							if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+								iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() DBOLTxnPspDetail:Update failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() DBOLTxnPspDetail:Update failed!!!\n");
+							}
+						}
+						if(iRet == PD_OK){
+							//update ol_txn_elements
+							PutField_Double(hTxn,"txn_amt",dAmt);
+							PutField_CString(hTxn,"txn_element_type",csElmType);
+							PutField_CString(hTxn,"amount_type",csAmtType);
+							BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","AddPspTxnElement");
+							if((unsigned long)(*BOObjPtr)(hTxn)!=PD_OK){
+								iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() DBOLTxnElements:AddPspTxnElement Failed!!\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() DBOLTxnElements:AddPspTxnElement Failed!!\n");
+							}
+						}
+					}
+				}
+			}
+
+			/*
+			if(iRet==PD_OK){
+				//add to ol_batch_txn_relation
+				if(GetField_CString(hContext,"act_batch_id",&csTmp))
+					PutField_CString(hRel,"batch_id",csTmp);
+				if(GetField_CString(hContext,"add_user",&csTmp))
+					PutField_CString(hRel,"create_user",csTmp);
+				PutField_Char(hRel,"txn_level",PD_TXN_LEVEL);
+				PutField_Char(hRel,"batch_type",PD_GENERAL);
+				PutField_CString(hRel,"txn_id", csTxnId);
+				PutField_Char(hRel,"batch_sub_type",PD_GENERAL_RECON);
+				PutField_Int(hRel,"is_input_txn",PD_FALSE);
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRel)!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() Add Action Batch Relation failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() Add Action Batch Relation failed!!!\n");
+				}
+			}
+			*/
+
+		}
+		else{ //BAID_TXN_LEVEL
+DEBUGLOG(("DoUpdateTxn() [%s][%s]\n",csLevel,csTxnId));
+			if(iRet==PD_OK && GetField_Int(hRequest,"af_status_rule_id",&iTmp)){
+				//get status rule
+				hash_init(hTxn,0);
+				PutField_CString(hTxn,"txn_seq",csTxnId);
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineStatusRule", "GetStatusRule");
+				if((unsigned long)(*DBObjPtr)(iTmp, hTxn)==PD_OK){
+DEBUGLOG(("DoUpdateTxn() do update status\n"));
+					//do update status
+					DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "Update");
+					if((unsigned long)(*DBObjPtr)(hTxn)!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() update status failed\n"));
+ERRLOG("BOOLTxnEngine:: DoUpdateTxn() update status failed\n");
+					}
+				}
+			}
+
+			/*
+			if(iRet==PD_OK){
+				//add to ol_batch_txn_relation
+				if(GetField_CString(hContext,"act_batch_id",&csTmp))
+					PutField_CString(hRel,"batch_id",csTmp);
+				if(GetField_CString(hContext,"add_user",&csTmp))
+					PutField_CString(hRel,"create_user",csTmp);
+				PutField_Char(hRel,"txn_level",PD_STMT_LEVEL);
+				PutField_Char(hRel,"batch_type",PD_GENERAL);
+				PutField_CString(hRel,"txn_id", csTxnId);
+				PutField_Char(hRel,"batch_sub_type",PD_GENERAL_RECON);
+				PutField_Int(hRel,"is_input_txn",PD_FALSE);
+
+				DBObjPtr = CreateObj(DBPtr, "DBOLBatchTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRel)!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DoUpdateTxn() Add Action Batch Relation failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoPostTxn() Add Action Batch Relation failed!!!\n");
+				}
+			}
+			*/
+		}
+	}
+
+	if(iRet==PD_SKIP_OK)
+		iRet = PD_OK;
+
+	FREE_ME(hTxn);
+	FREE_ME(hRel);
+
+DEBUGLOG(("DoUpdateTxn() exit iRet = [%d]\n", iRet));
+	return iRet; 
+}
+
+
+int	CheckBeforeStatus(const int iRuleId, const char *csLevel,const char *csTxnId,const char *csTriggerType)
+{
+	int	iRet = PD_OK;
+	char cRuleStatus;
+	char cRuleArInd;
+	char cRuleReconStatus;
+	char cRuleClassifiedStatus;
+	char *csRuleSubStatus;
+	char cStatus = PD_DEFAULT_STATUS;
+	char cArInd = PD_DEFAULT_STATUS;
+	char cReconStatus = PD_DEFAULT_STATUS;
+	char cClassifiedStatus = PD_DEFAULT_STATUS;
+	char *csSubStatus = strdup("000");
+
+	hash_t          *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+
+	hash_t          *hBaid;
+	hBaid = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hBaid,0);
+
+	hash_t          *hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	//get status rule
+	DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineStatusRule", "GetStatusRule");
+	if((unsigned long)(*DBObjPtr)(iRuleId, hTxn)==PD_OK){
+		//do check status
+		
+		if(!strcmp(csLevel,PD_TXN_HEADER_LEVEL) ||
+		   !strcmp(csLevel,PD_POST_TXN_HEADER_LEVEL)){
+
+			if(!strcmp(csTriggerType,PD_TRIGGER_MANUAL)){
+				//lock txn when manual mode
+				DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnIdForUpdate");
+				iRet = (unsigned long)(*DBObjPtr)(csTxnId);
+				if (iRet != PD_OK) {
+DEBUGLOG(("CheckBeforeStatus() call DBOLTransaction::GetTxnIdForUpdate() failed\n"));
+DEBUGLOG(("CheckBeforeStatus() cannot lock psp side txn id\n"));
+					iRet = INT_ERR;
+				}
+			}
+
+			DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+			if((unsigned long)(*DBObjPtr)(csTxnId, rRecordSet)==PD_OK){
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if(GetField_Char(hTxn,"status",&cRuleStatus)){
+						GetField_Char(hRec,"status",&cStatus);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleStatus,cStatus));
+						if(cRuleStatus!=cStatus)
+							iRet = INT_RECORD_MISMATCH;
+					}
+					if(GetField_Char(hTxn,"ar_ind",&cRuleArInd)){
+						GetField_Char(hRec,"ar_ind",&cArInd);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleArInd,cArInd));
+						if(cRuleArInd!=cArInd)
+							iRet = INT_RECORD_MISMATCH;
+					}
+					if(GetField_CString(hTxn,"sub_status",&csRuleSubStatus)){
+						GetField_CString(hRec,"sub_status",&csSubStatus);
+DEBUGLOG(("CheckBeforeStatus() [%s][%s]\n",csRuleSubStatus,csSubStatus));
+						if(strcmp(csRuleSubStatus,csSubStatus))
+							iRet = INT_RECORD_MISMATCH;
+					}
+					if(GetField_Char(hTxn,"recon_status",&cRuleReconStatus)){
+						GetField_Char(hRec,"recon_status",&cReconStatus);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleReconStatus,cReconStatus));
+						if(cRuleReconStatus!=cReconStatus)
+							iRet = INT_RECORD_MISMATCH;
+					}
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+		}
+		else{
+			if(!strcmp(csTriggerType,PD_TRIGGER_MANUAL)){
+				//lock txn when manual mode
+				DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetTxnIdForUpdate");
+				iRet = (unsigned long)(*DBObjPtr)(csTxnId);
+				if (iRet != PD_OK) {
+DEBUGLOG(("CheckBeforeStatus() call DBOLBAIDTxn::GetTxnIdForUpdate() failed\n"));
+DEBUGLOG(("CheckBeforeStatus() cannot lock baid side txn id\n"));
+					iRet = INT_ERR;
+				}
+			}
+			
+			DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxn");
+			if((unsigned long)(*DBObjPtr)(csTxnId, hBaid)==PD_OK){
+				if(GetField_Char(hTxn,"status",&cRuleStatus)){
+					GetField_Char(hBaid,"status",&cStatus);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleStatus,cStatus));
+					if(cRuleStatus!=cStatus)
+						iRet = INT_RECORD_MISMATCH;
+				}
+				if(GetField_Char(hTxn,"ar_ind",&cRuleArInd)){
+					GetField_Char(hBaid,"ar_ind",&cArInd);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleArInd,cArInd));
+					if(cRuleArInd!=cArInd)
+						iRet = INT_RECORD_MISMATCH;
+				}
+				if(GetField_CString(hTxn,"sub_status",&csRuleSubStatus)){
+					GetField_CString(hBaid,"sub_status",&csSubStatus);
+DEBUGLOG(("CheckBeforeStatus() [%s][%s]\n",csRuleSubStatus,csSubStatus));
+					if(strcmp(csRuleSubStatus,csSubStatus))
+						iRet = INT_RECORD_MISMATCH;
+				}
+				if(GetField_Char(hTxn,"recon_status",&cRuleReconStatus)){
+					GetField_Char(hBaid,"recon_status",&cReconStatus);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleReconStatus,cReconStatus));
+					if(cRuleReconStatus!=cReconStatus)
+						iRet = INT_RECORD_MISMATCH;
+				}
+				if(GetField_Char(hTxn,"classified_status",&cRuleClassifiedStatus)){
+					GetField_Char(hBaid,"classified_status",&cClassifiedStatus);
+DEBUGLOG(("CheckBeforeStatus() [%c][%c]\n",cRuleClassifiedStatus,cClassifiedStatus));
+					if(cRuleClassifiedStatus!=cClassifiedStatus)
+						iRet = INT_RECORD_MISMATCH;
+				}
+			}
+		}
+	}
+	else{
+		iRet = INT_TXN_ENGINE_CONFIG_MISSING;
+DEBUGLOG(("CheckBeforeStatus() status rule not found\n"));
+ERRLOG("BOOLTxnEngine:: CheckBeforeStatus() status rule not found!!!!\n");
+	}
+
+	FREE_ME(hTxn);
+	FREE_ME(hBaid);
+	FREE_ME(csSubStatus);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+DEBUGLOG(("CheckBeforeStatus() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int	DoLinkage(const int iAction, const char *csLevel, const int iLinkRule, hash_t* hContext)
+{
+	int	iRet = PD_OK;
+	char	*csLinkTxnId;
+	char	*csLinkBaidTxnId;
+	char	*csOrgTxnId;
+	char	*csOrgBaidTxnId;
+	char	*csNewTxnId;
+	char	*csLinkLevel;
+	char	*csUser;
+	int	iIsOverride = PD_FALSE;
+	char	cRelType = PD_REL_LINKAGE;
+
+	hash_t          *hRule;
+	hRule = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRule,0);
+	
+DEBUGLOG(("DoLinkage() Action[%d] Level[%s]\n",iAction,csLevel));
+
+DEBUGLOG(("DoLinkage() Get Linkage Rule\n"));
+	DBObjPtr = CreateObj(DBPtr, "DBOLTxnEngineLinkage", "GetLinkageRule");
+	iRet = (unsigned long)(*DBObjPtr)(iLinkRule, hRule);
+
+	if(iRet == PD_OK){
+		if(GetField_CString(hRule,"link_level",&csLinkLevel)){
+DEBUGLOG(("DoLinkage() link_level [%s]\n",csLinkLevel));
+		}
+		if(GetField_Int(hRule,"is_override",&iIsOverride)){
+DEBUGLOG(("DoLinkage() is_override [%d]\n",iIsOverride));
+		}
+		if(GetField_Char(hRule,"relation_type",&cRelType)){
+DEBUGLOG(("DoLinkage() relation_type [%c]\n",cRelType));
+		}
+	
+		if(GetField_CString(hContext,"org_txn_id",&csOrgTxnId)){
+DEBUGLOG(("DoLinkage() org txn_id [%s]\n",csOrgTxnId));
+		}
+
+		if(GetField_CString(hContext,"org_baid_txn_id",&csOrgBaidTxnId)){
+DEBUGLOG(("DoLinkage() org baid_txn_id [%s]\n",csOrgBaidTxnId));
+		}
+
+
+		if(GetField_CString(hContext,"link_txn_id",&csLinkTxnId)){
+DEBUGLOG(("DoLinkage() link txn_id [%s]\n",csLinkTxnId));
+		}
+
+		if(GetField_CString(hContext,"link_baid_txn_id",&csLinkBaidTxnId)){
+DEBUGLOG(("DoLinkage() link baid_txn_id [%s]\n",csLinkBaidTxnId));
+		}
+
+		if(GetField_CString(hContext,"add_user",&csUser)){
+DEBUGLOG(("DoLinkage() user[%s]\n",csUser));
+		}
+
+		if(iAction == PD_ENGINE_ACTION_POST_TXN){
+			if(!strcmp(csLevel,PD_BAID_TXN_LEVEL)){
+				if(GetField_CString(hContext,"posted_baid_txn_id",&csNewTxnId)){
+DEBUGLOG(("DoLinkage() new [%s] txn_id [%s]\n",csLevel,csNewTxnId));
+				}
+			}
+			else if(!strcmp(csLevel,PD_TXN_HEADER_LEVEL)){
+				if(GetField_CString(hContext,"posted_txn_id",&csNewTxnId)){
+DEBUGLOG(("DoLinkage() new [%s] txn_id [%s]\n",csLevel,csNewTxnId));
+				}
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("DoLinkage() invalid action level[%s]\n",csLevel));
+ERRLOG("BOOLTxnEngine:: DoLinkage() invalid action level[%s]\n",csLevel);
+			}
+		}
+		else if(iAction == PD_ENGINE_ACTION_UPDATE_TXN){ //update action
+			if(!strcmp(csLevel,PD_BAID_TXN_LEVEL)){
+				if(GetField_CString(hContext,"baid_txn_id",&csNewTxnId)){
+DEBUGLOG(("DoLinkage() new [%s] txn_id [%s]\n",csLevel,csNewTxnId));
+				}
+			}
+			else if(!strcmp(csLevel,PD_TXN_HEADER_LEVEL)){
+				if(GetField_CString(hContext,"txn_id",&csNewTxnId)){
+DEBUGLOG(("DoLinkage() new [%s] txn_id [%s]\n",csLevel,csNewTxnId));
+				}
+			}
+			else if(!strcmp(csLevel,PD_POST_BAID_TXN_LEVEL)){
+				if(GetField_CString(hContext,"posted_baid_txn_id",&csNewTxnId)){
+DEBUGLOG(("DoLinkage() new [%s] txn_id [%s]\n",csLevel,csNewTxnId));
+				}
+			}
+			else if(!strcmp(csLevel,PD_POST_TXN_HEADER_LEVEL)){
+				if(GetField_CString(hContext,"posted_txn_id",&csNewTxnId)){
+DEBUGLOG(("DoLinkage() new [%s] txn_id [%s]\n",csLevel,csNewTxnId));
+				}
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("DoLinkage() invalid action level[%s]\n",csLevel));
+ERRLOG("BOOLTxnEngine:: DoLinkage() invalid action level[%s]\n",csLevel);
+			}
+		
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("DoLinkage() invalid action [%d]\n",iAction));
+ERRLOG("BOOLTxnEngine:: DoLinkage() invalid action [%d]\n",iAction);
+		}
+	}
+
+	if(iRet == PD_OK){
+		int iDoAdd = PD_FALSE;
+
+		if(!strcmp(csLinkLevel,"SAME") || !strcmp(csLinkLevel,"BOTH")){
+			if( (!strcmp(csLevel,PD_BAID_TXN_LEVEL) ||
+			     !strcmp(csLevel,PD_POST_BAID_TXN_LEVEL)) && csLinkBaidTxnId){
+				//P, csLinkBaidTxnId, csNewTxnId, S, L
+				PutField_CString(hRule,"p1_txn_id",csLinkBaidTxnId);	
+				PutField_Char(hRule,"txn_level",PD_STMT_LEVEL);	
+				iDoAdd = PD_TRUE;
+			}
+			else if( (!strcmp(csLevel,PD_TXN_HEADER_LEVEL) ||
+				  !strcmp(csLevel,PD_POST_TXN_HEADER_LEVEL)) && csLinkTxnId){
+				//P, csLinkTxnId, csNewTxnId, T, L
+				PutField_CString(hRule,"p1_txn_id",csLinkTxnId);	
+				PutField_Char(hRule,"txn_level",PD_TXN_LEVEL);	
+				iDoAdd = PD_TRUE;
+			}
+		
+			if(iDoAdd){
+				PutField_Char(hRule,"party",PD_TYPE_PSP);
+				PutField_CString(hRule,"p2_txn_id",csNewTxnId);	
+				PutField_Char(hRule,"relation_type",cRelType);
+				PutField_CString(hRule,"create_user",csUser);	
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRule)!=PD_OK){
+					iRet=INT_ERR;
+DEBUGLOG(("DoLinkage() DBOLTxnRelation:Add Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoLinkage() DBOLTxnRelation:Add Failed!!!\n");
+				}
+			}
+
+		}
+		if(!strcmp(csLinkLevel,"CROSS") || !strcmp(csLinkLevel,"BOTH") || !strcmp(csLinkLevel,"SAME_ORG_CROSS")){
+			if( (!strcmp(csLevel,PD_BAID_TXN_LEVEL) ||
+			     !strcmp(csLevel,PD_POST_BAID_TXN_LEVEL)) && csLinkTxnId){
+				//csNewTxnId, csLinkTxnId
+				PutField_CString(hRule,"stmt_txn_id",csNewTxnId);	
+				PutField_CString(hRule,"txn_id",csLinkTxnId);	
+				iDoAdd = PD_TRUE;
+			}
+			else if( (!strcmp(csLevel,PD_TXN_HEADER_LEVEL) ||
+				  !strcmp(csLevel,PD_POST_TXN_HEADER_LEVEL)) &&csLinkBaidTxnId){
+				//csLinkBaidTxnId, csNewTxnId
+				PutField_CString(hRule,"stmt_txn_id",csLinkBaidTxnId);	
+				PutField_CString(hRule,"txn_id",csNewTxnId);	
+				iDoAdd = PD_TRUE;
+			}
+	
+			if(iDoAdd){
+				PutField_CString(hRule,"create_user",csUser);	
+				DBObjPtr = CreateObj(DBPtr, "DBOLStmtTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRule)!=PD_OK){
+					iRet=INT_ERR;
+DEBUGLOG(("DoLinkage() DBOLStmtTxnRelation:Add Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoLinkage() DBOLStmeTxnRelation:Add Failed!!!\n");
+				}
+			}
+		}
+		if(!strcmp(csLinkLevel,"SAME_ORG_CROSS")){
+			if( (!strcmp(csLevel,PD_BAID_TXN_LEVEL) ||
+			     !strcmp(csLevel,PD_POST_BAID_TXN_LEVEL)) && csOrgBaidTxnId){
+				//P, csOrgBaidTxnId, csNewTxnId, S, L
+				PutField_CString(hRule,"p1_txn_id",csOrgBaidTxnId);	
+				PutField_Char(hRule,"txn_level",PD_STMT_LEVEL);	
+				iDoAdd = PD_TRUE;
+			}
+			else if( (!strcmp(csLevel,PD_TXN_HEADER_LEVEL) ||
+				  !strcmp(csLevel,PD_POST_TXN_HEADER_LEVEL)) && csOrgTxnId){
+				//P, csOrgTxnId, csNewTxnId, T, L
+				PutField_CString(hRule,"p1_txn_id",csOrgTxnId);
+				PutField_Char(hRule,"txn_level",PD_TXN_LEVEL);	
+				iDoAdd = PD_TRUE;
+			}
+		
+			if(iDoAdd){
+				PutField_Char(hRule,"party",PD_TYPE_PSP);
+				PutField_CString(hRule,"p2_txn_id",csNewTxnId);	
+				PutField_Char(hRule,"relation_type",cRelType);
+				PutField_CString(hRule,"create_user",csUser);	
+				DBObjPtr = CreateObj(DBPtr, "DBOLTxnRelation", "Add");
+				if((unsigned long)(*DBObjPtr)(hRule)!=PD_OK){
+					iRet=INT_ERR;
+DEBUGLOG(("DoLinkage() DBOLTxnRelation:Add Failed!!!\n"));
+ERRLOG("BOOLTxnEngine:: DoLinkage() DBOLTxnRelation:Add Failed!!!\n");
+				}
+			}
+
+		}
+	}
+
+	if(iRet == PD_OK && iIsOverride){
+		if(!strcmp(csLevel,PD_BAID_TXN_LEVEL) ||
+		   !strcmp(csLevel,PD_POST_BAID_TXN_LEVEL)){
+			PutField_CString(hContext,"link_baid_txn_id",csNewTxnId);
+		}
+		else if(!strcmp(csLevel,PD_TXN_HEADER_LEVEL) ||
+			!strcmp(csLevel,PD_POST_TXN_HEADER_LEVEL)){
+			PutField_CString(hContext,"link_txn_id",csNewTxnId);
+		}
+	}
+
+DEBUGLOG(("DoLinkage() iRet = [%d]\n",iRet));
+	FREE_ME(hRule);
+	return iRet;
+}

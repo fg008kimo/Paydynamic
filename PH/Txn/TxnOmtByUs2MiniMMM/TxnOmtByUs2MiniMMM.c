@@ -1,0 +1,153 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/11/10              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUs2MiniMMM.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+char cDebug;
+OBJPTR(Txn);
+OBJPTR(DB);
+
+void TxnOmtByUs2MiniMMM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int	iGlobleEnable = PD_FALSE;
+	int	iSupportMiniMMM = PD_FALSE;
+	int	iRetErrIfNotMi = PD_TRUE;
+	int	iNeedAddMiTxnLog = PD_TRUE;
+	int	iTmp;
+	char	*csTxnId = NULL;
+	char	*csTxnCode = NULL;
+	char	*csTxnType = NULL;
+	char	*csMiniMmmMode = NULL;
+	char	csHandler[PD_TAG_LEN+1];
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+DEBUGLOG(("Authorize\n")); 
+
+	if(GetField_CString(hContext,"txn_seq",&csTxnId)){
+DEBUGLOG(("Authorize txn_seq = [%s]\n",csTxnId)); 
+	}
+
+	if(GetField_CString(hContext,"txn_code",&csTxnCode)){
+DEBUGLOG(("Authorize txn_code = [%s]\n",csTxnCode)); 
+	}
+
+	//check Mini-MMM mode is 'ON' or not
+	if(GetField_CString(hContext,"mini_mmm_mode",&csMiniMmmMode)){
+		if(!strcmp(csMiniMmmMode, PD_ENABLE_MMSMODE)){
+			iGlobleEnable = PD_TRUE;
+DEBUGLOG(("Authorize() Mini-MMM mode is enabled\n")); 
+		}
+		else{
+DEBUGLOG(("Authorize() Mini-MMM mode is disabled\n")); 
+		}
+	}
+
+	//check txn_type is support Mini-MMM mode
+	if(iRet==PD_OK){
+		if(GetField_CString(hContext,"mini_txn_type",&csTxnType)){
+DEBUGLOG(("Authorize txn_type = [%s]\n",csTxnType)); 
+			DBObjPtr = CreateObj(DBPtr,"DBMiModeTxnCtl","GetMiModeTxnCtl");
+			iRet = (unsigned long) (*DBObjPtr)(csTxnType,hTxn);
+			if(iRet == PD_OK){
+				GetField_Int(hTxn,"err_if_not_mi",&iRetErrIfNotMi);
+				GetField_Int(hTxn,"mi_support",&iSupportMiniMMM);
+				if(!iSupportMiniMMM){
+DEBUGLOG(("Authorize() this transaction type does not support Mini-MMM mode\n")); 
+				}
+				else{
+DEBUGLOG(("Authorize() this transaction type support Mini-MMM mode\n")); 
+				}
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBMiModeTxnCtl:GetMiModeTxnCtl() Failed!!\n")); 
+ERRLOG("TxnOmtByUs2MiniMMM:: Authorize() Call DBMiModeTxnCtl:GetMiModeTxnCtl() Failed!!\n"); 
+			}
+		}
+		else{
+DEBUGLOG(("Authorize() txn_type not found. Skip the MiModeTxnCtl checking...\n")); 
+		}
+	}
+
+	if(iRet==PD_OK){
+		if((!iGlobleEnable || !iSupportMiniMMM) && iRetErrIfNotMi){
+			iRet = INT_MINI_MMM_MODE_DISABLED;
+		}
+		else if ((!iGlobleEnable || !iSupportMiniMMM) && !iRetErrIfNotMi){
+			iRet = PD_SKIP_OK;
+DEBUGLOG(("Authorize() Skip the Mini-MMM process...\n")); 
+		}
+	}
+
+	if(iRet==PD_OK){
+		if(GetField_Int(hContext,"need_add_mi_txn_log",&iTmp)){
+DEBUGLOG(("Authorize need_add_mi_txn_log = [%d]\n",iTmp));
+			iNeedAddMiTxnLog = iTmp;
+		}
+	}
+
+	if(iRet==PD_OK && iNeedAddMiTxnLog){
+DEBUGLOG(("Authorize() DBOLTransaction:AddMiOLTxnLog\n")); 
+		DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","AddMiOLTxnLog");
+		if((unsigned long) (*DBObjPtr)(csTxnId)!=PD_OK){
+			iRet = INT_ERR;
+		}
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize() Call TxnMifByUsCOM for checking\n")); 
+		TxnObjPtr = CreateObj(TxnPtr,"TxnMifByUsCOM","Authorize");
+        	iRet = (unsigned long) (*TxnObjPtr)(hContext,hRequest,hResponse);
+	}
+
+	if(iRet==PD_OK){
+		sprintf(csHandler,"TxnMifByUs%s",csTxnCode);
+
+DEBUGLOG(("Authorize() Call handler[%s]\n",csHandler)); 
+		TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+		iRet = (unsigned long) (*TxnObjPtr)(hContext,hRequest,hResponse);
+	}
+
+	if(iRet == PD_SKIP_OK){
+		iRet = PD_OK;
+	}
+	if(iRet!=PD_OK){
+		PutField_Int(hContext, "internal_error", iRet);
+		TxnAbort();
+DEBUGLOG(("Authorize() Error Found, TxnAbort!!!\n"));
+	}
+
+DEBUGLOG(("TxnOmtByUs2MiniMMM Normal Exit() iRet = [%d]\n",iRet));
+	
+	FREE_ME(hTxn);
+        return iRet;
+}

@@ -1,0 +1,220 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/09/01              Dirk Wong 
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+char csCurrDate[PD_DATE_LEN+1];
+
+char csTag[PD_TAG_LEN+1];
+char csTmp[PD_TMP_BUF_LEN+1];
+char cDebug;
+int iCnt=0;
+
+int iDynCnt=0;
+
+OBJPTR(BO);
+
+int parse_arg(int argc,char **argv);
+
+int batch_init(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int     iRet = parse_arg(argc,argv);
+
+	hash_t *hContext;
+
+	if (iRet != SUCCESS) {
+		return FAILURE;
+	}
+
+	hContext = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hContext,0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+DEBUGLOG(("check_new_baid_create Start!\n"));
+
+	EXEC SQL BEGIN DECLARE SECTION;
+
+		varchar hv_curr_date[PD_DATE_LEN];
+
+		varchar	v_pid_name[PD_PSP_NAME_LEN+1];
+		varchar	v_baid_name[PD_BAID_NAME_LEN+1];
+		varchar	v_baid[PD_BAID_LEN+1];
+		varchar	v_create_ts[PD_TIMESTAMP_LEN + 1];
+
+		short	ind_pid_name = -1;
+		short	ind_baid_name = -1;
+		short	ind_baid = -1;
+		short	ind_create_ts = -1;
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_curr_date.len = strlen(csCurrDate);
+	memcpy(hv_curr_date.arr,csCurrDate,hv_curr_date.len);
+
+	EXEC SQL DECLARE c_cursor_getinfo CURSOR FOR
+		
+		SELECT	OPD_PSP_NAME,
+			OBAI_BAID_NAME,
+			OBAI_BAID,
+			TO_CHAR(OBAI_CREATE_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
+		FROM	ol_bank_acct_id,
+			ol_psp_detail
+		WHERE	OBAI_PSP_ID = OPD_PSP_ID
+		  AND	OBAI_CREATE_TIMESTAMP >= TO_DATE(:hv_curr_date,'YYYYMMDD')
+		  AND	OBAI_CREATE_TIMESTAMP < TO_DATE(:hv_curr_date,'YYYYMMDD')+1
+		ORDER BY
+			OBAI_CREATE_TIMESTAMP;
+		
+	EXEC SQL OPEN c_cursor_getinfo;
+	do {
+		EXEC SQL FETCH c_cursor_getinfo
+		INTO
+			:v_pid_name:ind_pid_name,
+			:v_baid_name:ind_baid_name,
+			:v_baid:ind_baid,
+			:v_create_ts:ind_create_ts;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			if (iCnt == 0) {
+DEBUGLOG(("No data found!\n"));
+			}
+			break;
+		}
+
+		if (ind_pid_name >= 0) {
+			sprintf(csTag,"fpid_name-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_pid_name.len,v_pid_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_baid_name >= 0) {
+			sprintf(csTag,"fbaid_name-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_baid_name.len,v_baid_name.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_baid >= 0) {
+			sprintf(csTag,"fbaid-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_baid.len,v_baid.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		if (ind_create_ts >= 0) {
+			sprintf(csTag,"fcreate_ts-%d",iCnt);
+			sprintf(csTmp,"%.*s",v_create_ts.len,v_create_ts.arr);
+			iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,csTag,"STR","stbl_body-0",csTmp);
+		}
+
+		iCnt++;
+	}
+	while(PD_TRUE && iRet == SUCCESS);
+	EXEC SQL CLOSE c_cursor_getinfo;
+
+	if (iCnt > 0) {
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_head-0", "SEC", "stbl_head-0", 0);
+		iDynCnt = set_tpl_dyn_int(hContext, iDynCnt, "stbl_body-0", "SEC", "stbl_body-0", iCnt);
+
+		sprintf(csTmp, "New BAID Create in PH Offline on %s",csCurrDate);
+		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"MAIL_SUBJECT","GLO","STR",csTmp);
+
+		iDynCnt = set_tpl_dyn_int(hContext,iDynCnt,"stitle-0","SEC","stitle-0",0);
+		iDynCnt = set_tpl_dyn_cstring(hContext,iDynCnt,"ftitle-0","STR","stitle-0",csTmp);
+
+		PutField_CString(hContext,"source","BATCH");
+		PutField_CString(hContext,"funct","NEW_BAID_ALERT");
+		PutField_Char(hContext,"party_type",'G');
+		PutField_CString(hContext,"party_id","000");
+
+		PutField_Int(hContext,"total_dyn",iDynCnt);
+
+		BOObjPtr = CreateObj(BOPtr,"BOAlertEmail","ProcessTpl");
+		if((unsigned long)((*BOObjPtr)(hContext) != PD_OK)){
+			iRet=INT_CODE_ERROR;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("BOAlertEmail:ProcessTpl Failed\n"));
+ERRLOG("check_new_baid_alert BOAlertEmail::ProcessTpl Failed, iRet=%d\n", iRet);
+		}
+		else
+		{
+DEBUGLOG(("BOAlertEmail:ProcessTpl Success\n"));
+		}
+	}
+
+DEBUGLOG(("check_new_baid_alert normal exit!\n"));
+
+	FREE_ME(hContext);
+
+	return iRet;
+
+sql_error:
+DEBUGLOG(("check_new_baid_alert error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_getinfo;
+    EXEC SQL ROLLBACK RELEASE;
+    return PD_ERR;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+
+        char    c;
+	strcpy(csCurrDate,"");
+
+        if (argc < 2) {
+                return PD_ERR;
+        }
+        while ((c = getopt(argc,argv,"d:")) != EOF) {
+                switch (c) {
+                        case 'd':
+                                strcpy(csCurrDate,optarg);
+                                break;
+                        default:
+                                return PD_ERR;
+                }
+        }
+
+	if (!strcmp(csCurrDate,""))
+		return FAILURE;
+
+        return SUCCESS;
+}

@@ -1,0 +1,378 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2013/09/12              David Wong
+Amend sorting                                      2017/03/10              David Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sqlca.h>
+#include <time.h>
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "OLSmsFormat.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define PD_FMT_DESC "desc"
+#define PD_IS_GENERIC "is_generic"
+#define PD_DELIMITER "delimiter"
+#define PD_DELIMITER_DESC "delimiter_desc"
+
+char cDebug;
+
+void OLSmsFormat(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+
+int CheckBank(const char* csText)
+{
+	int iRet = PD_FOUND;
+
+	EXEC SQL WHENEVER SQLERROR GOTO checkbank_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_text[PD_MAX_BUFFER + 1];
+		int v_cnt;
+
+		short ind_text = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	// text
+	hv_text.len = strlen(csText);
+	strncpy((char*)hv_text.arr, csText, hv_text.len);
+	ind_text = 0;
+DEBUGLOG(("CheckBank:: text = [%.*s]\n", hv_text.len, hv_text.arr));
+
+	EXEC SQL SELECT count(*)
+			INTO :v_cnt
+			FROM ol_sms_format
+			WHERE (
+				(length(:hv_text:ind_text) - length(osmf_key_word) = instr(:hv_text:ind_text, osmf_key_word, -1, 1) - 1)
+				OR
+				(substr(:hv_text:ind_text, 1, length(osmf_key_word)) = osmf_key_word)
+			)
+			AND osmf_disabled = 0;
+
+	if (v_cnt <= 0) {
+DEBUGLOG(("CheckBank:: unsupported bank\n"));
+		iRet = PD_NOT_FOUND;
+	}
+
+DEBUGLOG(("CheckBank Normal Exit iRet = [%d]\n", iRet));
+	return iRet;
+
+checkbank_error:
+DEBUGLOG(("checkbank_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("CheckBank checkbank_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int CheckSender(const char* csSender)
+{
+	int iRet = PD_FOUND;
+
+	EXEC SQL WHENEVER SQLERROR GOTO checksender_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_sender[PD_SMS_SENDER_LEN + 1];
+		int v_cnt;
+
+		short ind_sender = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	// sender
+	hv_sender.len = strlen(csSender);
+	strncpy((char*)hv_sender.arr, csSender, hv_sender.len);
+	ind_sender = 0;
+DEBUGLOG(("CheckSender:: sender = [%.*s]\n", hv_sender.len, hv_sender.arr));
+
+	EXEC SQL SELECT count(*)
+			INTO :v_cnt
+			FROM ol_sms_format
+			WHERE osmf_trust_sender = :hv_sender:ind_sender
+			AND osmf_disabled = 0;
+
+	if (v_cnt <= 0) {
+DEBUGLOG(("CheckSender:: untrusted sender\n"));
+		iRet = PD_NOT_FOUND;
+	}
+
+DEBUGLOG(("CheckSender Normal Exit iRet = [%d]\n", iRet));
+	return iRet;
+
+checksender_error:
+DEBUGLOG(("checksender_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("CheckSender checksender_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}
+
+
+int GetFormat(const char* csSender, const char* csText, recordset_t* rRecordSet)
+{
+	int iRet = PD_OK;
+	int iCnt = 0;
+
+	char csIntBankCode[PD_BANK_CODE_LEN + 1];
+	char csBankName[PD_BANK_NAME_LEN + 1];
+	char csKeyWord[PD_TMP_BUF_LEN + 1];
+	int iAlert;
+
+	char csLastFormatId[PD_FORMAT_ID_LEN + 1];
+	char csCurrFormatId[PD_FORMAT_ID_LEN + 1];
+
+	char csFormatType[PD_FORMAT_TYPE_LEN + 1];
+	char *csFormatValue = (char*) malloc (64);
+
+	char *csTag = (char*) malloc (64);
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(myHash, 0);
+
+	EXEC SQL WHENEVER SQLERROR GOTO getformat_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_sender[PD_SMS_SENDER_LEN];
+		varchar hv_text[PD_MAX_BUFFER];
+		varchar v_int_bank_code[PD_BANK_CODE_LEN + 1];
+		varchar v_bank_name[PD_BANK_NAME_LEN + 1];
+		varchar v_key_word[PD_TMP_BUF_LEN + 1];
+		int	v_alert;
+		varchar v_id[PD_FORMAT_ID_LEN + 1];
+		varchar v_type[PD_FORMAT_TYPE_LEN + 1];
+		int	v_value;
+		varchar v_desc[PD_FORMAT_DESC_LEN + 1];
+		int	v_is_generic;
+		varchar v_delimiter[PD_FORMAT_DELIMITER_LEN + 1];
+		varchar v_delimiter_desc[PD_FORMAT_DELIMITER_DESC_LEN + 1];
+
+		short ind_sender = -1;
+		short ind_text = -1;
+		short ind_int_bank_code = -1;
+		short ind_bank_name = -1;
+		short ind_key_word = -1;
+		short ind_alert = -1;
+		short ind_id = -1;
+		short ind_type = -1;
+		short ind_value = -1;
+		short ind_desc = -1;
+		short ind_is_generic = -1;
+		short ind_delimiter = -1;
+		short ind_delimiter_desc = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	// sender
+	hv_sender.len = strlen(csSender);
+	strncpy((char*)hv_sender.arr, csSender, hv_sender.len);
+	ind_sender = 0;
+DEBUGLOG(("GetFormat: sender = [%.*s]\n", hv_sender.len, hv_sender.arr));
+
+	// text
+	hv_text.len = strlen(csText);
+	strncpy((char*)hv_text.arr, csText, hv_text.len);
+	ind_text = 0;
+DEBUGLOG(("GetFormat: text = [%.*s]\n", hv_text.len, hv_text.arr));
+
+	EXEC SQL DECLARE c_cursor_getformat CURSOR FOR
+		SELECT INTERNAL_BANK_CODE,
+			BANK_NAME,
+			OSMF_KEY_WORD,
+			OSMF_ALERT,
+			OSMT_FORMAT_ID,
+			LOWER(OSMT_FORMAT_TYPE),
+			OSMT_FORMAT_VALUE,
+			OSMT_FORMAT_DESC,
+			OSMT_IS_GENERIC,
+			OSMT_DELIMITER,
+			OSMT_DELIMITER_DESC
+		FROM OL_SMS_FORMAT, OL_SMS_FORMAT_TEMPLATE, BANK_DESC
+		WHERE OSMF_TRUST_SENDER = :hv_sender:ind_sender
+		AND (
+			(LENGTH(:hv_text:ind_text) - LENGTH(OSMF_KEY_WORD) = INSTR(:hv_text:ind_text, OSMF_KEY_WORD, -1, 1) - 1)
+			OR
+			(SUBSTR(:hv_text:ind_text, 1, LENGTH(OSMF_KEY_WORD)) = OSMF_KEY_WORD)
+		)
+		AND OSMF_DISABLED = 0
+		AND OSMF_EFFECT_TIMESTAMP <= SYSDATE
+		AND OSMF_FORMAT_ID = OSMT_FORMAT_ID
+		AND OSMF_INT_BANK_CODE = INTERNAL_BANK_CODE
+		AND OFFLINE_SUPPORT = 1
+		ORDER BY TO_NUMBER(SUBSTR(OSMT_FORMAT_ID, INSTR(OSMT_FORMAT_ID, '_', 1, 1) + 1)), LOWER(OSMT_FORMAT_TYPE), OSMT_FORMAT_VALUE;
+
+	EXEC SQL OPEN c_cursor_getformat;
+
+	for (;;) {
+		EXEC SQL FETCH c_cursor_getformat
+		INTO :v_int_bank_code:ind_int_bank_code,
+			:v_bank_name:ind_bank_name,
+			:v_key_word:ind_key_word,
+			:v_alert:ind_alert,
+			:v_id:ind_id,
+			:v_type:ind_type,
+			:v_value:ind_value,
+			:v_desc:ind_desc,
+			:v_is_generic:ind_is_generic,
+			:v_delimiter:ind_delimiter,
+			:v_delimiter_desc:ind_delimiter_desc;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+			break;
+		}
+
+		iCnt++;
+
+/* int bank code */
+		if (ind_int_bank_code >= 0) {
+			v_int_bank_code.arr[v_int_bank_code.len] = '\0';
+DEBUGLOG(("GetFormat: int_bank_code = [%s]\n", (const char*)v_int_bank_code.arr));
+			strcpy(csIntBankCode, (const char*)v_int_bank_code.arr);
+		}
+
+/* bank name */
+		if (ind_bank_name >= 0) {
+			v_bank_name.arr[v_bank_name.len] = '\0';
+DEBUGLOG(("GetFormat: bank_name = [%s]\n", (const char*)v_bank_name.arr));
+			strcpy(csBankName, (const char*)v_bank_name.arr);
+		}
+
+/* key word */
+		if (ind_key_word >= 0) {
+			v_key_word.arr[v_key_word.len] = '\0';
+DEBUGLOG(("GetFormat: key_word = [%s]\n", (const char*)v_key_word.arr));
+			strcpy(csKeyWord, (const char*)v_key_word.arr);
+		}
+
+/* id */
+		if (ind_id >= 0) {
+			v_id.arr[v_id.len] = '\0';
+DEBUGLOG(("GetFormat: id = [%s]\n", (const char*)v_id.arr));
+			strcpy(csCurrFormatId, (const char*)v_id.arr);
+			if (iCnt == 1) {
+				PutField_CString(myHash, "id", csCurrFormatId);
+				strcpy(csLastFormatId, csCurrFormatId);
+			} else {
+				if (strcmp(csCurrFormatId, csLastFormatId)) {
+					PutField_CString(myHash, "int_bank_code", csIntBankCode);
+					PutField_CString(myHash, "bank_name", csBankName);
+					PutField_CString(myHash, "key_word", csKeyWord);
+					PutField_Int(myHash, "alert", iAlert);
+					RecordSet_Add(rRecordSet, myHash);
+DEBUGLOG(("GetFormat hash added - id = [%s]\n", csLastFormatId));
+					myHash = (hash_t*) malloc (sizeof(hash_t));
+					hash_init(myHash, 0);
+					PutField_CString(myHash, "id", csCurrFormatId);
+					strcpy(csLastFormatId, csCurrFormatId);
+				}
+			}
+		}
+
+
+/* alert */
+		if (ind_alert >= 0) {
+DEBUGLOG(("GetFormat: alert = [%d]\n", v_alert));
+			iAlert = v_alert;
+		}
+
+/* type */
+		if (ind_type >= 0) {
+			v_type.arr[v_type.len] = '\0';
+DEBUGLOG(("GetFormat: type = [%s]\n", (const char*)v_type.arr));
+			strcpy(csFormatType, (const char*)v_type.arr);
+		}
+
+/* value */
+		if (ind_value >= 0) {
+DEBUGLOG(("GetFormat: value = [%d]\n", v_value));
+			sprintf(csFormatValue, "%d", v_value);
+		}
+
+		if (strcmp(csFormatType, "content_cnt") == 0) {
+DEBUGLOG(("GetFormat: %s = [%d]\n", csFormatType, v_value));
+			PutField_Int(myHash, csFormatType, v_value);
+			continue;
+		}
+
+/* desc */
+		if (ind_desc >= 0) {
+			v_desc.arr[v_desc.len] = '\0';
+DEBUGLOG(("GetFormat: %s = [%s]\n", PD_FMT_DESC, (const char*)v_desc.arr));
+			sprintf(csTag, "%s_%s_%s", csFormatType, PD_FMT_DESC, csFormatValue);
+			PutField_CString(myHash, csTag, (const char*)v_desc.arr);
+		}
+
+/* is generic */
+		if (ind_is_generic >= 0) {
+DEBUGLOG(("GetFormat: %s = [%d]\n", PD_IS_GENERIC, v_is_generic));
+			sprintf(csTag, "%s_%s_%s", csFormatType, PD_IS_GENERIC, csFormatValue);
+			PutField_Int(myHash, csTag, v_is_generic);
+		}
+
+/* delimiter */
+		if (ind_delimiter >= 0) {
+			v_delimiter.arr[v_delimiter.len] = '\0';
+DEBUGLOG(("GetFormat: %s = [%s]\n", PD_DELIMITER, (const char*)v_delimiter.arr));
+			sprintf(csTag, "%s_%s_%s", csFormatType, PD_DELIMITER, csFormatValue);
+			PutField_CString(myHash, csTag, (const char*)v_delimiter.arr);
+		}
+
+/* delimiter desc */
+		if (ind_delimiter_desc >= 0) {
+			v_delimiter_desc.arr[v_delimiter_desc.len] = '\0';
+DEBUGLOG(("GetFormat: %s = [%s]\n", PD_DELIMITER_DESC, (const char*)v_delimiter_desc.arr));
+			sprintf(csTag, "%s_%s_%s", csFormatType, PD_DELIMITER_DESC, csFormatValue);
+			PutField_CString(myHash, csTag, (const char*)v_delimiter_desc.arr);
+		}
+	}
+
+	EXEC SQL CLOSE c_cursor_getformat;
+
+	if (iCnt > 0 ) {
+		PutField_CString(myHash, "int_bank_code", csIntBankCode);
+		PutField_CString(myHash, "bank_name", csBankName);
+		PutField_CString(myHash, "key_word", csKeyWord);
+		PutField_Int(myHash, "alert", iAlert);
+		RecordSet_Add(rRecordSet, myHash);
+DEBUGLOG(("GetFormat hash added - id = [%s]\n", csCurrFormatId));
+		iRet = PD_OK;
+	} else {
+DEBUGLOG(("GetFormat not found\n"));
+ERRLOG("OLSmsFormat:: GetFormat not found\n");
+		iRet = PD_ERR;
+	}
+
+	FREE_ME(csFormatValue);
+	FREE_ME(csTag);
+
+DEBUGLOG(("GetFormat Normal Exit! iRet = [%d]\n", iRet));
+	return iRet;
+
+getformat_error:
+DEBUGLOG(("getformat_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("OLSmsFormat getformat_error code %d\n", sqlca.sqlcode);
+ERRLOG("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+	EXEC SQL CLOSE c_cursor_getformat;
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	return PD_ERR;
+}

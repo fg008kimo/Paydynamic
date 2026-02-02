@@ -1,0 +1,591 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/06/20              Dirk Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include <math.h>
+#include "utilitys.h"
+#include "expat.h"
+#include <curl/curl.h>
+#include "myhash.h"
+#include "ObjPtr.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "batchcommon.h"
+#include "TxnSeq.h"
+#include "import_ofl_rpt_tbl_data.h"
+#include "internal.h"
+
+#define TBL_CLIENTS	1
+#define	TBL_MIRSP	2
+
+char	cs_table[PD_CODE_LEN + 1];
+char	cs_mode[PD_CODE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+
+char    cDebug = 'Y';
+
+int 	parse_arg(int argc,char **argv);
+int	parse_file(FILE *file1, int iFileNum);
+
+int	InsertOLClients(char csList[][IMPORT_FIELD_LEN]);
+int	InsertMiOLEntityRsp(char csList[][IMPORT_FIELD_LEN]);
+
+int	Delete_CLIENTS();
+int	Delete_MIRSP();
+
+int batch_init(int argc, char* argv[])
+{
+    if (argc < 4) {
+        printf("usage:  -t Table -d Date -m Mode\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+	char	cs_file1[PD_MAX_FILE_LEN + 1];
+        FILE    *file1;
+        int     iRet;
+
+        iRet = parse_arg(argc,argv);
+ 
+        if (iRet != SUCCESS){
+		printf("usage:  -t Table -d Date -m Mode\n");
+                return (iRet);
+	}
+
+	char	cs_yyyy[PD_YYYY_LEN+1];
+	char	cs_yyyymm[PD_YYYYMM_LEN+1];
+
+	memset(cs_yyyy,0,PD_YYYY_LEN+1);
+	memset(cs_yyyymm,0,PD_YYYYMM_LEN+1);
+	strncpy(cs_yyyy,cs_date,4);
+	strncpy(cs_yyyymm,cs_date,6);
+
+
+//OL_CLIENTS
+	if ((!strcmp(cs_table,PD_TBL_CLIENTS)) || (!strcmp(cs_table,PD_TBL_ALL))) {
+
+		if (!strcmp(cs_mode,PD_MODE_FULL)) {
+			iRet = Delete_CLIENTS();
+			sprintf(cs_file1, "%s/%s/%s/%s/full_clients_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+		} else {
+			sprintf(cs_file1, "%s/%s/%s/%s/clients_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+		}
+
+		file1 = fopen(cs_file1,"r");
+		if (file1 == NULL) {
+DEBUGLOG(("Error Opening file = [%s]\n",cs_file1));
+			return FAILURE;
+		} else {
+			iRet = parse_file(file1, TBL_CLIENTS);
+		}
+		fclose(file1);
+
+	}
+
+//MI_OL_ENTITY_RSP
+	if ((!strcmp(cs_table,PD_TBL_MIRSP)) || (!strcmp(cs_table,PD_TBL_ALL))) {
+
+		if (!strcmp(cs_mode,PD_MODE_FULL)) {
+			iRet = Delete_MIRSP();
+			sprintf(cs_file1, "%s/%s/%s/%s/full_mi_entity_rsp_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+		} else {
+			sprintf(cs_file1, "%s/%s/%s/%s/mi_entity_rsp_%s.csv",getenv("REPORT_HOME"),cs_yyyy,cs_yyyymm,cs_date,cs_date);
+		}
+
+		file1 = fopen(cs_file1,"r");
+		if (file1 == NULL) {
+DEBUGLOG(("Error Opening file = [%s]\n",cs_file1));
+			return FAILURE;
+		} else {
+			iRet = parse_file(file1, TBL_MIRSP);
+		}
+		fclose(file1);
+
+	}
+
+
+DEBUGLOG(("===== Finished!, iRet [%d] =====\n",iRet));
+
+        return iRet;
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_table,"");
+        strcpy(cs_mode,"");
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"t:d:m:")) != EOF) {
+                switch (c) {
+                        case 't':
+                                strcpy(cs_table, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        case 'm':
+                                strcpy(cs_mode, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if ( (!strcmp(cs_date,"")) || (!strcmp(cs_date,"")) || (!strcmp(cs_mode,"")) )
+                return FAILURE;
+
+
+        return SUCCESS;
+}
+
+
+int     parse_file(FILE *file1, int iFileNum)
+{
+        int     iRet = SUCCESS;
+        char    csList[IMPORT_MAX_FIELD][IMPORT_FIELD_LEN];
+        char    cs_input_buf[PD_MAX_BUFFER +1];
+        char*   p;
+        int     iCount;
+
+
+	while (fgets(cs_input_buf,PD_MAX_BUFFER,file1) != NULL)
+        {
+                iCount = 0;
+                if ((cs_input_buf[strlen(cs_input_buf) - 1] == 0x0A) || (cs_input_buf[strlen(cs_input_buf) - 1] == 0x0D))
+                cs_input_buf[strlen(cs_input_buf) - 1] = '\0';
+DEBUGLOG(("*[%s]\n",cs_input_buf));
+                p = mystrtok(cs_input_buf,"|");
+                if (p == NULL)  {
+                        return FAILURE;
+                }
+
+                if (strlen(p) > 0) {
+
+                        if(p[strlen(p) - 1] == 0x0D)
+                                p[strlen(p) - 1] = '\0';
+                        strcpy(csList[iCount],p);
+                }
+                else {
+                        csList[iCount][0] ='\0';
+                }
+                iCount++;
+
+                while ( (p = mystrtok(NULL,"|")) != NULL) {
+                        if(p[strlen(p) - 1] == 0x0D)
+                                p[strlen(p) - 1] = '\0';
+                        strcpy(csList[iCount],p);
+                        iCount++;
+                }
+
+		switch (iFileNum) {
+
+			case 1:
+				iRet = InsertOLClients(csList);
+				break;
+			case 2:
+				iRet = InsertMiOLEntityRsp(csList);
+				break;
+
+		}
+
+                if (iRet != SUCCESS)
+                        break;
+
+        }
+
+DEBUGLOG(("Parsefile ret =[%d]\n",iRet));
+
+        return iRet;
+}
+
+
+
+int     InsertOLClients(char csList[][IMPORT_FIELD_LEN])
+{
+	int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO errorolclients;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                short           hv_return_value;
+
+                varchar		hv_client_id[10];
+                varchar		hv_create_ts[PD_DATETIME_LEN];
+                varchar		hv_update_ts[PD_DATETIME_LEN];
+                varchar         hv_create_user[PD_USER_LEN];
+                varchar         hv_update_user[PD_USER_LEN];
+                varchar         hv_client_name[50];
+                varchar         hv_status[2];
+		char		hv_business_type;
+		varchar		hv_company_name[100];
+		varchar		hv_company_addr[200];
+
+		short           ind_client_id = -1;
+                short           ind_create_ts = -1;
+                short           ind_update_ts = -1;
+                short           ind_create_user = -1;
+                short           ind_update_user = -1;
+                short           ind_client_name = -1;
+                short           ind_status = -1;
+                short           ind_business_type = -1;
+                short           ind_company_name = -1;
+                short           ind_company_addr = -1;
+
+        EXEC SQL END DECLARE SECTION;
+DEBUGLOG(("Insert OLClients2\n"));
+
+//client_id
+        if (strlen(csList[IDX_CLIENTS_ID]) > 0 ) {
+                hv_client_id.len = strlen(csList[IDX_CLIENTS_ID]);
+                memcpy(hv_client_id.arr,csList[IDX_CLIENTS_ID],hv_client_id.len);
+                ind_client_id = 0;
+DEBUGLOG(("Insert client_id = [%.*s]\n",hv_client_id.len,hv_client_id.arr));
+        }
+
+//create_timestamp
+        if (strlen(csList[IDX_CLIENTS_CREATE_TS]) > 0 ) {
+                hv_create_ts.len = strlen(csList[IDX_CLIENTS_CREATE_TS]);
+                memcpy(hv_create_ts.arr,csList[IDX_CLIENTS_CREATE_TS],hv_create_ts.len);
+                ind_create_ts = 0;
+DEBUGLOG(("Insert create_ts = [%.*s]\n",hv_create_ts.len,hv_create_ts.arr));
+        }
+
+//update_timestamp
+        if (strlen(csList[IDX_CLIENTS_UPDATE_TS]) > 0 ) {
+                hv_update_ts.len = strlen(csList[IDX_CLIENTS_UPDATE_TS]);
+                memcpy(hv_update_ts.arr,csList[IDX_CLIENTS_UPDATE_TS],hv_update_ts.len);
+                ind_update_ts = 0;
+DEBUGLOG(("Insert update_ts = [%.*s]\n",hv_update_ts.len,hv_update_ts.arr));
+        }
+
+//create_user
+        if (strlen(csList[IDX_CLIENTS_CREATE_USER]) > 0 ) {
+                hv_create_user.len = strlen(csList[IDX_CLIENTS_CREATE_USER]);
+                memcpy(hv_create_user.arr,csList[IDX_CLIENTS_CREATE_USER],hv_create_user.len);
+                ind_create_user = 0;
+DEBUGLOG(("Insert create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+        }
+
+//update_user
+        if (strlen(csList[IDX_CLIENTS_UPDATE_USER]) > 0 ) {
+                hv_update_user.len = strlen(csList[IDX_CLIENTS_UPDATE_USER]);
+                memcpy(hv_update_user.arr,csList[IDX_CLIENTS_UPDATE_USER],hv_update_user.len);
+                ind_update_user = 0;
+DEBUGLOG(("Insert update_user = [%.*s]\n",hv_update_user.len,hv_update_user.arr));
+        }
+
+//client_name
+        if (strlen(csList[IDX_CLIENTS_NAME]) > 0 ) {
+                hv_client_name.len = strlen(csList[IDX_CLIENTS_NAME]);
+                memcpy(hv_client_name.arr,csList[IDX_CLIENTS_NAME],hv_client_name.len);
+                ind_client_name = 0;
+DEBUGLOG(("Insert client_name = [%.*s]\n",hv_client_name.len,hv_client_name));
+        }
+
+//status
+        if (strlen(csList[IDX_CLIENTS_STATUS]) > 0 ) {
+                hv_status.len = strlen(csList[IDX_CLIENTS_STATUS]);
+                memcpy(hv_status.arr,csList[IDX_CLIENTS_STATUS],hv_status.len);
+                ind_status = 0;
+DEBUGLOG(("Insert status = [%.*s]\n",hv_status.len,hv_status.arr));
+        }
+
+//business_type
+	if (strlen(csList[IDX_CLIENTS_BUSINESS_TYPE]) > 0 ) {
+		hv_business_type = csList[IDX_CLIENTS_BUSINESS_TYPE][0];
+		ind_business_type = 0;
+DEBUGLOG(("Insert business_type = [%d]\n",hv_business_type));
+	}
+
+//company_name
+        if (strlen(csList[IDX_CLIENTS_COMPANY_NAME]) > 0 ) {
+                hv_company_name.len = strlen(csList[IDX_CLIENTS_COMPANY_NAME]);
+                memcpy(hv_company_name.arr,csList[IDX_CLIENTS_COMPANY_NAME],hv_company_name.len);
+                ind_company_name = 0;
+DEBUGLOG(("Insert company_name = [%.*s]\n",hv_company_name.len,hv_company_name.arr));
+        }
+
+//company_addr
+        if (strlen(csList[IDX_CLIENTS_COMPANY_ADDR]) > 0 ) {
+                hv_company_addr.len = strlen(csList[IDX_CLIENTS_COMPANY_ADDR]);
+                memcpy(hv_company_addr.arr,csList[IDX_CLIENTS_COMPANY_ADDR],hv_company_addr.len);
+                ind_company_addr = 0;
+DEBUGLOG(("Insert company_addr = [%.*s]\n",hv_company_addr.len,hv_company_addr.arr));
+        }
+
+
+EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_olclients_insert(
+                                                :hv_client_id:ind_client_id,
+                                                :hv_create_ts:ind_create_ts,
+                                                :hv_update_ts:ind_update_ts,
+                                                :hv_create_user:ind_create_user,
+                                                :hv_update_user:ind_update_user,
+                                                :hv_client_name:ind_client_name,
+                                                :hv_status:ind_status,
+                                                :hv_business_type:ind_business_type,
+                                                :hv_company_name:ind_company_name,
+                                                :hv_company_addr:ind_company_addr);
+                END;
+        END-EXEC;
+
+	if (hv_return_value == SP_OK) {
+		iRet = SUCCESS;
+	}
+	else {
+DEBUGLOG(("error code %d from sp\n", hv_return_value));
+		iRet = FAILURE;
+	}
+
+
+        return iRet;
+
+errorolclients:
+DEBUGLOG(("insert_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+}
+
+
+int     InsertMiOLEntityRsp(char csList[][IMPORT_FIELD_LEN])
+{
+	int     iRet = SUCCESS;
+
+        EXEC SQL WHENEVER SQLERROR GOTO errormiolentityrsp;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                short           hv_return_value;
+
+                varchar		hv_entity_id[10];
+                varchar		hv_rsp_id[10];
+                varchar		hv_rsp_name[50];
+                varchar		hv_rsp_node_id[5];
+                varchar		hv_rsp_status[2];
+                varchar		hv_create_ts[PD_DATETIME_LEN];
+                varchar		hv_update_ts[PD_DATETIME_LEN];
+                varchar         hv_create_user[PD_USER_LEN];
+                varchar         hv_update_user[PD_USER_LEN];
+
+		short           ind_entity_id = -1;
+		short           ind_rsp_id = -1;
+		short           ind_rsp_name = -1;
+		short           ind_rsp_node_id = -1;
+		short           ind_rsp_status = -1;
+                short           ind_create_ts = -1;
+                short           ind_update_ts = -1;
+                short           ind_create_user = -1;
+                short           ind_update_user = -1;
+
+        EXEC SQL END DECLARE SECTION;
+DEBUGLOG(("Insert MiOLEntityRsp2\n"));
+
+//entity_id
+        if (strlen(csList[IDX_MIRSP_ENTITY_ID]) > 0 ) {
+                hv_entity_id.len = strlen(csList[IDX_MIRSP_ENTITY_ID]);
+                memcpy(hv_entity_id.arr,csList[IDX_MIRSP_ENTITY_ID],hv_entity_id.len);
+                ind_entity_id = 0;
+DEBUGLOG(("Insert entity_id = [%.*s]\n",hv_entity_id.len,hv_entity_id.arr));
+        }
+
+//rsp_id
+        if (strlen(csList[IDX_MIRSP_RSP_ID]) > 0 ) {
+                hv_rsp_id.len = strlen(csList[IDX_MIRSP_RSP_ID]);
+                memcpy(hv_rsp_id.arr,csList[IDX_MIRSP_RSP_ID],hv_rsp_id.len);
+                ind_rsp_id = 0;
+DEBUGLOG(("Insert rsp_id = [%.*s]\n",hv_rsp_id.len,hv_rsp_id.arr));
+        }
+
+//rsp_name
+        if (strlen(csList[IDX_MIRSP_RSP_NAME]) > 0 ) {
+                hv_rsp_name.len = strlen(csList[IDX_MIRSP_RSP_NAME]);
+                memcpy(hv_rsp_name.arr,csList[IDX_MIRSP_RSP_NAME],hv_rsp_name.len);
+                ind_rsp_name = 0;
+DEBUGLOG(("Insert rsp_name = [%.*s]\n",hv_rsp_name.len,hv_rsp_name.arr));
+        }
+
+//rsp_node_id
+        if (strlen(csList[IDX_MIRSP_RSP_NODE_ID]) > 0 ) {
+                hv_rsp_node_id.len = strlen(csList[IDX_MIRSP_RSP_NODE_ID]);
+                memcpy(hv_rsp_node_id.arr,csList[IDX_MIRSP_RSP_NODE_ID],hv_rsp_node_id.len);
+                ind_rsp_node_id = 0;
+DEBUGLOG(("Insert rsp_node_id = [%.*s]\n",hv_rsp_node_id.len,hv_rsp_node_id.arr));
+        }
+
+//rsp_status
+        if (strlen(csList[IDX_MIRSP_RSP_STATUS]) > 0 ) {
+                hv_rsp_status.len = strlen(csList[IDX_MIRSP_RSP_STATUS]);
+                memcpy(hv_rsp_status.arr,csList[IDX_MIRSP_RSP_STATUS],hv_rsp_status.len);
+                ind_rsp_status = 0;
+DEBUGLOG(("Insert rsp_status = [%.*s]\n",hv_rsp_status.len,hv_rsp_status.arr));
+        }
+
+//create_timestamp
+        if (strlen(csList[IDX_MIRSP_CREATE_TS]) > 0 ) {
+                hv_create_ts.len = strlen(csList[IDX_MIRSP_CREATE_TS]);
+                memcpy(hv_create_ts.arr,csList[IDX_MIRSP_CREATE_TS],hv_create_ts.len);
+                ind_create_ts = 0;
+DEBUGLOG(("Insert create_ts = [%.*s]\n",hv_create_ts.len,hv_create_ts.arr));
+        }
+
+//update_timestamp
+        if (strlen(csList[IDX_MIRSP_UPDATE_TS]) > 0 ) {
+                hv_update_ts.len = strlen(csList[IDX_MIRSP_UPDATE_TS]);
+                memcpy(hv_update_ts.arr,csList[IDX_MIRSP_UPDATE_TS],hv_update_ts.len);
+                ind_update_ts = 0;
+DEBUGLOG(("Insert update_ts = [%.*s]\n",hv_update_ts.len,hv_update_ts.arr));
+        }
+
+//create_user
+        if (strlen(csList[IDX_MIRSP_CREATE_USER]) > 0 ) {
+                hv_create_user.len = strlen(csList[IDX_MIRSP_CREATE_USER]);
+                memcpy(hv_create_user.arr,csList[IDX_MIRSP_CREATE_USER],hv_create_user.len);
+                ind_create_user = 0;
+DEBUGLOG(("Insert create_user = [%.*s]\n",hv_create_user.len,hv_create_user.arr));
+        }
+
+//update_user
+        if (strlen(csList[IDX_MIRSP_UPDATE_USER]) > 0 ) {
+                hv_update_user.len = strlen(csList[IDX_MIRSP_UPDATE_USER]);
+                memcpy(hv_update_user.arr,csList[IDX_MIRSP_UPDATE_USER],hv_update_user.len);
+                ind_update_user = 0;
+DEBUGLOG(("Insert update_user = [%.*s]\n",hv_update_user.len,hv_update_user.arr));
+        }
+
+EXEC SQL EXECUTE
+                BEGIN
+                        :hv_return_value := sp_miolentityrsp_insert(
+                                                :hv_entity_id:ind_entity_id,
+                                                :hv_rsp_id:ind_rsp_id,
+                                                :hv_rsp_name:ind_rsp_name,
+                                                :hv_rsp_node_id:ind_rsp_node_id,
+                                                :hv_rsp_status:ind_rsp_status,
+                                                :hv_create_ts:ind_create_ts,
+                                                :hv_update_ts:ind_update_ts,
+                                                :hv_create_user:ind_create_user,
+                                                :hv_update_user:ind_update_user);
+                END;
+        END-EXEC;
+
+	if (hv_return_value == SP_OK) {
+		iRet = SUCCESS;
+	}
+	else {
+DEBUGLOG(("error code %d from sp\n", hv_return_value));
+		iRet = FAILURE;
+	}
+
+
+        return iRet;
+
+errormiolentityrsp:
+DEBUGLOG(("insert_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+}
+
+
+
+
+int     Delete_CLIENTS()
+{
+        char    *csBuf;
+
+        EXEC SQL WHENEVER SQLERROR GOTO del_clients_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+        varchar         hv_dynstmt[PD_TMP_MSG_BUF_LEN];
+
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("=== Delete_CLIENTS Start ===\n"));
+        csBuf = (char*) malloc (PD_TMP_BUF_LEN);
+
+/* delete ol_clients_2 */
+        strcpy((char*)hv_dynstmt.arr,"delete from ol_clients_2 where ");
+
+        strcat((char*)hv_dynstmt.arr, "1=1");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("delete [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+
+del_clients_error:
+DEBUGLOG(("del_clients_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+}
+
+
+int     Delete_MIRSP()
+{
+        char    *csBuf;
+
+        EXEC SQL WHENEVER SQLERROR GOTO del_mirsp_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+        varchar         hv_dynstmt[PD_TMP_MSG_BUF_LEN];
+
+        EXEC SQL END DECLARE SECTION;
+
+DEBUGLOG(("=== Delete_MIRSP Start ===\n"));
+        csBuf = (char*) malloc (PD_TMP_BUF_LEN);
+
+/* delete mi_ol_entity_rsp_2 */
+        strcpy((char*)hv_dynstmt.arr,"delete from mi_ol_entity_rsp_2 where ");
+
+        strcat((char*)hv_dynstmt.arr, "1=1");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("delete [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+
+del_mirsp_error:
+DEBUGLOG(("del_mirsp_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return FAILURE;
+}
+

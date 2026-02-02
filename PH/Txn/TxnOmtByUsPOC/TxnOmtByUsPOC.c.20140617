@@ -1,0 +1,331 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/01/09              LokMan Chow
+pass to batch job, return msg immediately          2014/03/14              LokMan Chow
+mantis 844, partial confirm			   2014/06/11		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsPOC.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(BO);
+OBJPTR(DB);
+OBJPTR(Channel);
+
+#define       PD_DETAIL_TAG   "dt"
+
+void TxnOmtByUsPOC(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	char	*csTxnSeq;
+	char	*csBatchId;
+	char	*csTmp;
+	char    csTag[PD_TAG_LEN +1];
+	double	dTmp=0.0;
+	unsigned long	lBatchId;
+	//int	iStatus = 0;
+	int	iCnt = 0;
+	int	i = 0;
+	int	iTmp = 0;
+	char	*csIdentityId;
+	char    csCmd[PD_TMP_BUF_LEN*2+1];
+	int     iChk = 0;
+	int     iDtlRet = 0;
+	int     iUploadCnt = 0;
+	char	cInputInd;
+	hash_t  *hTxn;
+        hTxn = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+DEBUGLOG(("Authorize\n"));
+
+	if(GetField_CString(hRequest,"batch_id",&csBatchId)){
+DEBUGLOG(("Authorize::batch_id= [%s]\n",csBatchId));
+		lBatchId = ctol((const unsigned char *)csBatchId,strlen(csBatchId));
+		PutField_CString(hTxn,"batch_id",csBatchId);
+	}
+	else{
+DEBUGLOG(("Authorize::batch_id not found!!\n"));
+ERRLOG("TxnOmtByUsPOC:Authorize::batch_id not found!!\n");
+		iRet=INT_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* input ind*/
+        if(GetField_CString(hRequest,"input_ind",&csTmp)){
+                cInputInd = csTmp[0];
+DEBUGLOG(("Authorize::input_ind= [%c]\n",cInputInd));
+        }
+	else{
+		cInputInd = PD_BY_BATCH;
+	}
+
+	if (GetField_Int(hContext, "total_cnt", &iCnt)) {
+DEBUGLOG(("Authorize::total_cnt = [%d]\n", iCnt));
+	}
+	else {
+DEBUGLOG(("Authorize::total_cnt not found\n"));
+	}
+
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hContext,"update_user",csTmp);
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+	}
+	else{
+                iRet=INT_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::user not found!!\n"));
+ERRLOG("TxnOmtByUsPOC:Authorize::user not found!!\n");
+        }
+
+	if(iRet == PD_OK){
+                DBObjPtr = CreateObj(DBPtr,"DBOLMerchantUploadFileHeader","MatchBatchStatus_ForUpdate");
+                iChk = (unsigned long) ((*DBObjPtr)(csBatchId,PD_PAYOUTFILE_UPLOADED));
+                if(iChk==PD_NOT_FOUND){
+                        iRet=INT_INVALID_TXN;
+                        PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize::the file is not for confirm!!\n"));
+ERRLOG("TxnOmtByUsPOC:Authorize::the file is not for confirm!!\n");
+                }
+        }
+
+        if(iRet == PD_OK){
+                PutField_Int(hTxn,"status",PD_PAYOUTFILE_PROCESSING);
+                DBObjPtr = CreateObj(DBPtr,"DBOLMerchantUploadFileHeader","UpdateHeader");
+                if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBMerchantUploadFileHeader:Add Failed\n"));
+ERRLOG("Authorize::DBMerchantUploadFileHeader:Add Failed\n");
+                }
+        }
+
+
+	if(cInputInd==PD_BY_BATCH){
+		if(iRet == PD_OK){
+			sprintf(csCmd,"offline_payout_confirm.exec -b %s -u %s &",csBatchId,csTmp);
+			system(csCmd);
+		}
+	}
+	else{
+		iDtlRet = PD_OK;
+		for (i = 0; i < iCnt; i++) {
+			sprintf(csTag, "batch_id_%d",i);
+			PutField_CString(hContext,csTag,csBatchId);
+/* seq_num */
+			sprintf(csTag, "%s_seq_num_%d", PD_DETAIL_TAG, i+1);
+			if (GetField_CString(hRequest, csTag, &csTmp)) {
+DEBUGLOG(("Authorize::() [%s] = [%s]\n", csTag, csTmp));
+				sprintf(csTag, "seq_num_%d",i);
+				PutField_CString(hContext,csTag,csTmp);
+			}
+			else {
+				iDtlRet = INT_ERR;
+DEBUGLOG(("Authorize::[%s] not found\n", csTag));
+ERRLOG("TxnOmtByUsPOC::Authorize::[%s] not found\n", csTag);
+			}
+		}
+		if(iDtlRet!=PD_OK){
+			iRet = INT_ERR;
+		}
+
+		PutField_Char(hContext,"input_ind",PD_BY_TXN);
+
+		if(iRet == PD_OK){
+			PutField_Int(hContext,"status",PAYOUT_MASTER_TRANSACTION_UPLOADED);
+DEBUGLOG(("Authorize::call BOOLPayout->GetPayoutRecordsByMode\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOOLPayout","GetPayoutRecordsByMode");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest,hResponse);
+		}
+
+
+		if(iRet == PD_OK){
+DEBUGLOG(("Authorize::call BOOLMerchant->GetMerchantTxnInfo\n"));
+			BOObjPtr = CreateObj(BOPtr,"BOOLMerchant","GetMerchantTxnInfo");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+			if(iRet!=PD_OK){
+				iRet = INT_INVALID_TXN;
+				PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnOmtByUsPOC::Authorize() merchant acct not available\n");
+DEBUGLOG(("Authorize::merchat acct not available\n"));
+			}
+			else{
+				if(GetField_Int(hContext,"allow_payout",&iTmp)){
+					if(iTmp!=PD_TRUE){
+						iRet = INT_INVALID_TXN;
+						PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("TxnOmtByUsPOC::Authorize() merchant acct not allow payout\n");
+DEBUGLOG(("Authorize::merchat acct not allow payout\n"));
+					}
+				}
+			}
+		}
+
+
+		if(iRet == PD_OK){
+DEBUGLOG(("TxnOmtByUsPOC::Authorize() total_cnt= [%d]\n",iCnt));
+			for(i=0; i<iCnt; i++){
+DEBUGLOG(("TxnOmtByUsPOC::Authorize() current index= [%d]\n",i));
+				sprintf(csTag,"merchant_id_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					PutField_CString(hContext,"merchant_id",csTmp);
+					PutField_CString(hRequest,"merchant_id",csTmp);
+				}
+				sprintf(csTag,"merchant_client_id_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					PutField_CString(hRequest,"client_id",csTmp);
+				}
+				sprintf(csTag,"service_code_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					PutField_CString(hContext,"service_code",csTmp);
+					PutField_CString(hRequest,"service_code",csTmp);
+				}
+				sprintf(csTag,"txn_country_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					PutField_CString(hContext,"txn_country",csTmp);
+					PutField_CString(hRequest,"txn_country",csTmp);
+				}
+				sprintf(csTag,"merchant_ref_%d",i);
+				if(GetField_CString(hRequest,csTag,&csTmp)){
+					PutField_CString(hRequest,"merchant_ref",csTmp);
+				}
+				sprintf(csTag,"bank_name_%d",i);
+				if(GetField_CString(hRequest,csTag,&csTmp)){
+					PutField_CString(hRequest,"bank_name",csTmp);
+				}
+				sprintf(csTag,"txn_ccy_%d",i);
+				if(GetField_CString(hContext,csTag,&csTmp)){
+					PutField_CString(hContext,"net_ccy",csTmp);
+					PutField_CString(hContext,"txn_ccy",csTmp);
+					PutField_CString(hRequest,"txn_ccy",csTmp);
+				}
+				sprintf(csTag,"txn_amt_%d",i);
+				if(GetField_Double(hRequest,csTag,&dTmp)){
+					PutField_Double(hContext,"txn_amt",dTmp);
+				}
+
+				sprintf(csTag,"txn_country_%d",i);
+				if(GetField_CString(hRequest,csTag,&csTmp)) {
+DEBUGLOG(("TxnOmtByUsPOC::Authorize() txn_country= [%s]\n",csTmp));
+					sprintf(csTag,"identity_id_%d",i);
+					if(!strcmp(csTmp,PD_TAIWAN) && GetField_CString(hRequest,csTag,&csIdentityId)){
+DEBUGLOG(("TxnOmtByUsPOC::Authorize() identity_id= [%s]\n",csIdentityId));
+						if(islower(csIdentityId[0])){
+							//update
+							csIdentityId[0] = toupper(csIdentityId[0]);
+							PutField_CString(hRequest,csTag,csIdentityId);
+DEBUGLOG(("TxnOmtByUsPOC::Authorize() identity_id = [%s]\n",csIdentityId));
+						}
+						if(islower(csIdentityId[1])){
+							//update
+							csIdentityId[1] = toupper(csIdentityId[1]);
+							PutField_CString(hRequest,csTag,csIdentityId);
+DEBUGLOG(("TxnOmtByUsPOC::Authorize() identity_id = [%s]\n",csIdentityId));
+						}
+					}
+				}
+
+DEBUGLOG(("Authorize: Call GetNextBatchTxnSeq\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTxnSeq","GetNextBatchTxnSeq");
+				csTxnSeq  = strdup((*DBObjPtr)());
+DEBUGLOG(("Authorize: GenerateBatchSeq: [%s]\n",csTxnSeq));
+				PutField_CString(hContext,"txn_seq",csTxnSeq);
+				sprintf(csTag,"txn_seq_%d",i);
+				PutField_CString(hContext,csTag,csTxnSeq);
+				FREE_ME(csTxnSeq);
+
+				PutField_CString(hContext,"process_type","0000");
+				PutField_CString(hContext,"process_code","000000");
+				PutField_CString(hContext,"txn_code",PD_OL_PAYOUT_APPROVE);
+				PutField_Int(hContext,"do_logging",PD_TRUE);
+
+DEBUGLOG(("Authorize::Call OMTChannel:AddTxnLog\n"));
+				ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","AddTxnLog");
+				if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest))!=PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("Authorize::OMTChannel:AddTxnLog Failed\n"));
+						break;
+				}
+
+				if(iRet==PD_OK){
+					PutField_CString(hContext,"sub_status",PD_UPLOAD_CONFIRMED);
+					PutField_Char(hContext,"status",PD_TO_PSP);
+					PutField_Int(hContext,"internal_code",PD_OK);
+					PutField_CString(hContext,"response_code","0");
+DEBUGLOG(("Authorize::Call OMTChannel:UpdateTxnLog\n"));
+					ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnLog");
+					if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+						iRet = INT_ERR;
+DEBUGLOG(("Authorize::OMTChannel:AddTxnLog Failed\n"));
+						break;
+					}
+					PutField_Int(hContext,"do_logging",PD_FALSE);
+
+					if(iRet == PD_OK){
+DEBUGLOG(("Authorize::Call OMTChannel:UpdateTxnDetailLog\n"));
+						ChannelObjPtr = CreateObj(ChannelPtr,"OMTChannel","UpdateTxnDetailLog");
+						if((unsigned long) ((*ChannelObjPtr)(hContext,hRequest,hResponse))!=PD_OK){
+							iRet = INT_ERR;
+DEBUGLOG(("Authorize::OMTChannel:AddTxnDetailLog Failed\n"));
+							break;
+						}
+					}
+
+				}
+
+			}
+		}
+
+		if(iRet == PD_OK){
+DEBUGLOG(("Authorize::call BOOLPayout->UpdateDetail\n"));
+                	BOObjPtr = CreateObj(BOPtr,"BOOLPayout","UpdateDetail");
+			iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+		}
+
+		if(iRet==PD_OK){
+			PutField_Int(hTxn,"status",PD_PAYOUTFILE_UPLOADED);
+			DBObjPtr = CreateObj(DBPtr,"DBOLMerchantUploadFileDetail","RecordCountWithBatchStatus");
+			if((unsigned long) ((*DBObjPtr)(hTxn))==PD_OK){
+				GetField_Int(hTxn,"record_cnt",&iUploadCnt);
+				if(!iUploadCnt)
+					PutField_Int(hTxn,"status",PD_PAYOUTFILE_APPROVED);
+			}
+		}
+
+		if(iRet!=INT_INVALID_TXN){
+			DBObjPtr = CreateObj(DBPtr,"DBOLMerchantUploadFileHeader","UpdateHeader");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize::DBOLMerchantUploadFileHeader:Add Failed\n"));
+ERRLOG("Authorize::DBOLMerchantUploadFileHeader:Add Failed\n");
+			}
+		}
+	}
+
+DEBUGLOG(("TxnOmtByUsPOC Normal Exit() iRet = [%d]\n",iRet));
+	FREE_ME(hTxn);
+	return iRet;
+}

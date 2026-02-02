@@ -1,0 +1,434 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/08/08              Virginia Yun
+Update                                             2014/11/19              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "dates.h"
+#include "dbutility.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+int 	iDynCnt=0;
+char 	csTmp[PD_TMP_BUF_LEN+1];
+
+char	cs_txn_seq[PD_TXN_SEQ_LEN + 1];
+char    cs_merchant_id[PD_MERCHANT_ID_LEN + 1];
+char    cs_funct[PD_CODE_LEN +1];
+char    c_sett_type;
+char    cs_sett_service[PD_SERVICE_CODE_LEN +1];
+char    i_send_notify_email;
+
+char    cDebug = 'Y';
+
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+int parse_arg(int argc,char **argv);
+int process_get_ol_sett_data(hash_t* hRec, const char *csTxnSeq);
+int process_get_exclude_data(hash_t* hRec, const char* csTxnSeq, const char* csFunct, const char* csSettService, int iSendNotifyEmail);
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet = SUCCESS;
+
+	hash_t *hRec = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hRec, 0);
+
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS) {
+		printf("usage:  -t txn_id -m merchant_id -f funct -s sett_type -c sett_service -e send_notify_email\n");
+                return (iRet);
+        }
+
+	if(iRet == PD_OK){	
+		iRet = process_get_exclude_data(hRec, cs_txn_seq, cs_funct, cs_sett_service, i_send_notify_email);
+	}
+
+	if(iRet == PD_OK){
+		iRet = process_get_ol_sett_data(hRec, cs_txn_seq);
+	}
+
+	if(iRet == FOUND){
+
+/* source */
+                PutField_CString(hRec, "source", PD_EML_SOURCE_CHANNEL);
+DEBUGLOG(("batch_proc:: source = [%s]\n", PD_EML_SOURCE_CHANNEL));
+
+/* funct */
+		PutField_CString(hRec, "funct", cs_funct);
+DEBUGLOG(("batch_proc:: funct = [%s]\n", cs_funct));
+
+/* party_id */
+		PutField_CString(hRec, "party_id", cs_merchant_id);
+DEBUGLOG(("batch_proc:: party_id = [%s]\n", cs_merchant_id));		
+
+/* party_type */
+		PutField_Char(hRec, "party_type", c_sett_type);
+DEBUGLOG(("batch_proc:: party_type = [%c]\n", c_sett_type));		
+
+		BOObjPtr = CreateObj(BOPtr,"BOAlertEmail","ProcessTpl");
+               	if((unsigned long)((*BOObjPtr)(hRec) != PD_OK)){
+             		iRet = FAILURE;
+DEBUGLOG(("batch_proc:: BOAlertEmail Failed!!!\n"));
+ERRLOG("get_ol_sett_email_body::batch_proc::BOAlertEmail Failed, iRet=%d\n", iRet);
+             	} else {
+			iRet = SUCCESS;
+DEBUGLOG(("batch_proc:: BOAlertEmail Success!!!\n"));
+                }
+	}
+
+	if (iRet != PD_OK) {
+		iRet = FAILURE;
+	}
+
+	hash_destroy(hRec);
+        FREE_ME(hRec);
+
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+	char    c;
+
+	strcpy(cs_txn_seq,"");
+	strcpy(cs_merchant_id,"");
+	strcpy(cs_funct,"");
+	c_sett_type = ' ';
+	strcpy(cs_sett_service,"");
+	i_send_notify_email = 0;
+
+	while ((c = getopt(argc,argv,"t:m:f:s:c:e:")) != EOF) {
+		switch (c) {
+			case 't':
+				strcpy(cs_txn_seq, optarg);
+				break;
+			case 'm':
+				strcpy(cs_merchant_id, optarg);
+				break;
+			case 'f':
+				strcpy(cs_funct, optarg);
+				break;
+			case 's':
+				c_sett_type = optarg[0];
+                                break;
+			case 'c':
+                                strcpy(cs_sett_service, optarg);
+                                break;
+			case 'e':
+				i_send_notify_email = atoi(optarg);
+                                break;
+			default:
+				return FAILURE;
+		}
+	}
+
+	if (!strcmp(cs_txn_seq, "") || !strcmp(cs_merchant_id,"") || !strcmp(cs_funct,"") || c_sett_type==' ' || !strcmp(cs_sett_service,""))
+		return FAILURE;
+
+	return SUCCESS;
+}
+
+int process_get_ol_sett_data(hash_t* hRec, const char* csTxnSeq)
+{
+        int iRet = FOUND;
+
+        EXEC SQL WHENEVER SQLERROR GOTO processemail_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar hv_txn_seq[PD_TXN_SEQ_LEN];
+
+                varchar v_brand_name[PD_EML_FIELD_LEN + 1];
+                varchar v_merchant_id[PD_EML_FIELD_LEN + 1];
+                varchar v_short_name[PD_EML_FIELD_LEN + 1];
+                varchar v_request_datetime[PD_EML_FIELD_LEN + 1];
+                varchar v_approve_datetime[PD_EML_FIELD_LEN + 1];
+                varchar v_country_name[PD_EML_FIELD_LEN + 1];
+                varchar v_service_desc[PD_EML_FIELD_LEN + 1];
+                varchar v_request_ccy[PD_EML_FIELD_LEN + 1];
+                varchar v_request_amt[PD_EML_FIELD_LEN + 1];
+                varchar v_deliver_ccy[PD_EML_FIELD_LEN + 1];
+                varchar v_deliver_amt[PD_EML_FIELD_LEN + 1];
+
+                short   ind_brand_name = -1;
+                short   ind_merchant_id = -1;
+                short   ind_short_name = -1;
+                short   ind_request_datetime = -1;
+                short   ind_approve_datetime = -1;
+                short   ind_country_name = -1;
+                short   ind_service_desc = -1;
+                short   ind_request_ccy = -1;
+                short   ind_request_amt = -1;
+                short   ind_deliver_ccy = -1;
+                short   ind_deliver_amt = -1;
+        EXEC SQL END DECLARE SECTION;
+
+// txn_seq
+        hv_txn_seq.len = strlen(csTxnSeq);
+        memcpy(hv_txn_seq.arr,csTxnSeq,hv_txn_seq.len);
+DEBUGLOG(("process_get_ol_sett_data txn_seq = [%.*s]\n",hv_txn_seq.len,hv_txn_seq.arr));
+
+	sprintf(csTmp,"%.*s",hv_txn_seq.len,hv_txn_seq.arr);
+        iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"TXN_ID","GLO","STR",csTmp);
+
+        EXEC SQL
+                SELECT  NVL(MD_BRAND_NAME, 'OPTIMAL PAYMENTS PH-OFFLINE SYSTEM'),
+                        OSD_MERCHANT_ID,
+                        MD_SHORT_NAME,
+                        TO_CHAR(OTH_CREATE_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'),
+                        TO_CHAR(OTH_APPROVAL_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'),
+                        COUNTRY_NAME,
+                        SC_DESC,
+                        OSD_REQUEST_CCY,
+                        TO_CHAR(NVL(OSD_REQUEST_AMT, 0), 'FM999,999,990.00'),
+                        OSD_DELIVER_CCY,
+                        TO_CHAR(NVL(OSD_DELIVER_AMT, 0), 'FM999,999,990.00')
+                INTO    :v_brand_name:ind_brand_name,
+                        :v_merchant_id:ind_merchant_id,
+                        :v_short_name:ind_short_name,
+                        :v_request_datetime:ind_request_datetime,
+                        :v_approve_datetime:ind_approve_datetime,
+                        :v_country_name:ind_country_name,
+                        :v_service_desc:ind_service_desc,
+                        :v_request_ccy:ind_request_ccy,
+                        :v_request_amt:ind_request_amt,
+                        :v_deliver_ccy:ind_deliver_ccy,
+                        :v_deliver_amt:ind_deliver_amt
+                FROM    COUNTRY,
+                        DEF_SERVICE_CODE,
+                        OL_MERCH_DETAIL,
+                        OL_MERCHANT_SETTLEMENT_DETAIL,
+                        OL_TXN_HEADER
+                WHERE   OTH_TXN_ID = :hv_txn_seq
+                AND     OTH_TXN_CODE = 'OSR'
+                AND     OTH_STATUS = 'C'
+                AND     OTH_AR_IND = 'A'
+                AND     OTH_TXN_ID = OSD_TXN_ID
+                AND     OTH_MERCHANT_ID = OSD_MERCHANT_ID
+                AND     OSD_MERCHANT_ID = MD_MERCHANT_ID
+                AND     OSD_COUNTRY_ID = COUNTRY_CODE
+                AND     OSD_SERVICE_CODE = SC_CODE;
+
+// brand_name
+        if (ind_brand_name >= 0) {
+                v_brand_name.arr[v_brand_name.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data brand_name = [%s]\n",v_brand_name.arr));
+
+		//PutField_CString(hRec, "brand_name", (char*)v_brand_name.arr);
+
+		sprintf(csTmp,"%.*s",v_brand_name.len,v_brand_name.arr);
+		iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"BRAND_NAME","GLO","STR",csTmp);
+        }
+
+// merchant_id
+        if (ind_merchant_id >= 0) {
+                v_merchant_id.arr[v_merchant_id.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data merchant_id = [%s]\n",v_merchant_id.arr));
+
+		//PutField_CString(hRec, "merchant_id", (char*)v_merchant_id.arr);
+
+		sprintf(csTmp,"%.*s",v_merchant_id.len,v_merchant_id.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"MERCHANT_ID","GLO","STR",csTmp);
+        }
+
+// short_name
+        if (ind_short_name >= 0) {
+                v_short_name.arr[v_short_name.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data short_name = [%s]\n",v_short_name.arr));
+
+		//PutField_CString(hRec, "short_name", (char*)v_short_name.arr);
+
+		sprintf(csTmp,"%.*s",v_short_name.len,v_short_name.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"SHORT_NAME","GLO","STR",csTmp);
+        }
+
+// request_datetime
+        if (ind_request_datetime >= 0) {
+                v_request_datetime.arr[v_request_datetime.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data request_datetime = [%s]\n",v_request_datetime.arr));
+
+		//PutField_CString(hRec, "request_date_time", (char*)v_request_datetime.arr);
+
+		sprintf(csTmp,"%.*s",v_request_datetime.len,v_request_datetime.arr);
+		iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"REQUEST_DATE_TIME","GLO","STR",csTmp);
+        }
+
+// approve_datetime
+        if (ind_approve_datetime >= 0) {
+                v_approve_datetime.arr[v_approve_datetime.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data approve_datetime = [%s]\n",v_approve_datetime.arr));
+
+		//PutField_CString(hRec, "approve_date_time", (char*)v_approve_datetime.arr);
+		
+		sprintf(csTmp,"%.*s",v_approve_datetime.len,v_approve_datetime.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"APPROVE_DATE_TIME","GLO","STR",csTmp);
+        }
+
+// country_name
+        if (ind_country_name >= 0) {
+                v_country_name.arr[v_country_name.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data country_name = [%s]\n",v_country_name.arr));
+
+		//PutField_CString(hRec, "country_name", (char*)v_country_name.arr);
+
+		sprintf(csTmp,"%.*s",v_country_name.len,v_country_name.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"COUNTRY_NAME","GLO","STR",csTmp);
+        }
+
+// service_desc
+        if (ind_service_desc >= 0) {
+                v_service_desc.arr[v_service_desc.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data service_desc = [%s]\n",v_service_desc.arr));
+
+		//PutField_CString(hRec, "service_desc", (char*)v_service_desc.arr);
+
+		sprintf(csTmp,"%.*s",v_service_desc.len,v_service_desc.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"SERVICE_DESC","GLO","STR",csTmp);
+        }
+
+// request_ccy
+        if (ind_request_ccy >= 0) {
+                v_request_ccy.arr[v_request_ccy.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data request_ccy = [%s]\n",v_request_ccy.arr));
+
+		//PutField_CString(hRec, "request_ccy", (char*)v_request_ccy.arr);
+
+		sprintf(csTmp,"%.*s",v_request_ccy.len,v_request_ccy.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"REQUEST_CCY","GLO","STR",csTmp);
+        }
+
+// request_amt
+        if (ind_request_amt >= 0) {
+                v_request_amt.arr[v_request_amt.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data request_amt = [%f]\n",v_request_amt));
+
+		//PutField_CString(hRec, "request_amt", (char*)v_request_amt.arr);
+
+		sprintf(csTmp,"%.*s",v_request_amt.len,v_request_amt.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"REQUEST_AMT","GLO","STR",csTmp);
+        }
+
+// deliver_ccy
+        if (ind_deliver_ccy >= 0) {
+                v_deliver_ccy.arr[v_deliver_ccy.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data deliver_ccy = [%s]\n",v_deliver_ccy.arr));
+
+		//PutField_CString(hRec, "delivery_ccy", (char*)v_deliver_ccy.arr);
+
+		sprintf(csTmp,"%.*s",v_deliver_ccy.len,v_deliver_ccy.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"DELIVER_CCY","GLO","STR",csTmp);
+        }
+
+// deliver_amt
+        if (ind_deliver_amt >= 0) {
+                v_deliver_amt.arr[v_deliver_amt.len] ='\0';
+DEBUGLOG(("process_get_ol_sett_data deliver_amt = [%f]\n",v_deliver_amt));
+
+		//PutField_CString(hRec, "delivery_amt", (char*)v_deliver_amt.arr);
+		        
+		sprintf(csTmp,"%.*s",v_deliver_amt.len,v_deliver_amt.arr);
+                iDynCnt = set_tpl_dyn_cstring(hRec,iDynCnt,"DELIVER_AMT","GLO","STR",csTmp);
+	}
+
+	PutField_Int(hRec, "total_dyn", iDynCnt);
+DEBUGLOG(("process_get_ol_sett_data total_dyn = [%d]\n",iDynCnt));
+
+DEBUGLOG(("process_get_ol_sett_data() Normal Exit iRet = [%d]\n",iRet));
+        return iRet;
+
+processemail_error:
+DEBUGLOG(("processemail_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("get_ol_sett_email_body::process_get_ol_sett_data sql error %d\n", sqlca.sqlcode);
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+}
+
+int process_get_exclude_data(hash_t* hRec, const char* csTxnSeq, const char* csFunct, const char* csSettService, int iSendNotifyEmail)
+{
+	int iRet = PD_OK;
+
+	int iSendMerchantNotifyEmail = 0;
+
+	hash_t *hRecExclude;
+
+	recordset_t *rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet, 0);	
+
+DEBUGLOG(("process_get_exclude_data:: csTxnSeq = [%s]\n", csTxnSeq));
+DEBUGLOG(("process_get_exclude_data:: csFunct = [%s]\n", csFunct));
+
+/* service_code */
+      	PutField_CString(hRec,"service_code",csSettService);
+DEBUGLOG(("process_get_exclude_data:: service_code = [%s]\n",csSettService));
+
+      	if (!strcmp(csFunct, PD_EML_FUNCT_OL_SETT_ADMIN))
+      	{
+/* notify_email */
+       		PutField_Int(hRec,"notify_email",iSendNotifyEmail);
+DEBUGLOG(("process_get_exclude_data:: notify_email = [%d]\n",iSendNotifyEmail));
+      	}
+     	else if (!strcmp(csFunct, PD_EML_FUNCT_OL_SETT_MERCH))
+     	{
+DEBUGLOG(("process_get_exclude_data:: Call DBOLMerchantSettlementDetail:: GetSettlementDetail\n"));
+
+              	DBObjPtr = CreateObj(DBPtr,"DBOLMerchantSettlementDetail","GetSettlementDetail");
+             	if((unsigned long)(*DBObjPtr)(csTxnSeq,rRecordSet)==PD_OK) {
+DEBUGLOG(("process_get_exclude_data:: found record!!!\n"));
+                   	hRecExclude = RecordSet_GetFirst(rRecordSet);
+                     	while (hRecExclude) {
+
+/* merchant_notify_email */
+                      		if (GetField_Int(hRecExclude, "merchant_notify_email", &iSendMerchantNotifyEmail)) {
+DEBUGLOG(("process_get_exclude_data:: merchant_notify_email = [%d]\n",iSendMerchantNotifyEmail));
+                                  	PutField_Int(hRec,"merchant_notify_email",iSendMerchantNotifyEmail);
+                            	}
+
+                             	hRecExclude = RecordSet_GetNext(rRecordSet);
+                   	}
+           	} else {
+DEBUGLOG(("process_get_exclude_data:: GetSettlementDetail:: not found record!!!\n"));
+ERRLOG("get_ol_sett_email_body::process_get_exclude_data::GetSettlementRecords::GetSettlementDetail::not found record!!\n");
+           	}
+   	}
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+DEBUGLOG(("process_get_exclude_data:: iRet = [%d]\n", iRet));
+	return iRet;
+}

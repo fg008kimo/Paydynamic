@@ -1,0 +1,525 @@
+/*
+PDProTech (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of PDProTech.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2014/01/21              [MSN]
+Add payout_provider_fail tag			   2015/01/22		   [SWK]
+Add return void merchant payout txn_id             2015/08/12              [SWK]
+Modify for void merchant settlement		   2016/05/12		   [WWK]
+Add return_to_mfee & call DBDefVoidTxnConfig       2016/06/23              [WCS]
+Add return void bal-transfer: inter payout	   2016/09/22		   [WWK]
+Add Txn Code: Void Payout API			   2017/04/07		   [WMC]
+Update Debug Log                                   2021/06/02              [WMC]
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsVOT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+static char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+int GetTxnInfo(const unsigned char *csTxnSeq,
+		hash_t * hContext,
+		hash_t * hRequest);
+
+void TxnOmtByUsVOT(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+
+	int     iReturnMerchFee = PD_FALSE;
+        int     iReturnToMerchFee = PD_FALSE;
+        int     iPayoutTxn = PD_FALSE;
+	int 	iTmpRet = NOT_FOUND;
+        int 	iSkipVoidOrgTxnElements = PD_FALSE;
+
+	char	*csTxnSeq;
+	char	*csTxnSeqOpt;
+	char	*csTmp;
+	char	*csTxnCode;
+	char	*csHandler;
+	char	*csPHDate = NULL;
+	char	*csOrgPostDate = NULL;
+	char    *csPORespTxnSeq = NULL;
+	char 	*csValue = strdup("");
+
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("TxnOmtByUsVOT: Authroize()\n"));
+
+/* txn_seq */
+	if(GetField_CString(hContext,"txn_seq",&csTmp)){
+		PutField_CString(hContext,"from_txn_seq",csTmp);
+DEBUGLOG(("txn_seq = [%s]\n",csTmp));
+	}
+
+/* org_txn_seq */
+	if(GetField_CString(hRequest,"org_txn_seq",&csTxnSeq)){
+		PutField_CString(hContext,"org_txn_seq",csTxnSeq);
+DEBUGLOG(("org_txn_seq = [%s]\n",csTxnSeq));
+	}
+	else{
+DEBUGLOG(("org_txn_seq not found!!\n"));
+ERRLOG("TxnOmtByUsVOT::Authorize::org_txn_seq not found!!\n");
+		iRet=INT_INVALID_TXN;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* org_txn_seq_to */
+	if(GetField_CString(hRequest,"org_txn_seq_to",&csTxnSeqOpt)){
+		PutField_CString(hContext,"to_txn_seq",csTxnSeqOpt);
+DEBUGLOG(("org_txn_seq_to (optional) = [%s]\n",csTxnSeqOpt));
+	}
+	
+/* add_user */
+	if(GetField_CString(hRequest,"add_user",&csTmp)){
+		PutField_CString(hContext,"update_user",csTmp);
+DEBUGLOG(("update_user = [%s]\n",csTmp));
+	}
+
+/* remark */
+	if(GetField_CString(hRequest,"remark",&csTmp)){
+DEBUGLOG(("remark = [%s]\n",csTmp));
+	}
+
+/* return_mfee */
+	if(GetField_CString(hRequest,"return_mfee",&csTmp)){
+		iReturnMerchFee = atoi(csTmp);
+		PutField_Int(hRequest,"return_mfee",iReturnMerchFee);
+DEBUGLOG(("return_merchantfee = [%d]\n",iReturnMerchFee));
+	}
+	else{
+		PutField_Int(hRequest,"return_mfee",PD_FALSE);
+DEBUGLOG(("return_merchantfee (default) = [%d]\n",PD_FALSE));
+	}
+
+/* return_to_mfee */
+	if(GetField_CString(hRequest,"return_to_mfee",&csTmp)){
+		iReturnToMerchFee = atoi(csTmp);
+		PutField_Int(hRequest,"return_to_mfee",iReturnToMerchFee);
+DEBUGLOG(("return_to_merchantfee = [%d]\n",iReturnToMerchFee));
+	}
+	else{
+		PutField_Int(hRequest,"return_to_mfee",PD_FALSE);
+DEBUGLOG(("return_to_merchantfee (default) = [%d]\n",PD_FALSE));
+	}
+
+	// Get OLTxnInfo
+	if(iRet==PD_OK){
+DEBUGLOG(("Call GetTxnInfo by org_txn_seq = [%s]\n", csTxnSeq));
+		iRet = GetTxnInfo((const unsigned char*)csTxnSeq,hContext,hRequest);
+
+		if(iRet == INT_NOT_RECORD){
+		}
+		else if(iRet == PD_OK){
+			GetField_CString(hRequest,"org_txn_code",&csTxnCode);
+
+//////*******only void Adjustment/Settlement with mms mode OFF
+			char    *csMmsMode = strdup("");
+			int	iMmsMode = PD_FALSE;
+
+DEBUGLOG(("Call DBSystemParameter: FindCode\n"));
+			DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+			if ((unsigned long)(DBObjPtr)(PD_MMSMODE,csMmsMode) == FOUND) {
+DEBUGLOG(("FindCode: MMS Mode = [%s]\n",csMmsMode));
+				if(!strcmp(csMmsMode, PD_ENABLE_MMSMODE)){
+					iMmsMode = PD_TRUE;
+					if(!strcmp(csTxnCode,PD_SETTLEMENT_REQUEST)||
+					   !strcmp(csTxnCode,PD_PSP_SETTLEMENT) ||
+					   !strcmp(csTxnCode,PD_MERCH_BAL_TRF_OTH_SYS) ||
+					   !strcmp(csTxnCode,PD_PSP_BAL_TRF_OTH_SYS)){
+DEBUGLOG(("FindCode: MMS Mode is ON, Txn unvoidable!!!!!!!!\n"));
+ERRLOG("TxnOmtByUsVOT::Authorize::Call DBSystemParameter::FindCode::MMS Mode is ON, Txn unvoidable!!!!!!!!\n");
+						iRet=INT_ERR;
+					}
+				}
+			}
+			FREE_ME(csMmsMode);
+
+			// for adjustment
+			char    cPartyType;
+                        int     iCheck= PD_TRUE;
+
+                        if(toupper(csTxnCode[0])==PD_TYPE_MERCHANT)
+                        	cPartyType = PD_TYPE_MERCHANT;
+                        else if(toupper(csTxnCode[0])==PD_TYPE_PSP)
+                        	cPartyType = PD_TYPE_PSP;
+                        else
+                        	iCheck = PD_FALSE;
+
+			if (iCheck == PD_TRUE && islower(csTxnCode[0])) {
+				PutField_Int(hContext, "is_adj_txn_code", PD_TRUE);
+				if(iMmsMode==PD_TRUE){
+DEBUGLOG(("FindCode: MMS Mode is ON, Txn unvoidable!!!!!!!!\n"));
+ERRLOG("TxnOmtByUsVOT::Authorize::Call DBSystemParameter::FindCode::MMS Mode is ON, Txn unvoidable!!!!!!!!\n");
+					iRet=INT_ERR;
+				}					
+			}
+
+/*Check the two txn_seq is in a pair (TFT&TFF)*/
+			if (iRet == PD_OK) {
+				if(!strcmp(csTxnCode,PD_MERCHANT_BAL_TFF)){
+					int iMatch = PD_FALSE;
+        				recordset_init(rRecordSet,0);
+DEBUGLOG(("Call DBOLTransaction: GetTxnHeader by org_txn_seq_to = [%s]\n", csTxnSeqOpt));
+					DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnHeader");
+					if ((*DBObjPtr)(csTxnSeqOpt,rRecordSet) == PD_OK) {
+						hRec = RecordSet_GetFirst(rRecordSet);
+						while (hRec) {
+							if(GetField_CString(hRec,"org_txn_id",&csTmp)){
+								if(!strcmp(csTmp,csTxnSeq)){
+									iMatch = PD_TRUE;
+								}
+							}
+							hRec = RecordSet_GetNext(rRecordSet);
+						}
+					}
+					if(iMatch!=PD_TRUE){
+						iRet = INT_INVALID_TXN;
+DEBUGLOG(("The two txn_seq are not in a pair!!!!!!!\n"));
+ERRLOG("TxnOmtByUsVOT::Authorize::The two txn_seq are not in a pair!!!!!!!!\n");
+					}
+				}
+			}
+
+			if (iRet == PD_OK) {
+/*call BOTxnElement*/
+				if((!strcmp(csTxnCode,PD_OL_PAYOUT_APPROVE))
+				   ||(!strcmp(csTxnCode,PD_REQ_OPL_TXN_CODE))
+				){
+					if(GetField_CString(hContext,"org_sub_status",&csTmp)){
+DEBUGLOG(("org_sub_status = [%s]\n", csTmp));
+						if(!strcmp(csTmp,PD_APPROVED_FOR_GENERATED)){
+							GetField_CString(hContext,"PHDATE",&csPHDate);
+							if(GetField_CString(hContext,"org_posting_date",&csOrgPostDate)){
+DEBUGLOG(("org_posting_date = [%s]\n", csOrgPostDate));
+								if(!strcmp(csPHDate,csOrgPostDate))
+									PutField_Int(hContext,"same_date_cancel",PD_TRUE);
+							}
+						}
+					}
+				}
+
+				if((!strcmp(csTxnCode,PD_OL_PAYOUT_APPROVE))
+				   ||(!strcmp(csTxnCode,PD_REQ_OPL_TXN_CODE))
+				){
+DEBUGLOG(("same_date_cancel = [%d]\n", PD_TRUE));
+					//always put back to ava po
+					PutField_Int(hContext,"same_date_cancel",PD_TRUE);
+				}
+
+				DBObjPtr = CreateObj(DBPtr, "DBDefVoidTxnConfig", "FindCode");
+				iTmpRet = (unsigned long)(DBObjPtr)(csTxnCode, PD_VOT_VOID_TXN_ELEMENT, csValue);
+				if (iTmpRet == FOUND) {
+DEBUGLOG(("Call DBDefVoidTxnConfig: FindCode for org_txn_code[%s]\n", csTxnCode));
+DEBUGLOG(("FindCode: value = [%s]\n", csValue));
+					if (csValue[0] == PD_NO) {
+						iSkipVoidOrgTxnElements = PD_TRUE;
+DEBUGLOG(("FindCode: skip BOOLTxnElements: VoidOrgTxnElements\n"));
+					}
+				} else {
+DEBUGLOG(("Call DBDefVoidTxnConfig: FindCode not found for org_txn_code[%s]\n", csTxnCode));
+				}
+
+				if (!iSkipVoidOrgTxnElements) {
+DEBUGLOG(("Call BOOLTxnElements: VoidOrgTxnElements\n"));
+					BOObjPtr = CreateObj(BOPtr,"BOOLTxnElements","VoidOrgTxnElements");
+					iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+					if (iRet != PD_OK) {
+DEBUGLOG(("Call BOOLTxnElements: VoidOrgTxnElements failed\n"));
+					}
+				}
+
+			}
+
+			if (iRet == PD_OK) {
+				csHandler = (char*) malloc (20);
+
+/* Void Deposit */
+				if (!strcmp(csTxnCode,PD_INITIAL_OLN_TXN_CODE)){
+					PutField_CString(hContext,"new_txn_code","RDI");
+					sprintf(csHandler,"TxnOmtByUs%s","RDI");
+				}
+/* Void Payout */
+				if(!strcmp(csTxnCode,PD_OL_PAYOUT_APPROVE)){
+					iPayoutTxn = PD_TRUE;
+
+					/* For response purpose */
+					GetField_CString(hContext,"txn_seq",&csPORespTxnSeq);
+
+					PutField_CString(hContext,"txn_code",PD_OL_PAYOUT_VOID_MERCHANT);
+					PutField_Int(hContext,"do_logging",PD_NO_LOG);
+                			sprintf(csHandler,"TxnOmtByUs%s",PD_PAYOUT_VOID);
+				}
+/* Void Payout API */
+				else if(!strcmp(csTxnCode,PD_REQ_OPL_TXN_CODE)){
+                                        iPayoutTxn = PD_TRUE;
+
+                                        // For response purpose
+                                        GetField_CString(hContext,"txn_seq",&csPORespTxnSeq);
+
+                                        PutField_CString(hContext,"txn_code",PD_RETURN_POL_TXN_CODE);
+                                        PutField_Int(hContext,"do_logging",PD_NO_LOG);
+                                        sprintf(csHandler,"TxnOmtByUs%s",PD_PAYOUT_API_VOID);
+                                }
+/* Void Merchant Settlement */
+				else if(!strcmp(csTxnCode,PD_OL_SETTLEMENT_REQUEST)){
+					PutField_CString(hContext,"new_txn_code",PD_OL_SETTLEMENT_VOID);
+                			sprintf(csHandler,"TxnOmtByUs%s",PD_OL_SETTLEMENT_VOID);
+				}
+
+/* Void PSP Settlement */
+/*				else if(!strcmp(csTxnCode,PD_PSP_SETTLEMENT)){
+					PutField_CString(hContext,"new_txn_code",PD_PSP_SETTLEMENT_VOID);
+                			sprintf(csHandler,"TxnOmtByUs%s",PD_PSP_SETTLEMENT_VOID);
+				}
+*/
+/* Void Merchant Bal Transfer To Other System */
+/*				else if (!strcmp(csTxnCode, PD_MERCH_BAL_TRF_OTH_SYS)) {
+					PutField_CString(hContext, "new_txn_code", PD_MERCH_VOID_BAL_TRF_OTH_SYS);
+                			sprintf(csHandler,"TxnOmtByUs%s",PD_MERCH_VOID_BAL_TRF_OTH_SYS);
+				}
+*/
+/* Void PSP Bal Transfer To Other System */
+/*				else if (!strcmp(csTxnCode, PD_PSP_BAL_TRF_OTH_SYS)) {
+					PutField_CString(hContext, "new_txn_code", PD_PSP_VOID_BAL_TRF_OTH_SYS);
+                			sprintf(csHandler,"TxnOmtByUs%s",PD_PSP_VOID_BAL_TRF_OTH_SYS);
+				}
+*/
+/* Void Other System Bal Transfer To Merchant */
+				else if (!strcmp(csTxnCode, PD_OFL_OTH_SYS_2_MERCH_BAL_TRF)) {
+                                        PutField_CString(hContext, "new_txn_code", PD_OFL_OTH_SYS_2_MERCH_BAL_TRF_VOID);
+                                        sprintf(csHandler,"TxnOmtByUs%s",PD_OFL_OTH_SYS_2_MERCH_BAL_TRF_VOID);
+                                }
+/* Void Intra Merchant Bal Transfer */
+				else if(!strcmp(csTxnCode,PD_OFL_MERCHANT_BAL_TFF)){
+					PutField_CString(hContext,"new_txn_code",PD_OFL_VOID_MERCHANT_BAL_TFF);
+					sprintf(csHandler,"TxnOmtByUs%s",PD_OFL_VOID_MERCHANT_BAL_TFF);
+				}
+/* Void Merchant Bal Transfer - Inter Payout */
+				else if(!strcmp(csTxnCode,PD_OFL_AVA_PAYOUT_TRF_IN)){
+					PutField_CString(hContext,"new_txn_code",PD_OFL_VOID_AVA_PAYOUT_TRF_IN);
+					sprintf(csHandler,"TxnOmtByUs%s",PD_OFL_VOID_AVA_PAYOUT_TRF_IN);
+				}
+/* Void Psp Bal Transfer */
+/*				else if(!strcmp(csTxnCode,"PBU")){
+					PutField_CString(hContext,"new_txn_code","PBR");
+                			sprintf(csHandler,"TxnOmtByUs%s","PBR");
+				}
+*/
+/* Fund-in Payout for Merchant */
+				else if (!strcmp(csTxnCode, PD_OFL_FUND_IN_PAYOUT_MERCHANT)) {
+					PutField_CString(hContext,"new_txn_code",PD_OFL_FUND_IN_PAYOUT_MERCHANT_VOID);
+                			sprintf(csHandler,"TxnOmtByUs%s", PD_OFL_FUND_IN_PAYOUT_MERCHANT_VOID);
+				}
+/* Balance Transfer Out - Intra Payout */
+				else if (!strcmp(csTxnCode, PD_OFL_AVA_PAYOUT_REQ_TF_FROM)) {
+					PutField_CString(hContext,"new_txn_code",PD_OFL_VOID_AVA_PAYOUT_REQ_TF_FROM);
+					sprintf(csHandler,"TxnOmtByUs%s", PD_OFL_VOID_AVA_PAYOUT_REQ_TF_FROM);
+				}
+/* Fund-in Payout for PSP */
+/*				else if (!strcmp(csTxnCode, PD_FUND_IN_PAYOUT_PSP)) {
+					PutField_CString(hContext,"new_txn_code",PD_FUND_IN_PAYOUT_PSP_VOID);
+                			sprintf(csHandler,"TxnOmtByUs%s", PD_FUND_IN_PAYOUT_PSP_VOID);
+				}
+*/
+/* Fixed Amount HoldBack */
+/*				else if (!strcmp(csTxnCode, PD_FIXED_AMT_HB)) {
+					PutField_CString(hContext,"new_txn_code", PD_RELEASE_FIXED_AMT_HB);
+					sprintf(csHandler,"TxnOmtByUs%s", PD_RELEASE_FIXED_AMT_HB);
+				}
+*/
+				else{
+/* Void Adjustment */
+/*					if (GetField_Int(hContext, "is_adj_txn_code", &iTmp)) {
+						if (iTmp == PD_TRUE) {
+                					sprintf(csHandler,"TxnOmtByUs%s","VAD");
+						}
+					}
+*/				}
+DEBUGLOG(("Create Txn Object [%s]\n",csHandler));
+                		TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+				FREE_ME(csHandler);
+			}
+		}
+	}
+
+	if(iRet==PD_OK){
+		if(iPayoutTxn) {
+			PutField_CString(hContext,"sub_status",PD_REFUND_APPROVED);
+			PutField_CString(hResponse,"org_txn_seq",csPORespTxnSeq);
+		}
+		else {
+			PutField_CString(hContext,"sub_status",PD_APPROVED);
+		}
+	}
+
+
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("TxnOmtByUsVOT: Authorize() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int GetTxnInfo(const unsigned char *csTxnSeq,
+		hash_t * hContext,
+		hash_t * hRequest)
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+	char	*csTxnCode;
+	char	*csProcessCode;
+	char	*csProcessType;
+	char	*csSubStatus;
+	char	*csServiceCode;
+	char	*csTmp;
+	char	cTmp;
+	double  dTmp = 0.0;
+	int	iReleased = PD_FALSE;
+	hash_t	*hRec;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+DEBUGLOG(("TxnOmtByUsVOT: GetTxnInfo()\n"));
+
+	DBObjPtr = CreateObj(DBPtr,"DBOLTransaction","GetTxnHeader");
+	if ((*DBObjPtr)(csTxnSeq,rRecordSet) == PD_OK) {
+DEBUGLOG(("GetTxnInfo: Call DBOLTransaction: GetTxnHeader\n"));
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while (hRec) {
+			if (GetField_CString(hRec,"host_posting_date",&csTmp)) {
+				PutField_CString(hContext,"org_posting_date",csTmp);
+//DEBUGLOG(("GetTxnInfo (TxnHeader): host_posting_date = [%s]\n",csTmp));
+			}
+			if (GetField_CString(hRec,"txn_code",&csTxnCode)) {
+				PutField_CString(hRequest,"org_txn_code",csTxnCode);
+//DEBUGLOG(("GetTxnInfo (TxnHeader): txn_code = [%s]\n",csTxnCode));
+			}
+			if (GetField_CString(hRec,"process_code",&csProcessCode)) {
+//DEBUGLOG(("GetTxnInfo (TxnHeader): process_code = [%s]\n",csProcessCode));
+			}
+			if (GetField_CString(hRec,"process_type",&csProcessType)) {
+//DEBUGLOG(("GetTxnInfo (TxnHeader): process_type = [%s]\n",csProcessType));
+			}
+			if (GetField_CString(hRec,"merchant_id",&csTmp)) {
+				PutField_CString(hRequest,"merchant_id",csTmp);
+//DEBUGLOG(("GetTxnInfo (TxnHeader): merchant_id = [%s]\n",csTmp));
+			}
+			if (GetField_CString(hRec,"service_code",&csServiceCode)) {
+				PutField_CString(hRequest,"service_code",csServiceCode);
+				PutField_CString(hContext,"service_code",csServiceCode);
+//DEBUGLOG(("GetTxnInfo (TxnHeader): service_code= [%s]\n",csServiceCode));
+			}
+
+			/* for VAD only */
+                        if (GetField_Double(hRec, "txn_amt", &dTmp)) {
+                                PutField_Double(hRequest,"adj_txn_amt",dTmp);
+//DEBUGLOG(("GetTxnInfo (TxnHeader): txn_amt = [%lf]\n",dTmp));
+                        }
+			if (GetField_Double(hRec, "net_amt", &dTmp)) {
+                                PutField_Double(hRequest,"adj_net_amt",dTmp);
+//DEBUGLOG(("GetTxnInfo (TxnHeader): net_amt = [%lf]\n",dTmp));
+			}
+
+			if (GetField_Char(hRec,"status",&cTmp)) {
+//DEBUGLOG(("GetTxnInfo (TxnHeader): status = [%c]\n",cTmp));
+				if(cTmp!=PD_COMPLETE){
+					iRet=INT_INVALID_TXN;
+DEBUGLOG(("GetTxnInfo (TxnHeader): Invalid status[%c]\n",cTmp));
+ERRLOG("TxnOmtByUsVOT::GetTxnInfo::Call DBOLTransaction::GetTxnHeader::Invalid status!!\n");
+				}
+				else{
+					if (GetField_Char(hRec,"ar_ind",&cTmp)) {
+//DEBUGLOG(("GetTxnInfo (TxnHeader): ar_ind = [%c]\n",cTmp));
+						if(cTmp!=PD_ACCEPT){
+							iRet=INT_INVALID_TXN;
+DEBUGLOG(("GetTxnInfo (TxnHeader): Invalid ar_ind[%c]\n",cTmp));
+ERRLOG("TxnOmtByUsVOT::GetTxnInfo::Call DBOLTransaction::GetTxnHeader::Invalid ar_ind!!\n");
+						}
+					}
+				}
+			}
+			if(GetField_CString(hRec,"sub_status",&csSubStatus)){
+//DEBUGLOG(("GetTxnInfo (TxnHeader): sub_status = [%s]\n",csSubStatus));
+				PutField_CString(hContext,"org_sub_status",csSubStatus);
+			}
+			if(!strcmp(csSubStatus,PD_RESERVE_RELEASED)){
+				if (GetField_CString(hRec,"reserved_release_date",&csTmp)) {
+					iReleased = PD_TRUE;
+//DEBUGLOG(("GetTxnInfo (TxnHeader): reserved_release_date = [%s]\n",csTmp));
+				}
+			}
+			PutField_Int(hContext,"reserve_released",iReleased);
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	else{
+DEBUGLOG(("GetTxnInfo: Call DBOLTransaction: GetTxnHeader not found record for [%s]\n",csTxnSeq));
+//ERRLOG("TxnOmtByUsVOT::GetTxnInfo::Call DBOLTransaction::GetTxnHeader not found record!!\n");
+		iRet=INT_NOT_RECORD;
+		//PutField_Int(hContext,"internal_error",iRet);
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("GetTxnInfo: Call DBTxnCode: IsVoidable\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBTxnCode","IsVoidable");
+		if (!strcmp(csTxnCode, PD_INITIAL_OLN_TXN_CODE) && !(strcmp(csServiceCode, "LBP"))) {
+			iTmpRet = (unsigned long)(*DBObjPtr)(PD_INITIAL_OLN_TXN_M2_CODE,csProcessType,PD_PROCESS_CODE_ODD);
+		} else if (!strcmp(csTxnCode, PD_BANK_DEPOSIT_TXN_CODE)) {
+			iTmpRet = (unsigned long)(*DBObjPtr)(csTxnCode,"0200","220009");
+		} else {
+			iTmpRet = (unsigned long)(*DBObjPtr)(csTxnCode,csProcessType,csProcessCode);
+		}
+		if (iTmpRet != PD_TRUE) {
+			iRet = INT_INVALID_TXN;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("GetTxnInfo: Call DBTxnCode: IsVoidable: un-voidable for [%s][%s][%s]\n",csTxnCode,csProcessCode,csProcessType));
+ERRLOG("TxnOmtByUsVOT::GetTxnInfo::Call DBTxnCode::IsVoidable::un-voidable txn!!\n");
+		}
+	}
+
+	if(iRet==PD_OK){
+//////get merchant_client_id
+		if(GetField_CString(hRequest,"merchant_id",&csTmp)){
+DEBUGLOG(("GetTxnInfo: Call BOOLMerchant: GetMerchantDetail\n"));
+               		BOObjPtr = CreateObj(BOPtr,"BOOLMerchant","GetMerchantDetail");
+               		iRet = (unsigned long)(*BOObjPtr)(hContext,hRequest);
+			if (iRet != PD_OK) {
+DEBUGLOG(("GetTxnInfo: Call BOOLMerchant: GetMerchantDetail failed\n"));
+			}
+       		}
+	}
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("TxnOmtByUsVOT: GetTxnInfo() iRet = [%d]\n",iRet));
+	return iRet;
+}

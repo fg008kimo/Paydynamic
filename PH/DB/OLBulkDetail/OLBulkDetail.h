@@ -1,0 +1,18 @@
+#ifndef _OLBULKDETAIL_H_
+#define _OLBULKDETAIL_H_
+
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int Get(const char* csBatchId, int iSeq, hash_t* hRec);
+int GetByBatchId(const char* csBatchId, recordset_t* myRec);
+int Update(const hash_t *hRec);
+int UpdateByBatchId(const hash_t *hRec);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

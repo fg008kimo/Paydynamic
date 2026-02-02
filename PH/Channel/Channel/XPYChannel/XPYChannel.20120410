@@ -1,0 +1,1217 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2010/07/30              Cody Chan
+AddTxnLog: add encrypt type                        2011/01/27              LokMan Chow
+Call MerchStatistic				   2011/01/28		   LokMan Chow
+add client ip & service code			   2011/02/18		   LokMan Chow
+support other esky and hipay			   2011/02/21		   Cody Chan
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <string.h>
+#include "queue_utility.h"
+#include "XPYChannel.h"
+#include "utilitys.h"
+#include "common.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "mydb.h"
+#include "mq_db.h"
+
+char	cDebug;
+
+void XPYChannel(char	cdebug)
+{
+	cDebug = cdebug;
+//ERRLOG("XPY Debug = [%c]\n",cDebug);
+}
+
+
+OBJPTR(DB);
+OBJPTR(Msg);
+OBJPTR(Txn);
+OBJPTR(BO);
+
+int     UpdateContext(hash_t* hContext);
+int     AddTxnFeeChgLog(const hash_t* hContext,const hash_t* hRequest);
+int     AddTxnLog(const hash_t *hContext,
+                const hash_t* hRequest);
+int     UpdateTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse);
+
+int     UpdateTwvRspTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse);
+
+int     process_input_txn(hash_t *hContext,
+                                const hash_t *Request,
+                                hash_t *Response);
+int     process_resp_txn(hash_t *hContext,
+			   	const hex_t* inMsg,
+				hex_t *outMsg);
+
+int	process_txn(hash_t *hContext,
+			   	const hex_t* inMsg,
+				hex_t *outMsg)
+{
+	hex_t   *h_msg;
+	struct msg_t* msg;
+	hash_t	*hRequest,*hResponse;
+
+	long	lResponseQueueMtype;
+	long    lKey;
+
+
+	int	iRet = INT_NO_ERR;
+	int     iInternalErr = 0;
+
+	char*	csChannelCode = strdup("");
+	char*	csTxnCode;
+	char*	csTxnDesc;
+	char*	csTxnSeq = strdup("");
+	char*	csProcessType = strdup("");
+	char*	csProcessCode = strdup("");
+	char*	csBuf;
+	char	cTxnType;
+	char*	csMerchantId;
+	char*	csMerchantRef;
+	
+DEBUGLOG(("process_txn\n"));
+
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hResponse = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRequest,0);
+	hash_init(hResponse,0);
+
+	csTxnCode = (char*) malloc (PD_TXN_CODE_LEN +1 );
+        csTxnDesc = (char*) malloc (PD_DESC_LEN + 1);
+
+	GetField_Char(hContext,"txn_type",&cTxnType);
+DEBUGLOG(("txn type = [%c]\n",cTxnType));
+
+
+	PutField_Char(hContext,"dont_convert",PD_DOPD_CONVERT);
+	if (GetField_Long(hContext,"response_queue_mtype",&lResponseQueueMtype)) {
+DEBUGLOG(("response queue mtype = [%ld]\n",lResponseQueueMtype));
+	}
+	else  {
+DEBUGLOG(("unable to get response queue mtype\n"));
+		iRet = PD_ERR;
+	}
+	if (GetField_CString(hContext,"channel_code",&csChannelCode)) {
+/* set default return channel code */
+		PutField_CString(hResponse,"channel_code",csChannelCode);
+DEBUGLOG(("channel code = [%s]\n",csChannelCode));
+	}
+	else  {
+DEBUGLOG(("unable to get channel code queue mtype\n"));
+		iRet = PD_ERR;
+	}
+	if (cTxnType ==  MQ_RESP ) {
+		return process_resp_txn(hContext,inMsg,outMsg);
+		
+	}
+
+/* Set define return channel */
+	PutField_CString(hContext,"channel_code",csChannelCode);
+	if (iRet == PD_OK) {
+        	MsgObjPtr = CreateObj(MsgPtr,"XpyMsg","BreakDownMsg");
+        	if ((*MsgObjPtr)(hRequest,inMsg->msg,inMsg->len) != PD_OK)  {
+               		iRet = INT_BREAKDOWN_ERR;
+                	PutField_Int(hContext,"internal_error",iRet);
+ERRLOG("BreakDown XPYMsg Error\n");
+DEBUGLOG(("process_txn:BreakDown XPYMsg Error\n"));
+        	}
+	}
+	if (iRet == PD_OK) {
+                if (!GetField_CString(hRequest,"merchant_id",&csMerchantId)) {
+DEBUGLOG(("Merchant Id Not found\n"));
+                }
+DEBUGLOG(("Merchant Id = [%s]\n",csMerchantId));
+
+                if (!GetField_CString(hRequest,"merchant_ref",&csMerchantRef)) {
+DEBUGLOG(("Merchant Ref Not Found\n"));
+                }
+DEBUGLOG(("Merchant Ref = [%s]\n",csMerchantRef));
+
+        }
+
+	if (iRet == PD_OK) {
+                iRet  = (UpdateContext(hContext));
+        }
+
+	
+	if (iRet == PD_OK) {
+/* Find Txn Code */
+                if (GetField_CString(hRequest,"process_type",&csProcessType)) {
+DEBUGLOG(("process_txn:process_type = [%s]\n",csProcessType));
+                }
+                if (!GetField_CString(hRequest,"process_code",&csProcessCode)) {
+                        csProcessCode = strdup("000000");
+                }
+DEBUGLOG(("process_txn:process_code = [%s]\n",csProcessCode));
+
+                DBObjPtr = CreateObj(DBPtr,"DBTxnCode","FindTxnCode");
+                if (!(*DBObjPtr)(csTxnCode,
+				 csTxnDesc,
+                                        csProcessType,
+                                        csProcessCode)) {
+                        iRet = INT_INVALID_TXN;
+                        PutField_Int(hContext,"internal_error",INT_INVALID_TXN);
+DEBUGLOG(("process_txn:Can't Find TxnCode\n"));
+ERRLOG("XPYChannel:Unsupported transaction [%s][%s]\n",csProcessType,csProcessCode);
+                }
+                else {
+                        PutField_CString(hContext,"txn_code",csTxnCode);
+                        PutField_CString(hContext,"txn_desc",csTxnDesc);
+                        PutField_CString(hResponse,"txn_code",csTxnCode);
+DEBUGLOG(("process_txn:TxnCode = [%s]\n",csTxnCode));
+                }
+	}
+	if (iRet == PD_OK ) {
+		MsgObjPtr = CreateObj(MsgPtr,"XpyMsg","initReplyFromRequest");
+                if ((*MsgObjPtr)(hRequest,hResponse) != PD_OK)  {
+                        iRet = INT_BREAKDOWN_ERR;
+                        PutField_Int(hContext,"internal_error",iRet);
+                }
+	}
+
+	if (iRet == PD_OK) {
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchMerchantRef");
+                if ((unsigned long)(DBObjPtr)(csMerchantId,csMerchantRef) == PD_FOUND) {
+                        iRet = INT_DUP_MERCHANT_REF;
+                        PutField_Int(hContext,"internal_error",INT_DUP_MERCHANT_REF);
+ERRLOG("Channel:[WEB] - MerchantId[%s][%s]Duplicate Merchant Ref\n",csMerchantId,csMerchantRef);
+DEBUGLOG(("Channel:[WEB] - MerchantId[%s][%s]Duplicate Merchant Ref\n",csMerchantId,csMerchantRef));
+                }
+	}
+
+	if (iRet == PD_OK ) {
+                iRet = AddTxnLog(hContext,hRequest);
+        }
+
+
+	if (iRet == PD_OK) {
+/* add default psp_pd to avoid insert error */
+		PutField_CString(hContext,"psp_id",PD_DEFAULT_PSP);
+                iRet = process_input_txn(hContext,hRequest,hResponse);
+        }
+
+
+	if (iRet == PD_OK || GetField_Int(hContext,"internal_error",&iInternalErr))  {
+
+		int iDefErr = 1;
+		char *csPspChannelCode;
+		csBuf = (char*) malloc (128);
+
+		if(GetField_CString(hContext,"psp_channel_code",&csPspChannelCode)){
+DEBUGLOG(("psp_channel_code[%s] internal_error[%d]\n",csPspChannelCode,iInternalErr));
+			DBObjPtr = CreateObj(DBPtr,"DBMessages","i2c");
+			if ((*DBObjPtr)(csPspChannelCode,iInternalErr,csBuf) == PD_OK) {
+DEBUGLOG(("Internal[%d]->[%s] Result_Code = [%s]\n",iInternalErr,csPspChannelCode,csBuf));
+				iDefErr = 0;
+				PutField_CString(hResponse,"response_code",csBuf);
+			}
+		}
+		
+		if(iDefErr){
+			sprintf(csBuf,"%d",iInternalErr);
+                	PutField_CString(hResponse,"response_code",csBuf);
+DEBUGLOG(("Result_Code = %s\n",csBuf));
+		}
+
+		FREE_ME(csBuf);
+		
+                //PutField_Char(hContext,"ar_ind",PD_ACCEPT); /* update until come back PSP */
+                if (iInternalErr != 0 ) {
+DEBUGLOG(("*****Format Out Reject Message\n"));
+                        PutField_Char(hContext,"ar_ind",PD_REJECT);
+                        PutField_Char(hResponse,"ar_ind",PD_REJECT);
+                	PutField_Char(hContext,"status",PD_COMPLETE);
+                	PutField_Char(hResponse,"status",PD_COMPLETE);
+			PutField_CString(hResponse,"txn_mode",PD_FE_TXN);
+                }
+                else {
+                        iInternalErr = INT_NO_ERR;
+			if (!strcmp(csTxnCode, PD_INITIAL_TXN_CODE))   {// initial
+DEBUGLOG(("set***** status to i\n"));
+                		PutField_Char(hResponse,"status",PD_INIT);
+                       		PutField_Char(hContext,"status",PD_INIT);
+                	}
+			else {
+                		PutField_Char(hResponse,"status",PD_TO_PSP);
+                		PutField_Char(hContext,"status",PD_TO_PSP);
+				char*	csPtr;
+				if (GetField_CString(hContext,"psp_key",&csPtr)) {
+					PutField_CString(hContext,"psp_key",csPtr);
+				}
+/* tO ESKY Request */
+       	                	char* csTmpPspChannel;
+                        	if (GetField_CString(hContext,"psp_channel_code",&csTmpPspChannel)) {
+DEBUGLOG(("** PSP_CHANNEL = [%s]\n",csTmpPspChannel));
+                        		if (!strcmp(csTmpPspChannel,PD_CHANNEL_ESKY)||
+				    	!strcmp(csTmpPspChannel,PD_CHANNEL_EEP)) {
+                                       		char* csPspUrl;
+                                        	char* csRequestFunction;
+                                        	char  csTmpBuf[PD_TMP_BUF_LEN + 1];
+						char* csMethod;
+                       				if (!strcmp(csTmpPspChannel,PD_CHANNEL_ESKY)) 
+							MsgObjPtr = CreateObj(MsgPtr,"ESkyMsg","BuildAuthData");
+						else if (!strcmp(csTmpPspChannel,PD_CHANNEL_EEP))
+							MsgObjPtr = CreateObj(MsgPtr,"EepMsg","BuildAuthData");
+
+						if ((*MsgObjPtr)(hResponse) == PD_OK) {
+							BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateEskySign");
+							iRet = (unsigned long)(*BOObjPtr)(hContext,hResponse);
+
+                                        		GetField_CString(hContext,"psp_url",&csPspUrl);
+                                        		GetField_CString(hContext,"request_function",&csRequestFunction);
+                                        		GetField_CString(hContext,"url_method",&csMethod);
+					
+                                        		sprintf(csTmpBuf,"%s/%s",csPspUrl,csRequestFunction);
+                                        		PutField_CString(hResponse,"redirect_url",csTmpBuf);
+							PutField_CString(hResponse,"url_method",csMethod);
+DEBUGLOG(("redirect_url = [%s]\n",csTmpBuf));
+						}
+                       			}
+                       			else if (!strcmp(csTmpPspChannel,PD_CHANNEL_HPAY) || !strcmp(csTmpPspChannel,PD_CHANNEL_LKPAY)
+				       		||!strcmp(csTmpPspChannel,PD_CHANNEL_HHPAY)
+				       		||!strcmp(csTmpPspChannel,PD_CHANNEL_HPAY_CNP)
+						) {
+                                        	char* csPspUrl;
+                                        	char* csRequestFunction;
+                                        	char  csTmpBuf[PD_TMP_BUF_LEN + 1];
+                                        	char* csMethod;
+                                        	GetField_CString(hContext,"psp_url",&csPspUrl);
+                                        	GetField_CString(hContext,"request_function",&csRequestFunction);
+						if (GetField_CString(hContext,"url_method",&csMethod)) {
+DEBUGLOG(("url_method = [%s]\n",csMethod));
+							PutField_CString(hResponse,"url_method",csMethod);
+						}
+						
+                                        	sprintf(csTmpBuf,"%s/%s",csPspUrl,csRequestFunction);
+                                        	PutField_CString(hResponse,"redirect_url",csTmpBuf);
+DEBUGLOG(("redirect_url = [%s]\n",csTmpBuf));
+					
+                       				if (!strcmp(csTmpPspChannel,PD_CHANNEL_LKPAY)) 
+							MsgObjPtr = CreateObj(MsgPtr,"LkpMsg","BuildData");
+						else if (!strcmp(csTmpPspChannel,PD_CHANNEL_HPAY)) 
+							MsgObjPtr = CreateObj(MsgPtr,"HpyMsg","BuildData");
+						else if (!strcmp(csTmpPspChannel,PD_CHANNEL_HPAY_CNP)) 
+							MsgObjPtr = CreateObj(MsgPtr,"HcpMsg","BuildData");
+						else if (!strcmp(csTmpPspChannel,PD_CHANNEL_HHPAY)) 
+							MsgObjPtr = CreateObj(MsgPtr,"HhpMsg","BuildData");
+						else {
+ERRLOG("XPYChannel: Channel PSP[%s] Not Found\n",csTmpPspChannel);
+						}
+
+						if ((*MsgObjPtr)(hResponse) == PD_OK) {
+DEBUGLOG(("HpyMsg->BuildData = [%d]\n",PD_OK));
+							hash_t  *hCon;
+							char*	csTmp;
+							hCon = (hash_t*) malloc (sizeof(hash_t));
+							hash_init(hCon,0);
+							if (GetField_CString(hContext,"psp_merchant_id",&csTmp)) {
+DEBUGLOG(("psp_merchant_id = [%s]\n",csTmp));
+								PutField_CString(hResponse,"merchant_id",csTmp);
+							}
+
+							if (GetField_CString(hContext,"psp_key",&csTmp)) {
+DEBUGLOG(("psp_key = [%s]\n",csTmp));
+								PutField_CString(hCon,"psp_key",csTmp);
+							}
+
+							PutField_CString(hResponse,"encrypt_type","01");
+							BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateHaiPaySign");
+							iRet = (unsigned long)(*BOObjPtr)(hCon,hResponse);
+DEBUGLOG(("BOSecurity->GenerateHaiPaySign = [%d]\n",iRet));
+							FREE_ME(hCon);
+						}
+
+                            		}
+					else if (!strcmp(csTmpPspChannel,PD_CHANNEL_YEEPAY)) {
+                                                char* csPspUrl;
+                                                char* csRequestFunction;
+                                                char  csTmpBuf[PD_TMP_BUF_LEN + 1];
+                                                char* csMethod;
+                                                GetField_CString(hContext,"psp_url",&csPspUrl);
+                                                GetField_CString(hContext,"request_function",&csRequestFunction);
+                                                if (GetField_CString(hContext,"url_method",&csMethod)) {
+DEBUGLOG(("url_method = [%s]\n",csMethod));
+                                                        PutField_CString(hResponse,"url_method",csMethod);
+                                                }
+                                                if (GetField_CString(hContext,"action",&csMethod)) {
+DEBUGLOG(("action = [%s]\n",csMethod));
+                                                        PutField_CString(hResponse,"action",csMethod);
+                                                }
+
+                                                sprintf(csTmpBuf,"%s/%s",csPspUrl,csRequestFunction);
+                                                PutField_CString(hResponse,"redirect_url",csTmpBuf);
+DEBUGLOG(("redirect_url = [%s]\n",csTmpBuf));
+
+                                                MsgObjPtr = CreateObj(MsgPtr,"YpyMsg","BuildReqData");
+
+                                                if ((*MsgObjPtr)(hResponse) == PD_OK) {
+DEBUGLOG(("PypMsg->BuildData = [%d]\n",PD_OK));
+                                                        hash_t  *hCon;
+                                                        char*   csTmp;
+                                                        hCon = (hash_t*) malloc (sizeof(hash_t));
+                                                        hash_init(hCon,0);
+                                                        if (GetField_CString(hContext,"psp_merchant_id",&csTmp)) {
+DEBUGLOG(("psp_merchant_id = [%s]\n",csTmp));
+                                                                PutField_CString(hResponse,"merchant_id",csTmp);
+                                                        }
+
+                                                        if (GetField_CString(hContext,"psp_key",&csTmp)) {
+DEBUGLOG(("psp_key = [%s]\n",csTmp));
+                                                                PutField_CString(hCon,"psp_key",csTmp);
+                                                        }
+
+                                                        BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateYeePaySign");
+                                                        iRet = (unsigned long)(*BOObjPtr)(hCon,hResponse);
+DEBUGLOG(("BOSecurity->GenerateYeeSign = [%d]\n",iRet));
+                                                        FREE_ME(hCon);
+                                                }
+
+                                        }
+					else if (!strcmp(csTmpPspChannel,PD_CHANNEL_ALLINPAY)) {
+                                                char* csPspUrl;
+                                                char* csRequestFunction;
+                                                char  csTmpBuf[PD_TMP_BUF_LEN + 1];
+                                                char* csMethod;
+                                                GetField_CString(hContext,"psp_url",&csPspUrl);
+                                                GetField_CString(hContext,"request_function",&csRequestFunction);
+                                                if (GetField_CString(hContext,"url_method",&csMethod)) {
+DEBUGLOG(("url_method = [%s]\n",csMethod));
+                                                        PutField_CString(hResponse,"url_method",csMethod);
+                                                }
+                                                if (GetField_CString(hContext,"action",&csMethod)) {
+DEBUGLOG(("action = [%s]\n",csMethod));
+                                                        PutField_CString(hResponse,"action",csMethod);
+                                                }
+
+                                                sprintf(csTmpBuf,"%s/%s",csPspUrl,csRequestFunction);
+                                                PutField_CString(hResponse,"redirect_url",csTmpBuf);
+DEBUGLOG(("redirect_url = [%s]\n",csTmpBuf));
+
+                                                MsgObjPtr = CreateObj(MsgPtr,"AlpMsg","BuildAuthData");
+
+                                                if ((*MsgObjPtr)(hResponse) == PD_OK) {
+DEBUGLOG(("PypMsg->BuildData = [%d]\n",PD_OK));
+                                                        hash_t  *hCon;
+                                                        char*   csTmp;
+                                                        hCon = (hash_t*) malloc (sizeof(hash_t));
+                                                        hash_init(hCon,0);
+                                                        if (GetField_CString(hContext,"psp_merchant_id",&csTmp)) {
+DEBUGLOG(("psp_merchant_id = [%s]\n",csTmp));
+                                                                PutField_CString(hResponse,"merchant_id",csTmp);
+                                                        }
+
+                                                        if (GetField_CString(hContext,"psp_key",&csTmp)) {
+DEBUGLOG(("psp_key = [%s]\n",csTmp));
+                                                                PutField_CString(hCon,"psp_key",csTmp);
+                                                        }
+
+                                                        BOObjPtr = CreateObj(BOPtr,"BOSecurity","GenerateAllinPaySign");
+                                                        iRet = (unsigned long)(*BOObjPtr)(hCon,hResponse);
+DEBUGLOG(("BOSecurity->GenerateAllinPaySign = [%d]\n",iRet));
+                                                        FREE_ME(hCon);
+                                                }
+
+                                        }
+                   		}
+			}
+			
+		}
+
+
+			
+
+		MsgObjPtr = CreateObj(MsgPtr,"XpyMsg","FormatMsg");
+               	h_msg = (hex_t*) malloc (sizeof(hex_t));
+               	if ((*MsgObjPtr)(hResponse,h_msg->msg,&h_msg->len) == PD_OK) {
+               		iRet = UpdateTxnLog(hContext,hRequest,hResponse);
+               	}
+		
+DEBUGLOG(("h_msg->len = [%d]\n",h_msg->len));
+		GetField_Long(hContext,"queue_key",&lKey);
+		msg = (struct msg_t*)malloc(sizeof(struct msg_t)+MAX_MSG_SIZE);
+		msg->mtype  = lResponseQueueMtype;
+		long lRemoteKey =0l;
+		GetField_Long(hContext,"remote_reply_key",&lRemoteKey);
+
+      		memset(msg->mtext,0,sizeof(msg->mtext));
+               		MQ_build_header((unsigned char*)msg->mtext,
+                        MQ_RESP,
+                        csChannelCode,
+			0,
+			NULL,
+			lRemoteKey);
+              	memcpy(&msg->mtext[MQ_HEADER_LEN],h_msg->msg,h_msg->len);
+                msg->mtext[MQ_HEADER_LEN + h_msg->len] = '\0';
+DEBUGLOG(("send len = [%d]\n",MQ_HEADER_LEN + h_msg->len));
+
+                iRet = MQSend(lKey,msg,MQ_HEADER_LEN + h_msg->len);
+
+		FREE_ME(h_msg);
+                FREE_ME(msg);
+	}
+	else {
+ERRLOG("XPYCHANNE Internal error? [%d]\n",iRet);
+	}
+
+DEBUGLOG(("Normal RET = [%d]\n",iRet));
+//NLOG("[%s]Normal RET = [%d]{%s[%s]}\n",csTxnSeq,iRet,csTxnCode,csChannelCode);
+	FREE_ME(hRequest);
+	FREE_ME(hResponse);
+	FREE_ME(csChannelCode);
+	FREE_ME(csTxnCode);
+	FREE_ME(csTxnDesc);
+	FREE_ME(csProcessType);
+	FREE_ME(csProcessCode);
+	FREE_ME(csTxnSeq);
+	FREE_ME(csMerchantId);
+	FREE_ME(csMerchantRef);
+DEBUGLOG(("process_txn RET =[%d]\n",iRet));
+	return iRet;
+}
+
+
+int     process_input_txn(hash_t *hContext,
+                                const hash_t *Request,
+                                hash_t *Response)
+{
+        int     iRet = PD_OK;
+        char*   csTxnCode = NULL;
+	char*	csHandler = NULL;
+DEBUGLOG(("process_input\n"));
+        if (GetField_CString(hContext,"txn_code",&csTxnCode)) {
+DEBUGLOG(("process_input_txn:txn_code = [%s]\n",csTxnCode));
+        }
+        else {
+                iRet = PD_ERR;
+DEBUGLOG(("process_input_txn:txn_code not found\n"));
+        }
+
+        if (iRet == PD_OK) {
+        	TxnObjPtr = CreateObj(TxnPtr,"TxnXpyOnUsCOM","Authorize");
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,Request,Response);
+        }
+
+        if (iRet == PD_OK) {
+        	TxnObjPtr = CreateObj(TxnPtr,"TxnWebOnUsCOM","Authorize");
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,Request,Response);
+        }
+        if (iRet == PD_OK ) {
+                csHandler = (char*) malloc (20);
+                sprintf(csHandler,"TxnWebOnUs%s",csTxnCode);
+DEBUGLOG(("process_input_txn Create Txn Object [%s]\n",csHandler));
+                TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+                FREE_ME(csHandler);
+
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,Request,Response);
+DEBUGLOG(("iRet = [%d]\n",iRet));
+        }
+
+        FREE_ME(csTxnCode);
+DEBUGLOG(("process_input() exit\n"));
+        return iRet;
+}
+
+
+
+int     UpdateContext(hash_t* hContext)
+{
+	int	iRet = PD_OK;
+        long    lKey;
+	hash_t  *hRec;
+	char    *csCode = strdup("");
+        char    *csValue = strdup("");
+	char	*csQueueName = strdup("");
+        recordset_t     *rRecordSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        //lKey = GetMQKey((unsigned char*)"XPAYRSPQ");
+	if (GetField_CString(hContext,"reply_queue",&csQueueName)) {
+DEBUGLOG(("UpdateContext:reply queue = [%s]\n",csQueueName));
+                lKey = GetMQKey((unsigned char*)csQueueName);
+        }
+
+        PutField_Long(hContext,"queue_key",lKey);
+
+
+DEBUGLOG(("try to call\n"));
+        DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetAllCodes");
+        if ((*DBObjPtr)(rRecordSet) == PD_OK) {
+                hRec = RecordSet_GetFirst(rRecordSet);
+                while (hRec) {
+                        if (GetField_CString(hRec,"code",&csCode)) {
+                                if (GetField_CString(hRec,"value",&csValue)) {
+                                        if (!strcmp(csCode,"CTPHDATE")) {
+DEBUGLOG(("UpdateContext:Current Processor Hub Date= [%s]\n",csValue));
+                                                PutField_CString(hContext,"PHDATE",csValue);
+                                        }
+                                }
+                        }
+                        hRec = RecordSet_GetNext(rRecordSet);
+                }
+        }
+        else {
+DEBUGLOG(("UpdateContext:NOT RECORD\n"));
+                iRet = PD_ERR;
+ERRLOG("Internal Error:WEB Channel:SystemControl Record Not Found\n");
+        }
+
+	if (iRet == PD_OK) {
+        	DBObjPtr = CreateObj(DBPtr,"DBSystemParameter","FindCode");
+                if ((unsigned long)(DBObjPtr)(PD_BASED_CCY,csValue) == FOUND) {
+DEBUGLOG(("based ccy  = [%s]\n",csValue));
+                        PutField_CString(hContext,"based_ccy",csValue);
+                }
+                else {
+                        iRet = INT_ERR;
+ERRLOG("Unable to find based ccy\n");
+                }
+        }
+
+        RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+        FREE_ME(csCode);
+        FREE_ME(csValue);
+	FREE_ME(csQueueName);
+
+	return iRet;
+}
+
+                                        
+int     AddTxnLog(const hash_t *hContext,
+                const hash_t* hRequest)
+{                       
+        hash_t  *hTxn;
+        hash_t  *hDetail;
+        char    *csTmp = strdup("");
+        int iRet = PD_OK;
+
+	//double	dTmp;
+	char	cTmp;
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0); 
+        hDetail= (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hDetail,0); 
+        if (GetField_CString(hContext,"txn_seq",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_seq = [%s]\n",csTmp));
+                PutField_CString(hTxn,"txn_seq",csTmp);
+                PutField_CString(hDetail,"txn_seq",csTmp);
+        
+                PutField_CString(hTxn,"add_user",PD_UPDATE_USER);
+                PutField_CString(hDetail,"add_user",PD_UPDATE_USER);
+
+                if (GetField_CString(hContext,"org_txn_seq",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: org_txn_seq = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"org_txn_seq",csTmp);
+                }
+                                
+                if (GetField_CString(hContext,"channel_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: channel_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"channel_code",csTmp);
+                }
+                if (GetField_CString(hContext,"txn_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"txn_code",csTmp);
+                }
+                if (GetField_CString(hContext,"PHDATE",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: host_posting_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"host_posting_date",csTmp);
+                }
+                if (GetField_CString(hContext,"local_tm_date",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: local_tm_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"local_tm_date",csTmp);
+                }
+                if (GetField_CString(hContext,"local_tm_time",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: local_tm_time = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"local_tm_time",csTmp);
+                }
+
+/**** From Request */
+                if (GetField_CString(hRequest,"remark",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: Remark = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"remark",csTmp);
+                }
+
+                if (GetField_CString(hRequest,"process_type",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: process_type = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"process_type",csTmp);
+                }
+
+                if (GetField_CString(hRequest,"process_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: process_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"process_code",csTmp);
+                }
+
+/* merchant no */
+                if (GetField_CString(hRequest,"merchant_id",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: merchant_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"merchant_id",csTmp);
+                }
+/* merchant ref */
+                if (GetField_CString(hRequest,"merchant_ref",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: merchant_ref = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"merchant_ref",csTmp);
+                }
+
+
+                if (GetField_CString(hRequest,"transmission_datetime",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: transmission_datetime = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"transmission_datetime",csTmp);
+                }
+
+                if (GetField_CString(hRequest,"tm_date",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: tm_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"tm_date",csTmp);
+                }
+                if (GetField_CString(hRequest,"tm_time",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: tm_time = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"tm_time",csTmp);
+                }
+
+/* service code */
+                if (GetField_CString(hRequest,"service_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: service_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"service_code",csTmp);
+                }
+/* client ip */ 
+                if (GetField_CString(hRequest,"ip_addr",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: client_ip = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"ip_addr",csTmp);
+                }
+
+
+/* add to detail ********************************/
+
+/* txn ccy */
+                if (GetField_CString(hRequest,"txn_ccy",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_ccy = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"txn_ccy",csTmp);
+                }
+
+/* txn country */
+                if (GetField_CString(hRequest,"txn_country",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: txn_country = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"txn_country",csTmp);
+                }
+
+/* pay method */
+                if (GetField_CString(hRequest,"pay_method",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: pay_method  = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"pay_method",csTmp);
+                        PutField_CString(hDetail,"selected_pay_method",csTmp);
+                }
+
+/* bank code */
+                //if (GetField_CString(hContext,"internal_bank_code",&csTmp)) {
+                if (GetField_CString(hContext,"bank_code",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: bank_code = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"bank_code",csTmp);
+                }
+
+/* show paypage  */
+                if (GetField_Char(hRequest,"show_paypage",&cTmp)) {
+DEBUGLOG(("AddTxnLog:: show_paypage = [%c]\n",cTmp));
+                        PutField_Char(hDetail,"show_paypage",cTmp);
+                }
+
+/* language  */
+                if (GetField_CString(hRequest,"language",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: language = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"language",csTmp);
+                }
+
+/* success url  */
+                if (GetField_CString(hRequest,"success_url",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: success_url = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"success_url",csTmp);
+                }
+
+/* failure url  */
+                if (GetField_CString(hRequest,"failure_url",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: failure_url = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"failure_url",csTmp);
+                }
+
+
+/* success call back url  */
+                if (GetField_CString(hRequest,"success_callback_url",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: success_callback_url = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"success_callback_url",csTmp);
+                }
+
+/* failure  call backurl  */
+                if (GetField_CString(hRequest,"failure_callback_url",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: failure_callback_url = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"failure_callback_url",csTmp);
+                }
+
+/* encrypt type */
+                if (GetField_CString(hRequest,"encrypt_type",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: encrypt_type = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"encrypt_type",csTmp);
+                }
+/* remark */
+                if (GetField_CString(hRequest,"remark",&csTmp)) {
+DEBUGLOG(("AddTxnLog:: remark = [%s]\n",csTmp));
+                        PutField_CString(hDetail,"remark",csTmp);
+                }
+
+
+
+                PutField_Char(hTxn,"status",PD_PROCESSING);
+
+                DBObjPtr = CreateObj(DBPtr,"DBTransaction","Add");
+                iRet = (unsigned long) ((*DBObjPtr)(hTxn));
+
+		if (iRet == PD_OK ) {
+                	DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddDetail");
+                	iRet = (unsigned long) ((*DBObjPtr)(hDetail));
+		}
+
+        }
+        else
+                iRet = PD_ERR;
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);
+        hash_destroy(hDetail);
+        FREE_ME(hDetail);
+        FREE_ME(csTmp);
+DEBUGLOG(("AddTxnLog RET = [%d]\n",iRet));
+        return  iRet;
+}
+
+int     UpdateTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse)
+{                       
+        //hash_t  *hTxn,*hDetail;
+	hash_t	*hTxn;
+        char    *csTmp = strdup("");
+        char    *csTxnSeq = strdup(""); 
+        char    cTmp;
+        int     iTmp;
+        double  dTmp;   
+        int 	iRet = PD_OK; 
+                
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0); 
+        if (GetField_CString(hContext,"txn_seq",&csTxnSeq)) {
+DEBUGLOG(("UpdateTxnLog:: txn_seq = [%s]\n",csTxnSeq));
+                PutField_CString(hTxn,"txn_seq",csTxnSeq);
+                        
+        PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+/* Context */   
+                if (GetField_CString(hContext,"org_txn_seq",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: org_txn_seq = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"org_txn_seq",csTmp);
+                }
+                if (GetField_Char(hContext,"status",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: status = [%c]\n",cTmp));
+                        PutField_Char(hTxn,"status",cTmp);
+                }
+                
+                if (GetField_Char(hContext,"ar_ind",&cTmp)) {
+DEBUGLOG(("UpdateTxnLog:: ar_ind = [%c]\n",cTmp));
+                        PutField_Char(hTxn,"ar_ind",cTmp);
+                }
+
+                if (GetField_Int(hContext,"internal_code",&iTmp)) {
+DEBUGLOG(("UpdateTxnLog:: internal_code = [%d]\n",iTmp));
+                	PutField_Int(hTxn,"internal_code",iTmp);
+                }
+
+                if (GetField_CString(hContext,"merchant_client_id",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: merchant_client_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"client_id",csTmp);
+                }
+
+                if (GetField_Double(hContext,"txn_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: txn_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"txn_amt",dTmp);
+                }
+                if (GetField_Double(hContext,"net_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: net_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"net_amt",dTmp);
+                }
+
+                //if (GetField_CString(hContext,"internal_bank_code",&csTmp)) {
+                if (GetField_CString(hContext,"bank_code",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: bank_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"bank_code",csTmp);
+                }
+
+
+/* Response */
+                if (GetField_CString(hResponse,"expiry_date",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: expiry_date = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"expiry_date",csTmp);
+                }
+                if (GetField_CString(hResponse,"response_code",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: response_code = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"response_code",csTmp);
+                }
+                if (GetField_Double(hResponse,"net_amt",&dTmp) || GetField_Double(hContext,"net_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: net_amt = [%f]\n",dTmp));
+                        PutField_Double(hTxn,"net_amt",dTmp);
+                }
+
+/* detail */
+/************/
+                if (GetField_CString(hRequest,"pay_method",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: pay_method = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"pay_method",csTmp);
+                }
+                if (GetField_CString(hContext,"selected_pay_method",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: selected_pay_method = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"selected_pay_method",csTmp);
+                }
+                if (GetField_CString(hRequest,"show_paypage",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: show_paypage = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"show_paypage",csTmp);
+                }
+
+/* txn psp detail */
+                if (GetField_CString(hContext,"psp_id",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: psp_id = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"psp_id",csTmp);
+                }
+                if (GetField_Double(hContext,"new_dst_txn_amt",&dTmp)) {
+DEBUGLOG(("UpdateTxnLog:: psp_txn_amt = [%lf]\n",dTmp));
+                        PutField_Double(hTxn,"txn_amount",dTmp);
+                }
+                if (GetField_CString(hContext,"dst_txn_ccy",&csTmp)) {
+DEBUGLOG(("UpdateTxnLog:: psp_txn_ccy = [%s]\n",csTmp));
+                        PutField_CString(hTxn,"txn_ccy",csTmp);
+                }
+        
+                if (iRet == PD_OK) {
+                        DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }       
+                        
+                if (iRet == PD_OK) {
+                        DBObjPtr = CreateObj(DBPtr,"DBTransaction","UpdateDetail");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }       
+                        
+		if (iRet == PD_OK) {
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }
+                if (iRet == PD_OK) {
+			//iRet = AddTxnFeeChgLog(hContext,hRequest);
+		}
+        }
+        else                    
+                iRet = PD_ERR;
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);          
+
+                        
+        FREE_ME(csTmp);
+        FREE_ME(csTxnSeq); 
+        return  iRet;   
+}
+
+int     UpdateTWVRespTxnLog(const hash_t *hContext,
+                const hash_t* hRequest,
+                const hash_t* hResponse)
+{                       
+        hash_t  *hTxn,*hPspDetail;
+        char    *csTmp;
+        char    *csTxnSeq;
+	char*	csStatus = strdup("");
+	double	dTmp;
+        int 	iRet = PD_OK; 
+	//char	cStatus;
+                
+
+        hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0); 
+
+        hPspDetail = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hPspDetail,0); 
+
+        if (GetField_CString(hRequest,"order_num",&csTxnSeq)) {
+DEBUGLOG(("UpdateTWVRespTxnLog:: txn_seq = [%s]\n",csTxnSeq));
+                PutField_CString(hTxn,"txn_seq",csTxnSeq);
+                PutField_CString(hPspDetail,"txn_seq",csTxnSeq);
+                        
+        	PutField_CString(hTxn,"update_user",PD_UPDATE_USER);
+
+DEBUGLOG(("UpdateTWVRespTxnLog:: get status \n"));
+/* response */
+                if (GetField_CString(hRequest,"status",&csStatus)) {
+DEBUGLOG(("UpdateTWVRespTxnLog:: status = [%s]\n",csStatus));
+                  //      PutField_CString(hPspDetail,"status",csStatus);
+                }
+		else {
+DEBUGLOG(("UpdateTWVRespTxnLog:: status not found\n"));
+		}
+
+               	PutField_Char(hTxn,"ar_ind",PD_COMPLETE);
+DEBUGLOG(("UpdateTWVRespTxnLog:: status = [%c]\n",PD_COMPLETE));
+                
+		if (!strcmp(csStatus,PD_TWV_ACCEPT))   {
+                	PutField_Char(hTxn,"ar_ind",PD_ACCEPT);
+DEBUGLOG(("UpdateTWVRespTxnLog:: ar_ind = [%c]\n",PD_ACCEPT));
+		}
+		else {
+                	PutField_Char(hTxn,"ar_ind",PD_REJECT);
+DEBUGLOG(("UpdateTWVRespTxnLog:: ar_ind = [%c]\n",PD_REJECT));
+		}
+
+/* psp detail */
+/* bank code */
+        	//if (GetField_CString(hRequest,"bank_code",&csTmp)) {
+        	if (GetField_CString(hRequest,"internal_bank_code",&csTmp)) {
+			PutField_CString(hPspDetail,"bank_code",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: bank_code = [%s]\n",csTmp));
+		}
+/* bank name */
+        	if (GetField_CString(hRequest,"bank_name",&csTmp)) {
+			PutField_CString(hPspDetail,"bank_name",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: bank_name = [%s]\n",csTmp));
+		}
+/* bank_branch */
+        	if (GetField_CString(hRequest,"bank_branch",&csTmp)) {
+			PutField_CString(hPspDetail,"bank_branch",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: bank_branch = [%s]\n",csTmp));
+		}
+/* account_name */
+        	if (GetField_CString(hRequest,"account_name",&csTmp)) {
+			PutField_CString(hPspDetail,"account_name",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: account_name = [%s]\n",csTmp));
+		}
+/* account_no */
+        	if (GetField_CString(hRequest,"account_no",&csTmp)) {
+			PutField_CString(hPspDetail,"account_no",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: account_no = [%s]\n",csTmp));
+		}
+/* batch_id */
+        	if (GetField_CString(hRequest,"batch_id",&csTmp)) {
+			PutField_CString(hPspDetail,"batch_id",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: batch_id = [%s]\n",csTmp));
+		}
+/* fundin_date */
+        	if (GetField_CString(hRequest,"fundin_date",&csTmp)) {
+			PutField_CString(hPspDetail,"fundin_date",csTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: fundin_date = [%s]\n",csTmp));
+		}
+/* service_fee */
+        	if (GetField_Double(hRequest,"service_fee",&dTmp)) {
+			PutField_Double(hPspDetail,"service_fee",dTmp);
+DEBUGLOG(("UpdateTWVRespTxnLog:: service_fee = [%f]\n",dTmp));
+		}
+        
+        
+                if (iRet == PD_OK) {
+                        DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+                        iRet = (unsigned long)(*DBObjPtr)(hTxn);
+                }       
+                if (iRet == PD_OK) {
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+                        iRet = (unsigned long)(*DBObjPtr)(hPspDetail);
+                }       
+                        
+/*
+                if (iRet == PD_OK) {
+			if(cStatus=='A'){
+DEBUGLOG(("UpdateTWVRespTxnLog:: Call Add MerchStatistic\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBMerchStatistic","AddByTxnId");
+				if ((unsigned long)(DBObjPtr)(csTxnSeq) != PD_OK) {
+DEBUGLOG(("UpdateTWVRespTxnLog cannot add txn_id[%s] to statistic\n",csTxnSeq));
+ERRLOG("UpdateTWVRespTxnLog cannot add txn id [%s] to statistic\n",csTxnSeq);
+				}
+			}
+		}
+*/
+        }
+        else                    
+                iRet = PD_ERR;
+
+        hash_destroy(hTxn);
+        FREE_ME(hTxn);          
+
+        hash_destroy(hPspDetail);
+        FREE_ME(hPspDetail);          
+                        
+        FREE_ME(csTmp);
+        FREE_ME(csTxnSeq); 
+        return  iRet;   
+}
+
+int     process_resp_txn(hash_t *hContext,
+			   	const hex_t* inMsg,
+				hex_t *outMsg)
+{
+	int	iRet = PD_OK;
+	char	*csOrgTxnSeq;
+	hash_t	*hRequest,*hResponse;
+
+	hRequest = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hRequest,0);
+
+	hResponse = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hResponse,0);
+
+DEBUGLOG(("process_resp_txn()\n"));
+
+        MsgObjPtr = CreateObj(MsgPtr,"TwvMsg","BreakDownMsg");
+        if ((*MsgObjPtr)(hRequest,inMsg->msg,inMsg->len) != PD_OK)  {
+     		iRet = INT_BREAKDOWN_ERR;
+                PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("process_resp_txn:BreakDown XPYMsg Error\n"));
+       	}
+	else {
+		if (GetField_CString(hRequest,"order_num",&csOrgTxnSeq)) {
+DEBUGLOG(("process_resp_txn:org txn seq = [%s]\n",csOrgTxnSeq));
+                	DBObjPtr = CreateObj(DBPtr,"DBTransaction","MatchRespTxn");
+                	if ((unsigned long)(DBObjPtr)(csOrgTxnSeq,PD_TO_PSP) != PD_FOUND) {
+                       	 	iRet = INT_ORG_TXN_NOT_FOUND;
+                        	PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("process_resp_txn org txn id [%s] not found\n",csOrgTxnSeq));
+ERRLOG("process_resp_txn org txn id [%s] not found\n",csOrgTxnSeq);
+			}
+                }
+		else  {
+			iRet = INT_TXN_ID_NOT_FOUND;	
+DEBUGLOG(("process_resp_txn txn id not found\n"));
+ERRLOG("process_resp_txn  txn id not found\n");
+		}
+		if (iRet == PD_OK) 
+			iRet = UpdateTWVRespTxnLog(hContext,hRequest,hResponse);
+/* Send ACK */
+		if (iRet == PD_OK) {
+      			TxnObjPtr = CreateObj(TxnPtr,"TxnWebOnUsACK","Authorize");
+               		iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+		}
+/*********/
+	}
+
+       	hash_destroy(hRequest);
+       	FREE_ME(hRequest);          
+
+       	hash_destroy(hResponse);
+       	FREE_ME(hResponse);          
+
+DEBUGLOG(("process_resp_txn::Normal RET = [%d]\n",iRet));
+	return iRet;
+}
+	
+
+
+int     AddTxnFeeChgLog(const hash_t* hContext,
+			const hash_t* hRequest)
+{                                                       
+
+        int     iRet = PD_OK;
+
+        char    *csOrgTxnSeq;
+        char    *csOrgTxnCcy;
+        char    *csOrgDstTxnCcy;
+        double  dTmp;
+
+        hash_t  *hRec;
+        hRec = (hash_t*)  malloc (sizeof(hash_t));
+
+	 if (GetField_CString(hContext,"txn_seq",&csOrgTxnSeq)) {
+DEBUGLOG(("AddTxnFeeChgLog:: txn_seq = [%s]\n",csOrgTxnSeq));
+        }
+
+
+        if (GetField_CString(hContext,"src_txn_fee_ccy",&csOrgTxnCcy)) {
+DEBUGLOG(("AddTxnFeeChgLog:: src_txn_fee_ccy= [%s]\n",csOrgTxnCcy));
+        }
+        else {
+DEBUGLOG(("AddTxnFeeChgLog:: src_txn_fee_ccy is missing!!!, skip AddTxnFeeChg\n"));
+        }
+
+        if (GetField_CString(hContext,"dst_txn_fee_ccy",&csOrgDstTxnCcy)) {
+DEBUGLOG(("AddTxnFeeChgLog:: dst_txn_fee_ccy= [%s]\n",csOrgDstTxnCcy));
+        }
+                                
+
+/* merchant fee */
+        if (GetField_Double(hContext,"src_txn_fee",&dTmp) && iRet == PD_OK) {
+
+                if(dTmp>0){
+DEBUGLOG(("AddTxnFeeChgLog:: src txn fee = [%lf]\n",dTmp));
+
+                        hash_init(hRec,0);
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnFeeChg","Add");
+
+/* txn seq */
+                        PutField_CString(hRec,"txn_seq",csOrgTxnSeq);
+
+/* chg type */
+                        PutField_CString(hRec,"chg_type",PD_TXN_CHG_TYPE_FEE);
+
+/* party type */
+                        PutField_Char(hRec,"party_type",PD_CHG_PARTY_SRC);
+
+/* txn_ccy */
+                        PutField_CString(hRec,"ccy",csOrgTxnCcy);
+
+/* fee */
+                        PutField_Double(hRec,"fee",dTmp);
+
+/* user */              PutField_CString(hRec,"add_user",PD_UPDATE_USER);
+                        iRet = (unsigned long)(*DBObjPtr)(hRec);
+                        hash_destroy(hRec);
+                }
+        }
+
+
+/* customer fee */
+        if (GetField_Double(hContext,"dst_txn_fee",&dTmp) && iRet == PD_OK) {
+DEBUGLOG(("AddTxnFeeChgLog:: dst_txn_fee = [%lf]\n",dTmp));
+
+                if(dTmp>0){
+                        hash_init(hRec,0);
+                        DBObjPtr = CreateObj(DBPtr,"DBTxnFeeChg","Add");
+
+/* txn seq */
+                        PutField_CString(hRec,"txn_seq",csOrgTxnSeq);
+
+/* chg type */
+                        PutField_CString(hRec,"chg_type",PD_TXN_CHG_TYPE_FEE);
+
+/* party type */
+                        PutField_Char(hRec,"party_type",PD_CHG_PARTY_DST);
+
+/* txn_ccy */
+                        PutField_CString(hRec,"ccy",csOrgDstTxnCcy);
+
+/* fee */
+                        PutField_Double(hRec,"fee",dTmp);
+/* user */              PutField_CString(hRec,"add_user",PD_UPDATE_USER);
+
+                        iRet = (unsigned long)(*DBObjPtr)(hRec);
+                        hash_destroy(hRec);
+                }
+        }
+
+
+        FREE_ME(hRec);
+DEBUGLOG(("AddFeeTxnChgLog:: iRet = [%d]\n",iRet));
+        return  iRet;
+}

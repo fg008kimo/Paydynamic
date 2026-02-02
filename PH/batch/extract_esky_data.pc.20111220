@@ -1,0 +1,265 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+#define	PD_MY_DELIMITOR	','
+
+char    cs_outputfile[PD_MAX_FILE_LEN + 1];
+char    cs_psp_id[PD_PSP_ID_LEN + 1];
+char    cs_txn_code[PD_TXN_CODE_LEN + 1];
+char    cs_date[PD_DATE_LEN + 1];
+char    cDebug;
+
+int parse_arg(int argc,char **argv);
+int process_txn(const char* csPspId,const char* csTxnCode,
+                FILE *fp);
+int batch_init(int argc, char* argv[])
+{
+
+    if (argc < 4) {
+        printf("usage:  -o ouputfile -d Date -p PSP ID -t Txn Code\n");
+        return FAILURE;
+    }
+    else
+        return SUCCESS;
+}
+
+
+
+
+int batch_proc(int argc, char* argv[])
+{
+        int     iRet;
+        char    cs_outfile_name[PD_MAX_FILE_LEN + 1];
+        FILE    *fp;
+
+	iRet = parse_arg(argc,argv);
+               
+        if (iRet != SUCCESS) {
+        	printf("usage:  -o ouputfile -d Date -p PSP ID -t Txn Code\n");
+                return (iRet);
+        }
+
+	//if (CreateReportPath("ESKY",cs_outfile_name) != SUCCESS) 
+        //        return FAILURE;
+
+        sprintf(cs_outfile_name, "%s/%s_%s.dat", getenv("REPORT_DATA"),cs_outputfile,cs_date);
+        
+        fp = fopen(cs_outfile_name,"w");
+        if (fp == NULL) {
+DEBUGLOG(("batch_proc:unable to open [%s]\n",cs_outfile_name));
+                return FAILURE;
+        }
+        
+        iRet = process_txn(cs_psp_id,cs_txn_code,fp);
+        fclose(fp);
+	return iRet;
+
+
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+
+
+int process_txn(const char* csPspId,const char* csTxnCode,
+                FILE *fp)
+{               
+ 
+        int     iRet = SUCCESS;
+	char	*csArInd;
+	double	dTmp;
+        
+        EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+        
+        EXEC SQL BEGIN DECLARE SECTION;
+		
+		varchar	hv_host_date[PD_DATE_LEN];
+		varchar	hv_psp_id[PD_PSP_ID_LEN];
+		varchar	hv_txn_code[PD_TXN_CODE_LEN];
+		char	hv_status;
+
+		char	v_ar_ind;
+		double	v_service_fee;
+		varchar	v_txn_id[PD_TXN_SEQ_LEN + 1];
+		varchar	v_txn_amount[PD_AMOUNT_LEN + 1];
+		varchar	v_tid[PD_PSP_TID_LEN + 1];
+		varchar	v_fundin_date[PD_DATETIME_LEN];
+
+		short	ind_service_fee = -1;
+		short	ind_txn_id = -1;
+		short	ind_tid = -1;
+		short	ind_txn_amount = -1;
+		short	ind_ar_ind= -1;
+		short	ind_fundin_date= -1;
+
+
+	EXEC SQL END DECLARE SECTION;
+
+	hv_host_date.len = strlen(cs_date);
+        memcpy(hv_host_date.arr,cs_date,hv_host_date.len);
+DEBUGLOG(("process_txn::host_date = [%.*s]\n",hv_host_date.len,hv_host_date.arr));
+
+        hv_psp_id.len = strlen(csPspId);
+        memcpy(hv_psp_id.arr,csPspId,hv_psp_id.len);
+DEBUGLOG(("process_txn::psp_id = [%.*s]\n",hv_psp_id.len,hv_psp_id.arr));
+
+        hv_txn_code.len = strlen(csTxnCode);
+        memcpy(hv_txn_code.arr,csTxnCode,hv_txn_code.len);
+DEBUGLOG(("process_txn::txn_code = [%.*s]\n",hv_txn_code.len,hv_txn_code.arr));
+
+        hv_status = 'C';
+
+        EXEC SQL DECLARE c_cursor_gettxn CURSOR FOR
+		select 	tp_service_fee,
+         		tp_txn_id,
+         		tp_txn_amount,
+			th_ar_ind,
+			tp_tid,
+			tp_fundin_date
+  		   from txn_psp_detail,
+          		txn_header
+		  where tp_txn_id = th_txn_id
+		    and th_status = :hv_status
+                    and th_ar_ind = 'A'
+                    and tp_txn_date = :hv_host_date
+                    and tp_psp_id = :hv_psp_id
+		    and th_txn_code in ('DSI','DSP') 
+		order by tp_txn_id;
+                
+        EXEC SQL OPEN c_cursor_gettxn;
+        do {    
+                EXEC SQL FETCH c_cursor_gettxn
+                INTO
+			:v_service_fee:ind_service_fee,
+			:v_txn_id:ind_txn_id,
+			:v_txn_amount:ind_txn_amount,
+			:v_ar_ind:ind_ar_ind,
+			:v_tid:ind_tid,
+			:v_fundin_date:ind_fundin_date;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+/* Field #0 txn_seq */
+                if (ind_txn_id < 0 )
+                        v_txn_id.arr[0] = '\0';
+                fprintf(fp,"%.*s%c",v_txn_id.len,v_txn_id.arr,PD_MY_DELIMITOR);
+
+/*Field #1 tid*/
+		if(ind_tid < 0)
+			v_tid.arr[0] = '\0';
+		fprintf(fp,"%.*s%c",v_tid.len,v_tid.arr,PD_MY_DELIMITOR);
+
+/* Field #2 txn_amount */
+                if (ind_txn_amount < 0 )
+			v_txn_amount.arr[0] = '\0';
+		v_txn_amount.arr[v_txn_amount.len] = '\0';
+		sscanf((const char*)v_txn_amount.arr,"%lf",&dTmp);
+                fprintf(fp,"%.2lf%c",dTmp,PD_MY_DELIMITOR);
+
+
+/* Field #3 service_fee */
+                if (ind_service_fee < 0 )
+			v_service_fee = 0.0;
+                fprintf(fp,"%.2lf%c",v_service_fee,PD_MY_DELIMITOR);
+
+
+/* Field #4 status */
+		if(ind_ar_ind < 0)
+			csArInd = strdup("Unknown");
+		else{
+			if(v_ar_ind == PD_ACCEPT)
+				csArInd = strdup("Success");
+			else if(v_ar_ind == PD_REJECT)
+				csArInd = strdup("Failed");
+			else
+				csArInd = strdup("Unknown");
+		}
+		fprintf(fp,"%s%c",csArInd,PD_MY_DELIMITOR);
+
+		FREE_ME(csArInd);
+
+/* Fundin Date*/
+		if(ind_fundin_date < 0)
+                        v_fundin_date.arr[0] = '\0';
+
+		if(v_fundin_date.len==PD_DATETIME_LEN)
+			fprintf(fp,"%.*s00",v_fundin_date.len-2,v_fundin_date.arr);
+		else if(v_fundin_date.len==PD_DATE_LEN)
+			fprintf(fp,"%.*s000000",v_fundin_date.len,v_fundin_date.arr);
+		else
+			fprintf(fp,"%.*s",v_fundin_date.len,v_fundin_date.arr);
+
+		fprintf(fp,"\n");
+
+ 	}
+        while(PD_TRUE && iRet == SUCCESS);
+
+        EXEC SQL CLOSE c_cursor_gettxn;
+        return iRet;
+sql_error:
+    DEBUGLOG(("process_txn error code %d\n", sqlca.sqlcode));
+    DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+    EXEC SQL WHENEVER SQLERROR CONTINUE;
+    EXEC SQL CLOSE c_cursor_gettxn;
+    EXEC SQL ROLLBACK RELEASE;
+    return FAILURE;
+}
+
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+        strcpy(cs_outputfile,"");
+        strcpy(cs_psp_id,"");
+        strcpy(cs_txn_code,"");
+        strcpy(cs_date,"");
+
+        while ((c = getopt(argc,argv,"o:p:t:d:")) != EOF) {
+                switch (c) {
+                        case 'o':
+                                strcpy(cs_outputfile, optarg);
+                                break;
+                        case 'p':
+                                strcpy(cs_psp_id, optarg);
+                                break;
+                        case 't':
+                                strcpy(cs_txn_code, optarg);
+                                break;
+                        case 'd':
+                                strcpy(cs_date, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if (!strcmp(cs_outputfile,"") || !strcmp(cs_psp_id,"") || !strcmp(cs_txn_code,"") ||!strcmp(cs_date,""))
+                return FAILURE;
+
+        return SUCCESS;
+}
+

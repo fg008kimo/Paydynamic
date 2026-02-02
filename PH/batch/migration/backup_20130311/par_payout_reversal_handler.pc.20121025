@@ -1,0 +1,1061 @@
+/*
+Partnerdelight (c)2012. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/10/05              LokMan Chow
+
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sqlca.h>
+#include <sqlcpr.h>
+#include "common.h"
+#include "internal.h"
+#include "utilitys.h"
+#include "dbutility.h"
+#include "../batchcommon.h"
+#include "par_payout_reversal_handler.h"
+#include "pr_bo_funct.h"
+#include "pr_par_funct.h"
+#include "ObjPtr.h"
+#include "dbutility.h"
+
+char	cDebug;
+
+OBJPTR(DB);
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+int GetFileDetailByUploadTxnId(const hash_t *hTxn, recordset_t* myRec);
+int GetOrgTxnDetails(const char *csTxnId, recordset_t* myRec);
+int UpdateByGenId(const hash_t *hRec);
+
+int payout_reversal_handler(hash_t *hMyHash)
+{
+	int iRet = SUCCESS;
+	int iTmpRet;
+
+	hash_t          *hTxnHeader;
+
+	recordset_t     *rRecordSet;
+	hash_t          *hRec;
+
+	char    *csTmp = NULL;
+	double  dReqAmt = 0.0;
+	double  dMerchantFee = 0.0;
+	double  dMarkup = 0.0;
+	int     iTmp = 0;
+	int     iStatus = 0;
+
+	char    *csMerchNmb = NULL;
+	char    *csVNCRefNum = NULL;
+	char    *csUploadTxnId = NULL;
+	char    *csOrgTxnId= NULL;
+
+	int     iRecExists = PD_FALSE;
+	char    csTxnSeq[PD_TXN_SEQ_LEN+1];
+
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	hash_t  *hContext, *hRequest, *hResponse;
+
+	hTxnHeader = (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxnHeader, 0);
+
+	hContext = (hash_t *)malloc(sizeof(hash_t));
+	hRequest = (hash_t *)malloc(sizeof(hRequest));
+	hResponse = (hash_t *)malloc(sizeof(hResponse));
+
+        hash_init (hContext, 0);
+        hash_init (hRequest, 0);
+        hash_init (hResponse, 0);
+
+	// Chk PH MID
+	if (GetField_CString(hMyHash, "txn_merch_nmb", &csMerchNmb)) {
+DEBUGLOG(("payout_reversal_handler: txn_merch_nmb [%s]\n", csMerchNmb));
+	}
+	else {
+DEBUGLOG(("payout_reversal_handler: txn_merch_nmb missing!\n"));
+		iRet = FAILURE;
+	}
+
+	rRecordSet = (recordset_t *)malloc(sizeof(recordset_t));
+
+	recordset_init(rRecordSet, 0);
+	if (iRet == SUCCESS) {
+
+		if (ParMerchProfile_GetMerchant(csMerchNmb, rRecordSet) != PD_OK) {
+DEBUGLOG(("payout_reversal_handler: ParMerchProfile.GetMerchant FAILED!\n"));
+		} else {
+DEBUGLOG(("payout_reversal_handler: ParMerchProfile.GetMerchant SUCC!\n"));
+
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+
+				if (GetField_CString(hRec, "service", &csTmp)) {
+DEBUGLOG(("payout_reversal_handler: ParMerchProfile.GetMerchant service [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "service", csTmp);
+				}
+
+				if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+DEBUGLOG(("payout_reversal_handler: ParMerchProfile.GetMerchant merchant_id [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "merchant_id", csTmp);
+				}
+
+				if (GetField_CString(hRec, "client_id", &csTmp)) {
+DEBUGLOG(("payout_reversal_handler: ParMerchProfile.GetMerchant client_id [%s]!\n", csTmp));
+					PutField_CString(hMyHash, "merchant_client_id", csTmp);
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+	}
+	RecordSet_Destroy(rRecordSet);
+
+
+
+	// Chk if exists in txn_header
+	if (iRet == SUCCESS) {
+		if (GetField_CString(hMyHash, "txn_nmb", &csVNCRefNum)) {
+DEBUGLOG(("payout_reversal_handler: txn_nmb [%s]\n", csVNCRefNum));
+		}
+		else {
+DEBUGLOG(("payout_reversal_handler: txn_nmb not found!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+	if (iRet == SUCCESS) {
+		iTmpRet = ParTxnData_ChkExist(csVNCRefNum);
+
+		if (iTmpRet == PD_FOUND) {
+			iRecExists = PD_TRUE;
+
+		} else if (iTmpRet == PD_NOT_FOUND) {
+			iRecExists = PD_FALSE;
+
+		} else {
+DEBUGLOG(("payout_reversal_handler: ParTxnData_ChkExist FAILED!\n"));
+			iRet = FAILURE;
+		}
+	}
+
+////////if txn exist before, do nothing and return iRet
+////////else add new txn
+
+	if(iRet == SUCCESS &&
+	   iRecExists != PD_TRUE){
+		strcpy(csTxnSeq,GetNextMgtTxnSeq());
+		//csTxnSeq = strdup((char* )GetNextMgtTxnSeq());
+		PutField_CString(hMyHash,"txn_seq",csTxnSeq);
+DEBUGLOG(("payout_reversal_handler: Generate (MGT) Txn Seq [%s]\n", csTxnSeq));
+
+		PutField_CString(hTxnHeader, "txn_id", csTxnSeq);
+
+		PutField_CString(hMyHash, "channel_code", "MGT");
+		PutField_CString(hMyHash, "process_type", "0000");
+		PutField_CString(hMyHash, "process_code", "000000");
+		PutField_CString(hMyHash, "vnc_ref_num", csVNCRefNum);
+		PutField_Int(hMyHash, "internal_code", 0);
+		PutField_CString(hMyHash, "response_code", "0");
+
+		iRet = format_data(hMyHash, hTxnHeader, hContext, hRequest);
+
+		if (iRet == SUCCESS) {
+			if (PayoutAddTxnLog(hContext, hRequest) == PD_OK) {
+DEBUGLOG(("payout_reversal_handler:PayoutAddTxnLog  SUCC!\n"));
+
+				//DBObjPtr = CreateObj(DBPtr,"DBParTxnData","UpdateHeaderVNCRef");
+				if (UpdateHeaderVNCRef(hContext) == PD_OK) {
+DEBUGLOG(("payout_reversal_handler:Deposit init record updated vnc_ref_num succ!\n"));
+				}
+				else {
+DEBUGLOG(("payout_reversal_handler:Deposit init record updated vnc_ref_num fail!\n"));
+					iRet = FAILURE;
+				}
+
+			}
+			else {
+DEBUGLOG(("payout_reversal_handler:PayoutAddTxnLog FAIL!\n"));
+				iRet = FAILURE;
+			}
+		}
+
+//////check merchant_upload_file_detail
+		if(iRet == SUCCESS){
+			recordset_init(rRecordSet, 0);
+			if(GetPayoutDetailByAuxVncRefNum(csVNCRefNum,rRecordSet)==PD_OK){
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if(GetField_CString(hRec,"txn_id",&csUploadTxnId)){
+						PutField_CString(hTxnHeader, "org_txn_id", csUploadTxnId);
+						PutField_CString(hMyHash, "upload_txn_id", csUploadTxnId);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum txn_id = [%s]\n",csUploadTxnId));
+					}
+					if(GetField_CString(hRec,"batch_id",&csTmp)){
+						PutField_CString(hMyHash, "batch_id", csTmp);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum batch_id = [%s]\n",csTmp));
+					}
+					if(GetField_Int(hRec,"seq_num",&iTmp)){
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum seq_num = [%d]\n",iTmp));
+					}
+					if(GetField_Int(hRec,"status",&iStatus)){
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum status = [%d]\n",iStatus));
+					}
+					if(GetField_CString(hRec,"country",&csTmp)){
+						PutField_CString(hMyHash, "country", csTmp);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum country = [%s]\n",csTmp));
+					}
+					if(GetField_CString(hRec,"payout_ccy",&csTmp)){
+						PutField_CString(hContext, "net_ccy", csTmp);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum payout_ccy = [%s]\n",csTmp));
+					}
+					if(GetField_CString(hRec,"request_ccy",&csTmp)){
+						PutField_CString(hMyHash, "ccy", csTmp);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum request_ccy = [%s]\n",csTmp));
+					}
+					if(GetField_Double(hRec,"request_amount",&dReqAmt)){
+						PutField_Double(hMyHash,"amount",dReqAmt);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum request_amount = [%lf]\n",dReqAmt));
+					}
+					if(GetField_CString(hRec,"merchant_fee_ccy",&csTmp)){
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum merchant_fee_ccy = [%s]\n",csTmp));
+					}
+					if(GetField_Double(hRec,"merchant_fee",&dMerchantFee)){
+						//PutField_Double(hMyHash,"fee",dMerchantFee);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum merchant_fee = [%lf]\n",dMerchantFee));
+					}
+	
+					if(GetField_CString(hRec,"markup_ccy",&csTmp)){
+						PutField_CString(hMyHash, "markup_ccy", csTmp);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum markup_ccy = [%s]\n",csTmp));
+					}
+					if(GetField_Double(hRec,"markup_amt",&dMarkup)){
+						//PutField_Double(hMyHash,"markup_amt",dMarkup);
+DEBUGLOG(("GetPayoutDetailByAuxVncRefNum markup_amt = [%lf]\n",dMarkup));
+					}
+	
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+			else{
+DEBUGLOG(("payout_reversal_handler:GetPayoutDetailByAuxVncRefNum FAIL!\n"));
+				iRet = FAILURE;
+			}
+
+			RecordSet_Destroy(rRecordSet);
+		}
+
+		//////handle balance
+		if (iRet == SUCCESS) {
+			PutField_Char(hMyHash,"response_mode",PD_REVERSED);
+			iRet = handle_payout_balance(hMyHash);
+		}
+
+		if (iRet == SUCCESS)
+			PutField_Int(hMyHash, "approved", PD_TRUE);
+			iRet = format_data(hMyHash, hTxnHeader, hContext, hRequest);
+
+		/////txn element
+		if (iRet == SUCCESS) {
+			PutField_CString(hMyHash,"amount_type",PD_CR);
+			iRet = add_txn_element(hMyHash);
+		}
+
+
+		if (iRet == SUCCESS) {
+			PutField_Char(hContext,"status",PD_COMPLETE);
+			PutField_Char(hContext,"ar_ind",PD_ACCEPT);
+			//PutField_CString(hContext,"sub_status",PD_APPROVED_FOR_GENERATED);
+
+			if (UpdateTxnLog(hContext, hRequest, hResponse) == PD_OK) {
+DEBUGLOG(("payout_reversal_handler:UpdateTxnLog SUCC\n"));
+			} else {
+DEBUGLOG(("payout_reversal_handler:UpdateTxnLog FAIL\n"));
+				iRet = FAILURE;
+			}
+		}
+
+		//FREE_ME(csTxnSeq);
+
+	}
+	else{
+		//////do nothing
+	}
+
+
+//////////////////////////////////////////
+////////////////handle VOG////////////////
+//////////////////////////////////////////
+
+	double	dTmp = 0.0;
+	int	iCnt = 0;
+	char	csDate[PD_DATE_LEN+1];
+	char	csTime[PD_TIME_LEN+1];
+	char	*csTxnDateTime;
+	hash_t  *hTxn;
+	hTxn= (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hTxn, 0);
+	hash_t  *hOrgGenTxn;
+	hOrgGenTxn= (hash_t *)malloc(sizeof(hash_t));
+	hash_init (hOrgGenTxn, 0);
+
+        hash_init (hContext, 0);
+        hash_init (hRequest, 0);
+
+	if (iRet == SUCCESS){ //&&
+	    //iStatus==PAYOUT_MASTER_TRANSACTION_GENERATED) {
+
+		///find org_gen_txn_id
+		recordset_init(rRecordSet, 0);
+		if(GetFileDetailByUploadTxnId(hMyHash,rRecordSet)==PD_OK){
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if(GetField_CString(hRec,"txn_id",&csOrgTxnId)){
+					PutField_CString(hContext,"org_txn_seq",csOrgTxnId);
+					PutField_CString(hOrgGenTxn,"txn_id",csOrgTxnId);
+DEBUGLOG(("GetFileDetailByUploadTxnId org_gen_txn_id = [%s]\n",csOrgTxnId));
+					iCnt ++;
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+
+		}
+		if(iCnt==0){
+			iRet = PD_SKIP_OK;
+DEBUGLOG(("payout_reversal_handler:GetFileDetailByUploadTxnId Not Found.....Skip VOG......\n"));
+		}
+		RecordSet_Destroy(rRecordSet);
+
+		if(iRet==SUCCESS){
+			//get org txn details
+			recordset_init(rRecordSet, 0);
+			if(GetOrgTxnDetails(csOrgTxnId,rRecordSet)==PD_OK){
+				hRec = RecordSet_GetFirst(rRecordSet);
+				while (hRec) {
+					if(GetField_CString(hRec,"channel_code",&csTmp)){
+						PutField_CString(hContext,"channel_code",csTmp);
+					}
+					if(GetField_CString(hRec,"process_type",&csTmp)){
+						PutField_CString(hRequest,"process_type",csTmp);
+					}
+					if(GetField_CString(hRec,"process_code",&csTmp)){
+						PutField_CString(hRequest,"process_code",csTmp);
+					}
+					if(GetField_CString(hRec,"client_id",&csTmp)){
+						PutField_CString(hContext,"client_id",csTmp);
+					}
+					if(GetField_Double(hRec,"txn_amt",&dTmp)){
+						PutField_Double(hContext,"dst_net_amt",dTmp);
+						PutField_Double(hContext,"amount",dTmp);
+					}
+					if(GetField_CString(hRec,"net_ccy",&csTmp)){
+						PutField_CString(hContext,"net_ccy",csTmp);
+					}
+					if(GetField_CString(hRec,"txn_ccy",&csTmp)){
+						PutField_CString(hRequest,"txn_ccy",csTmp);
+						PutField_CString(hContext,"to_ccy",csTmp);
+						PutField_CString(hContext,"ccy",csTmp);
+					}
+					if(GetField_CString(hRec,"txn_country",&csTmp)){
+						PutField_CString(hRequest,"txn_country",csTmp);
+						PutField_CString(hContext,"country",csTmp);
+					}
+					if(GetField_CString(hRec,"psp_id",&csTmp)){
+						PutField_CString(hContext,"psp_id",csTmp);
+					}
+					if(GetField_Double(hRec,"service_fee",&dTmp)){
+						////???? return psp fee????
+						//PutField_Double(hContext,"precal_fee",dTmp);
+						//PutField_Double(hContext,"fee",dTmp);
+					}
+
+					hRec = RecordSet_GetNext(rRecordSet);
+				}
+			}
+			else{
+				iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler:GetOrgTxnDetails Failed\n"));
+			}
+		}
+
+		if(iRet== SUCCESS){
+			///generate new txn_id
+			///add txn log
+			//csTxnSeq = strdup((char* )GetNextMgtTxnSeq());
+			strcpy(csTxnSeq,GetNextMgtTxnSeq());
+			PutField_CString(hContext,"txn_seq",csTxnSeq);
+			PutField_CString(hTxn,"txn_seq",csTxnSeq);
+			PutField_CString(hOrgGenTxn,"aux_txn_id",csTxnSeq);
+DEBUGLOG(("payout_reversal_handler: Generate (MGT) Txn Seq [%s]\n", csTxnSeq));
+
+			PutField_CString(hContext,"txn_code",PD_PAYOUT_VOID_PSP);
+			PutField_Int(hContext, "internal_code", 0);
+			PutField_CString(hContext, "response_code", "0");
+			PutField_CString(hContext, "vnc_ref_num", csVNCRefNum);
+			PutField_CString(hContext,"desc","Payout Refund(PSP)");
+			if (GetField_CString(hMyHash, "post_date", &csTmp)) {
+				PutField_CString(hContext, "PHDATE", csTmp);
+			}
+			if (GetField_CString(hMyHash, "local_tm_date", &csTmp)) {
+				PutField_CString(hContext, "local_tm_date", csTmp);
+			}
+			if (GetField_CString(hMyHash, "local_tm_time", &csTmp)) {
+				PutField_CString(hContext, "local_tm_time", csTmp);
+			}
+			if (GetField_CString(hMyHash, "txn_date", &csTxnDateTime)) {
+				PutField_CString(hRequest, "transmission_datetime", csTxnDateTime);
+
+				csDate[0] = '\0';
+				csTime[0] = '\0';
+
+				strncpy(csDate, csTxnDateTime, PD_DATE_LEN);
+				strncpy(csTime, csTxnDateTime + PD_DATE_LEN, PD_TIME_LEN);
+
+				csDate[PD_DATE_LEN] = '\0';
+				csTime[PD_TIME_LEN] = '\0';
+
+				PutField_CString(hRequest, "tm_date", csDate);
+				PutField_CString(hRequest, "tm_time", csTime);
+				PutField_CString(hContext, "txn_date", csDate);
+				PutField_CString(hContext, "approval_date", csDate);
+			}
+
+			if (PayoutAddTxnLog(hContext, hRequest) == PD_OK) {
+DEBUGLOG(("payout_reversal_handler:PayoutAddTxnLog  SUCC!\n"));
+
+                                if (UpdateHeaderVNCRef(hContext) == PD_OK) {
+DEBUGLOG(("payout_reversal_handler:Deposit init record updated vnc_ref_num succ!\n"));
+                                }
+                                else {
+DEBUGLOG(("payout_reversal_handler:Deposit init record updated vnc_ref_num fail!\n"));
+                                        iRet = FAILURE;
+                                }
+
+                        }
+                        else {
+DEBUGLOG(("payout_reversal_handler:PayoutAddTxnLog FAIL!\n"));
+                                iRet = FAILURE;
+                        }
+
+			if(iRet==SUCCESS){
+DEBUGLOG(("payout_reversal_handler::Call DBTxnPspDetail:Add\n"));
+                        	DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Add");
+                        	if((unsigned long) ((*DBObjPtr)(hContext))!=PD_OK){
+                                	iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler::DBTxnPspDetail:Add Failed\n"));
+                        	}
+			}
+		}
+
+		if(iRet==SUCCESS){
+			///handle psp balance
+			PutField_Char(hContext,"response_mode",PD_REVERSED);
+			PutField_Char(hContext,"party_type",PD_TYPE_PSP);
+			if (UpdatePayoutAmount(hContext) == PD_OK) {
+				if (GetField_Double(hContext, "psp_total_float", &dTmp)) {
+					PutField_Double(hTxn,"total_float",dTmp);
+DEBUGLOG(("UpdatePayoutAmount:total_float [%lf]!\n", dTmp));
+				}
+				if (GetField_Double(hContext, "psp_balance", &dTmp)) {
+					PutField_Double(hTxn,"bal",dTmp);
+DEBUGLOG(("UpdatePayoutAmount:psp_balance[%lf]!\n", dTmp));
+				}
+				if (GetField_Double(hContext, "psp_total_hold", &dTmp)) {
+					PutField_Double(hTxn,"total_hold",dTmp);
+DEBUGLOG(("UpdatePayoutAmount:total_hold [%lf]!\n", dTmp));
+				}
+			}
+			else{
+				iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler::UpdatePayoutAmount Failed\n"));
+			}
+		}
+		
+		if(iRet==SUCCESS){
+			///add elements
+			PutField_CString(hContext,"amount_type",PD_CR);
+			PutField_Char(hContext,"party_type",PD_TYPE_PSP);
+			if(add_txn_element(hContext)!=SUCCESS){
+				iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler::add_txn_element Failed\n"));
+			}
+		}
+
+		if(iRet==SUCCESS){
+			///update txn log
+			PutField_Char(hTxn,"status",PD_COMPLETE);
+			PutField_Char(hTxn,"ar_ind",PD_ACCEPT);
+			DBObjPtr = CreateObj(DBPtr,"DBTransaction","Update");
+			if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+				iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler::DBTransaction:Update Failed\n"));
+			}
+
+			if(iRet==SUCCESS){
+DEBUGLOG(("payout_reversal_handler::Call DBTxnPspDetail:Update\n"));
+				DBObjPtr = CreateObj(DBPtr,"DBTxnPspDetail","Update");
+				if((unsigned long) ((*DBObjPtr)(hTxn))!=PD_OK){
+					iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler::DBTxnPspDetail:Update Failed\n"));
+				}
+			}
+		}
+
+		if(iRet==SUCCESS){
+			///update payout generated file detail status
+			PutField_Int(hOrgGenTxn,"status",PAYOUT_MASTER_TRANSACTION_REVERSED);
+			if(UpdateByGenId(hOrgGenTxn)!=PD_OK){
+				iRet = FAILURE;
+DEBUGLOG(("payout_reversal_handler::UpdateByGenId Failed\n"));
+			}
+		}		
+
+	}
+
+	if(iRet==PD_SKIP_OK)
+		iRet = SUCCESS;
+
+	if (iRet == SUCCESS) {
+DEBUGLOG(("payout_reversal_handler:UpdateProcessResult\n"));
+		if(iRecExists == PD_TRUE)
+			iRet = UpdateProcessResult(hMyHash, "SKIP");
+		else
+			iRet = UpdateProcessResult(hMyHash, "COMPLETE");
+	}
+
+	hash_destroy(hTxnHeader);
+        FREE_ME(hTxnHeader);
+
+        hash_destroy(hContext);
+        hash_destroy(hRequest);
+        hash_destroy(hResponse);
+
+        FREE_ME(hTxn);
+        FREE_ME(hOrgGenTxn);
+        FREE_ME(hContext);
+        FREE_ME(hRequest);
+        FREE_ME(hResponse);
+
+        FREE_ME(rRecordSet);
+
+DEBUGLOG(("payout_reversal_handler: iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int GetFileDetailByUploadTxnId(const hash_t *hTxn, recordset_t* myRec)
+{
+        hash_t *myHash;
+        char    csBatchId[PD_TXN_SEQ_LEN+1];
+        char*   csTmp;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getfiledetailbytxnid_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_upload_txn_id[PD_TXN_SEQ_LEN];
+                int             hv_status;
+
+                varchar         v_file_id[PD_TXN_SEQ_LEN];
+                unsigned long   v_batch_id;
+                int             v_seq_num;
+                varchar         v_txn_id[PD_TXN_SEQ_LEN+1];
+                varchar         v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+                varchar         v_country[PD_COUNTRY_LEN+1];
+                varchar         v_identity_id[PD_IDENTITY_ID_LEN+1];
+                varchar         v_account_num[PD_AC_NO_LEN+1];
+                varchar         v_account_name[PD_ACC_NAME_LEN+1];
+                varchar         v_bank_name[PD_BANK_NAME_LEN+1];
+                varchar         v_bank_code[PD_BANK_CODE_LEN+1];
+                varchar         v_branch[PD_BANK_BRANCH_LEN+1];
+                varchar         v_phone_num[PD_MOBILE_NO_LEN+1];
+                varchar         v_province[PD_PROVINCE_LEN+1];
+                varchar         v_city[PD_CITY_LEN+1];
+                varchar         v_payout_ccy[PD_CCY_ID_LEN+1];
+                varchar         v_request_ccy[PD_CCY_ID_LEN+1];
+                double          v_payout_amount;
+                double          v_request_amount;
+                varchar         v_psp_id[PD_PSP_ID_LEN+1];
+
+                short           ind_file_id = -1;
+                short           ind_batch_id = -1;
+                short           ind_seq_num = -1;
+                short           ind_txn_id = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_country = -1;
+                short           ind_identity_id = -1;
+                short           ind_account_num = -1;
+                short           ind_account_name = -1;
+                short           ind_bank_name = -1;
+                short           ind_bank_code = -1;
+                short           ind_branch = -1;
+                short           ind_phone_num = -1;
+                short           ind_province = -1;
+                short           ind_city = -1;
+                short           ind_payout_ccy = -1;
+                short           ind_request_ccy = -1;
+                short           ind_payout_amount = -1;
+                short           ind_request_amount = -1;
+                short           ind_psp_id= -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_status = PAYOUT_MASTER_TRANSACTION_GENERATED;
+        if(GetField_CString(hTxn,"upload_txn_id",&csTmp)){
+                hv_upload_txn_id.len = strlen(csTmp);
+                memcpy(hv_upload_txn_id.arr,csTmp,hv_upload_txn_id.len);
+DEBUGLOG(("GetFileDetailByUploadTxnId upload_txn_id = [%.*s]\n",hv_upload_txn_id.len,hv_upload_txn_id.arr));
+        }
+EXEC SQL DECLARE c_cursor_getfiledetailbytxnid CURSOR FOR
+                select  fd_file_id,
+                        fd_batch_id,
+                        fd_seq_num,
+                        fd_txn_id,
+                        fd_merchant_ref,
+                        fd_country,
+                        fd_identity_id,
+                        fd_account_num,
+                        fd_account_name,
+                        fd_bank_name,
+                        fd_bank_code,
+                        fd_branch,
+                        fd_phone_num,
+                        fd_province,
+                        fd_city,
+                        fd_payout_amount,
+                        fd_request_amount,
+                        fd_payout_currency,
+                        fd_request_currency,
+                        fh_file_pid
+                from    payout_generated_file_dt,
+                        payout_generated_file_hd
+                where   fd_upload_txn_id=:hv_upload_txn_id
+                and     fd_file_id = fh_file_id
+                and     fd_status =:hv_status;
+        EXEC SQL OPEN  c_cursor_getfiledetailbytxnid;
+        do{
+                EXEC SQL FETCH c_cursor_getfiledetailbytxnid
+                INTO
+                        :v_file_id:ind_file_id,
+                        :v_batch_id:ind_batch_id,
+                        :v_seq_num:ind_seq_num,
+                        :v_txn_id:ind_txn_id,
+                        :v_merchant_ref:ind_merchant_ref,
+                        :v_country:ind_country,
+                        :v_identity_id:ind_identity_id,
+                        :v_account_num:ind_account_num,
+                        :v_account_name:ind_account_name,
+                        :v_bank_name:ind_bank_name,
+                        :v_bank_code:ind_bank_code,
+                        :v_branch:ind_branch,
+                        :v_phone_num:ind_phone_num,
+                        :v_province:ind_province,
+                        :v_city:ind_city,
+                        :v_payout_amount:ind_payout_amount,
+                        :v_request_amount:ind_request_amount,
+                        :v_payout_ccy:ind_payout_ccy,
+                        :v_request_ccy:ind_request_ccy,
+                        :v_psp_id:ind_psp_id;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+/*file_id*/
+                if(ind_file_id>=0){
+                        v_file_id.arr[v_file_id.len]='\0';
+                        PutField_CString(myHash,"file_id",(const char*)v_file_id.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId file_id= [%s]\n",v_file_id.arr));
+                }
+
+
+/*batch_id*/
+                if(ind_batch_id>=0){
+                        sprintf(csBatchId,"%ld",v_batch_id);
+                        PutField_CString(myHash,"batch_id",csBatchId);
+DEBUGLOG(("GetFileDetailByUploadTxnId batch_id= [%s]\n",csBatchId));
+                }
+
+/*seq_num*/
+                if(ind_seq_num>=0){
+                        PutField_Int(myHash,"seq_num",v_seq_num);
+DEBUGLOG(("GetFileDetailByUploadTxnId seq_num= [%d]\n",v_seq_num));
+                }
+
+
+/*txn_id*/
+                if(ind_txn_id>=0){
+                        v_txn_id.arr[v_txn_id.len]='\0';
+                        PutField_CString(myHash,"txn_id",(const char*)v_txn_id.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId txn_id= [%s]\n",v_txn_id.arr));
+                }
+
+/*merchant_ref*/
+                if(ind_merchant_ref>=0){
+                        v_merchant_ref.arr[v_merchant_ref.len]='\0';
+                        PutField_CString(myHash,"merchant_ref",(const char*)v_merchant_ref.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId merchant_ref= [%s]\n",v_merchant_ref.arr));
+                }
+/*country*/
+                if(ind_country>=0){
+                        v_country.arr[v_country.len]='\0';
+                        PutField_CString(myHash,"txn_country",(const char*)v_country.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId country= [%s]\n",v_country.arr));
+                }
+
+/*identity_id*/
+                if(ind_identity_id>=0){
+                        v_identity_id.arr[v_identity_id.len]='\0';
+                        PutField_CString(myHash,"identity_id",(const char*)v_identity_id.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId identity_id= [%s]\n",v_identity_id.arr));
+                }
+
+/*account_num*/
+                if(ind_account_num>=0){
+                        v_account_num.arr[v_account_num.len]='\0';
+                        PutField_CString(myHash,"account_num",(const char*)v_account_num.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId account_num= [%s]\n",v_account_num.arr));
+                }
+
+/*account_name*/
+                if(ind_account_name>=0){
+                        v_account_name.arr[v_account_name.len]='\0';
+                        PutField_CString(myHash,"account_name",(const char*)v_account_name.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId account_name= [%s]\n",v_account_name.arr));
+                }
+
+/*bank_name*/
+                if(ind_bank_name>=0){
+                        v_bank_name.arr[v_bank_name.len]='\0';
+                        PutField_CString(myHash,"bank_name",(const char*)v_bank_name.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId bank_name= [%s]\n",v_bank_name.arr));
+        }
+/*bank_code*/
+                if(ind_bank_code>=0){
+                        v_bank_code.arr[v_bank_code.len]='\0';
+                        PutField_CString(myHash,"bank_code",(const char*)v_bank_code.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId bank_code= [%s]\n",v_bank_code.arr));
+                }
+
+/*branch*/
+                if(ind_branch>=0){
+                        v_branch.arr[v_branch.len]='\0';
+                        PutField_CString(myHash,"branch",(const char*)v_branch.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId branch= [%s]\n",v_branch.arr));
+                }
+
+/*phone_num*/
+                if(ind_phone_num>=0){
+                        v_phone_num.arr[v_phone_num.len]='\0';
+                        PutField_CString(myHash,"phone_num",(const char*)v_phone_num.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId phone_num= [%s]\n",v_phone_num.arr));
+                }
+
+/*province*/
+                if(ind_province>=0){
+                        v_province.arr[v_province.len]='\0';
+                        PutField_CString(myHash,"province",(const char*)v_province.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId province= [%s]\n",v_province.arr));
+                }
+
+/*city*/
+                if(ind_city>=0){
+                        v_city.arr[v_city.len]='\0';
+                        PutField_CString(myHash,"city",(const char*)v_city.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId city= [%s]\n",v_city.arr));
+                }
+/*payout_currency*/
+                if(ind_payout_ccy>=0){
+                        v_payout_ccy.arr[v_payout_ccy.len]='\0';
+                        PutField_CString(myHash,"payout_ccy",(const char*)v_payout_ccy.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId payout_ccy= [%s]\n",v_payout_ccy.arr));
+                }
+
+/*request_currency*/
+                if(ind_request_ccy>=0){
+                        v_request_ccy.arr[v_request_ccy.len]='\0';
+                        PutField_CString(myHash,"request_ccy",(const char*)v_request_ccy.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId request_ccy= [%s]\n",v_request_ccy.arr));
+                }
+
+/*payout_amount*/
+                if(ind_payout_amount>=0){
+                        PutField_Double(myHash,"payout_amount",v_payout_amount);
+DEBUGLOG(("GetFileDetailByUploadTxnId payout_amount = [%lf]\n",v_payout_amount));
+                }
+
+/*request_amount*/
+                if(ind_request_amount>=0){
+                        PutField_Double(myHash,"request_amount",v_request_amount);
+DEBUGLOG(("GetFileDetailByUploadTxnId request_amount = [%lf]\n",v_request_amount));
+                }
+
+/*psp_id*/
+                if(ind_psp_id>=0){
+                        v_psp_id.arr[v_psp_id.len]='\0';
+                        PutField_CString(myHash,"psp_id",(const char*)v_psp_id.arr);
+DEBUGLOG(("GetFileDetailByUploadTxnId psp_id = [%s]\n",v_psp_id.arr));
+                }
+
+                RecordSet_Add(myRec,myHash);
+
+        }while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getfiledetailbytxnid;
+
+DEBUGLOG(("GetFileDetailByUploadTxnId Normal Exit\n"));
+        return  PD_OK;
+
+getfiledetailbytxnid_error:
+DEBUGLOG(("getfiledetailbytxnid_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("PayoutGeneratedFileDT_Get: SP_INTERNAL_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getfiledetailbytxnid;
+        return PD_ERR;
+
+}
+
+int GetOrgTxnDetails(const char *csTxnId, recordset_t* myRec)
+{
+	hash_t *myHash;
+        int     iCnt = 0;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getorgdetails_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_txn_id[PD_TXN_SEQ_LEN];
+
+                varchar         v_client_id[PD_CLIENT_ID_LEN + 1];
+                varchar         v_net_ccy[PD_CCY_ID_LEN +1];
+                varchar         v_channel_code[PD_CHANNEL_CODE_LEN + 1];
+                varchar         v_process_code[PD_PROCESS_CODE_LEN + 1];
+                varchar         v_process_type[PD_PROCESS_TYPE_LEN + 1];
+                varchar         v_txn_ccy[PD_CCY_ID_LEN+ 1];
+                varchar         v_txn_country[PD_COUNTRY_LEN+ 1];
+                varchar         v_psp_id[PD_PSP_ID_LEN+ 1];
+                double          v_txn_amt;
+                double          v_service_fee;
+
+                short           ind_client_id = -1;
+                short           ind_txn_amt = -1;
+                short           ind_service_fee = -1;
+                short           ind_net_ccy = -1;
+                short           ind_channel_code = -1;
+                short           ind_process_code= -1;
+                short           ind_process_type= -1;
+                short           ind_txn_ccy= -1;
+                short           ind_txn_country= -1;
+                short           ind_psp_id= -1;
+
+        EXEC SQL END DECLARE SECTION;
+
+        hv_txn_id.len = strlen(csTxnId);
+        memcpy(hv_txn_id.arr,csTxnId,hv_txn_id.len);
+DEBUGLOG(("GetOrgTxnDetails txn_id = [%.*s]\n",hv_txn_id.len,hv_txn_id.arr));
+
+	EXEC SQL DECLARE c_cursor_getorgdetails CURSOR FOR
+                select th_input_channel,
+                       th_process_code,
+                       th_process_type,
+                       th_client_id,
+                       th_net_ccy,
+                       tp_txn_amount,
+                       tp_txn_ccy,
+                       tp_psp_id,
+                       tp_service_fee,
+		       td_txn_country
+                  from txn_header,
+		       txn_detail,
+		       txn_psp_detail
+                 where th_txn_id = :hv_txn_id
+		 and   th_txn_id = td_txn_id
+		 and   th_txn_id = tp_txn_id;
+	
+	EXEC SQL OPEN c_cursor_getorgdetails;
+        do {
+                EXEC SQL FETCH c_cursor_getorgdetails
+                INTO
+                        :v_channel_code:ind_channel_code,
+                        :v_process_code:ind_process_code,
+                        :v_process_type:ind_process_type,
+                        :v_client_id:ind_client_id,
+                        :v_net_ccy:ind_net_ccy,
+                        :v_txn_amt:ind_txn_amt,
+                        :v_txn_ccy:ind_txn_ccy,
+                        :v_psp_id:ind_psp_id,
+                        :v_service_fee:ind_service_fee,
+                        :v_txn_country:ind_txn_country;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		iCnt++;
+
+                myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+                if (ind_client_id >= 0) {
+                        v_client_id.arr[v_client_id.len] ='\0';
+                        PutField_CString(myHash,"client_id",(const char*)v_client_id.arr);
+DEBUGLOG(("GetOrgTxnDetails client_id = [%s]\n",v_client_id.arr));
+                }
+
+                if (ind_process_code >= 0) {
+                        v_process_code.arr[v_process_code.len] ='\0';
+                        PutField_CString(myHash,"process_code",(const char*)v_process_code.arr);
+DEBUGLOG(("GetOrgTxnDetails process_code = [%s]\n",v_process_code.arr));
+                }
+
+		if (ind_process_type >= 0) {
+                        v_process_type.arr[v_process_type.len] ='\0';
+                        PutField_CString(myHash,"process_type",(const char*)v_process_type.arr);
+DEBUGLOG(("GetOrgTxnDetails process_type = [%s]\n",v_process_type.arr));
+                }
+
+                if (ind_txn_amt < 0)
+                        v_txn_amt = 0.0;
+                PutField_Double(myHash,"txn_amt",v_txn_amt);
+DEBUGLOG(("GetOrgTxnDetails txn_amt = [%f]\n",v_txn_amt));
+
+                if (ind_service_fee< 0)
+                        v_service_fee= 0.0;
+                PutField_Double(myHash,"service_fee",v_service_fee);
+DEBUGLOG(("GetOrgTxnDetails service_fee = [%f]\n",v_service_fee));
+
+                if (ind_txn_country>= 0) {
+                        v_txn_country.arr[v_txn_country.len] ='\0';
+                        PutField_CString(myHash,"txn_country",(const char*)v_txn_country.arr);
+DEBUGLOG(("GetOrgTxnDetails txn_country = [%s]\n",v_txn_country.arr));
+                }
+
+                if (ind_txn_ccy >= 0) {
+                        v_txn_ccy.arr[v_txn_ccy.len] ='\0';
+                        PutField_CString(myHash,"txn_ccy",(const char*)v_txn_ccy.arr);
+DEBUGLOG(("GetOrgTxnDetails txn_ccy = [%s]\n",v_txn_ccy.arr));
+                }
+
+                if (ind_net_ccy >= 0) {
+                        v_net_ccy.arr[v_net_ccy.len] ='\0';
+                        PutField_CString(myHash,"net_ccy",(const char*)v_net_ccy.arr);
+DEBUGLOG(("GetOrgTxnDetails net_ccy = [%s]\n",v_net_ccy.arr));
+                }
+
+		if (ind_channel_code >= 0) {
+                        v_channel_code.arr[v_channel_code.len] ='\0';
+                        PutField_CString(myHash,"channel_code",(const char*)v_channel_code.arr);
+DEBUGLOG(("GetOrgTxnDetails channel_code = [%s]\n",v_channel_code.arr));
+                }
+
+		if (ind_psp_id>= 0) {
+                        v_psp_id.arr[v_psp_id.len] ='\0';
+                        PutField_CString(myHash,"psp_id",(const char*)v_psp_id.arr);
+DEBUGLOG(("GetOrgTxnDetails psp_id = [%s]\n",v_psp_id.arr));
+                }
+
+
+		RecordSet_Add(myRec,myHash);
+        }
+        while(PD_TRUE);
+
+        EXEC SQL CLOSE c_cursor_getorgdetails;
+
+
+        if (iCnt > 0 ) {
+DEBUGLOG(("GetOrgTxnDetails Normal Exit\n"));
+                return  PD_OK;
+        }
+        else {
+DEBUGLOG(("GetOrgTxnDetails Normal Exit, Not Found\n"));
+                return PD_ERR;
+        }
+
+getorgdetails_error:
+DEBUGLOG(("getorgdetails_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getorgdetails;
+        return PD_ERR;
+}
+
+int UpdateByGenId(const hash_t *hRec)
+{
+        char*   csBuf;
+        char*   csGenId;
+        int     iTmp;
+
+        EXEC SQL WHENEVER SQLERROR GOTO updatebygen_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+
+                varchar         hv_dynstmt[1024];
+
+        EXEC SQL END DECLARE SECTION;
+
+
+DEBUGLOG(("UpdateByGenId: Begin\n"));
+        csBuf = (char*) malloc (128);
+        strcpy((char*)hv_dynstmt.arr,"update payout_generated_file_dt set fd_update_timestamp = sysdate");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+        if(GetField_CString(hRec,"txn_id",&csGenId)){
+DEBUGLOG(("UpdateByGenId:txn_id = [%s]\n",csGenId));
+        }
+        else{
+                FREE_ME(csBuf);
+DEBUGLOG(("UpdateByGenId txn_id not found\n"));
+                return INT_ERR;
+        }
+
+        if(GetField_Int(hRec,"status",&iTmp)){
+DEBUGLOG(("UpdateByGenId: status = [%d]\n",iTmp));
+                sprintf(csBuf,"%d",iTmp);
+                strcat((char*)hv_dynstmt.arr, ",fd_status = ");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+	if(GetField_CString(hRec,"aux_txn_id",&csBuf)){
+DEBUGLOG(("UpdateByGenId: aux_txn_id = [%s]\n",csBuf));
+                strcat((char*)hv_dynstmt.arr, ",fd_aux_txn_id = '");
+                strcat((char*)hv_dynstmt.arr, csBuf);
+                strcat((char*)hv_dynstmt.arr, "'");
+                hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+        }
+
+	strcat((char*)hv_dynstmt.arr, " WHERE fd_txn_id= '");
+        strcat((char*)hv_dynstmt.arr, csGenId);
+        strcat((char*)hv_dynstmt.arr, "'");
+        hv_dynstmt.len = strlen((const char*)hv_dynstmt.arr);
+
+DEBUGLOG(("SQL = [%.*s]\n",hv_dynstmt.len,hv_dynstmt.arr));
+
+
+        EXEC SQL PREPARE PS FROM :hv_dynstmt;
+        EXEC SQL EXECUTE PS;
+
+        FREE_ME(csBuf);
+
+DEBUGLOG(("UpdateByGenId Normal Exit\n"));
+        return PD_OK;
+
+updatebygen_error:
+DEBUGLOG(("updatebygen_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("PayoutGeneratedFileDT_UpdateByGenId: SP_INTERNAL_ERR\n");
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        return PD_ERR;
+}

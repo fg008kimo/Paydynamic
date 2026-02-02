@@ -1,0 +1,74 @@
+CREATE OR REPLACE FUNCTION sp_ol_sim_cards_insert (
+	in_mobile             	ol_sim_cards.osc_mobile%TYPE,
+	in_carriers      	ol_sim_cards.osc_carriers%TYPE,
+	in_country        	ol_sim_cards.osc_country%TYPE,
+	in_owner_name      	ol_sim_cards.osc_owner_name%TYPE,
+	in_sim_credit         	ol_sim_cards.osc_sim_credit%TYPE,	
+	in_sim_package        	ol_sim_cards.osc_sim_package%TYPE,
+	in_sim_currency    	ol_sim_cards.osc_sim_currency%TYPE,
+	in_billed_date        	ol_sim_cards.osc_billed_date%TYPE,
+	in_last_topup_date    	ol_sim_cards.osc_last_topup_date%TYPE,
+	in_next_topup_date    	ol_sim_cards.osc_next_topup_date%TYPE,			
+	in_password          	ol_sim_cards.osc_password%TYPE,
+	in_status           	ol_sim_cards.osc_status%TYPE,
+	in_remarks      	ol_sim_cards.osc_remarks%TYPE,	
+	in_user          	ol_sim_cards.osc_create_user%TYPE
+	)
+  RETURN NUMBER IS
+
+BEGIN
+  INSERT INTO ol_sim_cards (
+	osc_mobile,
+     	osc_carriers,
+       	osc_country,
+      	osc_owner_name,
+       	osc_sim_credit,
+     	osc_sim_package,
+    	osc_sim_currency,
+   	osc_billed_date,
+   	osc_last_topup_date,
+       	osc_next_topup_date,
+       	osc_password,
+      	osc_status,
+       	osc_remarks,
+     	osc_create_timestamp,
+     	osc_create_user,
+       	osc_update_timestamp,
+       	osc_update_user
+	)
+
+  VALUES (
+	in_mobile,
+       	in_carriers,
+       	in_country,
+      	in_owner_name,
+       	in_sim_credit,
+      	in_sim_package,
+      	in_sim_currency,
+       	in_billed_date,
+      	in_last_topup_date,
+      	in_next_topup_date,
+       	in_password,
+       	in_status,
+       	in_remarks,
+       	SYSDATE,
+       	in_user,
+       	SYSDATE,
+       	in_user
+	);
+
+  IF SQL%ROWCOUNT = 0
+  THEN
+     RETURN 1;
+  ELSE
+     RETURN 0;
+  END IF;
+
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+
+END sp_ol_sim_cards_insert;
+/
+

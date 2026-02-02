@@ -1,0 +1,360 @@
+DROP VIEW MERCHANT_BALANCE_VIEW;
+
+/* Formatted on 12/4/2014 12:55:08 PM (QP5 v5.252.13127.32867) */
+CREATE OR REPLACE FORCE VIEW MERCHANT_BALANCE_VIEW
+(
+   M_MERCHANT_ID,
+   M_CURRENCY_ID,
+   M_COUNTRY_ID,
+   M_SERVICE_CODE,
+   CURRENT_BAL,
+   TOTAL_FLOAT,
+   RESERVED_BAL,
+   M_FUNDIN_PAYOUT,
+   M_RESERVED_PAYOUT,
+   SECURITY_BAL,
+   AVA_PO,
+   REMAINING_PO_AMOUNT,
+   REMAINING_PO_AMOUNT_WITH_FEE,
+   MERCHANT_AVA_PO,
+   APPRO_PO_FEE_RATE,
+   MERCHANT_BAL,
+   AVA_SETT,
+   TOTAL_AVA_SETT,
+   SETT_IN_TRANSIT,
+   DEPOSIT_FLOAT,
+   AFTER_PAYOUT_FLOAT,
+   SETTLEMENT_FLOAT,
+   UPLOAD_PAYOUT_AMOUNT,
+   BALANCE_TFR_AMOUNT
+)
+AS
+   SELECT m_merchant_id,
+          m_currency_id,
+          m_country_id,
+          m_service_code,
+          current_bal,
+          total_float,
+          reserved_bal,
+          m_fundin_payout,
+          m_reserved_payout,
+          security_bal,
+          CASE
+             WHEN ava_po > current_bal
+             THEN
+                CASE WHEN current_bal <= 0 THEN 0 ELSE current_bal END
+             ELSE
+                ava_po
+          END
+             AS ava_po,
+          CASE
+             WHEN remaining_po_amount > current_bal
+             THEN
+                CASE WHEN current_bal <= 0 THEN 0 ELSE current_bal END
+             ELSE
+                remaining_po_amount
+          END
+             AS remaining_po_amount,
+          CASE
+             WHEN remaining_po_amount_with_fee > (current_bal / (1 + rate))
+             THEN
+                CASE
+                   WHEN current_bal <= 0 THEN 0
+                   ELSE current_bal / (1 + rate)
+                END
+             ELSE
+                remaining_po_amount_with_fee
+          END
+             AS remaining_po_amount_with_fee,
+          CASE
+             WHEN remaining_po_amount_with_fee > (current_bal / (1 + rate))
+             THEN
+                CASE
+                   WHEN current_bal <= 0 THEN 0
+                   ELSE (current_bal / (1 + rate)) - req_amt
+                END
+             ELSE
+                remaining_po_amount_with_fee - req_amt
+          END
+             AS merchant_ava_po,
+          appro_po_fee_rate,
+          merchant_bal,
+          ava_sett,
+          total_ava_sett,
+          sett_in_transit,
+          m_total_float,
+          m_total_float_after_payout,
+          m_total_float_settlement,
+          uploaded_po_amt,
+          balance_tfr_amt
+     FROM (SELECT m_merchant_id,
+                  m_currency_id,
+                  m_country_id,
+                  m_service_code,
+                    m_current_bal
+                  + m_current_bal_settlement
+                  - m_total_hold
+                  - m_total_hold_settlement
+                  - m_total_reserved_amount
+                     AS current_bal,
+                  CASE
+                     WHEN MB_TXN_TYPE <> 'D'
+                     THEN
+                          m_total_float
+                        + m_total_float_after_payout
+                        + m_total_float_settlement
+                     ELSE
+                          m_total_float
+                        + m_total_float_after_payout
+                        + m_total_float_settlement
+                        - m_total_hold
+                  END
+                     AS total_float,
+                  m_total_reserved_amount AS reserved_bal,
+                  m_fundin_payout,
+                  m_reserved_payout,
+                  m_total_hold + m_total_hold_settlement AS security_bal,
+                  CASE
+                     WHEN MB_TXN_TYPE = 'D'
+                     THEN
+                        0
+                     ELSE
+                          m_current_bal
+                        - m_total_float
+                        - m_total_hold
+                        - m_total_float_after_payout
+                  END
+                     AS ava_po,
+                  CASE
+                     WHEN MB_TXN_TYPE = 'D'
+                     THEN
+                        0
+                     ELSE
+                        CASE
+                           WHEN     NVL (mr_reserved_amount, 0) = 0
+                                AND weekly_amt > 0
+                           THEN
+                              LEAST (
+                                 (  m_current_bal
+                                  - m_total_float
+                                  - m_total_hold
+                                  - m_total_float_after_payout),
+                                 weekly_remain_amt)
+                           WHEN     NVL (mr_reserved_amount, 0) > 0
+                                AND weekly_amt = 0
+                           THEN
+                              LEAST (
+                                 (  m_current_bal
+                                  - m_total_float
+                                  - m_total_hold
+                                  - m_total_float_after_payout),
+                                 NVL (mr_remain_reserved_amount, 0))
+                           WHEN     NVL (mr_reserved_amount, 0) > 0
+                                AND weekly_amt > 0
+                           THEN
+                              LEAST (
+                                 (  m_current_bal
+                                  - m_total_float
+                                  - m_total_hold
+                                  - m_total_float_after_payout),
+                                 NVL (mr_remain_reserved_amount, 0),
+                                 weekly_remain_amt)
+                           ELSE
+                              (  m_current_bal
+                               - m_total_float
+                               - m_total_hold
+                               - m_total_float_after_payout)
+                        END
+                  END
+                     AS remaining_po_amount,
+                  CASE
+                     WHEN MB_TXN_TYPE = 'D'
+                     THEN
+                        0
+                     ELSE
+                        CASE
+                           WHEN     NVL (mr_reserved_amount, 0) = 0
+                                AND weekly_amt > 0
+                           THEN
+                                FLOOR (
+                                     (  LEAST (
+                                           (  m_current_bal
+                                            - m_total_float
+                                            - m_total_hold
+                                            - m_total_float_after_payout),
+                                           weekly_remain_amt)
+                                      / (1 + rate))
+                                   * 100)
+                              / 100
+                           WHEN     NVL (mr_reserved_amount, 0) > 0
+                                AND weekly_amt = 0
+                           THEN
+                                FLOOR (
+                                     (  LEAST (
+                                           (  m_current_bal
+                                            - m_total_float
+                                            - m_total_hold
+                                            - m_total_float_after_payout),
+                                           NVL (mr_remain_reserved_amount, 0))
+                                      / (1 + rate))
+                                   * 100)
+                              / 100
+                           WHEN     NVL (mr_reserved_amount, 0) > 0
+                                AND weekly_amt > 0
+                           THEN
+                                FLOOR (
+                                     (  LEAST (
+                                           (  m_current_bal
+                                            - m_total_float
+                                            - m_total_hold
+                                            - m_total_float_after_payout),
+                                           NVL (mr_remain_reserved_amount, 0),
+                                           weekly_remain_amt)
+                                      / (1 + rate))
+                                   * 100)
+                              / 100
+                           ELSE
+                                FLOOR (
+                                     (  (  m_current_bal
+                                         - m_total_float
+                                         - m_total_hold
+                                         - m_total_float_after_payout)
+                                      / (1 + rate))
+                                   * 100)
+                              / 100
+                        END
+                  END
+                     AS REMAINING_PO_AMOUNT_WITH_FEE,
+                  rate * 100 AS appro_po_fee_rate,
+                  (m_current_bal + m_current_bal_settlement) AS merchant_bal,
+                  (  m_current_bal_settlement
+                   - m_total_float_settlement
+                   - m_total_hold_settlement
+                   - m_total_reserved_amount
+                   - m_settlement_in_transit)
+                     AS ava_sett,
+                  (  m_current_bal_settlement
+                   - m_total_float_settlement
+                   - m_total_hold_settlement
+                   - m_total_reserved_amount)
+                     AS total_ava_sett,
+                  m_settlement_in_transit AS sett_in_transit,
+                  NVL (seb_bal, 0),
+                  rate,
+                  NVL (req_amt, 0) req_amt,
+                  m_total_float,
+                  m_total_float_after_payout,
+                  m_total_float_settlement,
+                  NVL (uploaded_po_amt, 0) uploaded_po_amt,
+                  NVL (balance_tfr_amt, 0) balance_tfr_amt
+             FROM merchant_balance,
+                  merchant_bal_acct,
+                  (  SELECT s_bank_ccy, SUM (s_bank_bal) AS seb_bal
+                       FROM seb_balance
+                   GROUP BY s_bank_ccy),
+                  (SELECT merchant_id, (approximate_fee_rate / 100) AS rate
+                     FROM merch_detail),
+                  (SELECT mr_merchant_id,
+                          mr_currency_id,
+			  mr_country_id,
+			  mr_service_code,
+			  sum(mr_reserved_amount) mr_reserved_amount,
+			  sum(mr_remain_reserved_amount) mr_remain_reserved_amount,
+			  sum(weekly_amt) weekly_amt,
+			  sum(weekly_remain_amt) weekly_remain_amt
+                     FROM (SELECT mr_merchant_id,
+                                  mr_currency_id,
+                                  mr_country_id,
+                                  mr_service_code,
+                                  mr_reserved_amount,
+                                  mr_remain_reserved_amount,
+				  0 as weekly_amt,
+				  0 as weekly_remain_amt
+                             FROM merchant_reserved_amt_view
+                            WHERE     mr_type = 'D'
+                                  AND mr_day_of_week =
+                                         (SELECT   TO_NUMBER (
+                                                      TO_CHAR (
+                                                         TO_DATE (sys_val,
+                                                                  'YYYYMMDD'),
+                                                         'D'))
+                                                 - 1
+                                                    AS day_of_week
+                                            FROM (SELECT sys_val
+                                                    FROM system_control
+                                                   WHERE sys_code =
+                                                            'CTPHDATE'))
+                          union all
+                          SELECT mr_merchant_id,
+                                  mr_currency_id,
+                                  mr_country_id,
+                                  mr_service_code,
+				  0 as mr_reserved_amount,
+                                  0 as mr_remain_reserved_amount,
+                                  NVL (mr_reserved_amount, 0) weekly_amt,
+                                  NVL (mr_remain_reserved_amount, 0)
+                                     weekly_remain_amt
+                             FROM merchant_reserved_amt_view
+                            WHERE mr_type = 'D' AND mr_day_of_week = 7)
+		 group by mr_merchant_id,
+                          mr_currency_id,
+                          mr_country_id,
+                          mr_service_code),
+                  (  SELECT req_mid,
+                            req_service,
+                            req_country,
+                            req_ccy,
+                            SUM (amount) AS req_amt,
+                            SUM (uploaded_po_amt) AS uploaded_po_amt,
+                            SUM (balance_tfr_amt) AS balance_tfr_amt
+                       FROM (  SELECT uh_merchant_id AS req_mid,
+                                      uh_service_code AS req_service,
+                                      ud_country AS req_country,
+                                      ud_request_currency AS req_ccy,
+                                      SUM (ud_request_amount) AS amount,
+                                      SUM (ud_request_amount) AS uploaded_po_amt,
+                                      0 AS balance_tfr_amt
+                                 FROM merchant_upload_file_detail,
+                                      merchant_upload_file_header
+                                WHERE     ud_batch_id = uh_batch_id
+                                      AND (ud_status = 69 OR ud_status = 75)
+                             GROUP BY uh_merchant_id,
+                                      uh_service_code,
+                                      ud_country,
+                                      ud_request_currency
+                             UNION ALL
+                               SELECT th_merchant_id AS req_mid,
+                                      th_service_code AS req_service,
+                                      td_txn_country AS req_country,
+                                      th_net_ccy AS req_ccy,
+                                      SUM (th_transaction_amount) AS amount,
+                                      0 AS uploaded_po_amt,
+                                      SUM (th_transaction_amount)
+                                         AS balance_tfr_amt
+                                 FROM txn_header, txn_detail
+                                WHERE     th_txn_code = 'RTF'
+                                      AND th_status = 'P'
+                                      AND th_txn_id = td_txn_id
+                             GROUP BY th_merchant_id,
+                                      th_service_code,
+                                      td_txn_country,
+                                      th_net_ccy)
+                   GROUP BY req_mid,
+                            req_service,
+                            req_country,
+                            req_ccy)
+            WHERE     m_merchant_id = mr_merchant_id(+)
+                  AND m_currency_id = mr_currency_id(+)
+                  AND m_country_id = mr_country_id(+)
+                  AND m_service_code = mr_service_code(+)
+                  AND m_merchant_id = merchant_id(+)
+                  AND m_currency_id = s_bank_ccy(+)
+                  AND m_merchant_Id = mb_merchant_id
+                  AND m_country_id = mb_country
+                  AND m_currency_id = mb_ccy_id
+                  AND m_service_code = mb_service_code
+                  AND m_merchant_Id = req_mid(+)
+                  AND m_service_code = req_service(+)
+                  AND m_country_id = req_country(+)
+                  AND m_currency_id = req_ccy(+));
+

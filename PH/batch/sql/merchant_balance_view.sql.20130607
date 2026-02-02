@@ -1,0 +1,176 @@
+DROP VIEW MERCHANT_BALANCE_VIEW;
+
+CREATE OR REPLACE FORCE VIEW MERCHANT_BALANCE_VIEW
+(
+   M_MERCHANT_ID,
+   M_CURRENCY_ID,
+   M_COUNTRY_ID,
+   M_SERVICE_CODE,
+   CURRENT_BAL,
+   TOTAL_FLOAT,
+   RESERVED_BAL,
+   M_FUNDIN_PAYOUT,
+   M_RESERVED_PAYOUT,
+   SECURITY_BAL,
+   AVA_PO,
+   REMAINING_PO_AMOUNT,
+   REMAINING_PO_AMOUNT_WITH_FEE,
+   APPRO_PO_FEE_RATE,
+   MERCHANT_BAL,
+   AVA_SETT
+)
+AS
+   SELECT m_merchant_id,
+          m_currency_id,
+          m_country_id,
+          m_service_code,
+          current_bal,
+          total_float,
+          reserved_bal,
+          m_fundin_payout,
+          m_reserved_payout,
+          security_bal,
+          CASE
+             WHEN ava_po > current_bal
+             THEN
+                CASE WHEN current_bal <= 0 THEN 0 ELSE current_bal END
+             ELSE
+                ava_po
+          END
+             AS ava_po,
+          CASE
+             WHEN remaining_po_amount > current_bal
+             THEN
+                CASE WHEN current_bal <= 0 THEN 0 ELSE current_bal END
+             ELSE
+                remaining_po_amount
+          END
+             AS remaining_po_amount,
+          CASE
+             WHEN remaining_po_amount_with_fee > current_bal
+             THEN
+                CASE
+                   WHEN current_bal <= 0 THEN 0
+                   ELSE current_bal / (1 + rate)
+                END
+             ELSE
+                remaining_po_amount_with_fee
+          END
+             AS remaining_po_amount_with_fee,
+          appro_po_fee_rate,
+          merchant_bal,
+          ava_sett
+     FROM (SELECT m_merchant_id,
+                  m_currency_id,
+                  m_country_id,
+                  m_service_code,
+                    m_current_bal
+                  + m_current_bal_settlement
+                  - m_total_hold
+                  - m_total_hold_settlement
+                  - m_total_reserved_amount
+                     AS current_bal,
+                    m_total_float
+                  + m_total_float_after_payout
+                  + m_total_float_settlement
+                     AS total_float,
+                  m_total_reserved_amount AS reserved_bal,
+                  m_fundin_payout,
+                  m_reserved_payout,
+                  m_total_hold + m_total_hold_settlement AS security_bal,
+                    m_current_bal
+                  - m_total_float
+                  - m_total_hold
+                  - m_total_float_after_payout
+                     AS ava_po,
+                  CASE
+                     WHEN NVL (mr_reserved_amount, 0) = 0
+                     THEN
+                        (  m_current_bal
+                         - m_total_float
+                         - m_total_hold
+                         - m_total_float_after_payout)
+                     WHEN NVL (mr_remain_reserved_amount, 0) = 0
+                     THEN
+                        NVL (mr_remain_reserved_amount, 0)
+                     WHEN (  m_current_bal
+                           - m_total_float
+                           - m_total_hold
+                           - m_total_float_after_payout) >
+                             NVL (mr_remain_reserved_amount, 0)
+                     THEN
+                        NVL (mr_remain_reserved_amount, 0)
+                     ELSE
+                        (  m_current_bal
+                         - m_total_float
+                         - m_total_hold
+                         - m_total_float_after_payout)
+                  END
+                     AS remaining_po_amount,
+                  CASE
+                     WHEN NVL (mr_reserved_amount, 0) = 0
+                     THEN
+                          (  m_current_bal
+                           - m_total_float
+                           - m_total_hold
+                           - m_total_float_after_payout)
+                        / (1 + rate)
+                     WHEN NVL (mr_remain_reserved_amount, 0) = 0
+                     THEN
+                        NVL (mr_remain_reserved_amount, 0) / (1 + rate)
+                     WHEN (  m_current_bal
+                           - m_total_float
+                           - m_total_hold
+                           - m_total_float_after_payout) >
+                             NVL (mr_remain_reserved_amount, 0)
+                     THEN
+                        NVL (mr_remain_reserved_amount, 0) / (1 + rate)
+                     ELSE
+                          (  m_current_bal
+                           - m_total_float
+                           - m_total_hold
+                           - m_total_float_after_payout)
+                        / (1 + rate)
+                  END
+                     AS REMAINING_PO_AMOUNT_WITH_FEE,
+                  rate * 100 AS appro_po_fee_rate,
+                  (m_current_bal + m_current_bal_settlement) AS merchant_bal,
+                  (  m_current_bal_settlement
+                   - m_total_float_settlement
+                   - m_total_hold_settlement
+                   - m_total_reserved_amount)
+                     AS ava_sett,
+                  NVL (seb_bal, 0),
+                  rate
+             FROM merchant_balance,
+                  (  SELECT s_bank_ccy, SUM (s_bank_bal) AS seb_bal
+                       FROM seb_balance
+                   GROUP BY s_bank_ccy),
+                  (SELECT merchant_id, (approximate_fee_rate / 100) AS rate
+                     FROM merch_detail),
+                  (SELECT mr_merchant_id,
+                          mr_currency_id,
+                          mr_country_id,
+                          mr_service_code,
+                          mr_reserved_amount,
+                          mr_remain_reserved_amount
+                     FROM merchant_reserved_amt_view
+                    WHERE     mr_type = 'D'
+                          AND mr_day_of_week =
+                                 (SELECT   TO_NUMBER (
+                                              TO_CHAR (
+                                                 TO_DATE (sys_val,
+                                                          'YYYYMMDD'),
+                                                 'D'))
+                                         - 1
+                                            AS day_of_week
+                                    FROM (SELECT sys_val
+                                            FROM system_control
+                                           WHERE sys_code = 'CTPHDATE')))
+            WHERE     m_merchant_id = mr_merchant_id(+)
+                  AND m_currency_id = mr_currency_id(+)
+                  AND m_country_id = mr_country_id(+)
+                  AND m_service_code = mr_service_code(+)
+                  AND m_merchant_id = merchant_id(+)
+                  AND m_currency_id = s_bank_ccy(+));
+

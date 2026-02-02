@@ -1,0 +1,774 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/07/15              LokMan Chow
+Add Handle Payout API Merchant Txn		   2017/04/19	  	   Elvis Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnOmtByUsOPR.h"
+#include "myrecordset.h"
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+OBJPTR(Channel);
+
+int	isAllowProcess(hash_t *hContext);
+int	UpdatePayoutGenerateTxn(hash_t *hUpdateTxn);
+
+
+void TxnOmtByUsOPR(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int Authorize(hash_t* hContext,
+		hash_t* hRequest,
+		hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+	char	*csOPATxnId = NULL;
+	char	*csOPGTxnId = NULL;
+	char	*csUser = NULL;
+	char	*csRemark = NULL;
+	char	*csTxnSeq = NULL;
+	char	*csTmp = NULL;
+	char	*csTmp2 = NULL;
+	char	*csTmp3 = NULL;
+	char	csTag[PD_TAG_LEN+1];
+	int	i = 0;
+	int	j = 0;
+	int	iInputPairCnt = 0;
+	int	iReconPairCnt = 0;
+	int	iMatched = 0;
+	int	iReturnedCnt = 0;
+	int	iStartedRecon = PD_FALSE;
+	int	iTrackingTxnSeqCnt = 0;
+	int	iUnknownTxnSeqCnt = 0;
+	int	iSkip = PD_FALSE;
+	int	iEngineTxnCnt = 0;
+	int	iEngineStmtCnt = 0;
+	int	iReturnFee = PD_FALSE;
+	int	iOverwrite = PD_FALSE;
+	char	*csHandler;
+	char	*csOPATxnCode = NULL;
+
+	char	*csInputStmtTxnId = NULL;
+	char	*csInputReturnStmtTxnId = NULL;
+	char	*csInputBankCode = NULL;
+	char	*csInputBankAcctNum = NULL;
+	char	*csReconStmtTxnId = NULL;
+	char	*csReconBankCode = NULL;
+	char	*csReconBankAcctNum = NULL;
+	char	*csTrackingTxnSeq = NULL;
+	char	*csUnknownTxnSeq = NULL;
+	char	*csCurrBatchId = NULL;
+	char	csLastBatchId[PD_TXN_SEQ_LEN + 1];
+
+	double	dInputTxnAmt = 0.0;
+	double	dReconTxnAmt = 0.0;
+
+	hash_t	*hRec, *hTmp, *hManualRec;
+
+	recordset_t *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet, 0);
+
+	recordset_t *rReconPattern;
+	rReconPattern = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rReconPattern, 0);
+
+	hTmp = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTmp, 0);
+
+	hManualRec = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hManualRec, 0);
+
+DEBUGLOG(("TxnOmtByUsOPR: Authroize()\n"));
+
+	//	get merchant returned payout txn id
+	if (GetField_CString(hContext, "txn_seq", &csTxnSeq)) {
+DEBUGLOG(("Authroize:: Merchant Returned Payout Txn ID = [%s]\n", csTxnSeq));
+		PutField_CString(hContext, "from_txn_seq", csTxnSeq);
+	} else {
+		iRet = INT_TXN_ID_MISSING;
+		PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: Merchant Returned Payout Txn ID not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: Merchant Returned Payout Txn ID not found\n");
+	}
+
+DEBUGLOG(("Authorize:: ##############################\n"));
+
+	//	get merchant payout txn id
+	if (GetField_CString(hRequest, "org_txn_seq", &csOPATxnId)) {
+DEBUGLOG(("Authroize:: Merchant Payout Txn ID = [%s]\n", csOPATxnId));
+		PutField_CString(hContext, "org_txn_seq", csOPATxnId);
+		PutField_CString(hTmp, "upload_txn_id", csOPATxnId);
+
+		//	find original merchant payout transaction info
+		RecordSet_Destroy(rRecordSet);
+		recordset_init(rRecordSet, 0);
+
+DEBUGLOG(("Authorize:: call DBOLTransaction: GetTxnHeader()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLTransaction", "GetTxnHeader");
+		iRet = (unsigned long)(*DBObjPtr)(csOPATxnId, rRecordSet);
+		if (iRet == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			if (GetField_CString(hRec, "client_id", &csTmp)) {
+				PutField_CString(hContext, "merchant_client_id", csTmp);
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: Merchant Payout Client ID not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: Merchant Payout Client ID not found\n");
+			}
+	
+                        if (GetField_CString(hRec, "txn_code", &csOPATxnCode)) {
+DEBUGLOG(("Authorize:: Merchant Payout Txn Code = [%s]\n",csOPATxnCode));
+			} else {
+                                iRet = INT_ERR;
+                                PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: Merchant Payout Txn Code not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: Merchant Payout Txn Code not found\n");
+                        }
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: call DBOLTransaction: GetTxnHeader() failed\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: call DBOLTransaction: GetTxnHeader() failed\n");
+		}
+
+		//	find original psp payout transaction(s) in TEMP
+		//		check - split payout?
+		//		check - multi recon?
+		//			if multi recon come from same merchant payout transaction, allow to process
+		// 			if multi recon come from diff merchant payout transactions, reject
+		RecordSet_Destroy (rRecordSet);
+		recordset_init (rRecordSet, 0);
+
+DEBUGLOG(("Authorize:: call DBOLPayoutGeneratedFileDT: GetFileDetailByUploadTxnId()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLPayoutGeneratedFileDT", "GetFileDetailByUploadTxnId");
+		iRet = (unsigned long)(*DBObjPtr)(hTmp, rRecordSet);
+		if (iRet == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				if (GetField_CString(hRec, "txn_id", &csOPGTxnId)) {
+DEBUGLOG(("Authorize:: PSP Payout Txn ID = [%s]\n", csOPGTxnId));
+
+DEBUGLOG(("Authorize:: call DBOLPayoutReturn: CheckPayoutReconMulti()\n"));
+					DBObjPtr = CreateObj(DBPtr, "DBOLPayoutReturn", "CheckPayoutReconMulti");
+					iRet = (unsigned long)(*DBObjPtr)(csOPGTxnId);
+					if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: not multi recon, allow to return payout\n"));
+					} else {
+						iRet = INT_ERR;
+						PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: multi recon, not allow to return payout\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: multi recon, not allow to return payout\n");
+						break;
+					}
+				} else {
+					iRet = INT_TXN_ID_MISSING;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: PSP Payout Txn ID not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: PSP Payout Txn ID not found\n");
+					break;
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: call DBOLPayoutGeneratedFileDT: GetFileDetailByUploadTxnId() failed\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: call DBOLPayoutGeneratedFileDT: GetFileDetailByUploadTxnId() failed\n");
+		}
+
+		if (iRet == PD_OK) {
+			//	find the latest recon patten
+			//		number of bank statement reconciled with the PSP payout transaction(s)
+DEBUGLOG(("Authorize:: call DBOLPayoutReturn: GetReconPattern()\n"));
+			DBObjPtr = CreateObj(DBPtr, "DBOLPayoutReturn", "GetReconPattern");
+			iRet = (unsigned long)(*DBObjPtr)(hTmp, rReconPattern);
+			if (iRet == PD_OK) {
+				if (GetField_Int(hTmp, "recon_pair_cnt", &iReconPairCnt)) {
+DEBUGLOG(("Authorize:: recon_pair_cnt = [%d]\n", iReconPairCnt));
+				} else {
+					iRet = INT_ERR;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get recon_pair_cnt\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get recon_pair_cnt\n");
+				}
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: call DBOLPayoutReturn: GetReconPattern() failed\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: call DBOLPayoutReturn: GetReconPattern() failed\n");
+			}
+		}
+	} else {
+		iRet = INT_TXN_ID_MISSING;
+		PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: Merchant Payout Txn ID not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: Merchant Payout Txn ID not found\n");
+	}
+
+	//	get input_pair_cnt
+	if (GetField_Int(hContext, "total_cnt", &iInputPairCnt)) {
+DEBUGLOG(("Authorize:: input_pair_cnt = [%d]\n", iInputPairCnt));
+	}
+
+	//	get overwrite indicator
+	if (GetField_CString(hRequest, "overwrite", &csTmp)) {
+		iOverwrite = atoi(csTmp);
+DEBUGLOG(("Authorize:: overwrite = [%d]\n", iOverwrite));
+	}
+
+	//	match recon pair with input pair
+	if (iRet == PD_OK) {
+	if (!iOverwrite) {
+		hRec = RecordSet_GetFirst(rReconPattern);
+		while (hRec) {
+DEBUGLOG(("Authorize:: ==============================\n"));
+
+			if (GetField_CString(hRec, "stmt_txn_seq", &csReconStmtTxnId)) {
+DEBUGLOG(("Authorize:: System Payout Statement Txn ID = [%s]\n", csReconStmtTxnId));
+			} else {
+				iRet = INT_TXN_ID_MISSING;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get system stmt_txn_seq\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get system stmt_txn_seq\n");
+				break;
+			}
+
+			if (GetField_CString(hRec, "bank_code", &csReconBankCode)) {
+DEBUGLOG(("Authorize:: System Bank Code = [%s]\n", csReconBankCode));
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get system bank_code\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get system bank_code\n");
+				break;
+			}
+
+			if (GetField_CString(hRec, "bank_acct_num", &csReconBankAcctNum)) {
+DEBUGLOG(("Authorize:: System Bank Account Number = [%s]\n", csReconBankAcctNum));
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get system bank_acct_num\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get system bank_acct_num\n");
+				break;
+			}
+
+			if (GetField_Double(hRec, "txn_amt", &dReconTxnAmt)) {
+DEBUGLOG(("Authorize:: System Transaction Amount = [%lf]\n", dReconTxnAmt));
+			} else {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get system txn_amt\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get systemtxn_amt\n");
+				break;
+			}
+
+DEBUGLOG(("Authorize:: --------------------\n"));
+
+			iMatched = 0;
+
+			for (i = 1; i <= iInputPairCnt; i++) {
+				sprintf(csTag, "dt_obp_txnid_%d", i);
+				if (GetField_CString(hRequest, csTag, &csInputStmtTxnId)) {
+					//	Statement Txn ID (Classicfied as Payout and Reconciled)
+DEBUGLOG(("Authorize:: Input Payout Statement Txn ID [%d] = [%s]\n", i, csInputStmtTxnId));
+
+					if (!strcmp(csReconStmtTxnId, csInputStmtTxnId)) {
+						sprintf(csTag, "dt_ubc_txnid_%d", i);
+						if (GetField_CString(hRequest, csTag, &csInputReturnStmtTxnId)) {
+							//	Unknown Credit Statement Txn ID
+DEBUGLOG(("Authorize:: Input Unknown Credit Statement Txn ID [%d] = [%s]\n", i, csInputReturnStmtTxnId));
+
+							hash_destroy(hTmp);
+							hash_init(hTmp, 0);
+DEBUGLOG(("Authorize:: call DBOLStatement: GetStmtDtl()\n"));
+							DBObjPtr = CreateObj(DBPtr, "DBOLStatement", "GetStmtDtl");
+							iRet = (unsigned long)(*DBObjPtr)(csInputReturnStmtTxnId, hTmp);
+							if (iRet == PD_OK) {
+								//	check same bank code
+								if (GetField_CString(hTmp, "int_bank_code", &csInputBankCode)) {
+DEBUGLOG(("Authorize:: Input Unknown Credit Statement Bank Code [%d] = [%s]\n", i, csInputBankCode));
+									if (strcmp(csReconBankCode, csInputBankCode)) {
+										iRet = INT_ERR;
+										PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: bank code not match\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: bank code not match\n");
+										break;
+									}
+								} else {
+									iRet = INT_ERR;
+									PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get input unknown credit stmt bank code\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get input unknown credit stmt bank code\n");
+									break;
+								}
+
+								//	check same bank account number
+								if (GetField_CString(hTmp, "bank_acct_num", &csInputBankAcctNum)) {
+DEBUGLOG(("Authorize:: Input Unknown Credit Statement Bank Account Number [%d] = [%s]\n", i, csInputBankAcctNum));
+									if (strcmp(csReconBankAcctNum, csInputBankAcctNum)) {
+										iRet = INT_ERR;
+										PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: bank account number not match\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: bank account number not match\n");
+										break;
+									}
+								} else {
+									iRet = INT_ERR;
+									PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get input unknown credit stmt bank acct num\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get input unknown credit stmt bank acct num\n");
+									break;
+								}
+
+								//	check same transaction amount
+								if (GetField_CString(hTmp, "txn_amount", &csTmp)) {
+									dInputTxnAmt = string2double((const unsigned char *)csTmp);
+DEBUGLOG(("Authorize:: Input Unknown Credit Statement Transaction Amount [%d] = [%lf]\n", i, dInputTxnAmt));
+									if (newround(dReconTxnAmt, 2) != newround(dInputTxnAmt, 2)) {
+										iRet = INT_ERR;
+										PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: transaction amount not match\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: transaction amount not match\n");
+										break;
+									}
+								} else {
+									iRet = INT_ERR;
+									PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get input unknown credit stmt txn amt\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get input unknown credit stmt txn amt\n");
+									break;
+								}
+
+								//	update matched unknown credit stmt txn id
+								iMatched = 1;
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn: GetBaidTxnIdByStatTxnId()\n"));
+								DBObjPtr = CreateObj(DBPtr, "DBOLBAIDTxn", "GetBaidTxnIdByStatTxnId");
+								iRet = (unsigned long)(*DBObjPtr)(csInputReturnStmtTxnId, csTmp);
+								if (iRet == PD_OK) {
+DEBUGLOG(("Authorize:: Input Unknown Credit BAID Txn ID [%d] = [%s]\n", i, csTmp));
+									PutField_CString(hRec, "unknown_txn_seq", csTmp);
+									break;
+								} else {
+									iRet = INT_ERR;
+									PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: call DBOLBAIDTxn: GetBaidTxnIdByStatTxnId() failed\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: call DBOLBAIDTxn: GetBaidTxnIdByStatTxnId() failed\n");
+									break;
+								}
+							} else {
+								iRet = INT_ERR;
+								PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: call DBOLStatement: GetStmtDtl() failed\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: call DBOLStatement: GetStmtDtl() failed\n");
+								break;
+							}
+						} else {
+							iRet = INT_ERR;
+							PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get input unknown credit stmt txn id\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get input unknown credit stmt txn id\n");
+							break;
+						}
+					}
+				} else {
+					iRet = INT_TXN_ID_MISSING;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: cannot get input payout stmt txn id\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: cannot get input payout stmt txn id\n");
+					break;
+				}
+			}
+
+			if (!iMatched) {
+				iRet = INT_ERR;
+				PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: not matched\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: not matched\n");
+				break;
+			}
+
+			hRec = RecordSet_GetNext(rReconPattern);
+		}
+
+DEBUGLOG(("Authorize:: ==============================\n"));
+	}
+	}
+
+	if (GetField_CString(hRequest, "return_mfee", &csTmp)) {
+		iReturnFee = atoi(csTmp);
+		PutField_Int(hRequest, "return_mfee", iReturnFee);
+DEBUGLOG(("Authorize:: return merchant fee = [%d]\n", iReturnFee));
+	}
+
+	if (GetField_CString(hRequest, "remark", &csRemark)) {
+DEBUGLOG(("Authorize:: remark = [%s]\n", csRemark));
+	}
+
+	if (GetField_CString(hRequest, "add_user", &csUser)) {
+DEBUGLOG(("Authorize:: add_user = [%s]\n", csUser));
+		PutField_CString(hContext, "update_user", csUser);
+	}
+
+	//	return payout
+	if (iRet == PD_OK) {
+		PutField_Int(hContext, "same_date_cancel", PD_TRUE);
+DEBUGLOG(("Authorize:: call BOOLTxnElements: VoidOrgTxnElements()\n"));
+		BOObjPtr = CreateObj(BOPtr, "BOOLTxnElements", "VoidOrgTxnElements");
+		iRet = (unsigned long)(*BOObjPtr)(hContext, hRequest);
+DEBUGLOG(("Authorize:: BOOLTxnElements: VoidOrgTxnElements() iRet = [%d]\n", iRet));
+
+		if (iRet == PD_OK) {
+			//PutField_CString(hContext, "txn_code", PD_OL_PAYOUT_VOID_MERCHANT);
+			PutField_CString(hContext, "txn_code", csOPATxnCode);
+			PutField_Int(hContext, "do_logging", PD_NO_LOG);
+			csHandler = (char*) malloc (20);
+			if (!strcmp(csOPATxnCode, PD_OL_PAYOUT_APPROVE)) {
+				sprintf(csHandler, "TxnOmtByUs%s", PD_PAYOUT_VOID);
+			} else if (!strcmp(csOPATxnCode, PD_REQ_OPL_TXN_CODE)) {
+                                sprintf(csHandler, "TxnOmtByUs%s", PD_PAYOUT_API_VOID);
+			}
+DEBUGLOG(("Authorize:: call %s: Authorize()\n", csHandler));
+			TxnObjPtr = CreateObj(TxnPtr, csHandler, "Authorize");
+			iRet = (unsigned long)(*TxnObjPtr)(hContext, hRequest, hResponse);
+DEBUGLOG(("Authorize:: %s: Authorize() iRet = [%d]\n", csHandler, iRet));
+			FREE_ME(csHandler);
+		}
+	}
+
+	//	get the created PSP returned payout transaction(s)
+	if (iRet == PD_OK) {
+		hash_destroy(hTmp);
+		hash_init(hTmp, 0);
+		PutField_CString(hTmp, "upload_txn_id", csOPATxnId);
+
+		RecordSet_Destroy(rRecordSet);
+		recordset_init(rRecordSet, 0);
+
+DEBUGLOG(("Authorize:: call DBOLPayoutGeneratedFileDT: GetAuxTxnIdByUploadTxnId()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBOLPayoutGeneratedFileDT", "GetAuxTxnIdByUploadTxnId");
+		iRet = (unsigned long)(*DBObjPtr)(hTmp, rRecordSet);
+		if (iRet == PD_OK) {
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec) {
+				iReturnedCnt++;
+
+				if (GetField_CString(hRec, "txn_id", &csTmp)) {
+DEBUGLOG(("Authorize:: PSP Org Payout Txn ID [%d] = [%s]\n", iReturnedCnt, csTmp));
+					sprintf(csTag, "gen_org_txn_id_%d", iReturnedCnt);
+					PutField_CString(hTmp, csTag, csTmp);
+				} else {
+					iRet = INT_TXN_ID_MISSING;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: PSP Org Payout Txn ID not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: PSP Org Payout Txn ID not found\n");
+					break;
+				}
+
+				if (GetField_CString(hRec, "gen_aux_txn_id", &csTmp)) {
+DEBUGLOG(("Authorize:: PSP Returned Payout Txn ID [%d] = [%s]\n", iReturnedCnt, csTmp));
+					sprintf(csTag, "gen_aux_txn_id_%d", iReturnedCnt);
+					PutField_CString(hTmp, csTag, csTmp);
+				} else {
+					iRet = INT_TXN_ID_MISSING;
+					PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: PSP Returned Payout Txn ID not found\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: PSP Returned Payout Txn ID not found\n");
+                                        break;
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		} else {
+			iRet = INT_ERR;
+			PutField_Int(hContext, "internal_error", iRet);
+DEBUGLOG(("Authorize:: call DBOLPayoutGeneratedFileDT: GetAuxTxnIdByUploadTxnId() failed\n"));
+ERRLOG("TxnOmtByUsOPR:: Authorize:: call DBOLPayoutGeneratedFileDT: GetAuxTxnIdByUploadTxnId() failed\n");
+		}
+	}
+
+DEBUGLOG(("Authorize:: ==============================\n"));
+
+	//	follow the recon patten to pass PSP returned payout transation(s) and unknown CR stmt(s) pair to the API "REC
+	if (iRet == PD_OK) {
+		hRec = RecordSet_GetFirst(rReconPattern);
+		while (hRec) {
+			if (GetField_CString(hRec, "tracking_txn_seq", &csTrackingTxnSeq)) {
+DEBUGLOG(("Authorize:: tracking_txn_seq = [%s]\n", csTrackingTxnSeq));
+			}
+
+			if (GetField_CString(hRec, "unknown_txn_seq", &csUnknownTxnSeq)) {
+DEBUGLOG(("Authorize:: unknown_txn_seq = [%s]\n", csUnknownTxnSeq));
+			}
+
+			if (GetField_CString(hRec, "batch_id", &csCurrBatchId)) {
+DEBUGLOG(("Authorize:: batch_id = [%s]\n", csCurrBatchId));
+			}
+
+			if (!iStartedRecon) {
+				iStartedRecon = PD_TRUE;
+
+				iTrackingTxnSeqCnt++;
+				sprintf(csTag, "tracking_txn_seq_%d", iTrackingTxnSeqCnt);
+				PutField_CString(hManualRec, csTag, csTrackingTxnSeq);
+
+				if (!iOverwrite) {
+					iUnknownTxnSeqCnt++;
+					sprintf(csTag, "unknown_txn_seq_%d", iUnknownTxnSeqCnt);
+					PutField_CString(hManualRec, csTag, csUnknownTxnSeq);
+				}
+
+				strcpy(csLastBatchId, csCurrBatchId);
+			} else if (strcmp(csCurrBatchId, csLastBatchId)) {
+				//	call REC
+				PutField_CString(hManualRec, "activity", "RECON");
+				PutField_CString(hManualRec, "bank_stmt_type", "RETURN_PAYOUT");
+				PutField_CString(hManualRec, "recon_type", "SAME");
+				PutField_CString(hManualRec, "trigger_type", "manual");
+				PutField_CString(hManualRec, "input_channel", "OMT");
+				//if (!iOverwrite) {				
+				//	PutField_CString(hManualRec, "use_pf", "0");
+				//} else {
+					PutField_CString(hManualRec, "use_pf", "1");
+				//}
+				PutField_CString(hManualRec, "have_charge", "0");
+				PutField_CString(hManualRec, "have_interest", "0");
+				PutField_CString(hManualRec, "add_user", csUser);
+
+				iEngineTxnCnt = 0;
+				for (i = 1; i <= iTrackingTxnSeqCnt; i++) {
+					iSkip = PD_FALSE;
+					sprintf(csTag, "tracking_txn_seq_%d", i);
+					GetField_CString(hManualRec, csTag, &csTmp);
+DEBUGLOG(("1. start: [%s] = [%s]\n", csTag, csTmp));
+
+					for (j = 1; j <= iReturnedCnt; j++) {
+						sprintf(csTag, "gen_org_txn_id_%d", j);
+						GetField_CString(hTmp, csTag, &csTmp2);
+DEBUGLOG(("2. search: [%s] = [%s]\n", csTag, csTmp2));
+						if (!strcmp(csTmp, csTmp2)) {
+							sprintf(csTag, "gen_aux_txn_id_%d", j);
+							GetField_CString(hTmp, csTag, &csTmp3);
+DEBUGLOG(("3. get: [%s] = [%s]\n", csTag, csTmp3));
+							break;
+						}
+					}
+
+					for (j = 1; j <= iEngineTxnCnt; j++) {
+						sprintf(csTag, "txnid_%d", j);
+						GetField_CString(hManualRec, csTag, &csTmp2);
+DEBUGLOG(("4. dedup: [%s] = [%s]\n", csTag, csTmp2));
+						if (!strcmp(csTmp2, csTmp3)) {
+DEBUGLOG(("skip\n"));
+							iSkip = PD_TRUE;
+							break;
+						}
+					}
+
+					if (!iSkip) {
+						iEngineTxnCnt++;
+						sprintf(csTag, "txnid_%d", iEngineTxnCnt);
+DEBUGLOG(("5. put: [%s] = [%s]\n", csTag, csTmp3));
+						PutField_CString(hManualRec, csTag, csTmp3);
+					}
+				}
+
+				sprintf(csTag, "%d", iEngineTxnCnt);
+				PutField_CString(hManualRec, "txn_cnt", csTag);
+
+				iEngineStmtCnt = 0;
+				for (i = 1; i <= iUnknownTxnSeqCnt; i++) {
+					iSkip = PD_FALSE;
+					sprintf(csTag, "unknown_txn_seq_%d", i);
+					GetField_CString(hManualRec, csTag, &csTmp);
+DEBUGLOG(("6. start: [%s] = [%s]\n", csTag, csTmp));
+
+					for (j = 1; j <= iEngineStmtCnt; j++) {
+						sprintf(csTag, "stmt_txnid_%d", j);
+						GetField_CString(hManualRec, csTag, &csTmp2);
+DEBUGLOG(("7. dedup: [%s] = [%s]\n", csTag, csTmp2));
+						if (!strcmp(csTmp, csTmp2)) {
+DEBUGLOG(("skip\n"));
+							iSkip = PD_TRUE;
+							break;
+						}
+					}
+
+					if (!iSkip) {
+						iEngineStmtCnt++;
+						sprintf(csTag, "stmt_txnid_%d", iEngineStmtCnt);
+DEBUGLOG(("8. put: [%s] = [%s]\n", csTag, csTmp));
+						PutField_CString(hManualRec, csTag, csTmp);
+					}
+				}
+
+				sprintf(csTag, "%d", iEngineStmtCnt);
+				PutField_CString(hManualRec, "stmt_cnt", csTag);
+
+DEBUGLOG(("Authorize:: call TxnOmtByUsREC::Authorize()\n"));
+				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsREC", "Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hManualRec, hManualRec, hManualRec);
+
+				//	reset
+				hash_destroy(hManualRec);
+				hash_init(hManualRec, 0);
+				iTrackingTxnSeqCnt = 0;
+				iUnknownTxnSeqCnt = 0;
+
+				iTrackingTxnSeqCnt++;
+				sprintf(csTag, "tracking_txn_seq_%d", iTrackingTxnSeqCnt);
+				PutField_CString(hManualRec, csTag, csTrackingTxnSeq);
+
+				if (!iOverwrite) {
+					iUnknownTxnSeqCnt++;
+					sprintf(csTag, "unknown_txn_seq_%d", iUnknownTxnSeqCnt);
+					PutField_CString(hManualRec, csTag, csUnknownTxnSeq);
+				}
+
+				strcpy(csLastBatchId, csCurrBatchId);
+			} else {
+				iTrackingTxnSeqCnt++;
+				sprintf(csTag, "tracking_txn_seq_%d", iTrackingTxnSeqCnt);
+				PutField_CString(hManualRec, csTag, csTrackingTxnSeq);
+
+				if (!iOverwrite) {
+					iUnknownTxnSeqCnt++;
+					sprintf(csTag, "unknown_txn_seq_%d", iUnknownTxnSeqCnt);
+					PutField_CString(hManualRec, csTag, csUnknownTxnSeq);
+				}
+			}
+
+			hRec = RecordSet_GetNext(rReconPattern);
+		}
+
+		if (iStartedRecon) {
+			//	call REC
+			PutField_CString(hManualRec, "activity", "RECON");
+			PutField_CString(hManualRec, "bank_stmt_type", "RETURN_PAYOUT");
+			PutField_CString(hManualRec, "recon_type", "SAME");
+			PutField_CString(hManualRec, "trigger_type", "manual");
+			PutField_CString(hManualRec, "input_channel", "OMT");
+			//if (!iOverwrite) {
+			//	PutField_CString(hManualRec, "use_pf", "0");
+			//} else {
+				PutField_CString(hManualRec, "use_pf", "1");
+			//}
+			PutField_CString(hManualRec, "have_charge", "0");
+			PutField_CString(hManualRec, "have_interest", "0");
+			PutField_CString(hManualRec, "add_user", csUser);
+
+			iEngineTxnCnt = 0;
+			for (i = 1; i <= iTrackingTxnSeqCnt; i++) {
+				iSkip = PD_FALSE;
+				sprintf(csTag, "tracking_txn_seq_%d", i);
+				GetField_CString(hManualRec, csTag, &csTmp);
+DEBUGLOG(("11. start: [%s] = [%s]\n", csTag, csTmp));
+
+				for (j = 1; j <= iReturnedCnt; j++) {
+					sprintf(csTag, "gen_org_txn_id_%d", j);
+					GetField_CString(hTmp, csTag, &csTmp2);
+DEBUGLOG(("12. search: [%s] = [%s]\n", csTag, csTmp2));
+					if (!strcmp(csTmp, csTmp2)) {
+						sprintf(csTag, "gen_aux_txn_id_%d", j);
+						GetField_CString(hTmp, csTag, &csTmp3);
+DEBUGLOG(("13. get: [%s] = [%s]\n", csTag, csTmp3));
+						break;
+					}
+				}
+
+				for (j = 1; j <= iEngineTxnCnt; j++) {
+					sprintf(csTag, "txnid_%d", j);
+					GetField_CString(hManualRec, csTag, &csTmp2);
+DEBUGLOG(("14. dedup: [%s] = [%s]\n", csTag, csTmp2));
+					if (!strcmp(csTmp2, csTmp3)) {
+DEBUGLOG(("skip\n"));
+						iSkip = PD_TRUE;
+						break;
+					}
+				}
+
+				if (!iSkip) {
+					iEngineTxnCnt++;
+					sprintf(csTag, "txnid_%d", iEngineTxnCnt);
+DEBUGLOG(("15. put: [%s] = [%s]\n", csTag, csTmp3));
+					PutField_CString(hManualRec, csTag, csTmp3);
+				}
+			}
+
+			sprintf(csTag, "%d", iEngineTxnCnt);
+			PutField_CString(hManualRec, "txn_cnt", csTag);
+
+			iEngineStmtCnt = 0;
+			for (i = 1; i <= iUnknownTxnSeqCnt; i++) {
+				iSkip = PD_FALSE;
+				sprintf(csTag, "unknown_txn_seq_%d", i);
+				GetField_CString(hManualRec, csTag, &csTmp);
+DEBUGLOG(("16. start: [%s] = [%s]\n", csTag, csTmp));
+
+				for (j = 1; j <= iEngineStmtCnt; j++) {
+					sprintf(csTag, "stmt_txnid_%d", j);
+					GetField_CString(hManualRec, csTag, &csTmp2);
+DEBUGLOG(("17. dedup: [%s] = [%s]\n", csTag, csTmp2));
+					if (!strcmp(csTmp, csTmp2)) {
+DEBUGLOG(("skip\n"));
+						iSkip = PD_TRUE;
+						break;
+					}
+				}
+
+				if (!iSkip) {
+					iEngineStmtCnt++;
+					sprintf(csTag, "stmt_txnid_%d", iEngineStmtCnt);
+DEBUGLOG(("18. put: [%s] = [%s]\n", csTag, csTmp));
+					PutField_CString(hManualRec, csTag, csTmp);
+				}
+			}
+
+			sprintf(csTag, "%d", iEngineStmtCnt);
+			PutField_CString(hManualRec, "stmt_cnt", csTag);
+
+DEBUGLOG(("Authorize:: call TxnOmtByUsREC::Authorize()\n"));
+			TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsREC", "Authorize");
+			iRet = (unsigned long)(*TxnObjPtr)(hManualRec, hManualRec, hManualRec);
+		}
+	}
+
+	if (iRet == PD_OK) {
+		PutField_CString(hContext, "sub_status", PD_REFUND_APPROVED);
+		PutField_CString(hResponse, "org_txn_seq", csTxnSeq);
+	}
+
+	hash_destroy(hTmp);
+	hash_destroy(hManualRec);
+	RecordSet_Destroy(rRecordSet);
+	RecordSet_Destroy(rReconPattern);
+	FREE_ME(hTmp);
+	FREE_ME(hManualRec);
+	FREE_ME(rRecordSet);
+	FREE_ME(rReconPattern);
+
+DEBUGLOG(("Normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+

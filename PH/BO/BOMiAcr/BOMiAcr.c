@@ -1,0 +1,1192 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/10/29              LokMan Chow
+Add handleACRBalance_New for PRD136		   2018/08/16		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "BOMiAcr.h"
+#include "math.h"
+
+static char    cDebug;
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+
+double CreditFormula(const double dNowBankAmt, const double dNowRate,
+		     const double dInFromAmt, const double dInBankAmt);
+
+double DebitFormula(const double dNowBankAmt, const double dNowRate,
+		    const double dOutFromAmt, const double dOutBankAmt); 
+
+
+int handleACRBalance(hash_t* hUpdate,hash_t* hHistory,const int iVoid);
+
+int handleACRBalance_New(hash_t* hUpdate,hash_t* hHistory,const int iVoid);
+
+void BOMiAcr(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+
+int GetACRBal(const hash_t* hIn, hash_t* hOut)
+{
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;
+	double	dTmp = 0.0;
+
+	if(GetField_CString(hIn,"from_ccy",&csTmp)){
+DEBUGLOG(("GetACRBal() from_ccy = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("GetACRBal() from_ccy is missing!!!\n"));
+	}
+
+	if(GetField_CString(hIn,"bank_ccy",&csTmp)){
+DEBUGLOG(("GetACRBal() bank_ccy = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("GetACRBal() bank_ccy is missing!!!\n"));
+	}
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","GetOwnAcrBal");
+		iRet = (unsigned long)(*DBObjPtr)(hIn, hOut);
+		if(iRet == PD_FOUND){
+			iRet = PD_OK;
+			if(GetField_Double(hOut,"bank_bal",&dTmp)){
+DEBUGLOG(("GetOwnAcrBal() Bank Balance = [%lf]\n",dTmp));
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("GetOwnAcrBal() Bank Balance not found!!!!\n"));
+			}
+			if(GetField_Double(hOut,"rate",&dTmp)){
+DEBUGLOG(("GetOwnAcrBal() Rate = [%lf]\n",dTmp));
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("GetOwnAcrBal() Rate not found!!!!\n"));
+			}
+		}
+		else if(iRet == PD_NOT_FOUND){
+DEBUGLOG(("DBMiAcrBal: GetOwnAcrBal() record not found\n"));
+		}
+		else{
+DEBUGLOG(("DBMiAcrBal: GetOwnAcrBal() Failed!!!\n"));
+		}
+	}
+
+DEBUGLOG(("GetACRBal() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int GetACRBalForUpdate(const hash_t* hIn, hash_t* hOut)
+{
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;
+	double	dTmp = 0.0;
+
+	if(GetField_CString(hIn,"from_ccy",&csTmp)){
+DEBUGLOG(("GetACRBalForUpdate() from_ccy = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("GetACRBalForUpdate() from_ccy is missing!!!\n"));
+	}
+
+	if(GetField_CString(hIn,"bank_ccy",&csTmp)){
+DEBUGLOG(("GetACRBalForUpdate() bank_ccy = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("GetACRBalForUpdate() bank_ccy is missing!!!\n"));
+	}
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","GetOwnAcrBalForUpdate");
+		iRet = (unsigned long)(*DBObjPtr)(hIn, hOut);
+		if(iRet == PD_FOUND){
+			iRet = PD_OK;
+			if(GetField_Double(hOut,"bank_bal",&dTmp)){
+DEBUGLOG(("GetOwnAcrBalForUpdate() Bank Balance = [%lf]\n",dTmp));
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("GetOwnAcrBalForUpdate() Bank Balance not found!!!!\n"));
+			}
+			if(GetField_Double(hOut,"rate",&dTmp)){
+DEBUGLOG(("GetOwnAcrBalForUpdate() Rate = [%lf]\n",dTmp));
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("GetOwnAcrBalForUpdate() Rate not found!!!!\n"));
+			}
+		}
+		else if(iRet == PD_NOT_FOUND){
+			iRet = PD_OK;
+DEBUGLOG(("DBMiAcrBal: GetOwnAcrBalForUpdate() record not found\n"));
+		}
+		else{
+DEBUGLOG(("DBMiAcrBal: GetOwnAcrBalForUpdate() Failed!!!\n"));
+		}
+	}
+
+DEBUGLOG(("GetACRBalForUpdate() iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int CalculateACR(const hash_t* hIn)
+{
+	int	iRet = PD_OK;
+	int	i= 0;
+	int	iCnt = 0;
+	int	iProCnt = 0;
+	int	iVoid = PD_FALSE;
+	int	iIsACRBank = PD_FALSE;
+	int	isProrata = PD_FALSE;
+	double	dFromAmt = 0.0;
+	double	dBankAmt = 0.0;
+	double	dOrgRate = 0.0;
+	double	dOrgBalance = 0.0;
+	double	dOrgRatio = 0.0;
+	char	cDirection = 'x';
+	char	cTmp = 'x';
+	char	*csTmp = NULL;
+	char	*csFromCcy= NULL;
+	char	*csBankCcy= NULL;
+	char	*csOrgBatchId= NULL;
+	char	*csBaseCurrency= NULL;
+	char	*csEntityType = NULL;
+	char	*csBankId = NULL;
+	char	csTag[PD_TAG_LEN+1];
+	int	iCalVersion = PD_DEFAULT_ACR_CAL_VERSION;
+	int	iCalPeriod = PD_DEFAULT_ACR_CAL_PERIOD;
+	int	iLastTxn = PD_FALSE;
+
+	hash_t	*hRec;
+
+	hash_t	*hUpd;
+	hUpd = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hUpd,0);
+
+	hash_t	*hHis;
+	hHis= (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hHis,0);
+
+	hash_t	*hDetail;
+	hDetail = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hDetail,0);
+
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+DEBUGLOG(("CalculateACR:: ()\n"));
+
+	char*   csValueTmp;
+	csValueTmp = (char*) malloc (128);
+	DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+	if ((unsigned long)(DBObjPtr)("MI_ACR_CAL_VERSION", csValueTmp) == FOUND) {
+		if(is_numeric(csValueTmp) == PD_TRUE){
+			iCalVersion = atoi(csValueTmp);
+DEBUGLOG((" - Calculate Version  = [%d]\n", iCalVersion));
+		}
+	}
+	if ((unsigned long)(DBObjPtr)("MI_ACR_CAL_PERIOD", csValueTmp) == FOUND) {
+		if(is_numeric(csValueTmp) == PD_TRUE){
+			iCalPeriod = atoi(csValueTmp);
+DEBUGLOG((" - Calculate Period = [%d]\n", iCalPeriod));
+		}
+
+	}
+	PutField_Int(hHis, "cal_version", iCalVersion);
+	PutField_Int(hHis, "cal_period", iCalPeriod);
+
+	FREE_ME(csValueTmp);
+
+
+	if(GetField_Int(hIn,"is_void",&iVoid)){
+DEBUGLOG(("CalculateACR() is_void = [%d]\n",iVoid));
+
+		if(iVoid){
+			if(GetField_CString(hIn,"org_batch_id",&csOrgBatchId)){
+				PutField_CString(hHis,"org_batch_id",csOrgBatchId);
+DEBUGLOG(("CalculateACR() org_batch_id = [%s]\n",csOrgBatchId));
+			}
+			else if(GetField_CString(hIn,"org_txn_id",&csTmp)){
+				//find the batch_id by the org_txn_id
+				DBObjPtr = CreateObj(DBPtr,"DBMiBatchDetail","GetOrgBatchIdByTxnId");
+				if((unsigned long)((DBObjPtr)(csTmp,PD_MI_BATCH_TXN_OPER_INSERT,hDetail)) == PD_FOUND){
+					if(GetField_CString(hDetail,"batch_id",&csOrgBatchId)){
+						PutField_CString(hHis,"org_batch_id",csOrgBatchId);
+DEBUGLOG(("CalculateACR() GetBatchIdByTxnId() org_batch_id = [%s]\n",csOrgBatchId));
+					}
+				}
+				else{
+					iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() DBMiBatchDetail::GetBatchIdByTxnId failed!!!\n"));
+				}
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() org_txn_id is missing!!!!!\n"));
+			}
+		}
+	}
+	else{
+DEBUGLOG(("CalculateACR() is_void = [%d] (default)\n",iVoid));
+	}
+	
+	if(GetField_CString(hIn,"update_user",&csTmp)){
+		PutField_CString(hUpd,"add_user",csTmp);
+		PutField_CString(hHis,"add_user",csTmp);
+DEBUGLOG(("CalculateACR() update_user = [%s]\n",csTmp));
+	}
+
+	//Transaction ID(s) (Remit/Receive Txn)
+	if(GetField_Int(hIn,"txn_cnt",&iCnt)){
+		PutField_Int(hHis,"txn_cnt",iCnt);
+DEBUGLOG(("CalculateACR() txn_cnt = [%d]\n",iCnt));
+	}
+
+	if(iCnt == 1){
+		if(GetField_CString(hIn,"txn_id",&csTmp)){
+			sprintf(csTag,"txn_id_0");
+			PutField_CString(hHis,csTag,csTmp);
+DEBUGLOG(("CalculateACR() txn_id = [%s]\n",csTmp));
+		}
+		else{
+			iRet = INT_TXN_ID_NOT_FOUND;
+DEBUGLOG(("CalculateACR() txn_id not found\n"));
+ERRLOG("BOMiAcr::CalculateACR() txn_id not found\n");
+		}
+	}
+	else if(iCnt > 1){
+		for(i=0; i<iCnt; i++){
+			sprintf(csTag,"txn_id_%d",i);
+			if(GetField_CString(hIn,csTag,&csTmp)){
+				PutField_CString(hHis,csTag,csTmp);
+DEBUGLOG(("CalculateACR() txn_id [%d] = [%s]\n",i,csTmp));
+			}
+		}
+
+	}
+	else{
+		iRet = INT_TXN_ID_NOT_FOUND;
+	}
+	
+	//batch_id
+	if(GetField_CString(hIn,"batch_id",&csTmp)){
+		PutField_CString(hHis,"batch_id",csTmp);
+DEBUGLOG(("CalculateACR() batch_id = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() batch_id is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() batch_id is missing!!!\n");
+	}
+
+	//txn_date
+	if(GetField_CString(hIn,"txn_date",&csTmp)){
+		PutField_CString(hHis,"txn_date",csTmp);
+DEBUGLOG(("CalculateACR() txn_date = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() txn_date is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() txn_date is missing!!!\n");
+	}
+
+	//entity_id
+      	if (GetField_CString(hIn,"entity_id",&csTmp)) {
+DEBUGLOG(("CalculateACR() entity_id = [%s]\n",csTmp));
+		if(!GetField_CString(hIn,"entity_type",&csEntityType)){
+			//find the entity type of the entity
+			DBObjPtr = CreateObj(DBPtr,"DBMiEntityDetail","GetEntityType");
+			if((unsigned long)((DBObjPtr)(csTmp,hDetail)) == PD_FOUND){
+				if(GetField_CString(hDetail,"entity_type",&csEntityType)){
+DEBUGLOG(("CalculateACR() entity_type = [%s]\n",csEntityType));
+				}
+			}
+			else {
+				iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() entity_type not found\n"));
+ERRLOG("BOMiAcr::CalculateACR() entity_type not found\n");
+			}
+		}
+		
+       	}
+       	else {
+               	iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() entity_id not found\n"));
+ERRLOG("BOMiAcr::CalculateACR() entity_id not found\n");
+       	}
+
+	if(!strcmp(csEntityType,PD_MI_ENTITY_OPBANK)){
+
+		if(!GetField_CString(hIn,"bank_id",&csBankId)||
+		   !GetField_Int(hIn,"is_acr_bank",&iIsACRBank)||
+		   !GetField_CString(hIn,"base_ccy",&csBaseCurrency)){
+
+			//find base currency + is ACR bank
+			DBObjPtr = CreateObj(DBPtr,"DBMiEntityOpb","GetOPBInfoByEntityId");
+			iRet = (unsigned long)(*DBObjPtr)(csTmp,hDetail);
+			if(iRet == PD_OK){
+				if(GetField_CString(hDetail,"base_ccy",&csBaseCurrency)){
+DEBUGLOG(("CalculateACR() bank base_ccy = [%s]\n",csBaseCurrency));
+				}
+				if(GetField_Int(hDetail,"is_acr_bank",&iIsACRBank)){
+DEBUGLOG(("CalculateACR() is_acr_bank = [%d]\n",iIsACRBank));
+				}
+				if(GetField_CString(hDetail,"bank_id",&csBankId)){
+					PutField_CString(hHis,"bank_id",csBankId);
+DEBUGLOG(("CalculateACR() bank_id = [%s]\n",csBankId));
+				}
+
+			}
+		}
+		else{
+			PutField_CString(hHis,"bank_id",csBankId);
+		}
+
+	}
+
+	//txn_code
+	if(GetField_CString(hIn,"txn_code",&csTmp)){
+		PutField_CString(hHis,"txn_code",csTmp);
+DEBUGLOG(("CalculateACR() txn_code = [%s]\n",csTmp));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() txn_code is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() txn_code is missing!!!\n");
+	}
+
+	if(!iIsACRBank){
+		iRet = PD_SKIP_OK;
+DEBUGLOG(("CalculateACR() Not ACR Bank. Skip...\n"));
+	}
+	else{
+		DBObjPtr = CreateObj(DBPtr,"DBMiActionLock","TakeTheActionCtl");
+		if((unsigned long)(*DBObjPtr)("CalculateACR")!=PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() Take update ACR control failed!!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() Take update ACR control failed!!!!\n");
+		}
+	}
+
+	if(iRet==PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBSystemControl","GetApprovalDT");
+		(*DBObjPtr)(hHis);
+		if(GetField_CString(hHis,"approval_timestamp",&csTmp)) {
+			PutField_CString(hHis,"time",csTmp);
+DEBUGLOG(("GetApprovalDT: Approval Timestamp [%s]\n",csTmp));
+		}
+	}
+
+	///////For Void Case////////
+	if(iRet==PD_OK && iVoid){
+		//check the void txn is the last one or not
+		DBObjPtr = CreateObj(DBPtr, "DBMiAcrInOutHistory", "IsLastBatchInOverview");
+		iLastTxn = (unsigned long)(*DBObjPtr)(csOrgBatchId);
+		PutField_Int(hHis, "is_last_batch", iLastTxn);
+DEBUGLOG(("CalculateACR() check [%s] is last batch = [%s]\n", csOrgBatchId, iLastTxn == PD_TRUE ? "TRUE" : "FALSE"));
+
+		DBObjPtr = CreateObj(DBPtr,"DBMiAcrInOutHistory","GetOverviewByBatchId");
+		if((unsigned long)(*DBObjPtr)(csOrgBatchId,rRecordSet)==PD_OK){
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec && iRet==PD_OK) {
+				if(GetField_CString(hRec,"bank_id",&csTmp)){
+					if(strcmp(csBankId,csTmp)){
+						hRec = RecordSet_GetNext(rRecordSet);
+						continue;
+					}
+				}
+
+				if(GetField_Char(hRec,"fund_type",&cTmp)){
+					PutField_Char(hHis,"fund_type",cTmp);
+				}
+
+				if(GetField_Double(hRec,"old_rate",&dOrgRate)){
+					PutField_Double(hHis,"old_rate",dOrgRate);
+DEBUGLOG(("CalculateACR() old_rate = [%lf]\n",dOrgRate));
+				}
+				if(GetField_Double(hRec,"org_bank_bal",&dOrgBalance)){
+					PutField_Double(hHis,"org_bank_bal",dOrgBalance);
+DEBUGLOG(("CalculateACR() org_bank_bal = [%lf]\n",dOrgBalance));
+				}
+
+				if(GetField_CString(hRec,"bank_ccy",&csBankCcy)){
+					PutField_CString(hHis,"bank_ccy",csBankCcy);
+					PutField_CString(hUpd,"bank_ccy",csBankCcy);
+DEBUGLOG(("CalculateACR() bank_ccy = [%s]\n",csBankCcy));
+				}
+				if(GetField_Double(hRec,"bank_amt",&dBankAmt)){
+					PutField_Double(hHis,"bank_amt",dBankAmt);
+DEBUGLOG(("CalculateACR() bank_amt = [%lf]\n",dBankAmt));
+				}
+
+				if(GetField_CString(hRec,"from_ccy",&csFromCcy)){
+					PutField_CString(hHis,"from_ccy",csFromCcy);
+					PutField_CString(hUpd,"from_ccy",csFromCcy);
+DEBUGLOG(("CalculateACR() from_ccy = [%s]\n",csFromCcy));
+				}
+				if(GetField_Double(hRec,"from_amt",&dFromAmt)){
+					PutField_Double(hHis,"from_amt",dFromAmt);
+DEBUGLOG(("CalculateACR() from_amt = [%lf]\n",dFromAmt));
+				}
+				else{
+					if(cTmp==PD_FUNDS_OUT){
+						dFromAmt = newround(dBankAmt*dOrgRate, PD_DECIMAL_LEN);
+						PutField_Double(hHis,"from_amt",dFromAmt);
+DEBUGLOG(("CalculateACR() from_amt [%lf*%lf] = [%lf]\n",dBankAmt,dOrgRate,dFromAmt));
+					}
+					else{
+						iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() from_amt in history overview is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() from_amt in history overview is missing!!!\n");
+					}
+				}
+
+				if(iRet==PD_OK){
+					iRet = handleACRBalance(hUpd,hHis,iVoid);
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}//end while
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() DBMiAcrInOutHistory::GetOverviewByBatchId() Failed!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() DBMiAcrInOutHistory::GetOverviewByBatchId() Failed!!!\n");
+		}
+	}
+
+	
+	///////For Normal Case////////
+	else if(iRet==PD_OK && !iVoid){
+		//fund_type
+		if(GetField_Char(hIn,"fund_type",&cDirection)){
+			PutField_Char(hHis,"fund_type",cDirection);
+DEBUGLOG(("CalculateACR() fund_type = [%c]\n",cDirection));
+
+			if(cDirection==PD_FUNDS_OUT){
+				if(GetField_Int(hIn,"is_prorata",&isProrata)){
+					PutField_Int(hHis,"is_prorata",isProrata);
+DEBUGLOG(("CalculateACR() is_prorata = [%d]\n",isProrata));
+				}
+			}
+		}
+		else{
+			iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() fund_type is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() fund_type is missing!!!\n");
+		}
+
+		//bank_ccy
+		if(GetField_CString(hIn,"bank_ccy",&csBankCcy)){
+			PutField_CString(hHis,"bank_ccy",csBankCcy);
+			PutField_CString(hUpd,"bank_ccy",csBankCcy);
+DEBUGLOG(("CalculateACR() bank_ccy = [%s]\n",csBankCcy));
+
+			//verify with base currency
+			if(strcmp(csBankCcy,csBaseCurrency)){
+				iRet = INT_CURRENCY_ID_NOT_MATCH;
+DEBUGLOG(("CalculateACR() bank_ccy and base_ccy are not the same!!!![%s][%s]\n",csBankCcy,csBaseCurrency));
+ERRLOG("BOMiAcr::CalculateACR() bank_ccy and base_ccy are not the same!!!![%s][%s]\n",csBankCcy,csBaseCurrency);
+			}
+		}
+		else{
+			iRet = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("CalculateACR() bank_ccy is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() bank_ccy is missing!!!\n");
+		}
+		//bank_amt
+		if(GetField_Double(hIn,"bank_amt",&dBankAmt)){
+			PutField_Double(hHis,"bank_amt",dBankAmt);
+DEBUGLOG(("CalculateACR() bank_amt = [%lf]\n",dBankAmt));
+		}
+		else{
+			iRet = INT_TXN_AMT_MISSING;
+DEBUGLOG(("CalculateACR() bank_amt is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() bank_amt is missing!!!\n");
+		}
+
+		if(iRet==PD_OK){
+			//special handle for fund out by prorata
+			if(cDirection==PD_FUNDS_OUT && isProrata){
+				//find all acr with same bank_ccy
+				//split the bank_amt by ratio
+				//call handleACRBalance(hUpd,hHis,iVoid) one by one
+				double	dRemainBankAmt = dBankAmt;
+				double	dSplitAmt = 0.0;
+				int	iLoopCnt = 0;
+				DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","GetAllAcrBalByCcy");
+				if((unsigned long)(*DBObjPtr)(csBankCcy,rRecordSet)==PD_OK){
+					hRec = RecordSet_GetFirst(rRecordSet);
+					while (hRec && iRet==PD_OK) {
+						if(GetField_Int(hRec,"prorata_cnt",&iProCnt)){
+DEBUGLOG(("GetAllAcrBalByCcy: prorata_cnt = [%d]\n",iProCnt));
+						}
+
+						if(iProCnt>0){
+							if(GetField_CString(hRec,"from_ccy",&csFromCcy)){
+								PutField_CString(hHis,"from_ccy",csFromCcy);
+								PutField_CString(hUpd,"from_ccy",csFromCcy);
+DEBUGLOG(("GetAllAcrBalByCcy: from_ccy = [%s]\n",csFromCcy));
+							}
+							if(GetField_Double(hRec,"bank_bal",&dOrgBalance)){
+DEBUGLOG(("GetAllAcrBalByCcy: bank_bal = [%lf]\n",dOrgBalance));
+							}
+							if(GetField_Double(hRec,"rate",&dOrgRate)){
+DEBUGLOG(("GetAllAcrBalByCcy: rate = [%lf]\n",dOrgRate));
+							}
+							if(GetField_Double(hRec,"ratio",&dOrgRatio)){
+DEBUGLOG(("GetAllAcrBalByCcy: ratio = [%lf]\n",dOrgRatio));
+							}
+
+							if(dOrgRatio>0.0){
+								iLoopCnt ++;
+								if(iLoopCnt<iProCnt){
+									dSplitAmt = newround(dBankAmt*dOrgRatio,PD_DECIMAL_LEN);
+									PutField_Double(hHis,"bank_amt",dSplitAmt);
+									dRemainBankAmt = dRemainBankAmt - dSplitAmt;
+DEBUGLOG(("CalculateACR() debit bank_amt = [%lf]\n",dSplitAmt));
+								}
+								else{
+									PutField_Double(hHis,"bank_amt",dRemainBankAmt);
+DEBUGLOG(("CalculateACR() debit bank_amt = [%lf]\n",dRemainBankAmt));
+								}
+
+								iRet = handleACRBalance(hUpd,hHis,iVoid);
+							}
+							else{
+DEBUGLOG(("GetAllAcrBalByCcy: skip this pool as ratio = 0\n"));
+							}
+						}
+						else{
+							iRet = INT_INSUFFICIENT_FUND;
+DEBUGLOG(("GetAllAcrBalByCcy: Not enough balance for debit!!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() Not enough balance for debit!!!!\n");
+						}
+
+						hRec = RecordSet_GetNext(rRecordSet);
+					}
+				}
+				else{
+					iRet = INT_ERR;
+DEBUGLOG(("CalculateACR() DBMiAcrBal::GetAllAcrBalByCcy() Failed!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() DBMiAcrBal::GetAllAcrBalByCcy() Failed!!!\n");
+				}
+			}
+			else{
+				//from_ccy
+				if(GetField_CString(hIn,"from_ccy",&csFromCcy)){
+					PutField_CString(hHis,"from_ccy",csFromCcy);
+					PutField_CString(hUpd,"from_ccy",csFromCcy);
+DEBUGLOG(("CalculateACR() from_ccy = [%s]\n",csFromCcy));
+				}
+				else{
+					iRet = INT_CURRENCY_CODE_NOT_FOUND;
+DEBUGLOG(("CalculateACR() from_ccy is missing!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() from_ccy is missing!!!\n");
+				}
+
+				//from_amt
+				if(GetField_Double(hIn,"from_amt",&dFromAmt)){
+					PutField_Double(hHis,"from_amt",dFromAmt);
+DEBUGLOG(("CalculateACR() from_amt = [%lf]\n",dFromAmt));
+				}
+				if(dFromAmt==0.0 && cDirection==PD_FUNDS_IN){
+					iRet = INT_TXN_AMT_MISSING;
+DEBUGLOG(("CalculateACR() from_amt is missing!!!!\n"));
+ERRLOG("BOMiAcr::CalculateACR() from_amt is missing!!!\n");
+				}
+
+				if(iRet==PD_OK){
+					iRet = handleACRBalance(hUpd,hHis,iVoid);
+				}
+			}
+		}
+	}
+
+	if(iRet == PD_SKIP_OK){
+		iRet = PD_OK;
+	}
+
+	FREE_ME(hUpd);
+	FREE_ME(hHis);
+	FREE_ME(hDetail);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+DEBUGLOG(("CalculateACR:: () Noraml Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+double CreditFormula(const double dNowBankAmt, const double dNowRate, 
+		     const double dInFromAmt, const double dInBankAmt)
+{
+	double dNewValue = 0.0;
+
+	dNewValue = newround((dNowBankAmt*dNowRate + dInFromAmt)/(dNowBankAmt + dInBankAmt),PD_ROUND_UP_DEC);
+DEBUGLOG(("CreditFormula(): [(%lf*%lf + %lf)/(%lf + %lf)] = [%lf]\n",dNowBankAmt,dNowRate,dInFromAmt,dNowBankAmt,dInBankAmt,dNewValue));
+
+	return dNewValue;
+}
+
+double DebitFormula(const double dNowBankAmt, const double dNowRate,
+		    const double dOutFromAmt, const double dOutBankAmt)
+{
+	double dNewValue = 0.0;
+
+	dNewValue = newround((dNowBankAmt*dNowRate - dOutFromAmt)/(dNowBankAmt - dOutBankAmt),PD_ROUND_UP_DEC);
+DEBUGLOG(("DebitFormula(): [(%lf*%lf - %lf)/(%lf - %lf)] = [%lf]\n",dNowBankAmt,dNowRate,dOutFromAmt,dNowBankAmt,dOutBankAmt,dNewValue));
+
+	return dNewValue;
+}
+
+
+int handleACRBalance(hash_t* hUpdate,hash_t* hHistory,const int iVoid)
+{
+	int iRet = PD_OK;
+	int iLastTxn = PD_FALSE;
+	int isProrata = PD_FALSE;
+	int i = 0;
+	int iCnt = 0;
+	char	*csOrgBatchId = NULL;
+	char	*csFromCcy = NULL;
+	char	*csBankCcy= NULL;
+	char	*csTmp= NULL;
+	char	csTag[PD_TAG_LEN+1];
+	double	dFromAmt = 0.0;
+	double	dBankAmt = 0.0;
+	double	dNewRate = 0.0;
+	double	dNowRate = 0.0;
+	double	dOrgRate = 0.0;
+	double	dNewBalance = 0.0;
+	double	dNowBalance = 0.0;
+	double	dOrgBalance = 0.0;
+	double	dOrgNowBalance = 0.0;
+	char	cDirection = 'x';
+	char	cTmp = 'x';
+	int	iCalVersion = PD_DEFAULT_ACR_CAL_VERSION;
+
+	if(GetField_Int(hHistory, "cal_version", &iCalVersion)){
+		if(iCalVersion != PD_DEFAULT_ACR_CAL_VERSION){
+			return handleACRBalance_New(hUpdate, hHistory, iVoid);
+		}
+	}
+
+	hash_t	*hOrgBal;
+	hOrgBal = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOrgBal,0);
+
+DEBUGLOG(("handleACRBalance()\n"));
+	iRet = GetACRBalForUpdate(hHistory,hOrgBal);
+
+	if(iRet==PD_OK){
+		if(GetField_Int(hHistory,"txn_cnt",&iCnt)){
+DEBUGLOG(("handleACRBalance() txn_cnt = [%d]\n",iCnt));
+		}
+		if(GetField_Double(hOrgBal,"bank_bal",&dNowBalance)){
+DEBUGLOG(("handleACRBalance() now bank_bal = [%lf]\n",dNowBalance));
+		}
+		if(GetField_Double(hOrgBal,"rate",&dNowRate)){
+DEBUGLOG(("handleACRBalance() now rate= [%lf]\n",dNowRate));
+		}
+		if(GetField_Char(hHistory,"fund_type",&cDirection)){
+DEBUGLOG(("handleACRBalance() fund_type = [%c]\n",cDirection));
+		}
+		if(GetField_Int(hHistory,"is_prorata",&isProrata)){
+DEBUGLOG(("handleACRBalance() is_prorata = [%d]\n",isProrata));
+		}
+		if(GetField_CString(hHistory,"from_ccy",&csFromCcy)){
+DEBUGLOG(("handleACRBalance() from_ccy = [%s]\n",csFromCcy));
+		}
+		if(GetField_Double(hHistory,"from_amt",&dFromAmt)){
+DEBUGLOG(("handleACRBalance() from_amt = [%lf]\n",dFromAmt));
+		}
+		if(GetField_CString(hHistory,"bank_ccy",&csBankCcy)){
+DEBUGLOG(("handleACRBalance() bank_ccy = [%s]\n",csBankCcy));
+		}
+		if(GetField_Double(hHistory,"bank_amt",&dBankAmt)){
+DEBUGLOG(("handleACRBalance() bank_amt = [%lf]\n",dBankAmt));
+		}
+
+		//////For Void Case/////
+		if(iVoid && GetField_CString(hHistory,"org_batch_id",&csOrgBatchId)){
+			if(GetField_Double(hHistory,"old_rate",&dOrgRate)){
+DEBUGLOG(("handleACRBalance() org rate in history = [%lf]\n",dOrgRate));
+			}
+			if(GetField_Double(hHistory,"org_bank_bal",&dOrgBalance)){
+DEBUGLOG(("handleACRBalance() org bank_bal in history = [%lf]\n",dOrgBalance));
+			}
+			if(GetField_Char(hHistory,"fund_type",&cTmp)){
+				if(cTmp==PD_FUNDS_IN)
+					cDirection = PD_FUNDS_OUT;
+				else
+					cDirection = PD_FUNDS_IN;
+
+				PutField_Char(hHistory,"fund_type",cDirection);
+DEBUGLOG(("handleACRBalance() void fund_type [%c] -> [%c]\n",cTmp,cDirection));
+			}
+
+			//check the void txn is the last one or not
+			GetField_Int(hHistory, "is_last_batch", &iLastTxn);
+			if(!iLastTxn){
+				//check the currency pair of the void txn is the last one or not
+				DBObjPtr = CreateObj(DBPtr, "DBMiAcrInOutHistory", "IsLastBatchInOverviewByCcy");
+				iLastTxn = (unsigned long)(*DBObjPtr)(csOrgBatchId, csFromCcy, csBankCcy);
+DEBUGLOG(("handleACRBalance() check [%s] is last batch for currency pair[%s][%s] = [%s]\n", csOrgBatchId, csFromCcy, csBankCcy, iLastTxn == PD_TRUE ? "TRUE" : "FALSE"));
+			}
+
+			if(!iLastTxn){
+DEBUGLOG(("handleACRBalance() NOT void the last record in history\n"));
+				if(cDirection==PD_FUNDS_IN){
+					dNewBalance = dNowBalance + dBankAmt;
+DEBUGLOG(("handleACRBalance() NewBalance = [%lf]\n",dNewBalance));
+					if(dNowBalance<0.0){
+						//save the org balance
+						dOrgNowBalance = dNowBalance;
+						dNowBalance = 0.0;
+					}
+
+					if(!strcmp(csBankCcy,csFromCcy)){
+						dNewRate = 1.0;
+					}
+					else{
+						dNewRate = CreditFormula(dNowBalance,dNowRate,
+						 			 dFromAmt,dBankAmt);
+					}
+DEBUGLOG(("handleACRBalance() NewRate = [%lf]\n",dNewRate));
+
+
+					//override back the org balance
+					if(dOrgNowBalance<0.0)
+						dNowBalance = dOrgNowBalance;
+				}
+				else{
+					dNewBalance = dNowBalance - dBankAmt;
+DEBUGLOG(("handleACRBalance() NewBalance = [%lf]\n",dNewBalance));
+					if(dNowBalance>0.0 && dNewBalance>=0.0){
+						if(!strcmp(csBankCcy,csFromCcy)){
+							dNewRate = 1.0;
+						}
+						else{
+							if(dNewBalance>0.0){
+								dNewRate = DebitFormula(dNowBalance,dNowRate,
+										dFromAmt,dBankAmt);
+							}
+							else{
+								dNewRate = 0.0;
+							}
+						}
+DEBUGLOG(("handleACRBalance() NewRate = [%lf]\n",dNewRate));
+					}
+					else{
+						iRet = INT_INSUFFICIENT_FUND;
+DEBUGLOG(("handleACRBalance() Not enough balance for void!!!!\n"));
+ERRLOG("BOMiAcr::handleACRBalance() Not enough balance for void!!!!\n");
+					}
+				}
+			}
+			else{
+DEBUGLOG(("handleACRBalance() Void the last record in history\n"));
+				dNewBalance = dOrgBalance;
+				dNewRate = dOrgRate;
+DEBUGLOG(("handleACRBalance() NewBalance = OrgBalance[%lf]\n",dNewBalance));
+DEBUGLOG(("handleACRBalance() NewRate = OrgRate[%lf]\n",dNewRate));
+			}
+		}
+
+		//////For Normal Case/////
+		else{
+			if(cDirection==PD_FUNDS_IN){
+				dNewBalance = dNowBalance + dBankAmt;
+DEBUGLOG(("handleACRBalance() NewBalance = [%lf]\n",dNewBalance));
+				if(dNowBalance<0.0){
+					//save the org balance
+					dOrgNowBalance = dNowBalance;
+					dNowBalance = 0.0;
+				}
+
+				if(!strcmp(csBankCcy,csFromCcy)){
+					dNewRate = 1.0;
+				}
+				else{
+					dNewRate = CreditFormula(dNowBalance,dNowRate,
+								 dFromAmt,dBankAmt);
+				}
+DEBUGLOG(("handleACRBalance() NewRate = [%lf]\n",dNewRate));
+
+				//override back the org balance
+				if(dOrgNowBalance<0.0)
+					dNowBalance = dOrgNowBalance;
+			}
+			else{
+				dNewBalance = dNowBalance - dBankAmt;
+
+				if(dNewBalance<0.0){
+					iRet = INT_INSUFFICIENT_FUND;
+DEBUGLOG(("handleACRBalance() Not enough balance for debit!!!!\n"));
+ERRLOG("BOMiAcr::handleACRBalance() Not enough balance for debit!!!!\n");
+				}
+				else{
+					if(!strcmp(csBankCcy,csFromCcy)){
+						dNewRate = 1.0;
+					}
+					else{
+						if(isProrata){
+							dNewRate = dNowRate;
+						}
+						else{
+							if(dNewBalance==0.0){
+								iRet = INT_INSUFFICIENT_FUND;
+DEBUGLOG(("handleACRBalance() The result balance becomes zero, cannot calculate ACR!!!!\n"));
+ERRLOG("BOMiAcr::handleACRBalance() The result balance becomes zero, cannot calculate ACR!!!!\n");
+							}
+							else{
+								dNewRate = DebitFormula(dNowBalance,dNowRate,
+										dFromAmt,dBankAmt);
+							}
+						}
+					}
+				}
+
+DEBUGLOG(("handleACRBalance() NewBalance = [%lf]\n",dNewBalance));
+DEBUGLOG(("handleACRBalance() NewRate = [%lf]\n",dNewRate));
+			}
+		}
+	}
+
+	if(iRet==PD_OK){
+		PutField_Double(hHistory,"old_rate",dNowRate);
+		PutField_Double(hHistory,"org_bank_bal",dNowBalance);
+		PutField_Double(hHistory,"new_rate",dNewRate);
+		PutField_Double(hHistory,"bank_bal",dNewBalance);
+
+		PutField_Double(hUpdate,"rate",dNewRate);
+		PutField_Double(hUpdate,"bank_bal",dNewBalance);
+	}
+
+	if(iRet == PD_OK){
+DEBUGLOG(("handleACRBalance: Call DBMiAcrBal::Add() \n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMiAcrBal","Add");//it will update if balance exists
+		iRet = (unsigned long)(*DBObjPtr)(hUpdate);
+		if(iRet != PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("DBMiAcrBal::Add() Failed!!!!\n"));
+ERRLOG("BOMiAcr::handleACRBalance() Call DBMiAcrBal::Add Failed!!!!\n");
+		}
+	}
+
+	if(iRet == PD_OK){
+		for(i=0; i<iCnt; i++){
+			sprintf(csTag,"txn_id_%d",i);
+			if(GetField_CString(hHistory,csTag,&csTmp)){
+				PutField_CString(hHistory,"txn_id",csTmp);
+
+DEBUGLOG(("handleACRBalance() Call DBMiAcrInOutHistory::Add() \n"));
+				DBObjPtr = CreateObj(DBPtr,"DBMiAcrInOutHistory","Add");
+				iRet = (unsigned long)(*DBObjPtr)(hHistory);
+				if(iRet != PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DBMiAcrInOutHistory: Add [%s] Failed!!!!\n",csTmp));
+ERRLOG("BOMiAcr::handleACRBalance() Call DBMiAcrInOutHistory: Add [%s] Failed!!!!\n",csTmp);
+					break;
+				}
+			}
+		}
+	}
+
+
+	FREE_ME(hOrgBal);
+DEBUGLOG(("handleACRBalance:: () Noraml Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int AcrFormula(const double dFromAmt, const double dBankAmt, char cDirection, 
+	       double *dTotalFromAmt, double *dTotalBankAmt)
+{
+	int iRet = PD_OK;
+
+	if(cDirection == PD_FUNDS_IN){
+		*dTotalFromAmt = *dTotalFromAmt + dFromAmt;
+		*dTotalBankAmt = *dTotalBankAmt + dBankAmt;
+DEBUGLOG((" [%c]: From + [%.2f] = [%.2f]; Bank + [%.2f] = [%.2f]\n", cDirection, dFromAmt, *dTotalFromAmt, dBankAmt, *dTotalBankAmt));
+	}
+	else if(cDirection == PD_FUNDS_OUT){
+		*dTotalFromAmt = *dTotalFromAmt - dFromAmt;
+		*dTotalBankAmt = *dTotalBankAmt - dBankAmt;
+DEBUGLOG((" [%c]: From - [%.2f] = [%.2f]; Bank - [%.2f] = [%.2f]\n", cDirection, dFromAmt, *dTotalFromAmt, dBankAmt, *dTotalBankAmt));
+	}
+	else{
+		iRet = INT_ERR;
+DEBUGLOG((" Invalid Funds Type [%s]\n", cDirection));
+	}
+	return iRet;
+}
+
+
+
+int handleACRBalance_New(hash_t* hUpdate, hash_t* hHistory, const int iVoid)
+{
+	int iRet = PD_OK;
+	int isProrata = PD_FALSE;
+	int i = 0;
+	int iCnt = 0;
+	char	*csOrgBatchId = NULL;
+	char	*csFromCcy = NULL;
+	char	*csBankCcy= NULL;
+	char	*csTmp= NULL;
+	char	csTag[PD_TAG_LEN+1];
+	double	dFromAmt = 0.0;
+	double	dBankAmt = 0.0;
+	double	dNewRate = 0.0;
+	double	dNowRate = 0.0;
+	double	dNewBalance = 0.0;
+	double	dNowBalance = 0.0;
+	double	dOrgRate = 0.0;
+	double	dOrgBalance = 0.0;
+	char	cDirection = 'x';
+	int	iCalPeriod = PD_DEFAULT_ACR_CAL_PERIOD;
+	double	dTotalFromAmt = 0.0;
+	double	dTotalBankAmt = 0.0;
+	int	iLastTxn = PD_FALSE;
+
+	hash_t	*hOrgBal;
+	hOrgBal = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hOrgBal, 0);
+
+DEBUGLOG(("handleACRBalance_New()\n"));
+	iRet = GetACRBalForUpdate(hHistory, hOrgBal);
+
+	if(iRet==PD_OK){
+		if(GetField_Int(hHistory, "txn_cnt", &iCnt)){
+DEBUGLOG(("handleACRBalance_New() txn_cnt = [%d]\n", iCnt));
+		}
+		if(GetField_Double(hOrgBal, "bank_bal", &dNowBalance)){
+DEBUGLOG(("handleACRBalance_New() now bank_bal = [%.2f]\n", dNowBalance));
+		}
+		if(GetField_Double(hOrgBal, "rate", &dNowRate)){
+DEBUGLOG(("handleACRBalance_New() now rate = [%lf]\n", dNowRate));
+		}
+		if(GetField_Char(hHistory, "fund_type", &cDirection)){
+DEBUGLOG(("handleACRBalance_New() fund_type = [%c]\n", cDirection));
+			if(iVoid){
+				if(cDirection == PD_FUNDS_IN)
+					cDirection = PD_FUNDS_OUT;
+				else
+					cDirection = PD_FUNDS_IN;
+
+				PutField_Char(hHistory, "fund_type", cDirection);
+DEBUGLOG(("handleACRBalance_New() void fund_type = [%c]\n", cDirection));
+			}
+		}
+		if(GetField_Int(hHistory, "is_prorata", &isProrata)){
+DEBUGLOG(("handleACRBalance_New() is_prorata = [%d]\n", isProrata));
+		}
+		if(GetField_CString(hHistory, "from_ccy", &csFromCcy)){
+DEBUGLOG(("handleACRBalance_New() from_ccy = [%s]\n", csFromCcy));
+		}
+		if(GetField_Double(hHistory, "from_amt", &dFromAmt)){
+DEBUGLOG(("handleACRBalance_New() from_amt = [%lf]\n", dFromAmt));
+		}
+		if(GetField_CString(hHistory, "bank_ccy", &csBankCcy)){
+DEBUGLOG(("handleACRBalance_New() bank_ccy = [%s]\n", csBankCcy));
+		}
+		if(GetField_Double(hHistory, "bank_amt", &dBankAmt)){
+DEBUGLOG(("handleACRBalance_New() bank_amt = [%.2f]\n", dBankAmt));
+		}
+		if(GetField_Int(hHistory, "cal_period", &iCalPeriod)){
+DEBUGLOG(("handleACRBalance_New() cal_period = [%d]\n", iCalPeriod));
+		}
+	}
+
+	if(iRet==PD_OK){
+		if(!strcmp(csBankCcy, csFromCcy)){
+			dNewRate = 1.0;
+			iRet = PD_SKIP_OK;
+DEBUGLOG((" from_ccy = bank_ccy, new rate = [1.0]\n", csFromCcy, csBankCcy));
+		}
+		else{
+			if(isProrata){
+				dNewRate = dNowRate;
+				iRet = PD_SKIP_OK;
+DEBUGLOG((" is_prorata = TRUE, new rate = org rate [%lf]\n", dNewRate));
+			}
+		}
+
+		if(cDirection==PD_FUNDS_IN)
+			dNewBalance = dNowBalance + dBankAmt;
+		else
+			dNewBalance = dNowBalance - dBankAmt;
+
+DEBUGLOG((" new bank_bal = [%.2f]\n", dNewBalance));
+
+		if(dNewBalance < 0.0){
+			iRet = INT_INSUFFICIENT_FUND;
+DEBUGLOG(("handleACRBalance_New() Not enough balance for debit!!!!\n"));
+ERRLOG("BOMiAcr::handleACRBalance_New() Not enough balance for debit!!!!\n");
+		}
+	}
+
+	if(iRet==PD_OK){
+		if(iVoid && GetField_CString(hHistory,"org_batch_id",&csOrgBatchId)){
+			GetField_Int(hHistory, "is_last_batch", &iLastTxn);
+
+			if(!iLastTxn){
+				//check the currency pair of the void txn is the last one or not
+				DBObjPtr = CreateObj(DBPtr, "DBMiAcrInOutHistory", "IsLastBatchInOverviewByCcy");
+				iLastTxn = (unsigned long)(*DBObjPtr)(csOrgBatchId, csFromCcy, csBankCcy);
+DEBUGLOG(("handleACRBalance_New() check [%s] is last batch for currency pair[%s][%s] = [%s]\n", csOrgBatchId, csFromCcy, csBankCcy, iLastTxn == PD_TRUE ? "TRUE" : "FALSE"));
+			}
+
+			if(iLastTxn){
+DEBUGLOG(("handleACRBalance_New() Void the last record in history\n"));
+				if(GetField_Double(hHistory, "org_bank_bal", &dOrgBalance)){
+DEBUGLOG(("handleACRBalance_New() history org bank_bal = [%lf]\n", dOrgBalance));
+				}
+				if(GetField_Double(hHistory, "old_rate", &dOrgRate)){
+DEBUGLOG(("handleACRBalance_New() history org rate = [%lf]\n", dOrgRate));
+				}
+
+				dNewBalance = dOrgBalance;
+				dNewRate = dOrgRate;
+				iRet = PD_SKIP_OK;
+DEBUGLOG((" new bank_bal = history org bank_bal[%lf]\n", dNewBalance));
+DEBUGLOG((" new rate  = history org rate[%lf]\n", dNewRate));
+			}
+		}
+	}
+
+	if(iRet==PD_OK){
+//Get history within the calculation period 
+		double	dHisFromAmt = 0.0;
+		double	dHisBankAmt = 0.0;
+		int	iHisProrata = PD_FALSE;
+		char	cHisDirection;
+		hash_t	*hRec;
+		recordset_t     *rRecordSet;
+		rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+		recordset_init(rRecordSet, 0);
+DEBUGLOG((" Get History Movement within [%d] days\n", iCalPeriod));
+		DBObjPtr = CreateObj(DBPtr,  "DBMiAcrInOutHistory", "GetOverviewHistory");
+		if((unsigned long)(*DBObjPtr)(csFromCcy, csBankCcy, iCalPeriod, rRecordSet) == PD_OK){
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while (hRec && iRet == PD_OK) {
+				
+				if(GetField_Double(hRec, "from_amt", &dHisFromAmt)
+				   && GetField_Double(hRec, "bank_amt", &dHisBankAmt)
+				   && GetField_Char(hRec, "fund_type", &cHisDirection)
+				   && GetField_Int(hRec, "acr_prorata", &iHisProrata)){
+
+					if(!iHisProrata){
+						iRet = AcrFormula(dHisFromAmt, dHisBankAmt, cHisDirection,
+								   &dTotalFromAmt, &dTotalBankAmt);
+					}
+				}
+
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+		}
+DEBUGLOG((" Get History Movement End\n"));
+
+		RecordSet_Destroy(rRecordSet);
+		FREE_ME(rRecordSet);
+	}
+
+
+	if(iRet==PD_OK){
+DEBUGLOG((" Current Movement:\n"));
+		iRet = AcrFormula(dFromAmt, dBankAmt, cDirection,
+				   &dTotalFromAmt, &dTotalBankAmt);
+	}
+
+
+	if(iRet==PD_OK){
+		PutField_Double(hHistory, "numerator", dTotalFromAmt);
+		PutField_Double(hHistory, "denominator", dTotalBankAmt);
+
+		if(( newround(fabs(dTotalFromAmt), PD_DECIMAL_LEN) != 0.0) && ( newround(fabs(dTotalBankAmt), PD_DECIMAL_LEN) != 0.0)){
+			dNewRate = newround(fabs(dTotalFromAmt/dTotalBankAmt), PD_ROUND_UP_DEC);
+DEBUGLOG((" new rate = |[%.2f]/[%.2f]| = [%lf]\n", dTotalFromAmt, dTotalBankAmt, dNewRate));
+		}
+		else{
+			dNewRate = dNowRate;
+DEBUGLOG((" new rate = org rate[%lf] as [%lf]/[%lf] cannot be calculated\n", dNewRate, dTotalFromAmt, dTotalBankAmt));
+		}
+	}
+
+
+	if(iRet == PD_SKIP_OK){
+		iRet = PD_OK;
+	}
+
+	if(iRet==PD_OK){
+		PutField_Double(hHistory, "old_rate", dNowRate);
+		PutField_Double(hHistory, "org_bank_bal", dNowBalance);
+		PutField_Double(hHistory, "new_rate", dNewRate);
+		PutField_Double(hHistory, "bank_bal", dNewBalance);
+
+		PutField_Double(hUpdate, "rate", dNewRate);
+		PutField_Double(hUpdate, "bank_bal", dNewBalance);
+	}
+
+	if(iRet == PD_OK){
+DEBUGLOG(("handleACRBalance_New: Call DBMiAcrBal::Add() \n"));
+		DBObjPtr = CreateObj(DBPtr, "DBMiAcrBal", "Add");//it will update if balance exists
+		iRet = (unsigned long)(*DBObjPtr)(hUpdate);
+		if(iRet != PD_OK){
+			iRet = INT_ERR;
+DEBUGLOG(("DBMiAcrBal::Add() Failed!!!!\n"));
+ERRLOG("BOMiAcr::handleACRBalance_New() Call DBMiAcrBal::Add Failed!!!!\n");
+		}
+	}
+
+	if(iRet == PD_OK){
+		for(i=0; i<iCnt; i++){
+			sprintf(csTag, "txn_id_%d" ,i);
+			if(GetField_CString(hHistory, csTag, &csTmp)){
+				PutField_CString(hHistory, "txn_id", csTmp);
+
+DEBUGLOG(("handleACRBalance_New() Call DBMiAcrInOutHistory::Add() \n"));
+				DBObjPtr = CreateObj(DBPtr,"DBMiAcrInOutHistory","Add");
+				iRet = (unsigned long)(*DBObjPtr)(hHistory);
+				if(iRet != PD_OK){
+					iRet = INT_ERR;
+DEBUGLOG(("DBMiAcrInOutHistory: Add [%s] Failed!!!!\n", csTmp));
+ERRLOG("BOMiAcr::handleACRBalance_New() Call DBMiAcrInOutHistory: Add [%s] Failed!!!!\n", csTmp);
+					break;
+				}
+			}
+		}
+	}
+
+
+	FREE_ME(hOrgBal);
+DEBUGLOG(("handleACRBalance_New:: () Noraml Exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+

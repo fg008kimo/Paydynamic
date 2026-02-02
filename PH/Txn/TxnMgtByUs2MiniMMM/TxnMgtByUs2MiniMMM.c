@@ -1,0 +1,181 @@
+/*
+Partnerdelight (c)2011. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/11/10              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMgtByUs2MiniMMM.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+#include "dbutility.h"
+
+char cDebug;
+OBJPTR(Txn);
+OBJPTR(DB);
+
+void TxnMgtByUs2MiniMMM(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                        hash_t* hRequest,
+                        hash_t* hResponse)
+{
+        int     iRet = PD_OK;
+	int	iGlobleEnable = PD_FALSE;
+	int	iSupportMiniMMM = PD_FALSE;
+	int	iRetErrIfNotMi = PD_TRUE;
+	int	iExitIfOrgNotMi = PD_FALSE;
+	int	iIsVoidAction = PD_FALSE;
+	char	*csTmp = NULL;
+	char	*csTxnId = NULL;
+	char	*csTxnCode = NULL;
+	char	*csTxnType = NULL;
+	char	*csMiniMmmMode = NULL;
+	char	csHandler[PD_TAG_LEN+1];
+
+	hash_t  *hTxn;
+	hTxn = (hash_t*) malloc (sizeof(hash_t));
+	hash_init(hTxn,0);
+DEBUGLOG(("Authorize\n")); 
+
+	if(GetField_CString(hContext,"txn_seq",&csTxnId)){
+DEBUGLOG(("Authorize txn_seq = [%s]\n",csTxnId)); 
+	}
+
+	if(GetField_CString(hContext,"txn_code",&csTxnCode)){
+DEBUGLOG(("Authorize txn_code = [%s]\n",csTxnCode)); 
+	}
+
+	if(GetField_Int(hContext,"mini_void_action",&iIsVoidAction)){
+DEBUGLOG(("Authorize mini_void_action = [%d]\n",iIsVoidAction)); 
+	}
+
+	//check Mini-MMM mode is 'ON' or not
+	if(GetField_CString(hContext,"mini_mmm_mode",&csMiniMmmMode)){
+		if(!strcmp(csMiniMmmMode, PD_ENABLE_MMSMODE)){
+			iGlobleEnable = PD_TRUE;
+DEBUGLOG(("Authorize() Mini-MMM mode is enabled\n")); 
+		}
+		else{
+DEBUGLOG(("Authorize() Mini-MMM mode is disabled\n")); 
+		}
+	}
+
+	//check txn_type is support Mini-MMM mode
+	if(iRet==PD_OK){
+		if(GetField_CString(hContext,"mini_txn_type",&csTxnType)){
+DEBUGLOG(("Authorize txn_type = [%s]\n",csTxnType)); 
+			DBObjPtr = CreateObj(DBPtr,"DBMiModeTxnCtl","GetMiModeTxnCtl");
+			iRet = (unsigned long) (*DBObjPtr)(csTxnType,hTxn);
+			if(iRet == PD_OK){
+				GetField_Int(hTxn,"exit_if_org_not_mi",&iExitIfOrgNotMi);
+				GetField_Int(hTxn,"err_if_not_mi",&iRetErrIfNotMi);
+				GetField_Int(hTxn,"mi_support",&iSupportMiniMMM);
+				if(!iSupportMiniMMM){
+DEBUGLOG(("Authorize() this transaction type does not support Mini-MMM mode\n")); 
+				}
+				else{
+DEBUGLOG(("Authorize() this transaction type support Mini-MMM mode\n")); 
+				}
+			}
+			else{
+				iRet = INT_ERR;
+DEBUGLOG(("Authorize() Call DBMiModeTxnCtl:GetMiModeTxnCtl() Failed!!\n")); 
+ERRLOG("TxnMgtByUs2MiniMMM:: Authorize() Call DBMiModeTxnCtl:GetMiModeTxnCtl() Failed!!\n"); 
+			}
+		}
+		else{
+DEBUGLOG(("Authorize() txn_type not found. Skip the MiModeTxnCtl checking...\n")); 
+		}
+	}
+
+	if(iRet==PD_OK){
+		if((!iGlobleEnable || !iSupportMiniMMM) && iRetErrIfNotMi){
+			iRet = INT_MINI_MMM_MODE_DISABLED;
+		}
+		else if ((!iGlobleEnable || !iSupportMiniMMM) && !iRetErrIfNotMi){
+			iRet = PD_SKIP_OK;
+DEBUGLOG(("Authorize() Skip the Mini-MMM process...\n")); 
+		}
+	}
+
+
+	if(iRet==PD_OK && iIsVoidAction){
+		int iTmpRet = PD_NOT_FOUND;
+
+		if(GetField_CString(hContext,"org_txn_seq",&csTmp)){
+DEBUGLOG(("Authorize:: Call DBMiTxnLog:CheckTxnIdExist(%s)\n",csTmp));
+			DBObjPtr = CreateObj(DBPtr, "DBMiTxnLog", "CheckTxnIdExist");
+			iTmpRet = ((unsigned long)((*DBObjPtr)(csTmp)));
+			if(iTmpRet != PD_FOUND && iExitIfOrgNotMi){
+				iRet = PD_SKIP_OK;
+DEBUGLOG(("Authorize::org_txn_seq[%s] is not mini-mmm txn. Skip the Mini-MMM process...\n",csTmp));
+			}
+		}
+
+		if(iRet==PD_OK){
+			if(GetField_CString(hContext,"org_txn_seq_to",&csTmp)){
+DEBUGLOG(("Authorize:: Call DBMiTxnLog:CheckTxnIdExist(%s)\n",csTmp));
+				DBObjPtr = CreateObj(DBPtr, "DBMiTxnLog", "CheckTxnIdExist");
+				iTmpRet = ((unsigned long)((*DBObjPtr)(csTmp)));
+				if(iTmpRet != PD_FOUND && iExitIfOrgNotMi){
+					iRet = INT_NOT_MI_TRANSACTION;
+DEBUGLOG(("Authorize::org_txn_seq_to[%s] is not mini-mmm txn. Skip the Mini-MMM process...\n",csTmp));
+				}
+			}
+		}
+	}
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize() DBTransaction:AddMiTxnLog\n")); 
+		DBObjPtr = CreateObj(DBPtr,"DBTransaction","AddMiTxnLog");
+		if((unsigned long) (*DBObjPtr)(csTxnId)!=PD_OK){
+			iRet = INT_ERR;
+		}
+	}
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize() Call TxnMinByUsCOM for checking\n")); 
+		TxnObjPtr = CreateObj(TxnPtr,"TxnMinByUsCOM","Authorize");
+        	iRet = (unsigned long) (*TxnObjPtr)(hContext,hRequest,hResponse);
+	}
+
+	if(iRet==PD_OK){
+		sprintf(csHandler,"TxnMinByUs%s",csTxnCode);
+
+DEBUGLOG(("Authorize() Call handler[%s]\n",csHandler)); 
+		TxnObjPtr = CreateObj(TxnPtr,csHandler,"Authorize");
+		iRet = (unsigned long) (*TxnObjPtr)(hContext,hRequest,hResponse);
+	}
+
+	if(iRet == PD_SKIP_OK){
+		iRet = PD_OK;
+	}
+
+	if(iRet!=PD_OK){
+		PutField_Int(hContext, "internal_error", iRet);
+		TxnAbort();
+DEBUGLOG(("Authorize() Error Found, TxnAbort!!!\n")); 
+	}
+
+DEBUGLOG(("TxnMgtByUs2MiniMMM Normal Exit() iRet = [%d]\n",iRet));
+		
+	FREE_ME(hTxn);
+        return iRet;
+}

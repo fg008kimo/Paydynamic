@@ -1,0 +1,114 @@
+set serverout on;
+declare
+	l_client_id	par_clients.pc_client_id%type;
+	l_channel_code	par_channel_code_map.ccm_channel_code%type;
+	l_cnt		NUMBER(5);
+	
+	l_currency	psp_detail.currency_id%type;
+
+        cursor c1 is
+                select *
+                from par_psp_client_map
+                order by ppm_psp_client_grp;
+begin
+
+        for cur_c1 in c1 loop
+		dbms_output.put_line('>>>>>>>>>>>>>>>>>>>>>>>>>>');
+		l_client_id := NULL;
+
+                dbms_output.put_line('ppm_psp_client_grp = [' || cur_c1.ppm_psp_client_grp || ']');
+
+		begin
+			select pc_client_id
+			into l_client_id
+			from par_clients
+			where pc_def_client_group = cur_c1.ppm_psp_client_grp;
+		exception		
+			when no_data_found then
+				l_client_id := NULL;
+		end;
+
+		if (l_client_id is null) then
+			if (cur_c1.ppm_prefer_client_id is null) then
+
+				select 'CP' || to_char(NVL(max(substr(client_id, 3) ), 0) + 1, 'FM09999999')
+				into l_client_id
+		                from clients
+				where client_id like 'CP' || '%'
+		                and type = 'P'
+				and length(client_id) = 10;
+			else 
+				l_client_id := cur_c1.ppm_prefer_client_id;
+			end if;
+
+			dbms_output.put_line('client_id [' || l_client_id || '] will be created');
+
+			insert into par_clients (pc_company_name, pc_client_id, pc_def_client_group, 
+						pc_create_timestamp, pc_create_user, pc_update_timestamp, pc_update_user)
+			values (cur_c1.ppm_psp_client_grp_name, l_client_id, cur_c1.ppm_psp_client_grp,
+				sysdate, 'SYSTEM', sysdate, 'SYSTEM');
+
+
+			insert into clients (client_id, type, create_timestamp, update_timestamp, create_user, update_user, client_name, status)
+			values (l_client_id, 'P', sysdate, sysdate, 'SYSTEM', 'SYSTEM', cur_c1.ppm_psp_client_grp_name, 'O');
+
+		else 
+			dbms_output.put_line('client_id [' || l_client_id || '] exists');
+		end if;
+
+		-- psp_detail
+		select count(1)
+		into l_cnt
+		from psp_detail
+		where psp_id = cur_c1.ppm_preset_pid;
+
+		if (l_cnt = 0) then
+			begin
+				select  ccm_channel_code
+				into	l_channel_code
+				from	par_channel_code_map
+				where	ccm_psp_vnc_code = cur_c1.ppm_psp_code
+				and     ccm_psp_vnc_name = cur_c1.ppm_psp_name;
+			exception
+				when no_data_found then
+					l_channel_code := NULL;
+			end;
+	
+			dbms_output.put_line('create psp_id [' || cur_c1.ppm_preset_pid || ']');
+
+			/*
+			if (cur_c1.ppm_preset_psp_country = 'CN') then
+				l_currency := 'CNY';
+			else 
+				l_currency := 'TWD';
+			end if;
+			*/
+			select decode(cur_c1.ppm_ccy_id, 'RMB', 'CNY', cur_c1.ppm_ccy_id)
+			into l_currency 
+			from dual;
+
+			dbms_output.put_line('psp_type [' || cur_c1.ppm_psp_type || '] txn_type [' || cur_c1.ppm_txn_type || ']');
+
+			insert into psp_detail (psp_id, psp_name, disabled, online_mode,
+						create_timestamp, update_timestamp, create_user, update_user, 
+						client_id, psp_type, psp_merchant_id, psp_channel_code, 
+						txn_type, currency_id, status, trace_mismatch)
+			values (cur_c1.ppm_preset_pid,cur_c1.ppm_preset_psp_name, 0, 'Y',
+				sysdate, sysdate, 'SYSTEM', 'SYSTEM',
+				l_client_id, cur_c1.ppm_psp_type, NULL, l_channel_code, 
+				cur_c1.ppm_txn_type, l_currency , 'O', 0);
+
+			insert into psp_country(country, psp_id, create_timestamp, update_timestamp, create_user, update_user, currency_id)
+			values(cur_c1.ppm_country, cur_c1.ppm_preset_pid, sysdate, sysdate, 'SYSTEM', 'SYSTEM', l_currency);
+		end if;
+
+		
+
+
+        end loop;
+exception
+	when others then	
+		dbms_output.put_line('sqlerrm = [' || sqlerrm || ']');
+		raise;
+end;
+/

@@ -1,0 +1,177 @@
+DROP PACKAGE REPORT_PKG;
+
+CREATE OR REPLACE PACKAGE REPORT_PKG is
+
+	TYPE   RPT001_type is REF cursor return report_rpt001_view%rowtype;
+
+	function F_RPT001(in_approval_date_from  txn_header.th_approval_timestamp%type,
+                    in_approval_date_to  txn_header.th_approval_timestamp%type,
+                    in_merchant_id   txn_header.th_merchant_id%type,
+                    in_country       txn_detail.td_txn_country%type,
+                    in_service_code  txn_header.th_service_code%type,
+                    in_ccy           txn_detail.td_txn_ccy%type
+                  ) return rpt001_tab;
+	procedure open_cur_rpt001(
+       	    in_host_posting_date in     txn_header.th_host_posting_date%type,
+            in_merchant_id       in     txn_header.th_merchant_id%type,
+            in_country           in     txn_detail.td_txn_country%type,
+            in_service_code      in     txn_header.th_service_code%type,
+            in_ccy               IN     txn_detail.td_txn_ccy%type,
+            cursor_rpt001        IN OUT RPT001_type);
+end REPORT_PKG;
+/
+DROP PACKAGE BODY REPORT_PKG;
+
+CREATE OR REPLACE PACKAGE BODY REPORT_PKG is
+
+function F_RPT001(in_approval_date_from  txn_header.th_approval_timestamp%type,
+                    in_approval_date_to  txn_header.th_approval_timestamp%type,
+        	          in_merchant_id   txn_header.th_merchant_id%type,
+                    in_country       txn_detail.td_txn_country%type,
+                    in_service_code  txn_header.th_service_code%type,
+                    in_ccy           txn_detail.td_txn_ccy%type
+               		) return rpt001_tab is
+	Result rpt001_tab := rpt001_tab();
+  	n integer := 0;
+  	dBal number := 0.0;
+  	dOpeningBal number := 0.0;
+  	lTxnId txn_header.th_txn_id%type;
+
+  	v_txn_id                txn_header.th_txn_id%type;
+        v_merchant_ref		txn_header.th_merchant_ref%type;
+  	v_txn_code              txn_header.th_txn_code%type;
+  	v_txn_code_desc         txn_code.tc_desc%type;
+  	v_open_bal              txn_elements.te_amount%type;
+  	v_current_bal           txn_elements.te_amount%type;
+  	v_txn_element_type      txn_elements.te_txn_element_type%type;
+  	v_txn_element_type_desc def_element_type.dt_desc%type;
+  	v_exec_seq              txn_elements.te_exec_seq%type;
+  	v_amount                txn_elements.te_amount%type;
+  	v_ccy                   txn_elements.te_ccy%type;
+  	v_amt_type              txn_elements.te_amt_type%type;
+    v_approval_date         txn_header.th_approval_timestamp%type;
+
+
+	CURSOR rpt001_cur is
+    	select te_txn_id, 
+       th_merchant_ref,
+       th_txn_code, 
+       tc_desc, 
+       nvl(td_open_bal, 0), 
+       td_current_bal, 
+       te_txn_element_type, 
+       dt_desc, 
+       te_exec_seq, 
+       te_amount, 
+       te_ccy, 
+       te_amt_type, 
+       th_approval_timestamp 
+  from txn_detail, 
+       (select /*+ LEADING (TXN_ELEMENTS) */ te_txn_id, 
+	       th_merchant_ref,
+               te_txn_element_type, 
+               dt_desc, 
+               te_exec_seq, 
+               te_amount, 
+               te_ccy, 
+               te_amt_type, 
+               th_txn_code, 
+               tc_desc, 
+               th_approval_timestamp 
+          from txn_elements, 
+               (select th_txn_id, 
+                       th_txn_code, 
+                       th_approval_timestamp,
+		       th_merchant_ref
+                  from txn_header 
+                 where th_approval_timestamp >= in_approval_date_from 
+                   and th_approval_timestamp < in_approval_date_to
+                   and th_merchant_id = in_merchant_id
+                   and th_ar_ind = 'A' 
+                   and th_service_code = in_service_code) txn_header, 
+               def_element_type, 
+               txn_code 
+         where te_txn_element_type in ('TAMT', 'TFEE') 
+           and te_party_type = 'M' 
+           and te_ccy = in_ccy
+           and te_txn_id = th_txn_id 
+           and te_txn_element_type = dt_type 
+           and th_txn_code = tc_code) 
+ where td_txn_id = te_txn_id 
+   and td_txn_country = in_country
+ order by th_approval_timestamp, te_exec_seq;
+
+	begin
+
+  		OPEN rpt001_cur;
+  		loop
+    			FETCH rpt001_cur INTO
+        		v_txn_id,
+                        v_merchant_ref,
+        		v_txn_code,
+        		v_txn_code_desc,
+        		v_open_bal,
+        		v_current_bal,
+        		v_txn_element_type,
+        		v_txn_element_type_desc,
+        		v_exec_seq,
+        		v_amount,
+        		v_ccy,
+        		v_amt_type,
+            v_approval_date;
+    		EXIT WHEN rpt001_cur%NOTFOUND;
+
+    		if (n = 0) then
+      			lTxnId := v_txn_id;
+      			dBal := v_open_bal;
+    		end if;
+
+    		if (lTxnId != v_txn_id) then
+    			dBal := v_open_bal;
+    		end if;
+    		dOpeningBal := dBal;
+
+    		if (v_amt_type = 'DR') then
+      			dBal := dBal - v_amount;
+    		else
+      			dBal := dBal + v_amount;
+    		end if;
+
+    		Result.extend;
+    		n := n +1;
+
+    		result(n) := RPT001_OBj(v_txn_id,
+			 v_merchant_ref,
+                         v_txn_code,
+                         v_txn_code_desc,
+                         dOpeningBal,
+                         v_current_bal,
+                         v_txn_element_type,
+                         v_txn_element_type_desc,
+                         v_exec_seq,
+                         v_amount,
+                         v_ccy,
+                         v_amt_type,
+                         dBal,
+                         v_approval_date);
+    		lTxnId := v_txn_id;
+  	end loop;
+  	CLOSE rpt001_cur;
+  	return(Result);
+END;
+
+procedure open_cur_rpt001(
+          in_host_posting_date in     txn_header.th_host_posting_date%type,
+          in_merchant_id       in     txn_header.th_merchant_id%type,
+          in_country           in     txn_detail.td_txn_country%type,
+          in_service_code      in     txn_header.th_service_code%type,
+          in_ccy               IN     txn_detail.td_txn_ccy%type,
+          cursor_rpt001        IN OUT RPT001_type) is
+	BEGIN
+  		OPEN cursor_rpt001 For
+     		select  * from table(report_pkg.F_rpt001(to_date(in_host_posting_date,'yyyymmdd'),to_date(in_host_posting_date,'yyyymmdd') + 1,in_merchant_id,in_country,in_service_code,in_ccy));
+
+END open_cur_rpt001;
+end REPORT_PKG;
+/
+

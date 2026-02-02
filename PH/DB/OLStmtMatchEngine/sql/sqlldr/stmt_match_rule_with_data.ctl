@@ -1,0 +1,22 @@
+load data
+infile *
+append
+into table ol_stmt_match_rule
+fields terminated by '|'
+(OSMR_RULE_ID,
+OSMR_SUB_RULE_ID,
+OSMR_ACTION_SEQ,
+OSMR_ACTION_TYPE,
+OSMR_ACTION_FILTER_ID,
+OSMR_EXIT_ON_ERROR,
+OSMR_DISABLED,
+OSMR_CREATE_TIMESTAMP SYSDATE,
+OSMR_CREATE_USER,
+OSMR_UPDATE_TIMESTAMP SYSDATE,
+OSMR_UPDATE_USER
+)
+begindata
+65|1|1|no_action_type|0|1|0|SYSTEM|SYSTEM
+66|1|1|no_action_type|0|1|0|SYSTEM|SYSTEM
+67|1|1|no_action_type|0|1|0|SYSTEM|SYSTEM
+68|1|1|no_action_type|0|1|0|SYSTEM|SYSTEM

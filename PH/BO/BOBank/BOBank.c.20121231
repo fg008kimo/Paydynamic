@@ -1,0 +1,565 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/01/10              LokMan Chow
+Update GetAvailableBank
+- return all bank with outage flag		   2012/12/28		   LokMan Chow
+
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOBank.h"
+
+char    cDebug;
+
+void BOBank(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+OBJPTR(DB);
+OBJPTR(BO);
+
+int IsBankAvailableInParty(const unsigned char* csBank,
+                    const char  cPartyType,
+                    const unsigned char* csPartyId,
+                    const unsigned char* csOrgDateTime,
+		    const unsigned char* csChannel);
+
+int IsBankOutageNoteEffect(const unsigned char* csBank,
+                    const char  cPartyType,
+                    const unsigned char* csPartyId,
+                    const unsigned char* csOrgDateTime,
+                    const unsigned char* csChannel,
+                    int *iNoteId);
+
+int GetAvailableBank(const unsigned char * csChannel,
+                const unsigned char * csServiceCode,
+                const unsigned char * csTxnCountry,
+                const unsigned char * csOrgDateTime,
+		hash_t *hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csPtr;
+	char*	csBank;
+	char*	csPspId;
+	char*	csClientId;
+	int	iNoteId = 0;
+	int	iSchedulerId = 0;
+	int	iAvailable= 0;
+	int	iClientCnt = 0;
+	int	iPspCnt = 0;
+	char	csTmpPsp[PD_PSP_ID_LEN+1];
+	char	csTmpClient[PD_CLIENT_ID_LEN+1];
+	char	csTag[PD_TAG_LEN +1];
+
+	hash_t  *hRec, *hDis, *hAcct;
+	recordset_t     *rRecordSet, *rDisabledSet, *rAcctSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        rDisabledSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rDisabledSet,0);
+        rAcctSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rAcctSet,0);
+
+DEBUGLOG(("BOBank::GetAvailableBank() channel_code = [%s]\n",csChannel));
+DEBUGLOG(("BOBank::GetAvailableBank() txn_country = [%s]\n",csTxnCountry));
+DEBUGLOG(("BOBank::GetAvailableBank() service_code = [%s]\n",csServiceCode));
+
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBRuleDisabledBank","GetDisabledBank");
+		if ((unsigned long)(*DBObjPtr)(csChannel,csTxnCountry,PD_TYPE_GLOBAL,rDisabledSet) != PD_OK){
+			iRet = INT_ERR;
+ERRLOG("BOBank::GetAvailableBank() GetDisabledBank Failed\n");
+DEBUGLOG(("BOBank::GetAvailableBank() GetDisabledBank Failed\n"));
+		}
+		else
+DEBUGLOG(("BOBank::GetAvailableBank() GetDisabledBank iRet=[%d]\n",iRet));
+	}
+
+	if(iRet == PD_OK){
+		hDis = RecordSet_GetFirst(rDisabledSet);
+		while(hDis){
+			if (GetField_CString(hDis,"bank_code",&csBank)) {
+DEBUGLOG(("GetDisabledBank[%c] Bank[%s]\n",PD_TYPE_GLOBAL,csBank));
+			}
+			if (GetField_Int(hDis,"scheduler_id",&iSchedulerId)) {
+DEBUGLOG(("GetDisabledBank[%c] SchedulerID[%d]\n",PD_TYPE_GLOBAL,iSchedulerId));
+			}
+			if (GetField_Int(hDis,"note_id",&iNoteId)) {
+DEBUGLOG(("GetDisabledBank[%c] NoteID[%d]\n",PD_TYPE_GLOBAL,iNoteId));
+			}
+			BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckScheduler");
+			if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime)!= PD_OK){
+				RemoveField_CString(hDis,"bank_code");
+DEBUGLOG(("GetDisabledBank not in the disbaled period\n"));
+			
+				BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckEffectiveScheduler");
+				if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime)== PD_OK){
+					sprintf(csTag,"show_outage_%s",csBank);
+					PutField_Int(hResponse,csTag,PD_TRUE);
+					sprintf(csTag,"outage_note_id_%s",csBank);
+					PutField_Int(hResponse,csTag,iNoteId);
+DEBUGLOG(("GetDisabledBank its time to show outage note\n"));
+				}
+			}
+			hDis = RecordSet_GetNext(rDisabledSet);
+		}
+	}
+
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBRuleDisabledBank","GetAllBankSupported");
+		if ((unsigned long)(DBObjPtr)(csTxnCountry,csServiceCode,rRecordSet) != PD_OK){
+			iRet = INT_ERR;
+ERRLOG("BOBank::GetAvailableBank() GetAllBankSupported Failed\n");
+DEBUGLOG(("BOBank::GetAvailableBank() GetAllBankSupported Failed\n"));
+		}
+	}
+
+
+	if(iRet == PD_OK){
+		hDis = RecordSet_GetFirst(rDisabledSet);
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec && (iRet==PD_OK)){
+			if (GetField_CString(hRec,"bank_code",&csBank)) {
+				while(hDis  && (iRet==PD_OK)){
+					sprintf(csTag,"current_disabled_%s",csBank);
+					if(GetField_CString(hDis,"bank_code",&csPtr)){
+						if(strcmp(csBank,csPtr)<0){
+							PutField_Int(hResponse,csTag,PD_FALSE);
+							break;
+						}
+						else if(strcmp(csBank,csPtr)==0){
+DEBUGLOG(("BOBank::GetAvailableBank() Match the Global disabled Bank[%s]\n",csBank));
+							//RemoveField_CString(hRec,"bank_code");
+							PutField_Int(hResponse,csTag,PD_TRUE);
+							hDis = RecordSet_GetNext(rDisabledSet);
+							break;
+						}
+						else{
+							hDis = RecordSet_GetNext(rDisabledSet);
+						}
+
+						if(hDis==NULL)
+							iRet=PD_SKIP_OK;
+					}
+					else {
+						hDis = RecordSet_GetNext(rDisabledSet);
+					}
+				}
+			}
+			///check the bank in psp/client level
+			csBank=NULL;
+			if(GetField_CString(hRec,"bank_code",&csBank)){
+        			recordset_init(rAcctSet,0);
+				iClientCnt = 0;
+				iPspCnt = 0;
+				csTmpPsp[0] = '\0';
+				csTmpClient[0] = '\0';
+
+				DBObjPtr = CreateObj(DBPtr,"DBBankMapping","GetAcctIdByBank");
+				if ((unsigned long)(DBObjPtr)(csBank,rAcctSet) == PD_OK){
+					hAcct = RecordSet_GetFirst(rAcctSet);
+					while(hAcct){
+						GetField_CString(hAcct,"psp_id",&csPspId);
+						GetField_CString(hAcct,"client_id",&csClientId);
+
+						if(strcmp(csPspId,csTmpPsp)){
+							iPspCnt ++;
+							strcpy(csTmpPsp,csPspId);
+							csTmpPsp[strlen(csPspId)]= '\0';
+						}
+						if(strcmp(csClientId,csTmpClient)){
+							iClientCnt ++;
+							strcpy(csTmpClient,csClientId);
+							csTmpPsp[strlen(csClientId)]= '\0';
+						}
+
+						if(IsBankAvailableInParty((unsigned const char*)csBank,
+									PD_TYPE_PSP,
+									(unsigned const char*)csPspId,
+									(unsigned const char*)csOrgDateTime,
+									(unsigned const char*)csChannel)==PD_TRUE){
+							if(IsBankAvailableInParty((unsigned const char*)csBank,
+										PD_TYPE_CLIENT,
+										(unsigned const char*)csClientId,
+										(unsigned const char*)csOrgDateTime,
+										(unsigned const char*)csChannel)==PD_TRUE){
+								iAvailable = PD_TRUE;
+								break;
+							}
+						}
+DEBUGLOG(("BOBank::GetAvailableBank() Bank[%s] unavailable for [%s][%s]\n",csBank,csPspId,csClientId));
+						csPspId = NULL;
+						csClientId = NULL;
+						hAcct = RecordSet_GetNext(rAcctSet);
+					}
+					if(iAvailable != PD_TRUE){
+						//RemoveField_CString(hRec,"bank_code");
+						sprintf(csTag,"current_disabled_%s",csBank);
+						PutField_Int(hResponse,csTag,PD_TRUE);
+DEBUGLOG(("BOBank::GetAvailableBank() Bank[%s] unavailable for all psp/client\n",csBank));
+					}
+/*
+					else{
+						if(iPspCnt==1){
+							if(IsBankOutageNoteEffect((unsigned const char*)csBank,
+										  PD_TYPE_PSP,
+										  (unsigned const char*)csPspId,
+										  (unsigned const char*)csOrgDateTime,
+										  (unsigned const char*)csChannel,
+										  &iNoteId)){
+								sprintf(csTag,"show_outage_%s",csBank);
+								PutField_Int(hResponse,csTag,PD_TRUE);
+								sprintf(csTag,"outage_note_id_%s",csBank);
+								PutField_Int(hResponse,csTag,iNoteId);
+DEBUGLOG(("BOBank::GetAvailableBank() Bank[%s] outage note effective [%d]\n",csBank,iNoteId));
+							}
+						}
+						if(iClientCnt==1){
+							if(IsBankOutageNoteEffect((unsigned const char*)csBank,
+										  PD_TYPE_CLIENT,
+										  (unsigned const char*)csClientId,
+										  (unsigned const char*)csOrgDateTime,
+										  (unsigned const char*)csChannel,
+										  &iNoteId)){
+								sprintf(csTag,"show_outage_%s",csBank);
+								PutField_Int(hResponse,csTag,PD_TRUE);
+								sprintf(csTag,"outage_note_id_%s",csBank);
+								PutField_Int(hResponse,csTag,iNoteId);
+DEBUGLOG(("BOBank::GetAvailableBank() Bank[%s] outage note effective [%d]\n",csBank,iNoteId));
+							}
+						}
+					}
+*/
+				}
+			}
+			
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+	if(iRet == PD_SKIP_OK)
+		iRet = PD_OK;
+
+	if (iRet == PD_OK ) {
+		char	csTag[PD_TAG_LEN+1];
+		int i=0;
+		int iTmp=0;
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec){
+			if (GetField_CString(hRec,"bank_code",&csPtr)) {
+DEBUGLOG(("BOBank::GetAvailableBank() Bank[%s]\n",csPtr));
+				i++;
+				sprintf(csTag,"bank_code_%d",i);
+				PutField_CString(hResponse,csTag,csPtr);
+
+				sprintf(csTag,"show_outage_%s",csPtr);
+				iTmp = PD_FALSE;
+				GetField_Int(hResponse,csTag,&iTmp);
+				sprintf(csTag,"show_outage_%d",i);
+				PutField_Int(hResponse,csTag,iTmp);
+
+				sprintf(csTag,"outage_note_id_%s",csPtr);
+				iTmp = 0;
+				GetField_Int(hResponse,csTag,&iTmp);
+				sprintf(csTag,"outage_note_id_%d",i);
+				PutField_Int(hResponse,csTag,iTmp);
+
+				sprintf(csTag,"current_disabled_%s",csPtr);
+				iTmp = PD_FALSE;
+				GetField_Int(hResponse,csTag,&iTmp);
+				sprintf(csTag,"current_disabled_%d",i);
+				PutField_Int(hResponse,csTag,iTmp);
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+		PutField_Int(hResponse,"bank_code_cnt",i);
+	}
+
+
+
+	RecordSet_Destroy(rDisabledSet);
+	FREE_ME(rDisabledSet);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+
+int GetAvailablePspByBank(const unsigned char *csBank,
+                const unsigned char *csTxnCountry,
+		const unsigned char * csOrgDateTime,
+		hash_t * hResponse)
+{
+        int     iRet = PD_OK;
+	char*	csPspId;
+	char*	csPtr;
+	char	cTmp;
+	int	iSchedulerId;
+
+	hash_t  *hRec, *hDis;
+	recordset_t     *rRecordSet, *rDisabledSet;
+        rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+        rDisabledSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rDisabledSet,0);
+
+DEBUGLOG(("BOBank: GetAvailablePspByBank() bank_code = [%s]\n",csBank));
+DEBUGLOG(("BOBank::GetAvailablePspByBank() org_txn_country = [%s]\n",csTxnCountry));
+
+	if (iRet == PD_OK ) {
+		DBObjPtr = CreateObj(DBPtr,"DBRuleDisabledBank","DisabledBankInfo");
+         	if ((unsigned long)(*DBObjPtr)(csBank,PD_TYPE_PSP,rDisabledSet) != PD_OK) {
+               	 	iRet = INT_ERR;
+ERRLOG("BOBank: BankDisabledInfo[%s] Failed\n",csBank);
+DEBUGLOG(("BOBank: BankDisabledInfo[%s] Failed\n",csBank));
+               	}               
+		else {
+                	hDis = RecordSet_GetFirst(rDisabledSet);
+			while (hDis) {
+				iRet = PD_OK;
+				if (GetField_Int(hDis,"scheduler_id",&iSchedulerId)) {
+DEBUGLOG(("BOBank: BankDisabledInfo - scheduler_id = [%d]\n",iSchedulerId));
+				}
+				if(GetField_Char(hDis,"party_type",&cTmp)){
+DEBUGLOG(("BOBank: BankDisabledInfo - party_type = [%c]\n",cTmp));
+				}
+				if(GetField_CString(hDis,"party_id",&csPtr)){
+DEBUGLOG(("BOBank: BankDisabledInfo - party_id = [%s]\n",csPtr));
+				}
+				if (GetField_CString(hDis,"channel_code",&csPtr)) {
+DEBUGLOG(("BOBank: BankDisabledInfo - channel_code = [%s]\n",csPtr));
+				}
+				BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckScheduler");
+				if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime)!= PD_OK){
+					RemoveField_CString(hDis,"party_id");
+DEBUGLOG(("BankDisabledInfo: [%s][%s]not in the disbaled period\n",csBank,csPtr));
+				}
+				hDis = RecordSet_GetNext(rDisabledSet);
+			}
+		}
+	}
+
+	if(iRet == PD_OK){
+		DBObjPtr = CreateObj(DBPtr,"DBPspDetail","GetDepositPspList");
+		if ((*DBObjPtr)(csTxnCountry,csBank,rRecordSet) != PD_OK){
+			iRet = INT_ERR;
+ERRLOG("BOBank: GetDepositPspList Failed\n");
+DEBUGLOG(("BOBank: GetDepositPspList Failed\n"));
+		}
+		else{
+			hRec = RecordSet_GetFirst(rRecordSet);
+			while(hRec){
+				if (GetField_CString(hRec,"psp_id",&csPspId)) {
+					DBObjPtr = CreateObj(DBPtr,"DBRulePspLbPsp","GetPspLBScheduler");
+					iSchedulerId = (unsigned long)(*DBObjPtr)(csPspId);
+					if(iSchedulerId>=0){
+						BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckScheduler");
+                                		if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime)!= PD_OK){
+                                        		RemoveField_CString(hRec,"psp_id");
+DEBUGLOG(("BankDisabledInfo: [%s]not in the scheduler period\n",csPspId));
+                                		}
+					}
+					else{
+DEBUGLOG(("BankDisabledInfo: cannot find the scheduler period of [%s]\n",csPspId));
+                                        	RemoveField_CString(hRec,"psp_id");
+					}
+				}
+				hRec = RecordSet_GetNext(rRecordSet);
+			}
+DEBUGLOG(("BOBank: GetDepositPspList iRet = [%d]\n",iRet));
+		}
+	}
+
+	if (iRet == PD_OK ) {
+		hDis = RecordSet_GetFirst(rDisabledSet);
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec && (iRet==PD_OK)){
+			if (GetField_CString(hRec,"psp_id",&csPspId)) {
+				while(hDis  && (iRet==PD_OK)){
+					if (GetField_CString(hDis,"party_id",&csPtr)){
+						if(strcmp(csPspId,csPtr)<0){
+							break;
+						}
+						else if(strcmp(csPspId,csPtr)==0){
+DEBUGLOG(("BOBank::GetAvailablePspByBank() Match the disabled Bank from Psp[%s]\n",csPspId));
+							RemoveField_CString(hRec,"psp_id");
+							hDis = RecordSet_GetNext(rDisabledSet);
+							break;
+						}
+						else{
+							hDis = RecordSet_GetNext(rDisabledSet);
+						}
+
+						if(hDis==NULL)
+							iRet=PD_SKIP_OK;
+					}
+					else
+						hDis = RecordSet_GetNext(rDisabledSet);
+				}
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+	}
+
+	if(iRet == PD_SKIP_OK)
+		iRet = PD_OK;
+
+	if (iRet == PD_OK ) {
+		char    csTag[PD_TAG_LEN+1];
+                int	i=0;
+		hRec = RecordSet_GetFirst(rRecordSet);
+		while(hRec){
+			if (GetField_CString(hRec,"psp_id",&csPtr)) {
+				sprintf(csTag,"psp_id_%d",i);
+                                PutField_CString(hResponse,csTag,csPtr);
+DEBUGLOG(("BOBank::GetAvailablePspByBank() [%s] = [%s]\n",csTag,csPtr));
+				i++;
+			}
+			hRec = RecordSet_GetNext(rRecordSet);
+		}
+		PutField_Int(hResponse,"psp_id_cnt",i);
+	}
+
+
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	RecordSet_Destroy(rDisabledSet);
+	FREE_ME(rDisabledSet);
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+/*
+int IsBankAvailableInParty(const unsigned char* csBank,
+		    const char	cPartyType,
+		    const unsigned char* csPartyId,
+		    const unsigned char* csOrgDateTime)
+{
+DEBUGLOG(("BOBank::IsBankAvailable() [%s][%c][%s][%s]\n",csBank,cPartyType,csPartyId,csOrgDateTime));
+	int iRet = PD_FALSE;
+	int iId = -1;
+
+	DBObjPtr = CreateObj(DBPtr,"DBRuleDisabledBank","DisableBankSchedulerId");
+	iId = (unsigned long)(*DBObjPtr)(csBank,cPartyType,csPartyId);
+	if(iId >=0 ){
+		BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckScheduler");
+		if ((unsigned long)(*BOObjPtr)(iId,csOrgDateTime)!= PD_OK){
+DEBUGLOG(("BOBank::IsBankAvailable() Scheduler[%d] not effective now\n",iId));
+			iRet = PD_TRUE;
+		}
+	}
+	else{
+DEBUGLOG(("BOBank::IsBankAvailable() no scheduler found\n"));
+		iRet = PD_TRUE;
+	}
+
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+*/
+
+int IsBankAvailableInParty(const unsigned char* csBank,
+		    const char	cPartyType,
+		    const unsigned char* csPartyId,
+		    const unsigned char* csOrgDateTime,
+		    const unsigned char* csChannel)
+{
+DEBUGLOG(("BOBank::IsBankAvailableInParty() [%s][%c][%s][%s]\n",csBank,cPartyType,csPartyId,csOrgDateTime));
+	int	iRet = PD_TRUE;
+	int	iSchedulerId = 0;
+	hash_t  *hDis;
+	recordset_t	*rDisabledSet;
+        rDisabledSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rDisabledSet,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBRuleDisabledBank","GetDisableSchedule");
+	if ((unsigned long)(*DBObjPtr)(csChannel,cPartyType,csPartyId,csBank,rDisabledSet) == PD_OK){
+		hDis = RecordSet_GetFirst(rDisabledSet);
+		while(hDis){
+			if (GetField_Int(hDis,"scheduler_id",&iSchedulerId)) {
+DEBUGLOG(("GetDisabledBank[%c] SchedulerID[%d]\n",cPartyType,iSchedulerId));
+			}
+			BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckScheduler");
+			if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime) == PD_OK){
+DEBUGLOG(("GetDisabledBank not in the disbaled period\n"));
+					iRet = PD_FALSE;
+			}
+			hDis = RecordSet_GetNext(rDisabledSet);
+		}
+	}
+
+	RecordSet_Destroy(rDisabledSet);
+	FREE_ME(rDisabledSet);
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int IsBankOutageNoteEffect(const unsigned char* csBank,
+		    const char	cPartyType,
+		    const unsigned char* csPartyId,
+		    const unsigned char* csOrgDateTime,
+		    const unsigned char* csChannel,
+		    int *iNoteId)
+{
+DEBUGLOG(("BOBank::IsBankOutageNoteEffect() [%s][%c][%s][%s]\n",csBank,cPartyType,csPartyId,csOrgDateTime));
+	int	iRet = PD_FALSE;
+	int	iTmp= 0;
+	int	iSchedulerId = 0;
+	hash_t  *hDis;
+	recordset_t	*rDisabledSet;
+        rDisabledSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rDisabledSet,0);
+
+	DBObjPtr = CreateObj(DBPtr,"DBRuleDisabledBank","GetDisableSchedule");
+	if ((unsigned long)(*DBObjPtr)(csChannel,cPartyType,csPartyId,csBank,rDisabledSet) == PD_OK){
+		hDis = RecordSet_GetFirst(rDisabledSet);
+		while(hDis){
+			if (GetField_Int(hDis,"scheduler_id",&iSchedulerId)) {
+DEBUGLOG(("GetDisabledBank[%c] SchedulerID[%d]\n",cPartyType,iSchedulerId));
+			}
+			if (GetField_Int(hDis,"note_id",&iTmp)) {
+				*iNoteId = iTmp;
+DEBUGLOG(("GetDisabledBank[%c] NoteID[%d]\n",cPartyType,iTmp));
+			}
+			BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckScheduler");
+			if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime)!= PD_OK){
+DEBUGLOG(("GetDisabledBank not in the disbaled period\n"));
+			
+				BOObjPtr = CreateObj(BOPtr,"BOTxnLb","CheckEffectiveScheduler");
+				if ((unsigned long)(*BOObjPtr)(iSchedulerId,csOrgDateTime)== PD_OK){
+DEBUGLOG(("GetDisabledBank its time to show outage note\n"));
+					iRet = PD_TRUE;
+				}
+			}
+			hDis = RecordSet_GetNext(rDisabledSet);
+		}
+		
+	}
+
+	RecordSet_Destroy(rDisabledSet);
+	FREE_ME(rDisabledSet);
+DEBUGLOG(("iRet = [%d]\n",iRet));
+	return iRet;
+}

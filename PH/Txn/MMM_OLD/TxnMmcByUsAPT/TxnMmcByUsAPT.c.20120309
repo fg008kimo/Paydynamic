@@ -1,0 +1,692 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/02/29              LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmcByUsAPT.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+#define PD_DT_ELEMENT           "dt"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnMmcByUsAPT(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;
+
+	char	csTxnObjName[PD_TMP_BUF_LEN + 1];
+	char	csTag[PD_TAG_LEN + 1];
+	char	*csTxnId;
+	char	*csDtlTxnId;
+
+	char	cIsdInd;
+	char	cTmp;
+	int	iTotal=0;
+	int	iTotalSrc=0;
+	int	iTotalDst=0;
+	int	iSrcCnt=0;
+	int	iDstCnt=0;
+	int	i=0;
+	int	iTmp=0;
+	int	iBatchId=0;
+	int	iGroup = PD_FALSE;
+	double	dTmp;
+
+	hash_t  *hRec , *hAutoRev;
+	hash_t  *hTxn, *myHash;
+	recordset_t     *rRecordSet;
+	rRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rRecordSet,0);
+
+	recordset_t     *rSrcRecordSet;
+	rSrcRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rSrcRecordSet,0);
+
+	recordset_t     *rDstRecordSet;
+	rDstRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rDstRecordSet,0);
+
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+	hAutoRev = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hAutoRev,0);
+
+
+
+/* user */
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		PutField_CString(hContext, "update_user", csTmp);
+		PutField_CString(hContext, "add_user", csTmp);
+        }
+
+/* total_cnt */
+	if(GetField_Int(hContext,"total_cnt",&iTotal)){
+DEBUGLOG(("Authorize::total_cnt= [%d]\n",iTotal));
+	}
+
+/* total_src_cnt */
+	if(GetField_Int(hContext,"total_src_cnt",&iTotalSrc)){
+DEBUGLOG(("Authorize::total_src_cnt= [%d]\n",iTotalSrc));
+	}
+
+/* total_dst_cnt */
+	if(GetField_Int(hContext,"total_dst_cnt",&iTotalDst)){
+DEBUGLOG(("Authorize::total_dst_cnt= [%d]\n",iTotalDst));
+	}
+	
+	if(iTotal!=(iTotalSrc+iTotalDst)){
+DEBUGLOG(("Authorize::src/dst count incorrect!!!! [%d]!=[%d]+[%d]\n",iTotal,iTotalSrc,iTotalDst));
+		iRet=INT_ERR;
+	}
+
+/*group*/
+        if(GetField_CString(hRequest,"group",&csTmp)){
+		iGroup = atoi(csTmp);
+		PutField_Int(hContext,"group",iGroup);
+DEBUGLOG(("Authorize::group= [%d]\n",iGroup));
+        }
+
+
+	for(i=1; i<=iTotal; i++){
+
+DEBUGLOG(("Authorize:: >>>>>>>>>>>>>> START [%d] <<<<<<<<<<<<<<< \n",i));
+
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(myHash,0);
+
+		sprintf(csTag,"%s_sd_ind_%d",PD_DT_ELEMENT, i);
+		if(GetField_CString(hRequest,csTag,&csTmp)){
+DEBUGLOG(("Authorize::sd_ind= [%c]\n",csTmp[0]));
+			if(csTmp[0]==PD_SOURCE){
+				cIsdInd = PD_SOURCE;
+				iSrcCnt++;
+			}
+			else if(csTmp[0]==PD_DESTINATION){
+				cIsdInd = PD_DESTINATION;
+				iDstCnt++;
+			}
+		}
+		else{
+DEBUGLOG(("Authorize::sd_ind is missing!!!!\n"));
+			iRet = INT_INVALID_TXN;
+		}
+
+		if(cIsdInd ==PD_SOURCE){	
+			sprintf(csTag,"%s_txnid_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTxnId)){
+				PutField_CString(hContext,"org_txnid",csTxnId);
+				PutField_CString(myHash,"org_txnid",csTxnId);
+DEBUGLOG(("Authorize::txnid= [%s]\n",csTxnId));
+			}
+
+			sprintf(csTag,"%s_dtl_txnid_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csDtlTxnId)){
+				PutField_CString(myHash,"org_dtl_txnid",csDtlTxnId);
+DEBUGLOG(("Authorize::dtl_txnid= [%s]\n",csDtlTxnId));
+			}
+
+			DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","GetMmsTxnDetail");
+                	if ((unsigned long)((*DBObjPtr)(csTxnId,csDtlTxnId,rRecordSet)) != PD_OK) {
+                        	iRet = INT_ERR;
+                	}
+                	else{
+                        	hRec = RecordSet_GetFirst(rRecordSet);
+                        	while (hRec) {
+
+                                	if(GetField_Char(hRec,"isd_ind",&cTmp)){
+DEBUGLOG(("GetMmsTxnDetail: isd_ind[%c]\n",cTmp));
+						if(cTmp==PD_SOURCE){
+							iRet = INT_INVALID_TXN;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("GetMmsTxnDetail: invalid isd_ind[%c]\n",cTmp));
+						}
+                                	}
+                                	if(GetField_Char(hRec,"status",&cTmp)){
+DEBUGLOG(("GetMmsTxnDetail: status[%c]\n",cTmp));
+						if(cTmp!=PD_MMS_PENDING){
+							iRet = INT_INVALID_TXN;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("GetMmsTxnDetail: invalid status[%c]\n",cTmp));
+						}
+                                	}
+					if(GetField_Double(hRec,"txn_amt",&dTmp)){
+						PutField_Double(myHash,"org_txn_amt",dTmp);
+					}
+					if(GetField_Int(hRec,"carry_forward_ind",&iTmp)){
+						PutField_Int(myHash,"carry_forward_ind",iTmp);
+					}
+
+					if (GetField_CString(hRec, "dst_party_type", &csTmp)) {
+						PutField_CString(hContext,"src_party_type",csTmp);
+						PutField_CString(myHash, "party_type", csTmp);
+DEBUGLOG(("GetMmsTxnDetail: src_party_type= [%s]\n",csTmp));
+					}
+
+					if (GetField_CString(hRec, "party_node_id", &csTmp)) {
+						PutField_CString(myHash, "node_id", csTmp);
+DEBUGLOG(("GetMmsTxnDetail: node_id = [%s]\n",csTmp));
+					}
+
+					if (GetField_CString(hRec, "service_code", &csTmp)) {
+						PutField_CString(myHash, "service", csTmp);
+DEBUGLOG(("GetMmsTxnDetail: service = [%s]\n",csTmp));
+					}
+
+					if (GetField_CString(hRec, "txn_ccy", &csTmp)) {
+						PutField_CString(myHash, "txn_ccy", csTmp);
+DEBUGLOG(("GetMmsTxnDetail: txn_ccy = [%s]\n",csTmp));
+					}
+
+					if (GetField_CString(hRec, "psp_id", &csTmp)) {
+DEBUGLOG(("GetMmsTxnDetail: psp_id = [%s]\n",csTmp));
+						PutField_CString(myHash, "psp_id", csTmp);
+					}
+
+					if (GetField_CString(hRec, "merchant_id", &csTmp)) {
+DEBUGLOG(("GetMmsTxnDetail: merchant_id = [%s]\n",csTmp));
+						PutField_CString(myHash, "merchant_id", csTmp);
+					}
+
+					if (GetField_CString(hRec, "mb_id", &csTmp)) {
+DEBUGLOG(("GetMmsTxnDetail: mb_id = [%s]\n",csTmp));
+						PutField_CString(myHash, "mb_id", csTmp);
+					}
+					if (GetField_CString(hRec, "bank_id", &csTmp)) {
+DEBUGLOG(("GetMmsTxnDetail: bank_id = [%s]\n",csTmp));
+						PutField_CString(myHash, "bank_id", csTmp);
+					}
+					if (GetField_CString(hRec, "stl_bank_id", &csTmp)) {
+DEBUGLOG(("GetMmsTxnDetail: stl_bank_id = [%s]\n",csTmp));
+						PutField_CString(myHash, "stl_bank_id", csTmp);
+					}
+
+                                	hRec = RecordSet_GetNext(rRecordSet);
+                        	}
+                	}
+		}
+
+		if(iRet!=PD_OK){
+			break;
+		}
+		else{
+			sprintf(csTag,"%s_pty_type_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"party_type",csTmp);
+
+				//if(cIsdInd==PD_SOURCE)
+				//	PutField_CString(hContext,"src_party_type",csTmp);
+				//else
+					PutField_CString(hContext,"dst_party_type",csTmp);
+DEBUGLOG(("Authorize::party_type= [%s]\n",csTmp));
+			}
+			sprintf(csTag,"%s_pty_id_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"party_id",csTmp);
+DEBUGLOG(("Authorize::party_id= [%s]\n",csTmp));
+			}
+			sprintf(csTag,"%s_pty_node_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"node_id",csTmp);
+DEBUGLOG(("Authorize::node_id= [%s]\n",csTmp));
+			}
+			sprintf(csTag,"%s_pty_service_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"service",csTmp);
+DEBUGLOG(("Authorize::service= [%s]\n",csTmp));
+			}
+			sprintf(csTag,"%s_txnamt_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				dTmp = string2double((const unsigned char *)csTmp);
+				PutField_Double(myHash,"txn_amt",dTmp);
+DEBUGLOG(("Authorize::txnamt= [%lf]\n",dTmp));
+			}
+			sprintf(csTag,"%s_ccy_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"ccy",csTmp);
+DEBUGLOG(("Authorize::ccy= [%s]\n",csTmp));
+			}
+			sprintf(csTag,"%s_adj_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				dTmp = string2double((const unsigned char *)csTmp);
+				PutField_Double(myHash,"adjustment",dTmp);
+DEBUGLOG(("Authorize::adjustment= [%lf]\n",dTmp));
+			}
+			sprintf(csTag,"%s_rate_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				dTmp = string2double((const unsigned char *)csTmp);
+				PutField_Double(myHash,"exchange_rate",dTmp);
+DEBUGLOG(("Authorize::ex rate= [%lf]\n",dTmp));
+			}
+			sprintf(csTag,"%s_pc_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				dTmp = string2double((const unsigned char *)csTmp);
+				PutField_Double(myHash,"processing_cost",dTmp);
+DEBUGLOG(("Authorize::processing cost= [%lf]\n",dTmp));
+			}
+			sprintf(csTag,"%s_bk_chrg_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				dTmp = string2double((const unsigned char *)csTmp);
+				PutField_Double(myHash,"bank_charge",dTmp);
+DEBUGLOG(("Authorize::bank charge= [%lf]\n",dTmp));
+			}
+			sprintf(csTag,"%s_refund_%d",PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				dTmp = string2double((const unsigned char *)csTmp);
+				PutField_Double(myHash,"bank_charge_refund",dTmp);
+DEBUGLOG(("Authorize::bank charge refund= [%lf]\n",dTmp));
+			}
+			sprintf(csTag,"%s_txndate_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"txndate",csTmp);
+DEBUGLOG(("Authorize::txndate= [%s]\n",csTmp));
+			}
+			sprintf(csTag,"%s_fno_%d", PD_DT_ELEMENT, i);
+			if(GetField_CString(hRequest,csTag,&csTmp)){
+				PutField_CString(myHash,"filling_num",csTmp);
+DEBUGLOG(("Authorize::filling num= [%s]\n",csTmp));
+			}
+		}
+
+		if(cIsdInd==PD_SOURCE){
+			RecordSet_Add(rSrcRecordSet,myHash);
+		}
+		else{
+			RecordSet_Add(rDstRecordSet,myHash);
+		}
+
+DEBUGLOG(("Authorize:: >>>>>>>>>>>>>> END [%d] <<<<<<<<<<<<<<< \n",i));
+	}
+
+////////verification start
+//Count
+	if(iRet==PD_OK){
+		if((iTotalSrc!=iSrcCnt)||
+		   (iTotalDst!=iDstCnt)){
+DEBUGLOG(("Authorize: Record count mismatch!!! Src:[%d][%d]  Dst:[%d][%d]\n",iTotalSrc,iSrcCnt,iTotalDst,iDstCnt));
+			iRet = INT_ERR;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+//Amout
+	if(iRet==PD_OK){
+		double dSrcAmt = 0.0;
+		double dOrgSrcAmt = 0.0;
+		double dDstAmt = 0.0;
+		double dTotalDstAmt = 0.0;
+		double dGrpSrcAmt = 0.0;
+		double dSrcNetAmt = 0.0;
+
+		hRec = RecordSet_GetFirst(rSrcRecordSet);
+		while(hRec){
+			if(GetField_Double(hRec,"txn_amt",&dSrcNetAmt)){
+				dSrcAmt+=dSrcNetAmt;
+			}
+			if(GetField_Double(hRec,"adjustment",&dTmp)){
+				dSrcAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"processing_cost",&dTmp)){
+				dSrcAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"bank_charge",&dTmp)){
+				dSrcAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"org_txn_amt",&dTmp)){
+				dOrgSrcAmt+=dTmp;
+			}
+			hRec = RecordSet_GetNext(rSrcRecordSet);
+		}
+
+		if(iGroup==PD_TRUE){
+			if(GetField_Double(hContext,"txn_amt",&dTmp)){
+				dGrpSrcAmt+=dTmp;
+			}
+			if(GetField_Double(hContext,"adjustment",&dTmp)){
+				dGrpSrcAmt+=dTmp;
+			}
+			if(GetField_Double(hContext,"processing_cost",&dTmp)){
+				dGrpSrcAmt+=dTmp;
+			}
+			if(GetField_Double(hContext,"bank_charge",&dTmp)){
+				dGrpSrcAmt+=dTmp;
+			}
+
+			dSrcAmt = dOrgSrcAmt;
+
+		}
+
+		//compare src amount
+		if(dSrcAmt!=dOrgSrcAmt){
+			iRet = INT_INVALID_PAY_AMOUNT;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Grouped Amount != Original Amt [%lf]!=[%lf]\n",dSrcAmt,dOrgSrcAmt));
+		}
+
+		//Compare src with dst amount
+		hRec = RecordSet_GetFirst(rDstRecordSet);
+		while(hRec){
+			dDstAmt=0.0;
+			if(GetField_Double(hRec,"txn_amt",&dTmp)){
+				dDstAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"adjustment",&dTmp)){
+				dDstAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"processing_cost",&dTmp)){
+				dDstAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"bank_charge",&dTmp)){
+				dDstAmt+=dTmp;
+			}
+			if(GetField_Double(hRec,"exchange_rate",&dTmp)){
+				dDstAmt=(dDstAmt/dTmp);
+			}
+			dTotalDstAmt +=dDstAmt;
+			hRec = RecordSet_GetNext(rDstRecordSet);
+		}
+		
+		if((dTotalDstAmt-dSrcNetAmt)>1.0||
+		   (dSrcNetAmt-dTotalDstAmt)>1.0){ //ignore the decimal
+			iRet = INT_INVALID_PAY_AMOUNT;
+			PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Total Dst Amount != Total Src Amt [%lf]!=[%lf]\n",dTotalDstAmt,dOrgSrcAmt));
+		}
+	}
+
+//content
+	if(iRet==PD_OK){
+		char *csPartyType=NULL;
+		char *csPartyId=NULL;
+		char *csNodeId=NULL;
+		char *csService=NULL;
+
+		if(iTotalSrc>1){
+			hRec = RecordSet_GetFirst(rSrcRecordSet);
+			GetField_CString(hRec,"party_type",&csPartyType);
+			GetField_CString(hRec,"party_id",&csPartyId);
+			GetField_CString(hRec,"node_id",&csNodeId);
+			GetField_CString(hRec,"service",&csService);
+
+			hRec = RecordSet_GetNext(rSrcRecordSet);
+			while(hRec && iRet==PD_OK){
+				if(GetField_CString(hRec,"party_type",&csTmp)){
+					if(!strcmp(csTmp,csPartyType)){
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Party Type not the same!!!![%s][%s]\n",csPartyType,csTmp));
+					}
+				}
+				if(GetField_CString(hRec,"service",&csTmp)){
+					if(!strcmp(csTmp,csService)){
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Service not the same!!!![%s][%s]\n",csService,csTmp));
+					}
+				}
+
+				if(iGroup==PD_TRUE){
+					if(GetField_CString(hRec,"party_id",&csTmp)){
+						if(!strcmp(csTmp,csPartyId)){
+							iRet = INT_ERR;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Party Id not the same!!!![%s][%s]\n",csPartyId,csTmp));
+						}
+					}
+					if(GetField_CString(hRec,"node_id",&csTmp)){
+						if(!strcmp(csTmp,csNodeId)){
+							iRet = INT_ERR;
+							PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Node Id not the same!!!![%s][%s]\n",csNodeId,csTmp));
+						}
+					}
+				}
+				hRec = RecordSet_GetNext(rSrcRecordSet);
+			}
+		}
+		
+		csPartyType=NULL;
+		csService=NULL;
+
+		if(iTotalDst>1){
+			hRec = RecordSet_GetFirst(rDstRecordSet);
+			GetField_CString(hRec,"party_type",&csPartyType);
+			GetField_CString(hRec,"service",&csService);
+
+			hRec = RecordSet_GetNext(rDstRecordSet);
+			while(hRec && iRet==PD_OK){
+				if(GetField_CString(hRec,"party_type",&csTmp)){
+					if(!strcmp(csTmp,csPartyType)){
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Party Type not the same!!!![%s][%s]\n",csPartyType,csTmp));
+					}
+				}
+				if(GetField_CString(hRec,"service",&csTmp)){
+					if(!strcmp(csTmp,csService)){
+						iRet = INT_ERR;
+						PutField_Int(hContext,"internal_error",iRet);
+DEBUGLOG(("Authorize:: Service not the same!!!![%s][%s]\n",csService,csTmp));
+					}
+				}
+				hRec = RecordSet_GetNext(rDstRecordSet);
+			}
+		}
+
+	}
+////////verification end
+
+
+	if(iRet==PD_OK){
+		if(iTotalSrc>1){
+//use New txnid
+			if(GetField_CString(hContext,"txn_seq",&csTxnId)){
+				PutField_CString(hContext,"new_txn_seq",csTxnId);
+DEBUGLOG(("Authorize::Use New TxnSeq [%s]\n", csTxnId));
+			}
+
+			PutField_Int(hContext,"multi_src",PD_TRUE);
+		}
+		else{
+//use org txnid
+			if(GetField_CString(hContext,"org_txnid",&csTxnId)){
+				PutField_CString(hContext,"new_txn_seq",csTxnId);
+DEBUGLOG(("Authorize::Use Org TxnSeq [%s]\n",csTxnId));
+			}
+		}
+	}
+
+
+/*Get Batch Id*/
+DEBUGLOG(("Authorize::Call DBMmsTransaction:GetNextBatchId\n"));
+	DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","GetNextBatchId");
+	iRet = (unsigned long) ((*DBObjPtr)(csTxnId, &iBatchId));
+	if(iRet==PD_OK){
+		PutField_Int(hContext,"batch_id",iBatchId);
+DEBUGLOG(("Authorize::Batch Id [%d]\n",iBatchId));
+	}
+
+/*for Auto Rev*/
+	PutField_CString(hAutoRev,"txn_seq",csTxnId);
+	PutField_Int(hAutoRev,"batch_id",iBatchId);
+///
+
+	if(iRet==PD_OK){
+		hRec = RecordSet_GetFirst(rSrcRecordSet);
+		while(hRec){
+			if(iGroup==PD_FALSE){
+				sprintf(csTxnObjName,"TxnMmcByUsAIN");
+DEBUGLOG(("Authorize::Call %s:Authorize\n", csTxnObjName));
+				TxnObjPtr = CreateObj(TxnPtr, csTxnObjName,"Authorize");
+				iRet = (unsigned long)(*TxnObjPtr)(hContext,hRec,hResponse);
+DEBUGLOG(("Authorize::End to Call %s:Authorize\n", csTxnObjName));
+
+				if(GetField_CString(hContext,"dtl_txn_seq",csTmp))
+					PutField_CString(hAutoRev,"dtl_txn_seq",csTmp);
+
+				if(GetField_Char(hResponse, "auto_reverse", &cTmp)){
+DEBUGLOG(("Authorize::auto_reverse [%c]\n", cTmp));
+					/////Call Handler to reverse previous success txn
+					//TODO:
+DEBUGLOG(("TESTING...........Call Handler to reverse previous success txn\n"));
+				}
+			}
+			hRec = RecordSet_GetNext(rSrcRecordSet);
+		}
+
+		if(iGroup==PD_TRUE){
+			hRec = RecordSet_GetFirst(rSrcRecordSet);
+			if(GetField_CString(hRec,"party_type",&csTmp)){
+				PutField_CString(hTxn,"party_type",csTmp);
+DEBUGLOG(("Authorize::party_type= [%s]\n",csTmp));
+			}
+			if(GetField_CString(hRec,"party_id",&csTmp)){
+				PutField_CString(hTxn,"party_id",csTmp);
+DEBUGLOG(("Authorize::party_id= [%s]\n",csTmp));
+			}
+			if(GetField_CString(hRec,"node_id",&csTmp)){
+				PutField_CString(hTxn,"node_id",csTmp);
+DEBUGLOG(("Authorize::node_id= [%s]\n",csTmp));
+			}
+			if(GetField_CString(hRec,"service",&csTmp)){
+				PutField_CString(hTxn,"service",csTmp);
+DEBUGLOG(("Authorize::service= [%s]\n",csTmp));
+			}
+			if(GetField_CString(hRec,"ccy",&csTmp)){
+				PutField_CString(hTxn,"ccy",csTmp);
+DEBUGLOG(("Authorize::ccy= [%s]\n",csTmp));
+			}
+			if(GetField_Double(hContext,"txn_amt",&dTmp)){
+				PutField_Double(hTxn,"txn_amt",dTmp);
+DEBUGLOG(("Authorize::txn_amt= [%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"adjustment",&dTmp)){
+				PutField_Double(hTxn,"adjustment",dTmp);
+DEBUGLOG(("Authorize::adjustment= [%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"exchange_rate",&dTmp)){
+				PutField_Double(hTxn,"exchange_rate",dTmp);
+DEBUGLOG(("Authorize::exchange_rate= [%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"processing_cost",&dTmp)){
+				PutField_Double(hTxn,"processing_cost",dTmp);
+DEBUGLOG(("Authorize::processing_cost= [%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"bank_charge",&dTmp)){
+				PutField_Double(hRec,"bank_charge",dTmp);
+DEBUGLOG(("Authorize::bank_charge= [%lf]\n",dTmp));
+			}
+			if(GetField_Double(hContext,"bank_charge_refund",&dTmp)){
+				PutField_Double(hTxn,"bank_charge_refund",dTmp);
+DEBUGLOG(("Authorize::bank_charge_refund= [%lf]\n",dTmp));
+			}
+			if(GetField_CString(hRequest,"txndate",&csTmp)){
+				PutField_CString(hTxn,"txndate",csTmp);
+DEBUGLOG(("Authorize::txndate= [%s]\n",csTmp));
+			}
+			if(GetField_CString(hRequest,"fno",&csTmp)){
+				PutField_CString(hTxn,"filling_num",csTmp);
+DEBUGLOG(("Authorize::filling num= [%s]\n",csTmp));
+			}
+
+			sprintf(csTxnObjName,"TxnMmcByUsAIN");
+DEBUGLOG(("Authorize::Call %s:Authorize\n", csTxnObjName));
+			TxnObjPtr = CreateObj(TxnPtr, csTxnObjName,"Authorize");
+			iRet = (unsigned long)(*TxnObjPtr)(hContext,hTxn,hResponse);
+DEBUGLOG(("Authorize::End to Call %s:Authorize\n", csTxnObjName));
+
+		}
+	}
+
+
+	if(iRet==PD_OK){
+		hRec = RecordSet_GetFirst(rDstRecordSet);
+		while(hRec){
+			sprintf(csTxnObjName,"TxnMmcByUsAOT");
+DEBUGLOG(("Authorize::Call %s:Authorize\n", csTxnObjName));
+			TxnObjPtr = CreateObj(TxnPtr, csTxnObjName,"Authorize");
+			iRet = (unsigned long)(*TxnObjPtr)(hContext,hRec,hResponse);
+DEBUGLOG(("Authorize::End to Call %s:Authorize\n", csTxnObjName));
+
+			if(GetField_CString(hContext,"dtl_txn_seq",csTmp))
+				PutField_CString(hAutoRev,"dtl_txn_seq",csTmp);
+
+			if(GetField_Char(hResponse, "auto_reverse", &cTmp)){
+DEBUGLOG(("Authorize::auto_reverse [%c]\n", cTmp));
+				/////Call Handler to reverse previous success txn
+				//TODO:
+DEBUGLOG(("TESTING...........Call Handler to reverse previous success txn\n"));
+			}
+
+			hRec = RecordSet_GetNext(rDstRecordSet);
+		}
+	}
+
+
+//Update Prev Txn status -> A
+	if(iRet==PD_OK){
+		hash_t *hOrgTxn;
+		hOrgTxn = (hash_t*)  malloc (sizeof(hash_t));
+        	hash_init(hOrgTxn,0);
+
+		hRec = RecordSet_GetFirst(rSrcRecordSet);
+		while(hRec && iRet==PD_OK){
+DEBUGLOG(("Authorize::Call DBMmsTransaction:UpdateDetail\n"));
+			PutField_Char(hOrgTxn,"status",PD_ACCEPT);
+			if(GetField_CString(hRec,"org_txnid",&csTmp)){
+				PutField_CString(hOrgTxn,"txn_seq",csTmp);
+			}
+			if(GetField_CString(hRec,"org_dtl_txnid",&csTmp)){
+				PutField_CString(hOrgTxn,"dtl_txn_seq",csTmp);
+			}
+			PutField_Int(hOrgTxn,"internal_code",0);
+			PutField_CString(hOrgTxn,"response_code","0");
+			DBObjPtr = CreateObj(DBPtr,"DBMmsTransaction","UpdateDetail");
+			iRet = (unsigned long) ((*DBObjPtr)(hOrgTxn));
+DEBUGLOG(("DBMmsTransaction:UpdateDetail iRet[%d]\n",iRet));
+			hRec = RecordSet_GetNext(rSrcRecordSet);
+		}
+		FREE_ME(hOrgTxn);
+        }
+	
+
+	FREE_ME(hTxn);
+	FREE_ME(hAutoRev);
+	RecordSet_Destroy(rRecordSet);
+	FREE_ME(rRecordSet);
+	RecordSet_Destroy(rSrcRecordSet);
+	FREE_ME(rSrcRecordSet);
+	RecordSet_Destroy(rDstRecordSet);
+	FREE_ME(rDstRecordSet);
+
+DEBUGLOG(("TxnMmcByUsAPT Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

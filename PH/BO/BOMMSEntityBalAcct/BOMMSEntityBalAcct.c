@@ -1,0 +1,147 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2015/06/12              Cody Chan
+Add AddRecord()					   2015/06/25		   Dirk Wong
+Remove check txn_country			   2015/07/23		   Dirk Wong
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "myhash.h"
+#include "myrecordset.h"
+#include "internal.h"
+#include "common.h"
+#include "BOMMSEntityBalAcct.h"
+
+char    cDebug;
+
+OBJPTR(DB);
+
+void BOMMSEntityBalAcct(char    cdebug)
+{
+        cDebug = cdebug;
+}
+
+int CheckEntityBalAcct(hash_t* hContext,
+		const hash_t* hReq)
+{
+	int iRet = PD_OK;
+	char	*csPtr;
+
+	hash_t	*hData;
+
+DEBUGLOG(("CheckEntityBalAcct() \n"));
+
+        hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+/* txn_ccy */
+	if (GetField_CString(hReq,"txn_ccy",&csPtr)) {
+DEBUGLOG(("ChekcEntityBalAcct() txn_ccy = [%s]\n",csPtr));
+		PutField_CString(hData,"ccy",csPtr);
+	}
+	else {
+DEBUGLOG(("ChekcEntityBalAcct() txn_ccy not found\n"));
+ERRLOG("BOMMSEntityBalAcct::ChekcEntityBalAcct() txn_ccy not found\n");
+		iRet = INT_CURRENCY_CODE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* entity_id */
+
+	if (iRet == PD_OK) {
+		if (GetField_CString(hContext,"entity_id",&csPtr)) {
+DEBUGLOG(("ChekcEntityBalAcct() entity_id = [%s]\n",csPtr));
+			PutField_CString(hData,"entity_id",csPtr);
+		}
+		else {
+DEBUGLOG(("ChekcEntityBalAcct() entity_id not found\n"));
+ERRLOG("BOMMSEntityBalAcct::ChekcEntityBalAcct() entity_id not found\n");
+			iRet = INT_MMS_ENTITY_ID_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* check if the bal acct for entity is enable */
+	if (iRet == PD_OK) {
+//		char	*csStatus;
+		hash_t	*myHash;
+		myHash = (hash_t*) malloc (sizeof(hash_t));
+        	hash_init(myHash,0);
+
+		DBObjPtr = CreateObj(DBPtr,"DBMmsEntityBalAcct","GetEntityBalAcct");	
+		if ((unsigned long)(*DBObjPtr)(hData,
+                                 myHash) == PD_OK) {
+DEBUGLOG(("ChekcEntityBalAcct() entity bal account record found\n"));
+/*  dont support status, this status if ref only 
+			if (GetField_CString(myHash,"status",&csStatus)) {
+DEBUGLOG(("ChekcEntityBalAcct() entity bal account [%s]\n",csStatus));
+				if (strcmp(csStatus,PD_ACC_OPEN)) {
+					iRet = INT_MMS_ENTITY_BAL_ACCT_DISABLED;
+				}
+			}
+			else {		
+				iRet = INT_MMS_ENTITY_BAL_ACCT_DISABLED;
+			}
+			if (iRet != PD_OK) {
+DEBUGLOG(("ChekcEntityBalAcct() entity bal account disabled\n"));
+ERRLOG("BOMMSEntityBalAcct::ChekcEntityBalAcct() entity bal account disabled\n");
+			}
+*/
+                }
+		else {
+DEBUGLOG(("ChekcEntityBalAcct() entity bal account not found\n"));
+ERRLOG("BOMMSEntityBalAcct::ChekcEntityBalAcct() entity bal account not found\n");
+			iRet = INT_MMS_ENTITY_BAL_ACCT_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+		FREE_ME(myHash);
+	}
+
+
+	FREE_ME(hData);
+DEBUGLOG(("CheckEntityBalAcct() normal exit iRet = [%d]\n",iRet));
+	return iRet;
+}
+
+
+int AddRecord(hash_t* hData) {
+	int iRet = PD_OK;
+
+DEBUGLOG(("Add() Start!\n"));
+
+	//Check if Bal Acct exist
+/*
+	if (iRet == PD_OK) {
+DEBUGLOG(("Add(): Call DBMmsEntityBalAcct::GetEntityBalAcct\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMmsEntityBalAcct","GetEntityBalAcct");
+		if ((unsigned long)(*DBObjPtr)(hData, hData) == PD_OK) {
+DEBUGLOG(("Add(): Bal Acct already exists, return FAILED!!\n"));
+ERRLOG("BOMMSEntityBalAcct::Add(): Bal Acct already exists, return FAILED!!\n");
+			//iRet = PD_ERR;
+		} else {
+DEBUGLOG(("Add(): Bal Acct not exists, continue add()\n"));
+		}
+	}
+*/
+
+	//Add Entity Bal Acct
+	if (iRet == PD_OK) {
+DEBUGLOG(("Add(): Call DBMmsEntityBalAcct::Add\n"));
+		DBObjPtr = CreateObj(DBPtr,"DBMmsEntityBalAcct","Add");
+		iRet = (unsigned long) (*DBObjPtr)(hData);
+DEBUGLOG(("Add(): iRet = [%d] return from MMS Entity Bal Acct Add\n",iRet));
+	}
+
+
+DEBUGLOG(("Add() normal exit iRet = [%d]\n",iRet));
+
+	return iRet;
+}

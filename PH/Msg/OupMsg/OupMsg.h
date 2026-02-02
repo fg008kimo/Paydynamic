@@ -1,0 +1,47 @@
+#ifndef _OUPMSG_H
+#define	_OUPMSG_H
+
+#include "myhash.h"
+
+#define	MY_OUP_TOKEN		"&"
+#define	MY_OUP_FIELD_TOKEN	"="
+
+#define MY_OUP_ENCODING		"utf-8"
+#define MY_OUP_SIGN_METHOD	"01"
+#define MY_OUP_TXN_TYPE		"01"
+#define MY_OUP_TXN_SUB_TYPE	"01"
+#define MY_OUP_BIZ_TYPE		"000201"
+#define MY_OUP_CHANNEL_TYPE	"08"
+#define MY_OUP_ACCESS_TYPE	"0"
+#define MY_OUP_CCY_CODE		"156"
+
+#define MY_OUP_INQ_ENCODING	"UTF-8"
+#define MY_OUP_INQ_SIGN_METHOD	"01"
+#define MY_OUP_INQ_TXN_TYPE	"00"
+#define MY_OUP_INQ_TXN_SUB_TYPE	"00"
+#define MY_OUP_INQ_BIZ_TYPE	"000000"
+#define MY_OUP_INQ_ACCESS_TYPE	"0"
+#define MY_OUP_SUCCESS_STATUS_1	"00"
+#define MY_OUP_SUCCESS_STATUS_2	"A6"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int FormatMsg(const hash_t *table, unsigned char *outMsg, int *outLen);
+int BreakDownMsg(hash_t *table, const unsigned char *inMsg, int inLen);
+int initReplyFromRequest(const hash_t *, hash_t *);
+int BuildAuthData(hash_t *hIn);
+int BuildRspAuthData(hash_t *hIn);
+int FormatInqMsg(const hash_t *hIn, unsigned char *outMsg, int *outLen);
+int BuildInqAuthData(hash_t *hIn);
+int BreakDownInqRspMsg(hash_t *hContext, hash_t *hOut, const unsigned char *inMsg, int inLen);
+int BuildInqRspAuthData(hash_t *hIn);
+int BuildCallbackAuthData(hash_t *hIn);
+int FormatCallbackMsg(hash_t *hContext, hash_t *hIn, unsigned char *outMsg, int *outLen);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

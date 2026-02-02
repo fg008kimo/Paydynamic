@@ -1,0 +1,1124 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2016/07/27              Elvis Wong
+*/
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "batchcommon.h"
+#include "common.h"
+#include "utilitys.h"
+#include "myhash.h"
+#include "numutility.h"
+#include "myrecordset.h"
+#include "ObjPtr.h"
+#include "internal.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+int    	i_rpt_id = 0;
+char    cs_rpt_datetime[PD_DATETIME_LEN + 1];
+char	cs_rpt_type[PD_PSP_REPORT_TYPE_LEN + 1];
+char    cDebug;
+
+OBJPTR(DB);
+
+int parse_arg(int argc,char **argv);
+int get_psp_check_report_parameter(const char *csCode, char *csVal);
+int get_psp_check_report_log(recordset_t *rRecordSet);
+int gen_last_deposit_approve_table(recordset_t *rRecordSet);
+int get_last_deposit_approve_record(hash_t *hRec);
+int gen_pending_count_by_customer_ip_table(const char *csThresVal, recordset_t *rRecordSet);
+int get_pending_count_by_customer_ip_record(const hash_t* hRls, recordset_t *rRecordSet);
+
+int batch_init(int argc, char* argv[])
+{
+	if (argc < 3) {
+        	printf("usage: -i rpt_id -d rpt_datetime -t rpt_type\n");
+        	//return FAILURE;
+    	}
+    	//else
+        	return SUCCESS;
+}
+
+int batch_proc(int argc, char* argv[])
+{
+	int 	iRet = SUCCESS;
+	int 	iDtlRet = PD_FOUND;	
+
+	char    *csPspRptShow = (char*) malloc (PD_PSP_REPORT_VALUE_LEN + 1);
+	char    *csPspRptExactCntVal = (char*) malloc (PD_PSP_REPORT_VALUE_LEN + 1);
+
+        recordset_t	*rRecordSet = (recordset_t*) malloc (sizeof(recordset_t));
+        recordset_init(rRecordSet,0);
+
+	iRet = parse_arg(argc,argv);
+
+        if (iRet != SUCCESS) {
+                printf("usage: -i rpt_id -d rpt_datetime -t rpt_type\n");
+                return SUCCESS;
+        }
+
+	// Get Psp Txn Check Report Parameter (code = SHOW)
+	if (iRet == SUCCESS) {
+
+		iDtlRet = get_psp_check_report_parameter(PD_PSP_REPORT_CODE_SHOW, csPspRptShow);
+		if (iDtlRet == PD_FOUND) {
+
+DEBUGLOG(("batch_proc:: csPspRptShow = [%s]\n",csPspRptShow));
+			if (strcmp(csPspRptShow, PD_PSP_REPORT_VAL_ON)) {
+                            	iRet = FAILURE;
+DEBUGLOG(("batch_proc:: PSP Report Parameter Value OFF!!!\n"));
+			}
+		} else {
+			iRet = FAILURE;
+		}
+	}
+
+	// Get Psp Txn Check Report Log
+	if (iRet == SUCCESS) {
+
+		iDtlRet = get_psp_check_report_log(rRecordSet);
+		if (iDtlRet != PD_FOUND) {
+                        iRet = FAILURE;
+                }
+	} 
+
+	// Generate Last Deposit Approve Table
+	if (iRet == SUCCESS) {
+
+		iRet = gen_last_deposit_approve_table(rRecordSet);
+	}
+
+	// Generate Pending Count By Customer IP Table
+	if (iRet == SUCCESS) {
+
+		// Get Psp Txn Check Report Parameter (code = EXACT_CNT_VALUE)
+                iDtlRet = get_psp_check_report_parameter(PD_PSP_REPORT_CODE_EXACT_CNT_VALUE, csPspRptExactCntVal);
+		if (iDtlRet == PD_FOUND) {
+
+DEBUGLOG(("batch_proc:: csPspRptExactCntVal = [%s]\n",csPspRptExactCntVal));
+			iRet = gen_pending_count_by_customer_ip_table(csPspRptExactCntVal, rRecordSet);
+                } else {
+                        iRet = FAILURE;
+                }
+	} 
+
+	RecordSet_Destroy(rRecordSet);
+        FREE_ME(rRecordSet);
+
+	FREE_ME(csPspRptShow);
+	FREE_ME(csPspRptExactCntVal);
+
+DEBUGLOG(("batch_proc:: return = [%d]\n", iRet));
+	return iRet;
+}
+
+int batch_terminate(int argc, char* argv[])
+{
+        return SUCCESS;
+}
+
+int parse_arg(int argc,char **argv)
+{
+        char    c;
+	i_rpt_id = 0;
+        strcpy(cs_rpt_datetime,"");
+        strcpy(cs_rpt_type,"");
+
+        while ((c = getopt(argc,argv,"i:d:t:")) != EOF) {
+                switch (c) {
+			case 'i':
+				i_rpt_id = atoi(optarg);
+				break;
+                        case 'd':
+                                strcpy(cs_rpt_datetime, optarg);
+                                break;
+			case 't':
+                                strcpy(cs_rpt_type, optarg);
+                                break;
+                        default:
+                                return FAILURE;
+                }
+        }
+
+        if ((i_rpt_id == 0) || (!strcmp(cs_rpt_datetime,"")) || (!strcmp(cs_rpt_type,"")))
+                return FAILURE;
+
+        return SUCCESS;
+}
+
+int get_psp_check_report_parameter(const char *csCode, char *csVal)
+{
+        int     iRet = PD_FOUND;
+
+	char	*csTmp = NULL;
+
+        hash_t  *hData;
+        hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	// rpt_type
+        PutField_CString(hData,"rpt_type",cs_rpt_type);
+DEBUGLOG(("get_psp_check_report_parameter:: rpt_type = [%s]\n", cs_rpt_type));
+
+	// code
+        PutField_CString(hData,"code",csCode);
+DEBUGLOG(("get_psp_check_report_parameter:: code = [%s]\n", csCode));
+
+        // Get Psp Txn Check Report Parameter
+DEBUGLOG(("get_psp_check_report_parameter:: Call DBPspTxnCheckReportParameter:: GetPspTxnCheckReportParameter\n"));
+       	DBObjPtr = CreateObj(DBPtr,"DBPspTxnCheckReportParameter","GetPspTxnCheckReportParameter");
+      	iRet = (unsigned long)(*DBObjPtr)(hData);
+       	if (iRet != PD_FOUND) {
+DEBUGLOG(("get_psp_check_report_parameter:: Call DBPspTxnCheckReportParameter:: GetPspTxnCheckReportParameter Not Found!!!\n"));
+ERRLOG("check_psp_txn_report::get_psp_check_report_parameter::Call DBPspTxnCheckReportParameter::GetPspTxnCheckReportParameter Not Found!!!\n");
+       	} else {
+
+/* val */
+           	if (GetField_CString(hData,"val",&csTmp)) {
+			sprintf(csVal, "%s", csTmp);
+DEBUGLOG(("get_psp_check_report_parameter:: Call DBPspTxnCheckReportParameter:: GetPspTxnCheckReportParameter:: val = [%s]\n",csVal));
+               	} else {
+DEBUGLOG(("get_psp_check_report_parameter:: Call DBPspTxnCheckReportParameter:: GetPspTxnCheckReportParameter invalid val!!!\n"));
+ERRLOG("check_psp_txn_report::get_psp_check_report_parameter::Call DBPspTxnCheckReportParameter::GetPspTxnCheckReportParameter invalid val!!!\n");
+		}
+    	}
+
+	FREE_ME(hData);
+
+	return iRet;
+}
+
+int get_psp_check_report_log(recordset_t *rRecordSet)
+{
+	int     iRet = PD_FOUND;
+
+	int     iCnt = 0;
+        int     iTmp = 0;
+        char    *csTmp = NULL;
+        char    cTmp;
+
+	hash_t  *hRec;
+
+	hash_t  *hData;
+        hData = (hash_t*) malloc (sizeof(hash_t));
+        hash_init(hData,0);
+
+	// rpt_id
+        PutField_Int(hData,"rpt_gen_id",i_rpt_id);
+DEBUGLOG(("get_psp_check_report_log:: rpt_id = [%d]\n", i_rpt_id));
+
+        // rpt_datetime
+        PutField_CString(hData,"rpt_gen_datetime",cs_rpt_datetime);
+DEBUGLOG(("get_psp_check_report_log:: rpt_datetime = [%s]\n", cs_rpt_datetime));
+
+        // rpt_type
+        PutField_CString(hData,"rpt_type",cs_rpt_type);
+DEBUGLOG(("get_psp_check_report_log:: rpt_type = [%s]\n", cs_rpt_type));
+
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog\n"));
+       	DBObjPtr = CreateObj(DBPtr,"DBPspTxnCheckReportLog","GetPspTxnCheckReportLog");
+      	iRet = (unsigned long)(*DBObjPtr)(hData, rRecordSet);
+    	if (iRet == PD_FOUND) {
+
+              	hRec = RecordSet_GetFirst(rRecordSet);
+              	while (hRec) {
+
+/* seq */
+                    	if (GetField_Int(hRec, "seq", &iTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][seq] = [%d]\n", iCnt, iTmp));
+                      	}
+
+/* party_type */
+                    	if (GetField_Char(hRec, "party_type", &cTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][party_type] = [%c]\n", iCnt, cTmp));
+                     	}
+
+/* party_id */
+                    	if (GetField_CString(hRec, "party_id", &csTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][party_id] = [%s]\n", iCnt, csTmp));
+                     	}
+
+/* party_name */
+                     	if (GetField_CString(hRec, "party_name", &csTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][party_name] = [%s]\n", iCnt, csTmp));
+                     	}
+
+/* bank_code */
+                   	if (GetField_CString(hRec, "bank_code", &csTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][bank_code] = [%s]\n", iCnt, csTmp));
+                   	}
+
+/* bank_name */
+                      	if (GetField_CString(hRec, "bank_name", &csTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][bank_name] = [%s]\n", iCnt, csTmp));
+                     	}
+
+/* dur_start */
+                     	if (GetField_CString(hRec, "dur_start", &csTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][dur_start] = [%s]\n", iCnt, csTmp));
+                        }
+
+/* dur_end */
+                    	if (GetField_CString(hRec, "dur_end", &csTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][dur_end] = [%s]\n", iCnt, csTmp));
+                      	}
+
+/* succ_cnt */
+                     	if (GetField_Int(hRec, "succ_cnt", &iTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][succ_cnt] = [%d]\n", iCnt, iTmp));
+                      	}
+
+/* pend_cnt */
+                   	if (GetField_Int(hRec, "pend_cnt", &iTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][pend_cnt] = [%d]\n", iCnt, iTmp));
+                     	}
+
+/* total_cnt */
+                   	if (GetField_Int(hRec, "total_cnt", &iTmp)) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog:: [%d][total_cnt] = [%d]\n", iCnt, iTmp));
+                     	}
+
+                      	iCnt++;
+
+                	hRec = RecordSet_GetNext(rRecordSet);
+             	}
+    	} else if (iRet == PD_NOT_FOUND) {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog Not Found!!!\n"));
+	} else {
+DEBUGLOG(("get_psp_check_report_log:: Call DBPspTxnCheckReportLog:: GetPspTxnCheckReportLog Error!!!\n"));
+ERRLOG("check_psp_txn_report::get_psp_check_report_log::Call DBPspTxnCheckReportLog::GetPspTxnCheckReportLog Error!!!\n");
+	}	
+
+	FREE_ME(hData);	
+
+	return iRet;
+}
+
+int gen_last_deposit_approve_table(recordset_t *rRecordSet)
+{
+	int     iRet = SUCCESS;
+	int	iDtlRet = PD_NOT_FOUND;
+
+	int	iCnt = 0;
+	int	iFound = 0;	
+	double  dTxnAmt = 0.0;
+	double	dTmp = 0.0;
+	char	*csPspId = NULL;
+	char	*csPspName = NULL;
+	char	*csDurStart = NULL;
+	char	*csDurEnd = NULL;
+	char	*csTxnId = NULL;
+	char	*csUpdateTimestamp = NULL;
+	char	*csCreateTimestamp = NULL;
+	char	*csMerchShortName = NULL;
+	char	*csMerchantRef = NULL;
+	char	*csTxnCcy = NULL;
+	char	*csBankName = NULL;
+	char    *csApprovalTimestamp = NULL;	
+	char	*csSubStatus = NULL;	
+	char	*csStatusName = NULL;
+	char	*csTmp = NULL;
+	char    cStatus;
+	char	cARInd;
+	char	cPartyType;
+
+	hash_t  *hRec;	
+
+	hash_t  *hLastAppDepAddRec;
+        hash_t  *hLastAppDepGetRec;
+        recordset_t     *rLastAppDepRecordSet;
+        rLastAppDepRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+        recordset_init(rLastAppDepRecordSet,0);
+
+	// Get Last Deposit Approve Record        
+	hRec = RecordSet_GetFirst(rRecordSet);
+       	while ((hRec) && (iRet == SUCCESS)) {
+
+		iDtlRet = get_last_deposit_approve_record(hRec);
+		if (iDtlRet == PD_FOUND) {
+
+			iFound++;
+
+			hLastAppDepAddRec = (hash_t*) malloc (sizeof(hash_t));
+                        hash_init(hLastAppDepAddRec, 0);
+
+/* party_type */	
+			if (GetField_Char(hRec,"party_type",&cPartyType)) {
+                		if (cPartyType == PD_TYPE_PSP) {
+/* psp_id */
+					if (GetField_CString(hRec,"party_id",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][psp_id] = [%s]\n",iCnt,csTmp));
+						PutField_CString(hLastAppDepAddRec,"psp_id",csTmp);
+        				}
+
+/* psp_name */
+        				if (GetField_CString(hRec,"party_name",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][psp_name] = [%s]\n",iCnt,csTmp));
+						PutField_CString(hLastAppDepAddRec,"psp_name",csTmp);
+        				}
+				}
+			}
+
+/* dur_start */
+        		if (GetField_CString(hRec,"dur_start",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][dur_start] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"dur_start",csTmp);
+        		}
+
+/* dur_end */
+        		if (GetField_CString(hRec,"dur_end",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][dur_end] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"dur_end",csTmp);
+        		}
+
+/* txn_id */
+        		if (GetField_CString(hRec,"txn_seq",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][txn_id] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"txn_seq",csTmp);
+        		}
+
+/* update_timestamp */
+        		if (GetField_CString(hRec,"update_timestamp",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][update_timestamp] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"update_timestamp",csTmp);
+        		}
+
+/* create_timestamp */
+        		if (GetField_CString(hRec,"create_timestamp",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][create_timestamp] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"create_timestamp",csTmp);
+        		}
+
+/* merch_short_name */
+        		if (GetField_CString(hRec,"merch_short_name",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][merch_short_name] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"merch_short_name",csTmp);
+        		}
+
+/* merchant_reference */
+        		if (GetField_CString(hRec,"merchant_ref",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][merchant_ref] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"merchant_ref",csTmp);
+        		}
+
+/* txn_ccy */
+        		if (GetField_CString(hRec,"txn_ccy",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][txn_ccy] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"txn_ccy",csTmp);
+       	 		}
+
+/* txn_amt */
+        		if (GetField_Double(hRec,"txn_amt",&dTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][txn_amt] = [%.2f]\n",iCnt,dTmp));
+				PutField_Double(hLastAppDepAddRec,"txn_amt",dTmp);
+        		}
+
+/* bank_name */
+        		if (GetField_CString(hRec,"bank_name",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][bank_name] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"bank_name",csTmp);
+        		}
+
+/* status */
+        		if (GetField_Char(hRec,"status",&cStatus)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][status] = [%c]\n",iCnt,cStatus));
+
+/* ar_ind */	
+				if (GetField_Char(hRec,"ar_ind",&cARInd)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][ar_ind] = [%c]\n",iCnt,cARInd));
+
+					if ((cStatus = PD_COMPLETE) && (cARInd = PD_ACCEPT)) {
+						PutField_CString(hLastAppDepAddRec,"status_name","Approved");
+					}
+				}
+			}
+
+/* sub_status */
+        		if (GetField_CString(hRec,"sub_status",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][sub_status] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"sub_status",csTmp);
+        		}
+
+/* approval_timestamp */
+        		if (GetField_CString(hRec,"approval_timestamp",&csTmp)) {
+DEBUGLOG(("gen_last_deposit_approve_table:: [%d][approval_timestamp] = [%s]\n",iCnt,csTmp));
+				PutField_CString(hLastAppDepAddRec,"approval_timestamp",csTmp);
+        		}
+
+			RecordSet_Add(rLastAppDepRecordSet, hLastAppDepAddRec);
+
+		} else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("gen_last_deposit_approve_table:: get_last_deposit_approve_record:: No Record Found!!!\n"));
+		} else {
+			iRet = FAILURE;
+DEBUGLOG(("gen_last_deposit_approve_table:: get_last_deposit_approve_record:: Error!!!\n"));
+ERRLOG("check_psp_txn_report::gen_last_deposit_approve_table::get_last_deposit_approve_record::Error!!!\n");
+		}
+
+		iCnt++;
+
+		hRec = RecordSet_GetNext(rRecordSet);
+        }
+
+	// Generate Last Deposit Approve Table
+	if ((iRet == SUCCESS) && (iFound > 0)) {
+
+		printf("<br><b>Last approved deposit</b><br><br>\n");
+        	printf("<html><body><table border=\"1\">\n");
+        	printf("<tr align=\"center\"><b><td>Duration Start</td><td>Duration End</td><td>PSP Account Name</td><td>Transaction ID</td><td>Last Update Date</td><td>Create Time</td><td>Merchant Short Name</td><td>Merchant Reference</td><td>Transaction Amount</td><td>Consumer Deposit Bank</td><td>Status</td><td>Sub Status</td><td>Approval Time</td></b></tr>");
+
+		hLastAppDepGetRec = RecordSet_GetFirst(rLastAppDepRecordSet);
+        	while (hLastAppDepGetRec) {
+
+			GetField_CString(hLastAppDepGetRec,"psp_id",&csPspId);
+			GetField_CString(hLastAppDepGetRec,"psp_name",&csPspName);
+			GetField_CString(hLastAppDepGetRec,"dur_start",&csDurStart);
+			GetField_CString(hLastAppDepGetRec,"dur_end",&csDurEnd);
+			GetField_CString(hLastAppDepGetRec,"txn_seq",&csTxnId);
+			GetField_CString(hLastAppDepGetRec,"update_timestamp",&csUpdateTimestamp);
+			GetField_CString(hLastAppDepGetRec,"create_timestamp",&csCreateTimestamp);
+			GetField_CString(hLastAppDepGetRec,"merch_short_name",&csMerchShortName);
+			GetField_CString(hLastAppDepGetRec,"merchant_ref",&csMerchantRef);
+			GetField_CString(hLastAppDepGetRec,"txn_ccy",&csTxnCcy);
+			GetField_Double(hLastAppDepGetRec,"txn_amt",&dTxnAmt);
+			GetField_CString(hLastAppDepGetRec,"bank_name",&csBankName);
+			GetField_CString(hLastAppDepGetRec,"status_name",&csStatusName);			
+			GetField_CString(hLastAppDepGetRec,"sub_status",&csSubStatus);
+			GetField_CString(hLastAppDepGetRec,"approval_timestamp",&csApprovalTimestamp);
+
+			printf("<tr align=\"center\"><td>%s</td><td>%s</td><td>%s (%s)</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s %.2f</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",csDurStart,csDurEnd,csPspName,csPspId,csTxnId,csUpdateTimestamp,csCreateTimestamp,csMerchShortName,csMerchantRef,csTxnCcy,dTxnAmt,csBankName,csStatusName,csSubStatus,csApprovalTimestamp);
+
+			hLastAppDepGetRec = RecordSet_GetNext(rLastAppDepRecordSet);
+		}
+	
+		printf("\n</table></body></html>");
+	}
+	
+	RecordSet_Destroy(rLastAppDepRecordSet);
+        FREE_ME(rLastAppDepRecordSet);
+
+	FREE_ME(hLastAppDepAddRec);
+
+DEBUGLOG(("gen_last_deposit_approve_table:: iRet = [%d]\n",iRet));
+	return iRet;	
+}
+
+int get_last_deposit_approve_record(hash_t *hRec)
+{
+	int	iCnt = 0;
+	char	cPartyType;
+	char 	*csTmp = NULL;
+
+	EXEC SQL WHENEVER SQLERROR GOTO getdeprec_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar 	hv_psp_id[PD_PSP_ID_LEN+1];
+		varchar         hv_dur_start[PD_TIMESTAMP_LEN+1];
+                varchar         hv_dur_end[PD_TIMESTAMP_LEN+1];
+
+                varchar         v_txn_id[PD_TXN_SEQ_LEN+1];
+		varchar         v_update_timestamp[PD_TIMESTAMP_LEN+1];
+		varchar         v_create_timestamp[PD_TIMESTAMP_LEN+1];
+		varchar         v_client_ip[PD_IP_LEN+1];
+		varchar         v_merch_short_name[PD_MERCH_SHORT_NAME_LEN+1];
+		varchar		v_merchant_ref[PD_MERCHANT_REF_LEN+1];
+		varchar         v_txn_ccy[PD_CCY_ID_LEN+1];
+		double          v_txn_amt;
+		varchar		v_bank_code[PD_BANK_CODE_LEN+1];
+		varchar 	v_bank_name[PD_AC_BANK_NAME_LEN+1];
+		char            v_status;
+		char            v_ar_ind;
+		varchar         v_sub_status[PD_NAME_LEN+1];
+		varchar         v_approval_timestamp[PD_TIMESTAMP_LEN+1];			
+
+		short           ind_txn_id = -1;
+                short           ind_update_timestamp = -1;
+                short           ind_create_timestamp = -1;
+                short           ind_client_ip = -1;
+                short           ind_merch_short_name = -1;
+                short           ind_merchant_ref = -1;
+                short           ind_txn_ccy = -1;
+                short           ind_txn_amt = -1;
+                short           ind_bank_code = -1;
+                short           ind_bank_name = -1;
+                short           ind_status = -1;
+                short           ind_ar_ind = -1;
+                short           ind_sub_status = -1;
+                short           ind_approval_timestamp = -1;
+        EXEC SQL END DECLARE SECTION;
+
+// psp_id
+       	if (GetField_Char(hRec,"party_type",&cPartyType)) {
+             	if (cPartyType == PD_TYPE_PSP) {
+			if (GetField_CString(hRec,"party_id",&csTmp)) {
+DEBUGLOG(("get_last_deposit_approve_record:: psp_id = [%s]\n",csTmp));
+				hv_psp_id.len = strlen((char*)csTmp);
+        			memcpy(hv_psp_id.arr,csTmp,hv_psp_id.len);
+			}
+		}
+	}
+
+// dur_start
+	if (GetField_CString(hRec,"dur_start",&csTmp)) {
+DEBUGLOG(("get_last_deposit_approve_record:: dur_start = [%s]\n",csTmp));
+        	hv_dur_start.len = strlen((char*)csTmp);
+        	memcpy(hv_dur_start.arr,csTmp,hv_dur_start.len);
+	}
+
+// dur_end
+	if (GetField_CString(hRec,"dur_end",&csTmp)) {
+DEBUGLOG(("get_last_deposit_approve_record:: dur_end = [%s]\n",csTmp));
+		hv_dur_end.len = strlen((char*)csTmp);
+        	memcpy(hv_dur_end.arr,csTmp,hv_dur_end.len);
+	}
+
+	EXEC SQL DECLARE c_cursor_getdeprec CURSOR FOR
+
+		select  th.th_txn_id,
+			to_char(th.th_update_timestamp,'DD/MM/YYYY HH24:MI'),
+			to_char(th.th_create_timestamp,'DD/MM/YYYY HH24:MI'),
+			th.th_client_ip,
+			md.short_name,
+			th.th_merchant_ref,
+			tp.tp_txn_ccy,
+			tp.tp_txn_amount,
+			bd.internal_bank_code,
+			bd.bank_name,
+			th.th_status,
+			th.th_ar_ind,
+			ds.ds_name,
+			to_char(th.th_approval_timestamp,'DD/MM/YYYY HH24:MI')
+		from 	txn_header th,
+			txn_psp_detail tp,
+			merch_detail md,
+			bank_desc bd,
+			def_sub_status ds
+		where 	md.merchant_id = th.th_merchant_id
+		and   	tp.tp_txn_id = th.th_txn_id
+		and   	bd.internal_bank_code = tp.tp_bank_code
+		and	ds.ds_sub_status = th.th_sub_status
+		and   	th.th_txn_code = 'DSI'
+		and   	th.th_status = 'C'
+		and   	th.th_ar_ind = 'A'
+		and   	th.th_client_id not in (           
+                		select 	epm_party_id        
+                		from 	email_check_party_map        
+                		where 	epm_name = 'CHECK_PSP_TXN'        
+                		and 	epm_group = 'EXCLUDE'        
+                		and 	epm_party_type = 'C'        
+                		and 	epm_support_multi_entry = 1        
+                		/*'C1000002','C1000013'*/)         
+		and 	th.th_create_timestamp between to_date(:hv_dur_start, 'DD-MON-YYYY HH24:MI:SS')                   
+                            			and to_date(:hv_dur_end, 'DD-MON-YYYY HH24:MI:SS')
+		and 	exists (select  1
+            			from    txn_psp_detail
+            			where   tp_txn_id = th_txn_id
+            			and     tp_psp_id = :hv_psp_id)
+		order by th.th_create_timestamp desc;
+
+	EXEC SQL OPEN c_cursor_getdeprec;
+        do {
+                EXEC SQL FETCH c_cursor_getdeprec
+		INTO
+                        :v_txn_id:ind_txn_id,
+                        :v_update_timestamp:ind_update_timestamp,
+                        :v_create_timestamp:ind_create_timestamp,
+                        :v_client_ip:ind_client_ip,
+                        :v_merch_short_name:ind_merch_short_name,
+			:v_merchant_ref:ind_merchant_ref,
+			:v_txn_ccy:ind_txn_ccy,
+			:v_txn_amt:ind_txn_amt,
+			:v_bank_code:ind_bank_code,
+			:v_bank_name:ind_bank_name,
+			:v_status:ind_status,
+			:v_ar_ind:ind_ar_ind,
+			:v_sub_status:ind_sub_status,
+                        :v_approval_timestamp:ind_approval_timestamp;
+
+		if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+		if (iCnt > 0) {
+			break;
+		} else {
+			// total_record
+                	iCnt ++;
+			PutField_Int(hRec,"total_record",iCnt);
+		}
+
+/* txn_id */
+                if (ind_txn_id >= 0) {
+                        v_txn_id.arr[v_txn_id.len] = '\0';
+                        PutField_CString(hRec,"txn_seq",(const char*)v_txn_id.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: txn_id = [%s]\n",v_txn_id.arr));
+                }
+
+/* update_timestamp */
+                if (ind_update_timestamp >= 0) {
+                        v_update_timestamp.arr[v_update_timestamp.len] = '\0';
+                        PutField_CString(hRec,"update_timestamp",(const char*)v_update_timestamp.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: update_timestamp = [%s]\n",v_update_timestamp.arr));
+                }
+
+/* create_timestamp */
+                if (ind_create_timestamp >= 0) {
+                        v_create_timestamp.arr[v_create_timestamp.len] = '\0';
+                        PutField_CString(hRec,"create_timestamp",(const char*)v_create_timestamp.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: create_timestamp = [%s]\n",v_create_timestamp.arr));
+                }
+
+/* client_ip */
+                if (ind_client_ip >= 0) {
+                        v_client_ip.arr[v_client_ip.len] = '\0';
+                        PutField_CString(hRec,"client_ip",(const char*)v_client_ip.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: client_ip = [%s]\n",v_client_ip.arr));
+                }
+
+/* merch_short_name */
+                if (ind_merch_short_name >= 0) {
+                        v_merch_short_name.arr[v_merch_short_name.len] = '\0';
+                        PutField_CString(hRec,"merch_short_name",(const char*)v_merch_short_name.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: merch_short_name = [%s]\n",v_merch_short_name.arr));
+                }
+
+/* merchant_ref */
+                if (ind_merchant_ref >= 0) {
+                        v_merchant_ref.arr[v_merchant_ref.len] = '\0';
+                        PutField_CString(hRec,"merchant_ref",(const char*)v_merchant_ref.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: merchant_ref = [%s]\n",v_merchant_ref.arr));
+                }
+
+/* txn_ccy */
+                if (ind_txn_ccy >= 0) {
+                        v_txn_ccy.arr[v_txn_ccy.len] = '\0';
+                        PutField_CString(hRec,"txn_ccy",(const char*)v_txn_ccy.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: txn_ccy = [%s]\n",v_txn_ccy.arr));
+                }
+
+/* txn_amt */
+		if (ind_txn_amt >= 0){
+                        PutField_Double(hRec,"txn_amt",v_txn_amt);
+DEBUGLOG(("get_last_deposit_approve_record:: txn_amt = [%lf]\n",v_txn_amt));
+                }		
+		
+/* bank_code */
+                if (ind_bank_code >= 0) {
+                        v_bank_code.arr[v_bank_code.len] = '\0';
+                        PutField_CString(hRec,"bank_code",(const char*)v_bank_code.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: bank_code = [%s]\n",v_bank_code.arr));
+                }
+
+/* bank_name */
+                if (ind_bank_name >= 0) {
+                        v_bank_name.arr[v_bank_name.len] = '\0';
+                        PutField_CString(hRec,"bank_name",(const char*)v_bank_name.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: bank_name = [%s]\n",v_bank_name.arr));
+                }
+
+/* status */
+                if (ind_status >= 0) {
+                        PutField_Char(hRec,"status",v_status);
+DEBUGLOG(("get_last_deposit_approve_record:: status = [%c]\n",v_status));
+                }
+
+/* ar_ind */
+                if (ind_ar_ind >=  0) {
+                        PutField_Char(hRec,"ar_ind",v_ar_ind);
+DEBUGLOG(("get_last_deposit_approve_record:: ar_ind = [%c]\n",v_ar_ind));
+                }
+
+/* sub_status */
+                if (ind_sub_status >= 0) {
+                        v_sub_status.arr[v_sub_status.len] = '\0';
+                        PutField_CString(hRec,"sub_status",(const char*)v_sub_status.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: sub_status = [%s]\n",v_sub_status.arr));
+                }
+
+/* approval_timestamp */
+                if (ind_approval_timestamp >= 0) {
+                        v_approval_timestamp.arr[v_approval_timestamp.len] = '\0';
+                        PutField_CString(hRec,"approval_timestamp",(const char*)v_approval_timestamp.arr);
+DEBUGLOG(("get_last_deposit_approve_record:: approval_timestamp = [%s]\n",v_approval_timestamp.arr));
+                }
+	} 
+	while(PD_TRUE);
+        
+	EXEC SQL CLOSE c_cursor_getdeprec;
+
+	if (iCnt > 0) {
+DEBUGLOG(("get_last_deposit_approve_record Normal Exit\n"));
+                return  PD_FOUND;
+        } else {
+DEBUGLOG(("get_last_deposit_approve_record Normal Exit Not Found\n"));
+                return  PD_NOT_FOUND;
+        }
+
+getdeprec_error:
+DEBUGLOG(("getdeprec_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getdeprec;
+        return PD_ERR;
+}
+
+int gen_pending_count_by_customer_ip_table(const char *csThresVal, recordset_t *rRecordSet)
+{
+	int     iRet = SUCCESS;
+        int     iDtlRet = PD_NOT_FOUND;
+
+	int	iCnt = 0;
+	int	iSubCnt = 0;
+	int	iThresVal = 0;
+	int	iNumOfPendCntGTThresVal = 0;
+	int	iNumOfPendCntEQThresVal = 0;
+     	int    	iPendCntByIP = 0;
+     	int    	iTotalPendCnt = 0;
+	int	iFoundGTThresVal = 0;
+	int	iFoundEQThresVal = 0;
+       	int	iEQThresValFlag = PD_FALSE;
+	char    *csPspId = NULL;
+	char    *csPspName = NULL;
+	char    *csDurStart = NULL;
+	char    *csDurEnd = NULL;
+        char    *csClientIP = NULL;
+        char    cPartyType;
+
+        hash_t  *hRec;
+
+	hash_t	*hIPRec;
+	recordset_t	*rIPRecordSet;
+        rIPRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+
+	hash_t  *hThresValAddRec;
+	hash_t  *hThresValGetRec;
+        recordset_t     *rThresValRecordSet;
+        rThresValRecordSet = (recordset_t *)malloc (sizeof(recordset_t));
+	recordset_init(rThresValRecordSet,0);
+
+	// Threshold Value (Integer)
+	iThresVal = atoi(csThresVal);
+
+	// Get Pending Count Group By Customer IP Record
+	if (iRet == SUCCESS) {
+
+        	hRec = RecordSet_GetFirst(rRecordSet);
+        	while ((hRec) && (iRet == SUCCESS)) {
+			
+/* party_type, psp_id, psp_name, dur_start, dur_end, total_pend_cnt */
+                   	if (GetField_Char(hRec,"party_type",&cPartyType)) { 
+                           	if (cPartyType == PD_TYPE_PSP) {
+                                    	GetField_CString(hRec,"party_id",&csPspId);
+                                   	GetField_CString(hRec,"party_name",&csPspName);
+					GetField_CString(hRec,"dur_start",&csDurStart);
+                        		GetField_CString(hRec,"dur_end",&csDurEnd);
+                        		GetField_Int(hRec,"pend_cnt",&iTotalPendCnt);
+                            	}
+                      	}
+
+			iNumOfPendCntGTThresVal = 0;
+			iNumOfPendCntEQThresVal = 0;
+
+        		recordset_init(rIPRecordSet,0);
+         	       	
+			iDtlRet = get_pending_count_by_customer_ip_record(hRec, rIPRecordSet);
+                	if (iDtlRet == PD_FOUND) {
+
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][psp_id] = [%s]\n",iCnt,csPspId));
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][psp_name] = [%s]\n",iCnt,csPspName));
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][dur_start] = [%s]\n",iCnt,csDurStart));
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][dur_end] = [%s]\n",iCnt,csDurEnd));
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][total_pend_cnt] = [%d]\n",iCnt,iTotalPendCnt));
+
+				hIPRec = RecordSet_GetFirst(rIPRecordSet);
+				while (hIPRec) {
+
+					hThresValAddRec = (hash_t*) malloc (sizeof(hash_t));
+                        		hash_init(hThresValAddRec, 0);
+
+					PutField_Int(hThresValAddRec,"eq_thres_val",PD_FALSE);
+					PutField_CString(hThresValAddRec,"psp_id",csPspId);
+					PutField_CString(hThresValAddRec,"psp_name",csPspName);
+					PutField_CString(hThresValAddRec,"dur_start",csDurStart);
+					PutField_CString(hThresValAddRec,"dur_end",csDurEnd);
+
+/* client_ip */
+                                	if (GetField_CString(hIPRec,"client_ip",&csClientIP)) {
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][%d][client_ip] = [%s]\n",iCnt,iSubCnt,csClientIP));
+						PutField_CString(hThresValAddRec,"client_ip",csClientIP);
+                                	}
+
+/* pend_cnt_by_ip */
+                                	if (GetField_Int(hIPRec,"pend_cnt_by_ip",&iPendCntByIP)) {
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][%d][pend_cnt_by_ip] = [%d]\n",iCnt,iSubCnt,iPendCntByIP));
+						PutField_Int(hThresValAddRec,"pend_cnt_by_ip",iPendCntByIP);
+                                	}
+		
+					// Check iPendCntByIP
+                                       	if (iPendCntByIP > iThresVal) {
+
+						iFoundGTThresVal++;
+
+						iNumOfPendCntGTThresVal++;
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][%d][iNumOfPendCntGTThresVal] = [%d]\n",iCnt,iSubCnt,iNumOfPendCntGTThresVal));
+
+                                                PutField_Int(hThresValAddRec,"ttl_pend_cnt_gt_thres_val",iNumOfPendCntGTThresVal);
+					} else if (iPendCntByIP == iThresVal) {
+
+                                                iFoundEQThresVal++;
+
+                                                iNumOfPendCntEQThresVal++;
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: [%d][%d][iNumOfPendCntEQThresVal] = [%d]\n",iCnt,iSubCnt,iNumOfPendCntEQThresVal));
+
+                                                PutField_Int(hThresValAddRec,"ttl_pend_cnt_eq_thres_val",iNumOfPendCntEQThresVal);
+
+						// Set Equal to Threshold Value Flag
+						PutField_Int(hThresValAddRec,"eq_thres_val",PD_TRUE);
+                                        }
+
+					iSubCnt++;
+
+					RecordSet_Add(rThresValRecordSet, hThresValAddRec);
+
+					hIPRec = RecordSet_GetNext(rIPRecordSet);
+				}
+			} else if (iDtlRet == PD_NOT_FOUND) {
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: get_pending_count_by_customer_ip_record:: No Record Found!!!\n"));
+                	} else {
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: get_pending_count_by_customer_ip_record:: Error!!!\n"));
+ERRLOG("check_psp_txn_report::gen_pending_count_by_customer_ip_table::get_pending_count_by_customer_ip_record::Error!!!\n");
+                        	iRet = FAILURE;
+                	}
+
+			RecordSet_Destroy(rIPRecordSet);
+
+			iCnt++;
+
+	                hRec = RecordSet_GetNext(rRecordSet);
+        	}
+	}
+
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: iFoundGTThresVal = [%d]\n",iFoundGTThresVal));
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: iFoundEQThresVal = [%d]\n",iFoundEQThresVal));
+
+	// Generate Table "Customer pending count > Threshold Value"
+	if ((iRet == SUCCESS) && (iFoundGTThresVal > 0)) {
+
+		printf("<br><b>Customer pending count > %d</b><br><br>\n",iThresVal);
+                printf("<html><body><table border=\"1\">\n");
+                printf("<tr align=\"center\"><b><td>Duration Start</td><td>Duration End</td><td>PSP Account Name</td><td>Cust IP</td><td>Pending Count</td></b></tr>");
+
+		hThresValGetRec = RecordSet_GetFirst(rThresValRecordSet);
+                while (hThresValGetRec) {
+
+			iNumOfPendCntGTThresVal = 0;
+
+			GetField_Int(hThresValGetRec,"eq_thres_val",&iEQThresValFlag);
+			GetField_CString(hThresValGetRec,"psp_id",&csPspId);
+                        GetField_CString(hThresValGetRec,"psp_name",&csPspName);
+                        GetField_CString(hThresValGetRec,"dur_start",&csDurStart);
+                        GetField_CString(hThresValGetRec,"dur_end",&csDurEnd);
+			GetField_CString(hThresValGetRec,"client_ip",&csClientIP);			
+			GetField_Int(hThresValGetRec,"pend_cnt_by_ip",&iPendCntByIP);
+			GetField_Int(hThresValGetRec,"ttl_pend_cnt_gt_thres_val",&iNumOfPendCntGTThresVal);
+
+			if ((iEQThresValFlag == PD_FALSE) && (iNumOfPendCntGTThresVal > 0)) {
+
+				printf("<tr align=\"center\"><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td></tr>",csDurStart,csDurEnd,csPspName,csClientIP,iPendCntByIP);
+			}
+
+			hThresValGetRec = RecordSet_GetNext(rThresValRecordSet);
+		}	
+
+		printf("\n</table></body></html>");
+	}
+
+	// Generate Table "Number of customer with pending count = Threshold Value"
+	if ((iRet == SUCCESS) && (iFoundEQThresVal > 0)) {
+
+		printf("<br><b>Number of customer with pending count = %d</b><br><br>\n",iThresVal);
+        	printf("<html><body><table border=\"1\">\n");
+        	printf("<tr align=\"center\"><b><td>Duration Start</td><td>Duration End</td><td>PSP Account Name</td><td>#cust with pending=%d</td></b></tr>",iThresVal);
+		
+		hThresValGetRec = RecordSet_GetFirst(rThresValRecordSet);
+               	while (hThresValGetRec) {
+
+			iNumOfPendCntEQThresVal = 0;
+
+			GetField_Int(hThresValGetRec,"eq_thres_val",&iEQThresValFlag);
+                      	GetField_CString(hThresValGetRec,"psp_id",&csPspId);
+                       	GetField_CString(hThresValGetRec,"psp_name",&csPspName);
+                        GetField_CString(hThresValGetRec,"dur_start",&csDurStart);
+                       	GetField_CString(hThresValGetRec,"dur_end",&csDurEnd);
+                      	GetField_Int(hThresValGetRec,"ttl_pend_cnt_eq_thres_val",&iNumOfPendCntEQThresVal);
+
+			if ((iEQThresValFlag == PD_TRUE) && (iNumOfPendCntEQThresVal > 0)) {
+
+				printf("<tr align=\"center\"><td>%s</td><td>%s</td><td>%s</td><td>%d</td></tr>",csDurStart,csDurEnd,csPspName,iNumOfPendCntEQThresVal);
+			}
+
+			hThresValGetRec = RecordSet_GetNext(rThresValRecordSet);
+		}
+
+		printf("\n</table></body></html>");
+	}
+
+        FREE_ME(rIPRecordSet);
+
+	RecordSet_Destroy(rThresValRecordSet);
+        FREE_ME(rThresValRecordSet);
+
+	FREE_ME(hThresValAddRec);
+
+DEBUGLOG(("gen_pending_count_by_customer_ip_table:: iRet = [%d]\n",iRet));
+        return iRet;
+}
+
+int get_pending_count_by_customer_ip_record(const hash_t *hRls, recordset_t *rRecordSet)
+{
+        int     iCnt = 0;
+        int	iTmp = 0;
+	char    cPartyType;
+        char    *csTmp = NULL;
+	hash_t  *hRec;
+
+        EXEC SQL WHENEVER SQLERROR GOTO getpendcnt_error;
+        EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+        EXEC SQL BEGIN DECLARE SECTION;
+                varchar         hv_psp_id[PD_PSP_ID_LEN+1];
+		varchar         hv_dur_start[PD_TIMESTAMP_LEN+1];
+                varchar         hv_dur_end[PD_TIMESTAMP_LEN+1];
+		int     	hv_total_pend_cnt;
+
+                varchar         v_client_ip[PD_IP_LEN+1];
+		int		v_pend_cnt_by_ip;
+
+                short           ind_client_ip = -1;
+                short           ind_pend_cnt_by_ip = -1;
+        EXEC SQL END DECLARE SECTION;
+
+// psp_id
+        if (GetField_Char(hRls,"party_type",&cPartyType)) {
+                if (cPartyType == PD_TYPE_PSP) {
+                        if (GetField_CString(hRls,"party_id",&csTmp)) {
+DEBUGLOG(("get_pending_count_by_customer_ip_record:: psp_id = [%s]\n",csTmp));
+                                hv_psp_id.len = strlen((char*)csTmp);
+                                memcpy(hv_psp_id.arr,csTmp,hv_psp_id.len);
+                        }
+                }
+        }
+
+// dur_start
+        if (GetField_CString(hRls,"dur_start",&csTmp)) {
+DEBUGLOG(("get_pending_count_by_customer_ip_record:: dur_start = [%s]\n",csTmp));
+                hv_dur_start.len = strlen((char*)csTmp);
+                memcpy(hv_dur_start.arr,csTmp,hv_dur_start.len);
+        }
+
+// dur_end
+        if (GetField_CString(hRls,"dur_end",&csTmp)) {
+DEBUGLOG(("get_pending_count_by_customer_ip_record:: dur_end = [%s]\n",csTmp));
+                hv_dur_end.len = strlen((char*)csTmp);
+                memcpy(hv_dur_end.arr,csTmp,hv_dur_end.len);
+        }
+
+// total_pend_cnt
+	if (GetField_Int(hRls,"pend_cnt",&iTmp)) {
+DEBUGLOG(("get_pending_count_by_customer_ip_record:: total_pend_cnt = [%d]\n",iTmp));
+		hv_total_pend_cnt = iTmp;
+	}
+
+	EXEC SQL DECLARE c_cursor_getpendcnt CURSOR FOR
+	
+		select  count(1),
+			th_client_ip
+		from    (select th_txn_id,                    
+    				th_client_ip
+    			from    txn_header                  
+    			where   th_txn_code = 'DSI'
+   		 	and     th_status = 'W'      
+    			and     th_client_id not in (select 	epm_party_id        
+                				    from 	email_check_party_map        
+                				    where 	epm_name = 'CHECK_PSP_TXN'        
+               	 				    and	 	epm_group = 'EXCLUDE'        
+                				    and 	epm_party_type = 'C'        
+                				    and 	epm_support_multi_entry = 1        
+                				    /*'C1000002','C1000013'*/)                    
+    			and     th_create_timestamp between to_date(:hv_dur_start, 'DD-MON-YYYY HH24:MI:SS')                   
+                                    			and to_date(:hv_dur_end, 'DD-MON-YYYY HH24:MI:SS')         
+    			and     exists (select  1            
+            				from    txn_psp_detail           
+            				where   tp_txn_id = th_txn_id            
+            				and     tp_psp_id = :hv_psp_id)            
+            				order by th_create_timestamp desc)
+		where rownum <= :hv_total_pend_cnt      
+		group by th_client_ip
+		order by count(1) desc;  
+
+	EXEC SQL OPEN c_cursor_getpendcnt;
+        do {
+                EXEC SQL FETCH c_cursor_getpendcnt
+                INTO
+                        :v_pend_cnt_by_ip:ind_pend_cnt_by_ip,
+			:v_client_ip:ind_client_ip;
+
+                if (SQLCODE == SQL_NOT_FOUND) {
+                        break;
+                }
+
+                iCnt ++;
+
+		hRec = (hash_t*) malloc (sizeof(hash_t));
+                hash_init(hRec, 0);
+
+/* pend_cnt_by_ip */
+                if (ind_pend_cnt_by_ip >= 0) {
+                        PutField_Int(hRec,"pend_cnt_by_ip",v_pend_cnt_by_ip);
+DEBUGLOG(("get_pending_count_by_customer_ip_record:: pend_cnt = [%d]\n", v_pend_cnt_by_ip));
+                }
+
+/* client_ip */
+                if (ind_client_ip >= 0) {
+                        v_client_ip.arr[v_client_ip.len] = '\0';
+                        PutField_CString(hRec,"client_ip",(const char*)v_client_ip.arr);
+DEBUGLOG(("get_pending_count_by_customer_ip_record:: client_ip = [%s]\n",v_client_ip.arr));
+                }
+
+		RecordSet_Add(rRecordSet, hRec);
+
+	}
+        while(PD_TRUE);
+        
+	EXEC SQL CLOSE c_cursor_getpendcnt;
+
+        if (iCnt > 0) {
+DEBUGLOG(("get_pending_count_by_customer_ip_record Normal Exit\n"));
+                return  PD_FOUND;
+        } else {
+DEBUGLOG(("get_pending_count_by_customer_ip_record Not Found\n"));
+                return  PD_NOT_FOUND;
+        }
+
+getpendcnt_error:
+DEBUGLOG(("getpendcnt_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+        EXEC SQL WHENEVER SQLERROR CONTINUE;
+        EXEC SQL CLOSE c_cursor_getpendcnt;
+        return PD_ERR;
+}
+

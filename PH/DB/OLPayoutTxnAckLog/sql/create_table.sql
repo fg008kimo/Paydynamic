@@ -1,0 +1,64 @@
+
+
+
+CREATE TABLE OL_PAYOUT_TXN_ACK_LOG
+(
+  OAA_TXN_ID            VARCHAR2(16 BYTE),
+  OAA_ORG_TXN_ID        VARCHAR2(16 BYTE),
+  OAA_STATUS            CHAR(1 BYTE),
+  OAA_INTERNAL_CODE     NUMBER(8),
+  OAA_CREATE_USER       VARCHAR2(20 BYTE),
+  OAA_CREATE_TIMESTAMP  DATE                    DEFAULT sysdate               NOT NULL,
+  OAA_UPDATE_USER       VARCHAR2(20 BYTE),
+  OAA_UPDATE_TIMESTAMP  DATE                    DEFAULT sysdate               NOT NULL
+)
+TABLESPACE USER_DATA
+PCTUSED    0
+PCTFREE    10
+INITRANS   1
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           )
+LOGGING 
+NOCOMPRESS 
+NOCACHE
+MONITORING;
+
+
+CREATE INDEX OL_PAYOUT_TXN_ACK_LOG_IDX01 ON OL_PAYOUT_TXN_ACK_LOG
+(OAA_TXN_ID, OAA_ORG_TXN_ID)
+LOGGING
+TABLESPACE USER_IDX
+PCTFREE    10
+INITRANS   2
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           );
+
+CREATE INDEX OL_PAYOUT_TXN_ACK_LOG_IDX02 ON OL_PAYOUT_TXN_ACK_LOG
+(OAA_CREATE_TIMESTAMP, OAA_UPDATE_TIMESTAMP)
+LOGGING
+TABLESPACE USER_IDX
+PCTFREE    10
+INITRANS   2
+MAXTRANS   255
+STORAGE    (
+            INITIAL          64K
+            NEXT             1M
+            MINEXTENTS       1
+            MAXEXTENTS       UNLIMITED
+            PCTINCREASE      0
+            BUFFER_POOL      DEFAULT
+           );

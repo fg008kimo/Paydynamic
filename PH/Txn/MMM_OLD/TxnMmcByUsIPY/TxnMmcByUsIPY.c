@@ -1,0 +1,224 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2011/12/22              Virginia Yun
+Handle STL Bank					   2012/03/05	 	   Virginia Yun	
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmcByUsIPY.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnMmcByUsIPY(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  const hash_t* hRequest,
+                        hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+	char	*csTmp = NULL;
+
+	char	*csPartyType = NULL;
+	char	*csPartyId = NULL;
+	char	csTxnObjName[PD_TMP_BUF_LEN + 1];
+	char	csTagName[PD_TMP_BUF_LEN + 1];
+        char    *csValue = strdup("");
+
+	char	cType;
+	char	cQueryType;
+	int	iTmp;
+
+/* node_id */
+	if (GetField_CString(hContext, "node_id", &csTmp)) {
+DEBUGLOG(("Authorize::node_id= [%s]\n",csTmp));
+	}
+	else {
+DEBUGLOG(("Authorize::node_id not found!!\n"));
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+	
+
+/* party_type */
+	//if (GetField_CString(hRequest, "party_type", &csPartyType)) 
+	if (GetField_CString(hRequest, "pty_type", &csPartyType)) {
+DEBUGLOG(("Authorize::party_type= [%s]\n",csPartyType));
+	}
+	else {
+DEBUGLOG(("Authorize::party_type not found!!\n"));
+ERRLOG("TxnMmcByUsIPY::Authorize::party_type not found!!\n");
+                iRet=INT_PARTY_TYPE_NOT_FOUND;
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* business type */ 
+/* not apply for MB , Bank and Stl Bank */
+	if (GetField_CString(hRequest, "type", &csTmp)) {
+		cType = csTmp[0];
+DEBUGLOG(("Authorize::type= [%c]\n",cType));
+
+		PutField_Char(hContext, "business_type", cType);
+	}
+	else {
+		if (!strcmp(csPartyType, PD_MMS_PARTY_PSP) || ! strcmp(csPartyType, PD_MMS_PARTY_MERCH)) {
+DEBUGLOG(("Authorize::type not found!!\n"));
+ERRLOG("TxnMmcByUsIPY::Authorize::type not found!!\n");
+			iRet = INT_BUSINESS_TYPE_NOT_FOUND;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}
+
+/* party_id */ 
+/* for single or multiple record query */
+	if (GetField_CString(hRequest, "pty_id", &csPartyId)) {
+DEBUGLOG(("Authorize::party_id= [%s]\n",csPartyId));
+		PutField_CString(hContext, "party_id", csPartyId);
+
+		cQueryType = PD_MMS_SINGLE_QUERY;
+	}
+	else {
+		cQueryType = PD_MMS_MULTI_QUERY;
+
+		/* last_id */
+		if(GetField_CString(hRequest,"last_id",&csTmp)){
+DEBUGLOG(("Authorize::last_id = [%s]\n",csTmp));
+		}
+		else {
+DEBUGLOG(("Authorize::last_id not found!!\n"));
+		}
+	}
+
+	PutField_Char(hContext, "query_type", cQueryType); 
+
+/* mmc_id */
+	if(GetField_CString(hRequest,"mmc_id",&csTmp)){
+DEBUGLOG(("Authorize::mmc_id = [%s]\n",csTmp));
+		PutField_CString(hContext, "mms_node_id", csTmp);
+	}
+	else {
+DEBUGLOG(("Authorize::mmc_id not found!!\n"));
+	}
+
+
+/* user */
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+		PutField_CString(hContext, "update_user", csTmp);
+		PutField_CString(hContext, "add_user", csTmp);
+        }
+	else {
+DEBUGLOG(("Authorize::user not found!!\n"));
+	}
+
+
+/* Get Max Return Record */
+	if (iRet == PD_OK && cQueryType == PD_MMS_MULTI_QUERY) {
+
+		if (GetField_Int(hContext, "ipy_max_rtn", &iTmp)) {
+DEBUGLOG(("Authorize: ipy_max_return record = [%d]\n", iTmp));
+			PutField_Int(hContext, "max_rtn", iTmp);
+		}
+		else {
+			iRet = INT_ERR;
+DEBUGLOG(("Authorize: unable to find IPY_max_rtn\n"));
+ERRLOG("TxnMmcByUsIPY::Authorize:Unable to find IPY max rtn\n");
+
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+	}	
+
+/* Refresh Interval */
+	if (iRet == PD_OK) {
+                if (GetField_Int(hContext, "refresh_interval", &iTmp)) {
+DEBUGLOG(("Authorize: refresh_interval record = [%d]\n", iTmp));
+                        PutField_Int(hContext, "refresh_interval", iTmp);
+                }
+                else {
+                        iRet = INT_ERR;
+DEBUGLOG(("Authorize: unable to find refresh_inteval\n"));
+ERRLOG("TxnMmcByUsIPY::Authorize:Unable to find refresh_interval\n");
+
+                        PutField_Int(hContext,"internal_error",iRet);
+                }
+	}
+
+
+	if (iRet == PD_OK) {
+		memset(csTxnObjName, 0, sizeof(csTxnObjName));
+		memset(csTagName, 0, sizeof(csTagName));
+
+		if (!strcmp(csPartyType, PD_MMS_PARTY_PSP)) {
+			sprintf(csTxnObjName, "%s", "TxnMmcByUsIPM");
+			sprintf(csTagName, "%s", "psp_id");
+			PutField_Char(hContext, "party_type", PD_TYPE_PSP);
+		}
+		else if (!strcmp(csPartyType, PD_MMS_PARTY_MERCH)) {
+			sprintf(csTxnObjName, "%s", "TxnMmcByUsIPM");
+			sprintf(csTagName, "%s", "merchant_id");
+			PutField_Char(hContext, "party_type", PD_TYPE_MERCHANT);
+		}
+		else if (!strcmp(csPartyType, PD_MMS_PARTY_MB)) {
+			sprintf(csTxnObjName, "%s", "TxnMmcByUsIMI");
+			sprintf(csTagName, "%s", "mb_id");
+		}
+		else if (!strcmp(csPartyType, PD_MMS_PARTY_BANK)) {
+			sprintf(csTxnObjName, "%s", "TxnMmcByUsIBI");
+			sprintf(csTagName, "%s", "bank_id");
+		}
+		else if (!strcmp(csPartyType, PD_MMS_PARTY_STL_BK)) {
+			sprintf(csTxnObjName, "%s", "TxnMmcByUsISI");
+			sprintf(csTagName, "%s", "stl_bank_id");
+
+		}
+		else {
+			iRet = INT_INVALID_PARTY_TYPE;
+			PutField_Int(hContext,"internal_error",iRet);
+		}
+DEBUGLOG(("Authorize::To TxnObject [%s] Tag [%s]\n", csTxnObjName, csTagName));
+
+		if (iRet == PD_OK) {
+			if (cQueryType == PD_MMS_SINGLE_QUERY) {
+DEBUGLOG(("Authorize::Tag [%s] is assigned csPartyId [%s]\n", csTagName, csPartyId));
+				PutField_CString(hContext, csTagName, csPartyId);
+			}
+		}
+	}
+
+	
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call %s:Authorize\n", csTxnObjName));
+
+		TxnObjPtr = CreateObj(TxnPtr, csTxnObjName,"Authorize");
+		iRet = (unsigned long)(*TxnObjPtr)(hContext,hRequest,hResponse);
+
+DEBUGLOG(("Authorize::End to Call %s:Authorize\n", csTxnObjName));
+
+	}
+
+
+        FREE_ME(csValue);
+
+DEBUGLOG(("TxnMmcByUsIPY Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

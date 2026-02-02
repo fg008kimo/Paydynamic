@@ -1,0 +1,134 @@
+#ifndef _BOSECURITY_H_
+#define _BOSECURITY_H_
+#include "myhash.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int GenerateMac(hash_t* hContext,
+		const hash_t* hRequest,
+		hash_t* hResponse);
+
+int VerifyMac(hash_t* hContext,
+		const hash_t* hRequest,
+		hash_t* hResponse);
+
+
+int GeneratePspSign(hash_t *hContext,
+			hash_t *hRequest,
+                 	hash_t *hResponse);
+int VerifyPspSign(hash_t *hContext,
+			hash_t *hRequest,
+                 	hash_t *hResponse);
+int Generate3DESTxnSeq(const char* csTxnSeq, unsigned char* OUT);
+int Encrypt3DESTxnSeq(const char* csTxnSeq, unsigned char* OUT);
+int Decrypt3DESTxnSeq(const char* csEnTxnSeq, unsigned char* OUT);
+
+
+int VerifyMD5Sign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int VerifyXpaySign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateXpaySign(hash_t *hContext,
+                hash_t* hOut);
+
+int VerifyHaiPaySign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateHaiPaySign(hash_t *hContext,
+                hash_t* hOut);
+int GenerateMD5Sign(hash_t *hContext,
+                hash_t* hOut);
+
+int VerifyAllinPaySign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int VerifySengPaySign(hash_t *hContext,
+                hash_t* hOut);
+
+int VerifyYeePaySign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateYeePaySign(hash_t *hContext,
+                hash_t* hOut);
+
+int GenerateMMSMac(hash_t* hContext,
+              const hash_t* hRequest,
+              hash_t* hResponse);
+int VerifyMMSMac(hash_t* hContext,
+              const hash_t* hRequest,
+              hash_t* hResponse);
+
+int Generate51EpaySign(hash_t *hContext,
+                hash_t* hOut);
+int Verify51EpaySign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateIPay88Sign(hash_t *hContext,
+                hash_t* hOut);
+int VerifyIPay88Sign(hash_t *hContext,
+                const hash_t* hRequest);
+int DesEncryptECB(const char*, const char*,char*);
+
+int GenerateNetworkMac(hash_t* hContext,
+		const hash_t* hRequest,
+		hash_t* hResponse);
+int VerifyNetworkMac(hash_t* hContext,
+		const hash_t* hRequest,
+		hash_t* hResponse);
+int VerifyYeePayMobileSign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateYeePayMobileSign(hash_t *hContext,
+                hash_t* hOut);
+
+int RSAEncryptData(unsigned char* KEYFILE,
+		   unsigned char* DATA,
+		   unsigned char* OUT, 
+		   const int isPrivate,
+		   const int isEncrype);
+
+int AESEncryptData(unsigned char* KEY,
+		   unsigned char* DATA,
+		   unsigned char* OUT,
+		   unsigned int* iOutLen);
+
+int AESDecryptData(unsigned char* KEY,
+		   unsigned char* DATA,
+		   const int Dlen,
+		   unsigned char* OUT);
+
+
+int GenerateYsePaySign(hash_t *hContext,
+                hash_t* hOut);
+int VerifyYsePaySign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateOUPSign(hash_t *hContext, hash_t *hOut);
+
+
+int GenerateSHA256Sign(hash_t *hContext,
+                hash_t* hOut);
+
+int VerifySHA256Sign(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateSHA1Sign(hash_t *hContext, hash_t* hOut);
+
+int VerifySHA1Sign(hash_t *hContext, const hash_t* hRequest);
+
+int VerifyAESMac(hash_t *hContext,
+                const hash_t* hRequest);
+
+int GenerateAESMac(hash_t *hContext,
+                hash_t* hOut);
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

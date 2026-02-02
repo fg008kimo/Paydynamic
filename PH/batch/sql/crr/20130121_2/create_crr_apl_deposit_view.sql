@@ -1,0 +1,317 @@
+DROP VIEW CRR_APL_DEPOSIT_VIEW;
+
+/* Formatted on 1/22/2013 6:00:24 PM (QP5 v5.226.12202.30050) */
+CREATE OR REPLACE FORCE VIEW CRR_APL_DEPOSIT_VIEW
+(
+   CR_TXN_DATE,
+   CR_COUNTRY,
+   CR_PRODUCT,
+   TE_PARTY_TYPE,
+   PARTY_ID,
+   CR_CURRENCY,
+   CR_JNL_TYPE_ID,
+   CR_JNL_ENTRY_TYPE_ID,
+   CR_IND,
+   CR_GL_ID,
+   TXN_COUNT,
+   CR_AMOUNT
+)
+AS
+     SELECT TH.TH_APPROVAL_DATE CR_TXN_DATE,
+            TD_TXN_COUNTRY CR_COUNTRY,
+            CR_PRODUCT_CODE CR_PRODUCT,
+            'M' TE_PARTY_TYPE,
+            TH.TH_MERCHANT_ID PARTY_ID,
+            TD_TXN_CCY CR_CURRENCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT Th_Txn_Id) Txn_Count,
+            SUM (Th.Th_Net_Amount) Cr_Amount
+       FROM (SELECT Th_Txn_Id,
+                    DECODE (Th_Txn_Code,
+                            'DSI', 'DSP',
+                            'DSR', 'DSP',
+                            Th_Txn_Code)
+                       Th_Txn_Code,
+                    Th_Approval_Date,
+                    Th_Merchant_Id,
+                    Th_Net_Amount
+               FROM Txn_Header Th
+              WHERE     Th.Th_Status IN ('C', 'R')
+                    AND Th.Th_Ar_Ind = 'A'
+                    AND Th.Th_Txn_Code IN ('DSI', 'DSP')
+                    AND Th.Th_Approval_Date IS NOT NULL) Th,
+            txn_detail,
+            merch_detail,
+            clients,
+            CRR_BUSINESS_TYPE_MAPPING,
+            (SELECT Cr_Country_Id,
+                    Cr_Party_Type,
+                    Cr_Party_Id,
+                    Cr_Jnl_Type_Id,
+                    Cr_Jnl_Entry_Type_Id,
+                    Cr_Txn_Code,
+                    Cr_Product_Code,
+                    Cr_Currency_Id,
+                    Cr_Credit_Gl_Id,
+                    Cr_Debit_Gl_Id
+               FROM Crr_Rule_Posting Crp
+              WHERE     Crp.Cr_Party_Type = 'M'
+                    AND Crp.Cr_Jnl_Entry_Type_Id = 'NET_AMT'
+                    AND Crp.Cr_Txn_Code = 'DSP'
+                    AND Crp.Cr_Disabled = 0) Crp
+      WHERE     th_txn_id = td_txn_id
+            AND th_merchant_id = merchant_id
+            AND merch_detail.client_id = clients.client_id
+            AND business_type = bm_business_type
+            AND TH_MERCHANT_ID = CR_PARTY_ID
+            AND th_Txn_Code = Cr_Txn_Code
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND Td_Txn_Ccy = Cr_Currency_Id
+            AND BM_PRODUCT_CODE = Cr_Product_Code
+   GROUP BY TH.TH_APPROVAL_DATE,
+            TD_TXN_COUNTRY,
+            CR_PRODUCT_CODE,
+            TH.TH_MERCHANT_ID,
+            TD_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+   UNION ALL
+     SELECT TH.TH_APPROVAL_DATE CR_TXN_DATE,
+            TD_TXN_COUNTRY CR_COUNTRY,
+            CR_PRODUCT_CODE CR_PRODUCT,
+            CR_PARTY_TYPE,
+            '' PARTY_ID,
+            TE_CCY CR_CURRENCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TE_AMOUNT) CR_AMOUNT
+       FROM (SELECT Th_Txn_Id,
+                    DECODE (TH_TXN_CODE,
+                            'DSI', 'DSP',
+                            'DSR', 'DSP',
+                            TH_TXN_CODE)
+                       TH_TXN_CODE,
+                    Th_Approval_Date,
+                    Th_merchant_id
+               FROM Txn_Header
+              WHERE     Th_Status IN ('C', 'R')
+                    AND th_Ar_Ind = 'A'
+                    AND th_Txn_Code IN ('DSI', 'DSP')
+                    AND Th_Approval_Date IS NOT NULL) Th,
+            txn_detail,
+            merch_detail,
+            clients,
+            CRR_BUSINESS_TYPE_MAPPING,
+            (SELECT CR_COUNTRY_ID,
+                    CR_PARTY_TYPE,
+                    CR_JNL_TYPE_ID,
+                    CR_JNL_ENTRY_TYPE_ID,
+                    CR_TXN_CODE,
+                    Cr_Product_Code,
+                    CR_CREDIT_GL_ID,
+                    CR_DEBIT_GL_ID
+               FROM Crr_Rule_Posting
+              WHERE     Cr_Party_Type = 'G'
+                    AND Cr_Jnl_Entry_Type_Id = 'M_FEE'
+                    AND Cr_Txn_Code = 'DSP'
+                    AND Cr_Disabled = 0) CRP,
+            (SELECT Te_Txn_Id,
+                    Te_Txn_Element_Type,
+                    TE_CCY,
+                    TE_AMOUNT
+               FROM Txn_Elements
+              WHERE Te_Txn_Element_Type = 'TFEE' AND TE_PARTY_TYPE = 'M')
+      WHERE     th_txn_id = td_txn_id
+            AND th_merchant_id = merchant_id
+            AND MERCH_DETAIL.client_id = clients.client_id
+            AND business_type = bm_business_type
+            AND CRP.CR_TXN_CODE = TH.TH_TXN_CODE
+            AND TD_TXN_COUNTRY = CRP.CR_COUNTRY_ID
+            AND BM_PRODUCT_CODE = Crp.Cr_Product_Code
+            AND Te_Txn_Id = Th.Th_Txn_Id
+   GROUP BY TH.TH_APPROVAL_DATE,
+            TD_TXN_COUNTRY,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TE_CCY,
+            TE_TXN_ELEMENT_TYPE,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+   UNION ALL
+     SELECT TH.TH_APPROVAL_DATE CR_TXN_DATE,
+            TD_TXN_COUNTRY CR_COUNTRY,
+            CR_PRODUCT_CODE CR_PRODUCT,
+            CR_PARTY_TYPE,
+            '' PARTY_ID,
+            TE_CCY CR_CURRENCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CR_CREDIT_GL_ID <> 0 THEN CR_CREDIT_GL_ID
+               WHEN CR_DEBIT_GL_ID IS NOT NULL THEN CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TE_AMOUNT) CR_AMOUNT
+       FROM (SELECT TH_TXN_ID,
+                    TH_TXN_CODE,
+                    TH_APPROVAL_DATE,
+                    TH_MERCHANT_ID
+               FROM TXN_HEADER TH
+              WHERE     TH.TH_STATUS IN ('C', 'R')
+                    AND TH.TH_AR_IND = 'A'
+                    AND TH.TH_TXN_CODE IN ('DSI', 'DSP', 'DSR')
+                    AND TH.TH_APPROVAL_DATE IS NOT NULL) TH,
+            TXN_DETAIL TD,
+            (SELECT cr_jnl_type_id,
+                    cr_jnl_entry_type_id,
+                    cr_party_type,
+                    cr_debit_gl_id,
+                    cr_credit_gl_id,
+                    cr_product_code,
+                    cr_txn_code,
+                    cr_country_id
+               FROM CRR_RULE_POSTING
+              WHERE     CR_PARTY_TYPE = 'G'
+                    AND CR_JNL_ENTRY_TYPE_ID = 'M_FXMU_FEE'
+                    AND CR_TXN_CODE = 'DSP'
+                    AND CR_DISABLED = 0) CRP,
+            (SELECT BM_PRODUCT_CODE, MERCHANT_ID
+               FROM MERCH_DETAIL, CLIENTS, CRR_BUSINESS_TYPE_MAPPING
+              WHERE     MERCH_DETAIL.CLIENT_ID = CLIENTS.CLIENT_ID
+                    AND BUSINESS_TYPE = BM_BUSINESS_TYPE) PC,
+            (SELECT te_txn_id,
+                    te_amt_type,
+                    te_ccy,
+                    te_txn_element_type,
+                    te_amount
+               FROM TXN_ELEMENTS
+              WHERE     TE_AMT_TYPE IS NOT NULL
+                    AND TE_TXN_ELEMENT_TYPE = 'MAMT'
+                    AND TE_PARTY_TYPE = 'R')
+      WHERE     TH.TH_TXN_ID = TD.TD_TXN_ID
+            AND TH_TXN_ID = TE_TXN_ID
+            AND TH.TH_MERCHANT_ID = PC.merchant_id
+            AND TD_TXN_COUNTRY = CR_COUNTRY_ID
+            AND CR_PRODUCT_CODE = PC.BM_PRODUCT_CODE
+            AND CR_TXN_CODE =
+                   DECODE (TH.TH_TXN_CODE, 'DSI', 'DSP', TH.TH_TXN_CODE)
+   GROUP BY TH.TH_APPROVAL_DATE,
+            TD_TXN_COUNTRY,
+            CR_PRODUCT_CODE,
+            CR_PARTY_TYPE,
+            TE_AMT_TYPE,
+            TE_CCY,
+            TE_TXN_ELEMENT_TYPE,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            CR_CREDIT_GL_ID,
+            CR_DEBIT_GL_ID
+   UNION ALL
+     SELECT TH.TH_APPROVAL_DATE CR_TXN_DATE,
+            TD_TXN_COUNTRY CR_COUNTRY,
+            CR_PRODUCT_CODE CR_PRODUCT,
+            'P',
+            TP_PSP_ID AS PARTY_ID,
+            TP_TXN_CCY CR_CURRENCY,
+            CRP.CR_JNL_TYPE_ID,
+            CRP.CR_JNL_ENTRY_TYPE_ID,
+            CASE
+               WHEN CRP.CR_CREDIT_GL_ID <> 0 THEN 'C'
+               WHEN CRP.CR_DEBIT_GL_ID IS NOT NULL THEN 'D'
+               ELSE ''
+            END
+               CR_IND,
+            CASE
+               WHEN CRP.CR_CREDIT_GL_ID <> 0 THEN CRP.CR_CREDIT_GL_ID
+               WHEN CRP.CR_DEBIT_GL_ID IS NOT NULL THEN CRP.CR_DEBIT_GL_ID
+               ELSE 0
+            END
+               CR_GL_ID,
+            COUNT (DISTINCT TH_TXN_ID) TXN_COUNT,
+            SUM (TP_TXN_AMOUNT) CR_AMOUNT
+       FROM (SELECT Th_Txn_Id,
+                    DECODE (TH_TXN_CODE,
+                            'DSI', 'DSP',
+                            'DSR', 'DSP',
+                            TH_TXN_CODE)
+                       TH_TXN_CODE,
+                    Th_Approval_Date
+               FROM TXN_HEADER TH
+              WHERE     TH.TH_STATUS IN ('C', 'R')
+                    AND TH.TH_AR_IND = 'A'
+                    AND TH.TH_TXN_CODE IN ('DSI', 'DSP', 'DSR')
+                    AND Th.Th_Approval_Date IS NOT NULL) Th,
+            txn_detail,
+            txn_psp_detail,
+            psp_detail,
+            CRR_BUSINESS_TYPE_MAPPING,
+            (SELECT Cr_Country_Id,
+                    Cr_Party_Type,
+                    Cr_Jnl_Type_Id,
+                    Cr_Jnl_Entry_Type_Id,
+                    Cr_Txn_Code,
+                    Cr_Product_Code,
+                    Cr_Party_Id,
+                    Cr_Credit_Gl_Id,
+                    Cr_Debit_Gl_Id
+               FROM Crr_Rule_Posting Crp
+              WHERE     CRP.CR_PARTY_TYPE = 'P'
+                    AND CRP.CR_JNL_ENTRY_TYPE_ID = 'TXN_AMT'
+                    AND CRP.CR_TXN_CODE = 'DSP'
+                    AND Crp.Cr_Disabled = 0) CRP
+      WHERE     th.th_txn_id = td_txn_id
+            AND th.th_txn_id = tp_txn_id
+            AND tp_psp_id = psp_id
+            AND bm_business_type = psp_type
+            AND TD_TXN_COUNTRY = CRP.CR_COUNTRY_ID
+            AND BM_PRODUCT_CODE = Cr_Product_Code
+            AND Tp_Psp_Id = Cr_Party_Id
+            AND th.th_txn_code = cr_txn_code
+   GROUP BY TH.TH_APPROVAL_DATE,
+            TD_TXN_COUNTRY,
+            CR_PRODUCT_CODE,
+            TP_PSP_ID,
+            TP_TXN_CCY,
+            CR_JNL_TYPE_ID,
+            CR_JNL_ENTRY_TYPE_ID,
+            Cr_Credit_Gl_Id,
+            Cr_Debit_Gl_Id;
+

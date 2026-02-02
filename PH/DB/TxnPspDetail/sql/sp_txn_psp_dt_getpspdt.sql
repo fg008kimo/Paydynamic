@@ -1,0 +1,54 @@
+CREATE OR REPLACE FUNCTION sp_txn_psp_dt_getpspdt(
+  in_txn_date	            	txn_psp_detail.tp_txn_date%type,
+  in_psp_id			txn_psp_detail.tp_psp_id%type,
+  out_cursor            out     sys_refcursor)
+
+RETURN NUMBER Is
+	iCnt	integer := 0;
+
+Begin
+
+	select count(*)
+	  into	iCnt
+	  from	txn_header,
+	  	txn_psp_detail
+	  where	th_approval_date=in_txn_date
+	  and	tp_psp_id=in_psp_id
+	  and	th_txn_id=tp_txn_id
+	  and   tp_match_ind = 0
+	  and	th_ar_ind='A'
+	  and	th_txn_code = 'DSI';
+
+	if iCnt > 0 THEN
+		OPEN out_cursor for
+		select	tp_tid,
+			tp_txn_id,
+			tp_fundin_date,
+			tp_bank_bill_no,
+			tp_txn_amount,
+			tp_service_fee,
+                        '1',
+			nvl(tp_paid_amount, tp_txn_amount)
+		from  txn_psp_detail
+		where tp_psp_id=in_psp_id
+		and   exists (select null
+				from txn_header
+				where th_approval_date=in_txn_date
+				and   th_txn_id=tp_txn_id
+				and   th_ar_ind='A'
+				and   th_txn_code = 'DSI')
+		order by tp_txn_id;
+
+		return 1;
+	
+	else
+		return 0;
+	end if;
+
+	return 0;
+
+exception
+   WHEN OTHERS THEN
+     RETURN 0;
+END sp_txn_psp_dt_getpspdt;
+/

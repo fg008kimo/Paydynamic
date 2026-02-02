@@ -1,0 +1,1037 @@
+/*
+Partnerdelight (c)2015. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version					   2015/03/16              Cody Chan
+Add Inq Messages				   2015/04/09		   LokMan Chow
+Add card_type					   2016/09/30              Elvis Wong
+fallback card_type				   2016/12/08		   LokMan Chow
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "RpyMsg.h"
+#include "common.h"
+#include "utilitys.h"
+#include "queue_defs.h"
+#include "b64.h"
+
+#define	MY_RPY_SERVICE		"online_pay"
+#define	MY_RPY_SIGN_TYPE	"MD5"
+#define	MY_RPY_CHARSET		"GBK"
+#define	MY_RPY_PAYMENT_TYPE	"1"
+#define	MY_RPY_PAYMETHOD	"directPay"
+#define	MY_RPY_BODY		"body"
+#define	MY_RPY_TITLE		"title"
+
+char	cDebug;
+
+void	RpyMsg(char cdebug)
+{
+	cDebug = cdebug;
+}
+
+int FormatMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+	int	iRet = PD_OK;
+	char*   csTmp = NULL;
+	char*   csPtr = NULL;
+	char*   csBuf;
+	double  dTmp;
+	char*   csMethod = NULL;
+
+	csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+	memset(outMsg,0,sizeof(outMsg));
+	if (GetField_CString(hIn,"redirect_url",&csPtr)) {
+DEBUGLOG(("FormatMsg here\n"));
+		strcat((char*)outMsg,csPtr);
+		strcat((char*)outMsg,"?");
+
+/* charset */
+		strcat((char*)outMsg,"charset");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_CHARSET);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+/* service */	
+		strcat((char*)outMsg,"service");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_SERVICE);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+/* merchant_ID */
+		if (GetField_CString(hIn,"psp_merchant_id",&csTmp)) {
+			strcat((char*)outMsg,"merchant_ID");
+			strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: merchant_ID = [%s]\n",csTmp));
+		}
+		else {
+			iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: ***psp_merchant_id is missing\n"));
+		}
+/* notify_url */
+		//if (GetField_CString(hIn,"fe_url_only",&csTmp)) {
+		if (GetField_CString(hIn,"return_url_only",&csTmp)) {
+                        strcat((char*)outMsg,"notify_url");
+                        strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+                        //strcat((char*)outMsg,url_encode(csTmp));
+                        strcat((char*)outMsg,csTmp);
+                        strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: notify_url = [%s]\n",csTmp));
+                }       
+                else {
+                        iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: *** notify_url is missing\n"));
+                }
+/* return_url */
+		//if (GetField_CString(hIn,"return_url_only",&csTmp)) {
+		if (GetField_CString(hIn,"fe_url_only",&csTmp)) {
+                        strcat((char*)outMsg,"return_url");
+                        strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+                        //strcat((char*)outMsg,url_encode(csTmp));
+                        strcat((char*)outMsg,csTmp);
+                        strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: return_url = [%s]\n",csTmp));
+                }       
+                else {
+                        iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: *** return_url is missing\n"));
+                }
+
+/* sign */
+		if (GetField_CString(hIn,"sign",&csTmp)) {
+			strcat((char*)outMsg,"sign");
+			strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: sign = [%s]\n",csTmp));
+		}
+/* sign type */
+		strcat((char*)outMsg,"sign_type");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_SIGN_TYPE);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+
+/* title */
+		strcat((char*)outMsg,"title");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_TITLE);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+/* body */
+		strcat((char*)outMsg,"body");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_BODY);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+
+/* order no */
+		if (GetField_CString(hIn,"txn_seq",&csTmp)) {
+			strcat((char*)outMsg,"order_no");
+			strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: order_no = [%s]\n",csTmp));
+		}
+
+/* total_fee */
+                if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+
+                        char    csTmpAmt[PD_TMP_BUF_LEN +1];
+                        sprintf(csTmpAmt,"%.2f",dTmp);
+                        strcat((char*)outMsg,"total_fee");
+                        strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+                        strcat((char*)outMsg,csTmpAmt);
+                        strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: total_fee = [%s]\n",csTmpAmt));
+                }
+                else {
+DEBUGLOG(("FormatMsg:: psp_txn_amt is missing!!!\n"));
+                }
+/* payment_type */
+		strcat((char*)outMsg,"payment_type");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_PAYMENT_TYPE);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+/* paymentmethod */
+		strcat((char*)outMsg,"paymethod");
+		strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+		strcat((char*)outMsg,MY_RPY_PAYMETHOD);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+
+/* defaultbank */
+		if (GetField_CString(hIn,"bank_code",&csTmp)) {
+			strcat((char*)outMsg,"defaultbank");
+			strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+			strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatMsg:: pd_FrpId = [%s]\n",csTmp));
+		}
+		else {
+DEBUGLOG(("FormatMsg:: bank_code is missing\n"));
+		}
+
+/*seller email */
+		if (GetField_CString(hIn,"psp_key_id",&csTmp)) {
+			strcat((char*)outMsg,"seller_email");
+			strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+			strcat((char*)outMsg,csTmp);
+DEBUGLOG(("FormatMsg:: seller_email = [%s]\n",csTmp));
+		}
+		else {
+DEBUGLOG(("FormatMsg:: psp_key_id is missing\n"));
+		}
+
+
+/* url_method */
+		if (GetField_CString(hIn,"url_method",&csMethod)) {
+DEBUGLOG(("FormatMsg:: url_method = [%s]\n",csMethod));
+		}
+		else 
+			csMethod = strdup("");
+
+DEBUGLOG(("FormatMsg:: outmsg = [%s]\n",outMsg));
+		base64_encode(outMsg,strlen((char*)outMsg),csBuf,PD_MAX_BUFFER);
+DEBUGLOG(("FormatMsg:: after encode\n"));
+                outMsg[0] = '\0';
+                strcat((char*)outMsg,"redirect_url");
+                strcat((char*)outMsg,"=");
+                strcat((char*)outMsg,csBuf);
+                strcat((char*)outMsg,MY_RPY_TOKEN);
+		strcat((char*)outMsg,"url_method");
+		strcat((char*)outMsg,"=");
+		strcat((char*)outMsg,csMethod);
+		strcat((char*)outMsg,MY_RPY_TOKEN);
+                strcat((char*)outMsg,"ret_status=0");
+DEBUGLOG(("FormatMsg:: outMsg = [%s]\n",outMsg));
+
+		*outLen = strlen((const char*)outMsg);
+	}
+	else {
+		iRet = PD_ERR;
+DEBUGLOG(("FormatMsg:: Redirct url not found\n"));
+	}
+
+
+DEBUGLOG(("FormatMsg:: normal exit iret =[%d]\n",iRet));
+	FREE_ME(csBuf);
+	return 	iRet;
+}
+
+
+
+int BreakDownMsg(hash_t *hOut,const unsigned char *inMsg,int inLen)
+{
+	int	iRet = PD_OK;
+	char	*csPtr;
+	char	csTxnTime[PD_DATETIME_LEN+1];
+	char	csTxnDate[PD_DATE_LEN+1];
+	//char	csPHdate[PD_DATE_LEN+1];
+	hash_t  *hRec;
+
+        hRec = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hRec,0);
+
+DEBUGLOG(("BreakDownMsg()\n"));
+DEBUGLOG(("DATA = [%s][%d]\n",inMsg,inLen));
+
+	if (Str2Cls(hRec,(char*)inMsg,MY_RPY_TOKEN, MY_RPY_FIELD_TOKEN) == PD_OK) {
+
+
+/* notify_type */
+		if (GetField_CString(hRec,"notify_type",&csPtr)) {
+			PutField_CString(hOut,"notify_type",csPtr);
+DEBUGLOG(("BreakDownMsg:: notify_type:notify_type = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: notify_type:notify_type not found\n"));
+		}
+/* notify_id */
+		if (GetField_CString(hRec,"notify_id",&csPtr)) {
+			PutField_CString(hOut,"notify_id",csPtr);
+DEBUGLOG(("BreakDownMsg:: notify_id:notify_id = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: notify_id:notify_id not found\n"));
+		}
+
+/* notify_time */
+		if (GetField_CString(hRec,"notify_time",&csPtr)) {
+			PutField_CString(hOut,"notify_time",csPtr);
+DEBUGLOG(("BreakDownMsg:: notify_time:notify_time = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: notify_time:notify_time not found\n"));
+		}
+
+/* sign */
+		if (GetField_CString(hRec,"sign",&csPtr)) {
+			PutField_CString(hOut,"sign",csPtr);
+DEBUGLOG(("BreakDownMsg:: sign = [%s]\n",csPtr));
+		}
+		else{
+                	PutField_CString(hOut,"sign"," ");
+DEBUGLOG(("BreakDownMsg:: sign = [%s]\n"," "));
+        	}
+
+/* sign_type */
+		if (GetField_CString(hRec,"sign_type",&csPtr)) {
+			PutField_CString(hOut,"sign_type",csPtr);
+DEBUGLOG(("BreakDownMsg:: sign_type = [%s]\n",csPtr));
+		}
+		else{
+                	PutField_CString(hOut,"sign_type"," ");
+DEBUGLOG(("BreakDownMsg:: sign_type = [%s]\n"," "));
+		}
+
+/* trade_no */
+		if (GetField_CString(hRec,"trade_no",&csPtr)) {
+			PutField_CString(hOut,"tid",csPtr);
+DEBUGLOG(("BreakDownMsg:: trade_no:tid = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: trade_no:tid not found\n"));
+		}
+
+/* order_no */
+		if (GetField_CString(hRec,"order_no",&csPtr)) {
+			PutField_CString(hOut,"txn_seq",csPtr);
+DEBUGLOG(("BreakDownMsg:: order_no:txn_seq = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: order_no:txn_seq not found\n"));
+		}
+
+/* payment_type */
+		if (GetField_CString(hRec,"payment_type",&csPtr)) {
+			PutField_CString(hOut,"payment_type",csPtr);
+DEBUGLOG(("BreakDownMsg:: payment_type:payment_type = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: payment_type:payment_type not found\n"));
+		}
+
+/* title */
+		if (GetField_CString(hRec,"title",&csPtr)) {
+			PutField_CString(hOut,"title",csPtr);
+DEBUGLOG(("BreakDownMsg:: title:title = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: title:title not found\n"));
+		}
+
+/* body */
+		if (GetField_CString(hRec,"body",&csPtr)) {
+			PutField_CString(hOut,"body",csPtr);
+DEBUGLOG(("BreakDownMsg:: body:body = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: body:body not found\n"));
+		}
+
+/* total_fee */
+		if (GetField_CString(hRec,"total_fee",&csPtr)) {
+			PutField_CString(hOut,"psp_txn_amt",csPtr);
+			PutField_CString(hOut,"txn_amt",csPtr);
+DEBUGLOG(("BreakDownMsg:: total_fee:txn_amt = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: total_fee:txn_amt not found\n"));
+		}
+
+
+/* trade_status */
+		if (GetField_CString(hRec,"trade_status",&csPtr)) {
+			PutField_CString(hOut,"status",csPtr);
+DEBUGLOG(("BreakDownMsg:: trade_status:status = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: trade_status:status not found\n"));
+		}
+
+/* seller_email */
+		if (GetField_CString(hRec,"seller_email",&csPtr)) {
+			PutField_CString(hOut,"seller_email",csPtr);
+DEBUGLOG(("BreakDownMsg:: seller_email:seller_email = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: seller_email:seller_email not found\n"));
+		}
+
+/* seller_id */
+		if (GetField_CString(hRec,"seller_id",&csPtr)) {
+			PutField_CString(hOut,"seller_id",csPtr);
+DEBUGLOG(("BreakDownMsg:: seller_id:seller_id = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: seller_id:seller_id not found\n"));
+		}
+
+/* buyer_email */
+		if (GetField_CString(hRec,"buyer_email",&csPtr)) {
+			PutField_CString(hOut,"buyer_email",csPtr);
+DEBUGLOG(("BreakDownMsg:: buyer_email:buyer_email = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: buyer_email:buyer_email not found\n"));
+		}
+
+/* buyer_id */
+		if (GetField_CString(hRec,"buyer_id",&csPtr)) {
+			PutField_CString(hOut,"buyer_id",csPtr);
+DEBUGLOG(("BreakDownMsg:: buyer_id:buyer_id = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: buyer_id:buyer_id not found\n"));
+		}
+
+
+
+/* gmt_create*/
+		if (GetField_CString(hRec,"gmt_create",&csPtr)) {
+			PutField_CString(hOut,"gmt_create",csPtr);
+DEBUGLOG(("BreakDownMsg:: gmt_create = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: gmt_create:gmt_create not found\n"));
+		}
+
+
+/* gmt_payment */
+		if (GetField_CString(hRec,"gmt_payment",&csPtr)) {
+			sprintf(csTxnDate,"%.*s%.*s%.*s",
+				PD_YYYY_LEN,csPtr,
+				PD_MM_LEN,&csPtr[PD_YYYY_LEN+1],
+				PD_DD_LEN,&csPtr[PD_YYYYMM_LEN+2]);
+			csTxnDate[PD_DATE_LEN]='\0';
+
+			sprintf(csTxnTime,"%.*s%.*s%.*s%.*s",
+				PD_DATE_LEN,csTxnDate,
+				PD_MM_LEN,&csPtr[PD_DATE_LEN+3],
+				PD_MM_LEN,&csPtr[PD_DATE_LEN+6],
+				PD_MM_LEN,&csPtr[PD_DATE_LEN+9]);
+
+			PutField_CString(hOut,"gmt_payment",csPtr);
+			PutField_CString(hOut,"txn_date",csTxnDate);
+			PutField_CString(hOut,"fundin_date",csTxnTime);
+DEBUGLOG(("BreakDownMsg:: gmt_payment:gmt_txn_datetime = [%s]\n",csTxnTime));
+DEBUGLOG(("BreakDownMsg:: gmt_payment:gmt_txn_date = [%s]\n",csTxnDate));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: gmt_payment:txn_date not found\n"));
+		}
+
+/*discount*/
+		if (GetField_CString(hRec,"discount",&csPtr)) {
+			PutField_CString(hOut,"discount",csPtr);
+DEBUGLOG(("BreakDownMsg:: discount = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: discount: not found\n"));
+		}
+
+/*gmt_logistics_modify*/
+		if (GetField_CString(hRec,"gmt_logistics_modify",&csPtr)) {
+			PutField_CString(hOut,"gmt_logistics_modify",csPtr);
+DEBUGLOG(("BreakDownMsg:: gmt_logistics_modify: = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: gmt_logistics_modify: not found\n"));
+		}
+
+/*is_success*/
+		if (GetField_CString(hRec,"is_success",&csPtr)) {
+			PutField_CString(hOut,"is_success",csPtr);
+DEBUGLOG(("BreakDownMsg:: is_success: = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: is_success: not found\n"));
+		}
+
+/*is_total_fee_adjust*/
+		if (GetField_CString(hRec,"is_total_fee_adjust",&csPtr)) {
+			PutField_CString(hOut,"is_total_fee_adjust",csPtr);
+DEBUGLOG(("BreakDownMsg:: is_total_fee_adjust: = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: is_total_fee_adjust: not found\n"));
+		}
+
+/*price*/
+		if (GetField_CString(hRec,"price",&csPtr)) {
+			PutField_CString(hOut,"price",csPtr);
+DEBUGLOG(("BreakDownMsg:: price: = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: price: not found\n"));
+		}
+
+/*quantity*/
+		if (GetField_CString(hRec,"quantity",&csPtr)) {
+			PutField_CString(hOut,"quantity",csPtr);
+DEBUGLOG(("BreakDownMsg:: quantity: = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: quantity: not found\n"));
+		}
+
+/*seller_actions*/
+		if (GetField_CString(hRec,"seller_actions",&csPtr)) {
+			PutField_CString(hOut,"seller_actions",csPtr);
+DEBUGLOG(("BreakDownMsg:: seller_actions: = [%s]\n",csPtr));
+		}
+		else{
+DEBUGLOG(("BreakDownMsg:: seller_actions: not found\n"));
+		}
+
+	}
+	else {
+DEBUGLOG(("BreakDownMsg() Error\n"));
+                iRet = PD_ERR;
+        }
+        
+        hash_destroy(hRec);
+	FREE_ME(hRec);
+
+DEBUGLOG(("BreakDownMsg Exit\n"));
+	return	iRet;
+}
+
+int initReplyFromRequest(const hash_t* hRequest, hash_t* hResponse)
+{
+	int	iRet = PD_OK;
+
+	return iRet;
+}
+
+
+int BuildAuthData(hash_t* hIn)
+{       
+        int     iRet = PD_OK;
+        char*   csPtr,*csDATA;
+        char*   csBuf;
+        double  dTmp;
+        csDATA = (char*) malloc (1024 * 2 +1);
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 ); 
+
+DEBUGLOG(("BuildAuthData()\n"));
+                
+        memset(csDATA,0,sizeof(csDATA));
+// 1 body
+        strcat((char*)csDATA,"body");
+        strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csDATA,MY_RPY_BODY);
+        strcat((char*)csDATA,MY_RPY_TOKEN);
+DEBUGLOG(("BuildAuthData:: 1 body = [%s]\n",MY_RPY_BODY));
+// 2 charset
+        strcat((char*)csDATA,"charset");
+        strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csDATA,MY_RPY_CHARSET);
+        strcat((char*)csDATA,MY_RPY_TOKEN);
+DEBUGLOG(("BuildAuthData:: 2 charset = [%s]\n",MY_RPY_CHARSET));
+
+//3 defaultbank 
+        if (GetField_CString(hIn,"bank_code",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: 3 defaultbank = [%s]\n",csPtr));
+                strcat((char*)csDATA,"defaultbank");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+                strcat((char*)csDATA,MY_RPY_TOKEN);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 3 bank_code is missing***\n"));
+	}
+
+// 4 merchant_ID
+        if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: 4. merchant_ID = [%s]\n",csPtr));
+                strcat((char*)csDATA,"merchant_ID");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+                strcat((char*)csDATA,MY_RPY_TOKEN);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 4 psp_merchant_id is missing***\n"));
+	}
+
+// 5 notify_url 
+        //if (GetField_CString(hIn,"fe_url_only",&csPtr)) {
+        if (GetField_CString(hIn,"return_url_only",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: 5. notify_url = [%s]\n",csPtr));
+                strcat((char*)csDATA,"notify_url");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+                strcat((char*)csDATA,MY_RPY_TOKEN);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 5 return_url_only is missing***\n"));
+	}
+
+
+// 6 order_no
+        if (GetField_CString(hIn,"txn_seq",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: 6. order_no = [%s]\n",csPtr));
+                strcat((char*)csDATA,"order_no");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+                strcat((char*)csDATA,MY_RPY_TOKEN);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 6 txn_seq is missing***\n"));
+	}
+
+// 7 payment_type
+        strcat((char*)csDATA,"payment_type");
+        strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csDATA,MY_RPY_PAYMENT_TYPE);
+        strcat((char*)csDATA,MY_RPY_TOKEN);
+DEBUGLOG(("BuildAuthData:: 7 payment_type = [%s]\n",MY_RPY_PAYMENT_TYPE));
+
+// 8 paymenthod
+        strcat((char*)csDATA,"paymethod");
+        strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csDATA,MY_RPY_PAYMETHOD);
+        strcat((char*)csDATA,MY_RPY_TOKEN);
+DEBUGLOG(("BuildAuthData:: 8 paymenthod = [%s]\n",MY_RPY_PAYMETHOD));
+
+
+
+// 9 return_url
+        //if (GetField_CString(hIn,"return_url_only",&csPtr)) {
+        if (GetField_CString(hIn,"fe_url_only",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: 9. return_url = [%s]\n",csPtr));
+                strcat((char*)csDATA,"return_url");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+                strcat((char*)csDATA,MY_RPY_TOKEN);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 9 fe_url_only is missing***\n"));
+	}
+
+// 10 seller_email
+        if (GetField_CString(hIn,"psp_key_id",&csPtr)) {
+DEBUGLOG(("BuildAuthData:: 10. seller_email = [%s]\n",csPtr));
+                strcat((char*)csDATA,"seller_email");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+                strcat((char*)csDATA,MY_RPY_TOKEN);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 10 psp_key_id is missing***\n"));
+	}
+
+// 11 service
+        strcat((char*)csDATA,"service");
+        strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csDATA,MY_RPY_SERVICE);
+        strcat((char*)csDATA,MY_RPY_TOKEN);
+DEBUGLOG(("BuildAuthData:: 11. service = [%s]\n",MY_RPY_SERVICE));
+
+// 12 title
+        strcat((char*)csDATA,"title");
+        strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csDATA,MY_RPY_TITLE);
+        strcat((char*)csDATA,MY_RPY_TOKEN);
+DEBUGLOG(("BuildAuthData:: 12. title = [%s]\n",MY_RPY_TITLE));
+
+// 13 total_fee
+        if (GetField_Double(hIn,"psp_txn_amt",&dTmp)) {
+		char    csTmpAmt[PD_TMP_BUF_LEN +1];
+                strcat((char*)csDATA,"total_fee");
+                strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+		sprintf(csTmpAmt,"%.2f",dTmp);
+DEBUGLOG(("BuildAuthData:: 13. total_fee = [%s]\n",csTmpAmt));
+                strcat((char*)csDATA,csTmpAmt);
+        }
+	else {
+DEBUGLOG(("BuildAuthData:: 13 total_fee is missing***\n"));
+	}
+
+        PutField_CString(hIn,"auth_data",csDATA);
+                
+DEBUGLOG(("BuildReqData:: DATA = [%s]\n",csDATA));
+        
+        FREE_ME(csDATA);
+DEBUGLOG(("BuildReqData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+int BuildRspAuthData(hash_t* hIn)
+{       
+        int     iRet = PD_OK;
+        char*   csPtr,*csDATA;
+        char*   csBuf;
+        csDATA = (char*) malloc (1024 * 2 +1);
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 ); 
+
+DEBUGLOG(("BuildRspData()\n"));
+                
+        memset(csDATA,0,sizeof(csDATA));
+
+/* 1 body */
+        if (GetField_CString(hIn,"body",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 1 body:body = [%s]\n",csPtr));
+		strcat((char*)csDATA,"body");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+		strcat((char*)csDATA,csPtr);
+        }
+
+/* 2 buyer_email */
+        if (GetField_CString(hIn,"buyer_email",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 2 buyer_email:buyer_email = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"buyer_email");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+		strcat((char*)csDATA,csPtr);
+        }
+
+/* 3 buyer_id */
+        if (GetField_CString(hIn,"buyer_id",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 3 buyer_id:buyer_id = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"buyer_id");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 discount*/
+        if (GetField_CString(hIn,"discount",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 discount:discount = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"discount");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 gmt_create */
+        if (GetField_CString(hIn,"gmt_create",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 gmt_create:gmt_create = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"gmt_create");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 gmt_logistics_modify*/
+        if (GetField_CString(hIn,"gmt_logistics_modify",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 gmt_logistics_modify:gmt_logistics_modify = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"gmt_logistics_modify");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 5 gmt_payment */
+        if (GetField_CString(hIn,"gmt_payment",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 5 gmt_payment:gmt_payment = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"gmt_payment");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 is_success*/
+        if (GetField_CString(hIn,"is_success",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 is_success:is_success = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"is_success");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 is_total_fee_adjust*/
+        if (GetField_CString(hIn,"is_total_fee_adjust",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 is_total_fee_adjust:is_total_fee_adjust= [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"is_total_fee_adjust=");
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 6 notify_id */
+        if (GetField_CString(hIn,"notify_id",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 6 notify_id:notify_id = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"notify_id=");
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 7 notify_time */
+        if (GetField_CString(hIn,"notify_time",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 7 notify_time:notify_time = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"notify_time=");
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 8 notify_type */
+        if (GetField_CString(hIn,"notify_type",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 8 notify_type:notify_type = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"notify_type");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 9 order_no */
+        if (GetField_CString(hIn,"txn_seq",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 9 order_no:order_no = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"order_no");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 10 payment_type */
+        if (GetField_CString(hIn,"payment_type",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 10 payment_type:payment_type = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"payment_type");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 price*/
+        if (GetField_CString(hIn,"price",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 price:price = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"price");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 4 quantity*/
+        if (GetField_CString(hIn,"quantity",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 4 quantity:quantity = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"quantity");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 11 seller_actions*/
+        if (GetField_CString(hIn,"seller_actions",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 11 seller_actions:seller_actions = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"seller_actions");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 11 seller_email */
+        if (GetField_CString(hIn,"seller_email",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 11 seller_email:seller_email = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"seller_email");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 12 seller_id */
+        if (GetField_CString(hIn,"seller_id",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 12 seller_id:seller_id = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"seller_id");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 13 title */
+        if (GetField_CString(hIn,"title",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 13 title:title = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"title");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 14 total_fee */
+        if (GetField_CString(hIn,"txn_amt",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 14 total_fee:total_fee = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"total_fee");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 15 trade_no */
+        if (GetField_CString(hIn,"tid",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 15 trade_no:trade_no = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"trade_no");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+/* 16 trade_status */
+        if (GetField_CString(hIn,"status",&csPtr)) {
+DEBUGLOG(("BuildRspData:: 16 trade_status:trade_status = [%s]\n",csPtr));
+		strcat((char*)csDATA,MY_RPY_TOKEN);
+		strcat((char*)csDATA,"trade_status");
+		strcat((char*)csDATA,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csDATA,csPtr);
+        }
+
+        PutField_CString(hIn,"auth_data",csDATA);
+                
+DEBUGLOG(("BuildRspData:: auth_data = [%s]\n",csDATA));
+        
+        FREE_ME(csDATA);
+DEBUGLOG(("BuildRspData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+
+int FormatInqMsg(const hash_t* hIn,unsigned char *outMsg,int *outLen)
+{
+        int     iRet = PD_OK;
+
+        char*   csPtr = NULL;
+        char*   csURL = NULL;
+        char*   csBuf;
+
+        //double        dTmp;
+DEBUGLOG(("FormatInqMsg()\n"));
+
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+        outMsg[0]= '\0';
+//psp_url
+        if (GetField_CString(hIn,"psp_url",&csURL)) {
+                if (GetField_CString(hIn,"request_function",&csPtr)) {
+                        strcpy((char*)csBuf,"url");
+DEBUGLOG(("FormatInqMsg:: psp_url = [%s]\n",csURL));
+DEBUGLOG(("FormatInqMsg:: request function  = [%s]\n",csPtr));
+                        strcat((char*)csBuf,MY_RPY_FIELD_TOKEN);
+                        strcat((char*)csBuf,csURL);
+                        strcat((char*)csBuf,"/");
+                        strcat((char*)csBuf,csPtr);
+                        strcat((char*)csBuf,"?");
+DEBUGLOG(("FormatInqMsg:: psp_url = [%s]\n",csBuf));
+                }
+
+                sprintf((char*)outMsg,"%0*d",PD_WEB_HEADER_LEN_LEN,(int)strlen(csBuf));
+DEBUGLOG(("FormatInqMsg:: outMsg = [%s]\n",outMsg));
+                strcat((char*)outMsg,csBuf);
+DEBUGLOG(("FormatInqMsg:: outMsg = [%s]\n",outMsg));
+
+        }
+        FREE_ME(csBuf);
+
+//charset
+	strcat((char*)outMsg,"charset");
+        strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+        strcat((char*)outMsg,"utf8");
+        strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatInqMsg:: charset = [utf8]\n"));
+
+//psp mid
+	if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+DEBUGLOG(("FormatInqMsg::merchant_ID = [%s]\n",csPtr));
+                strcat((char*)outMsg,"merchant_ID");
+                strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+                strcat((char*)outMsg,csPtr);
+                strcat((char*)outMsg,MY_RPY_TOKEN);
+        }
+        else {
+DEBUGLOG(("FormatInqMsg:: merchant_ID is missing\n"));
+        }
+
+
+//txn seq
+	if (GetField_CString(hIn,"org_txn_seq",&csPtr)) {
+DEBUGLOG(("FormatInqMsg::order_no = [%s]\n",csPtr));
+		strcat((char*)outMsg,"order_no");
+                strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+                strcat((char*)outMsg,csPtr);
+                strcat((char*)outMsg,MY_RPY_TOKEN);
+        }
+        else {
+DEBUGLOG(("FormatInqMsg:: order_no is missing\n"));
+        }
+
+//sign type
+	strcat((char*)outMsg,"sign_type");
+        strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+        strcat((char*)outMsg,MY_RPY_SIGN_TYPE);
+        strcat((char*)outMsg,MY_RPY_TOKEN);
+DEBUGLOG(("FormatInqMsg:: sign_type = [%s]\n",MY_RPY_SIGN_TYPE));
+
+//sign
+	if (GetField_CString(hIn,"sign",&csPtr)) {
+DEBUGLOG(("FormatInqMsg:: sign = [%s]\n",csPtr));
+                strcat((char*)outMsg,"sign");
+                strcat((char*)outMsg,MY_RPY_FIELD_TOKEN);
+                strcat((char*)outMsg,csPtr);
+        }
+        else {
+DEBUGLOG(("FormatInqMsg:: sign not found!!!\n"));
+        }
+
+DEBUGLOG(("outmsg = [%s]\n",outMsg));
+
+        *outLen = strlen((const char*)outMsg);
+DEBUGLOG(("FormatInqMsg() [%s][%d]\n",outMsg,*outLen));
+DEBUGLOG(("FormatInqMsg() Exit\n"));
+        FREE_ME(csPtr);
+        FREE_ME(csURL);
+        return  iRet;
+}
+
+int BuildInqAuthData(hash_t* hIn)
+{
+        int     iRet = PD_OK;
+        char*   csPtr;
+        char*   csBuf;
+        csBuf = (char*) malloc (MAX_MSG_SIZE + 1 );
+
+DEBUGLOG(("BuildInqAuthData()\n"));
+        memset(csBuf,0,MAX_MSG_SIZE);
+        csBuf[0] = '\0';
+
+/* 1 charset*/
+        strcat((char*)csBuf,"charset");
+        strcat((char*)csBuf,MY_RPY_FIELD_TOKEN);
+        strcat((char*)csBuf,"utf8");
+
+/* 2 merchant_ID */
+        if (GetField_CString(hIn,"psp_merchant_id",&csPtr)) {
+                strcat((char*)csBuf,MY_RPY_TOKEN);
+                strcat((char*)csBuf,"merchant_ID");
+                strcat((char*)csBuf,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csBuf,csPtr);
+DEBUGLOG(("BuildInqAuthData:: merchant_ID = [%s]\n",csPtr));
+        }
+        else {
+                iRet = PD_ERR;
+DEBUGLOG(("BuildInqAuthData:: ***psp_merchant_id is missing\n"));
+        }
+
+/* 3 order_no*/
+        if (GetField_CString(hIn,"org_txn_seq",&csPtr)) {
+                strcat((char*)csBuf,MY_RPY_TOKEN);
+                strcat((char*)csBuf,"order_no");
+                strcat((char*)csBuf,MY_RPY_FIELD_TOKEN);
+                strcat((char*)csBuf,csPtr);
+DEBUGLOG(("BuildInqAuthData:: order_no = [%s]\n",csPtr));
+        }
+        else {
+DEBUGLOG(("BuildInqAuthData:: org_txn_seq is missing!!!\n"));
+        }
+
+        PutField_CString(hIn,"auth_data",csBuf);
+DEBUGLOG(("BuildInqAuthData:: auth_data = [%s]\n",csBuf));
+        FREE_ME(csBuf);
+
+DEBUGLOG(("BuildInqAuthData() Exit iRet = [%d]\n",iRet));
+        return  iRet;
+}
+

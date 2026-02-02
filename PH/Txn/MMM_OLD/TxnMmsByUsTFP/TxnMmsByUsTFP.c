@@ -1,0 +1,236 @@
+/*
+Partnerdelight (c)2010. All rights reserved. No part of this software may be reproduced in any form without written permission
+of an authorized representative of Partnerdelight.
+
+Change Description                                 Change Date             Change By
+-------------------------------                    ------------            --------------
+Init Version                                       2012/02/20              Virginia Yun
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "common.h"
+#include "utilitys.h"
+#include "ObjPtr.h"
+#include "internal.h"
+#include "TxnMmsByUsTFP.h"
+#include "myrecordset.h"
+#include <curl/curl.h>
+#include "queue_utility.h"
+#include "mq_db.h"
+
+char cDebug;
+OBJPTR(DB);
+OBJPTR(BO);
+OBJPTR(Txn);
+
+void TxnMmsByUsTFP(char    cdebug)
+{
+	cDebug = cdebug;
+}
+
+int     Authorize(hash_t* hContext,
+                  hash_t* hRequest,
+                  hash_t* hResponse)
+{
+
+	int	iRet = PD_OK;
+
+        char    *csTmp;
+	//char	cTmp;
+	char	cIsd_ind;
+
+	double  dTmp ;
+
+	char	*csNodeId = NULL;
+	char	*csOrgSeq = NULL;
+	char	*csOrgDtlSeq = NULL;
+
+	hash_t *hTxn;
+	hTxn = (hash_t*)  malloc (sizeof(hash_t));
+        hash_init(hTxn,0);
+
+/* org_txn_seq */
+	if (GetField_CString(hRequest, "org_txn_seq", &csOrgSeq)) {
+DEBUGLOG(("Authorize::org_txn_seq = [%s]\n",csOrgSeq));
+	}
+
+/* org_dtl_txn_seq */
+	if (GetField_CString(hRequest, "org_dtl_txn_seq", &csOrgDtlSeq)) {
+DEBUGLOG(("Authorize::org_dtl_txn_seq = [%s]\n",csOrgDtlSeq));
+	}
+
+
+/* add_user */
+        if(GetField_CString(hRequest,"add_user",&csTmp)){
+DEBUGLOG(("Authorize::add_user= [%s]\n",csTmp));
+                PutField_CString(hTxn,"update_user",csTmp);
+        }
+
+/* party_type */
+	if (GetField_CString(hRequest, "party_type", &csTmp)) {
+DEBUGLOG(("Authorize::party_type = [%s]\n",csTmp));
+                PutField_CString(hTxn,"party_type",csTmp);
+	}
+
+/* psp_id */
+        if(GetField_CString(hRequest,"psp_id",&csTmp)){
+DEBUGLOG(("Authorize::psp_id = [%s]\n",csTmp));
+                PutField_CString(hTxn,"psp_id",csTmp);
+        }
+
+
+/* isd_ind  */
+        if(GetField_Char(hRequest,"isd_ind",&cIsd_ind)){
+DEBUGLOG(("Authorize::isd_ind = [%c]\n",cIsd_ind));
+                PutField_Char(hTxn,"isd_ind",cIsd_ind);
+        }
+
+/* txn_amt */
+       if(GetField_Double(hContext,"txn_amt",&dTmp)){
+DEBUGLOG(("Authorize::txn_amt= [%f]\n",dTmp));
+                PutField_Double(hTxn,"txn_amt",dTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::txn_amt not found!!\n"));
+ERRLOG("TxnMmsByUsTFP::Authorize::txn_amt not found!!\n");
+                iRet=INT_PAY_AMOUNT_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+        }
+
+/* txn_ccy */
+	if(GetField_CString(hRequest,"txn_ccy",&csTmp)){
+DEBUGLOG(("Authorize::txn_ccy= [%s]\n",csTmp));
+                PutField_CString(hTxn,"txn_ccy",csTmp);
+	}
+	else{
+DEBUGLOG(("Authorize::ccy not found!!\n"));
+ERRLOG("TxnMmsByUsTFP::Authorize::ccy not found!!\n");
+		iRet=INT_CURRENCY_CODE_NOT_FOUND;
+
+		PutField_Int(hContext,"internal_error",iRet);
+	}
+
+/* adjustment*/
+
+       if(GetField_Double(hContext,"adjustment",&dTmp)){
+DEBUGLOG(("Authorize::adjustment = [%f]\n",dTmp));
+                PutField_Double(hTxn,"adjustment",dTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::adjustment not found!!\n"));
+        }
+
+
+/* rate */
+
+       if(GetField_Double(hContext,"exchange_rate",&dTmp)){
+DEBUGLOG(("Authorize::rate = [%f]\n",dTmp));
+                PutField_Double(hTxn,"exchange_rate",dTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::rate not found!!\n"));
+        }
+
+
+/* processing_cost */
+       if(GetField_Double(hContext,"pc_amt",&dTmp)){
+DEBUGLOG(("Authorize::processing_cost = [%f]\n",dTmp));
+                PutField_Double(hTxn,"processing_cost",dTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::processing_cost not found!!\n"));
+        }
+
+/* bank_charge */
+       if(GetField_Double(hContext,"bk_chrg",&dTmp)){
+DEBUGLOG(("Authorize::bank_charge = [%f]\n",dTmp));
+                PutField_Double(hTxn,"bank_charge",dTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::bank_charge not found!!\n"));
+        }
+
+/* bank_charge_refund */
+
+       if(GetField_Double(hContext,"bank_charge_refund",&dTmp)){
+DEBUGLOG(("Authorize::bank_charge_refund = [%f]\n",dTmp));
+                PutField_Double(hTxn,"bank_charge_refund",dTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::bank_charge_refund not found!!\n"));
+        }
+
+
+/* txn_country */
+/*
+       if(GetField_CString(hRequest,"txn_country",&csTmp)){
+DEBUGLOG(("Authorize::txn_country = [%s]\n",csTmp));
+                PutField_CString(hTxn,"txn_country",csTmp);
+        }
+        else{
+DEBUGLOG(("Authorize::txn_country not found!!\n"));
+        }
+*/
+
+/*
+	if (GetField_Char(hRequest, "cal_amt_ind", &cTmp)) {
+DEBUGLOG(("Authorize::cal_amt_ind = [%c]\n",cTmp));
+		PutField_Char(hTxn, "cal_amt_ind", cTmp);
+	}	
+*/
+
+
+	if (GetField_CString(hRequest, "mms_node_id", &csNodeId)) {
+DEBUGLOG(("Authorize::mms_node_id = [%s]\n",csNodeId));
+		PutField_CString(hTxn, "mms_node_id", csNodeId);
+	}	
+
+
+	if(iRet==PD_OK){
+DEBUGLOG(("Authorize::Call BOMmsBalance: TxnTypeHandler\n"));
+                BOObjPtr = CreateObj(BOPtr,"BOMmsBalance","TxnTypeHandler");
+		iRet = (unsigned long)((*BOObjPtr)(hTxn));
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::PTMHandler Failed\n"));
+ERRLOG("TxnMmsByUsTFP::Authorize::PTMHandler Failed\n");
+                }
+        }
+
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("Authorize::Call TxnMgtByUsMML\n"));
+
+                TxnObjPtr = CreateObj(TxnPtr, "TxnMgtByUsMML","Authorize");
+                iRet = (unsigned long)(*TxnObjPtr)(hContext,hTxn,hResponse);
+
+		if (iRet != PD_OK) {
+DEBUGLOG(("Authorize::TxnMgtByUsMML Failed\n"));
+ERRLOG("TxnMmsByUsTFP::Authorize::TxnMgtByUsMML Failed\n");
+		}
+
+	}
+
+
+	if (iRet == PD_OK) {
+		//PutField_CString(hResponse, "org_txn_seq", csOrgSeq);
+		//PutField_CString(hResponse, "org_dtl_txn_seq", csOrgDtlSeq);
+
+
+		if (GetField_CString(hTxn, "txn_country", &csTmp)) {
+			PutField_CString(hResponse, "txn_country", csTmp);
+		}
+	}
+
+
+
+
+	FREE_ME(hTxn);
+
+DEBUGLOG(("TxnMmsByUsTFP Normal Exit() iRet = [%d]\n",iRet));
+	return iRet;
+}

@@ -1,0 +1,168 @@
+CREATE OR REPLACE FUNCTION sp_ol_statement_hold_log (
+   in_filename            ol_statement_detail.olsd_filename%TYPE,
+   in_int_bank_code       ol_statement_detail.olsd_int_bank_code%TYPE,
+   in_bank_acct_num       ol_statement_detail.olsd_bank_acct_num%TYPE,
+   in_statement_seq       ol_statement_detail.olsd_statement_seq%TYPE,
+   iCnt               OUT NUMBER)
+   RETURN NUMBER
+IS
+   TXN_AMOUNT        ol_statement_detail.olsd_txn_amount%TYPE;
+   AMT_TYPE          ol_statement_detail.olsd_amt_type%TYPE;
+   CREATE_DATETIME   VARCHAR2 (14);
+   STMT_DATETIME     VARCHAR2 (14);
+BEGIN
+   iCnt := 0;
+
+   /* Update Hold record */
+   UPDATE OL_STATEMENT_DETAIL
+      SET OLSD_UPDATE_TIMESTAMP = SYSDATE,
+          OLSD_UPDATE_USER = 'SYSTEM',
+          OLSD_STATUS = 'H'
+    WHERE     OLSD_FILENAME = in_filename
+          AND OLSD_INT_BANK_CODE = in_int_bank_code
+          AND OLSD_BANK_ACCT_NUM = in_bank_acct_num
+          AND OLSD_STATEMENT_SEQ = in_statement_seq
+          AND OLSD_STATUS = 'U';
+
+   IF SQL%ROWCOUNT = 0
+   THEN
+      RETURN 1;
+   END IF;
+
+   /* Insert Hold Log */
+   INSERT INTO ol_statement_status_log (sl_filename,
+                                        sl_statement_seq,
+                                        sl_status,
+                                        sl_process_group,
+                                        sl_input_channel,
+                                        sl_upload_filename,
+                                        sl_create_user)
+      SELECT OLSD_FILENAME,
+             OLSD_STATEMENT_SEQ,
+             OLSD_STATUS,
+             OLSD_PROCESS_GROUP,
+             OLSD_INPUT_CHANNEL,
+             OLSD_FILENAME,
+             'SYSTEM'
+        FROM OL_STATEMENT_DETAIL
+       WHERE     OLSD_FILENAME = in_filename
+             AND OLSD_INT_BANK_CODE = in_int_bank_code
+             AND OLSD_BANK_ACCT_NUM = in_bank_acct_num
+             AND OLSD_STATEMENT_SEQ = in_statement_seq
+             AND OLSD_STATUS = 'H';
+
+   IF SQL%ROWCOUNT = 0
+   THEN
+      RETURN 1;
+   END IF;
+
+   /* Check Amount Type */
+   SELECT OLSD_TXN_AMOUNT,
+          OLSD_AMT_TYPE,
+          TO_CHAR (OLSD_CREATE_TIMESTAMP, 'YYYYMMDDHH24MISS'),
+          TO_CHAR (OLSD_STATEMENT_TIMESTAMP, 'YYYYMMDDHH24MISS')
+     INTO TXN_AMOUNT,
+          AMT_TYPE,
+          CREATE_DATETIME,
+          STMT_DATETIME
+     FROM OL_STATEMENT_DETAIL
+    WHERE     OLSD_FILENAME = in_filename
+          AND OLSD_INT_BANK_CODE = in_int_bank_code
+          AND OLSD_BANK_ACCT_NUM = in_bank_acct_num
+          AND OLSD_STATEMENT_SEQ = in_statement_seq;
+
+   IF AMT_TYPE = 'DR'
+   THEN
+      /* HOLD previous 1 hour CR Record */
+      SELECT COUNT (*)
+        INTO iCnt
+        FROM OL_STATEMENT_DETAIL
+       WHERE     (   (    OLSD_FILENAME = in_filename
+                      AND OLSD_STATEMENT_SEQ < in_statement_seq)
+                  OR (    OLSD_FILENAME != in_filename
+                      AND OLSD_CREATE_TIMESTAMP <=
+                             TO_DATE (CREATE_DATETIME, 'YYYYMMDDHH24MISS')))
+             AND OLSD_INT_BANK_CODE = in_int_bank_code
+             AND OLSD_STATEMENT_TIMESTAMP >=
+                    TO_DATE (STMT_DATETIME, 'YYYYMMDDHH24MISS') - 1 / 24
+             AND OLSD_STATEMENT_TIMESTAMP <=
+                    TO_DATE (STMT_DATETIME, 'YYYYMMDDHH24MISS')
+             AND OLSD_AMT_TYPE = 'CR'
+             AND OLSD_TXN_AMOUNT = TXN_AMOUNT
+             AND OLSD_STATUS = 'U';
+
+      IF iCnt > 0
+      THEN
+         /* Update Other Hold Record */
+         UPDATE OL_STATEMENT_DETAIL
+            SET OLSD_UPDATE_TIMESTAMP = SYSDATE,
+                OLSD_UPDATE_USER = 'SYSTEM',
+                OLSD_STATUS = 'H'
+          WHERE     (   (    OLSD_FILENAME = in_filename
+                         AND OLSD_STATEMENT_SEQ < in_statement_seq)
+                     OR (    OLSD_FILENAME != in_filename
+                         AND OLSD_CREATE_TIMESTAMP <=
+                                TO_DATE (CREATE_DATETIME, 'YYYYMMDDHH24MISS')))
+                AND OLSD_INT_BANK_CODE = in_int_bank_code
+                AND OLSD_STATEMENT_TIMESTAMP >=
+                       TO_DATE (STMT_DATETIME, 'YYYYMMDDHH24MISS') - 1 / 24
+                AND OLSD_STATEMENT_TIMESTAMP <=
+                       TO_DATE (STMT_DATETIME, 'YYYYMMDDHH24MISS')
+                AND OLSD_AMT_TYPE = 'CR'
+                AND OLSD_TXN_AMOUNT = TXN_AMOUNT
+                AND OLSD_STATUS = 'U';
+
+         IF SQL%ROWCOUNT = 0
+         THEN
+            RETURN 1;
+         END IF;
+
+         /* Insert Other Hold Log */
+         INSERT INTO ol_statement_status_log (sl_filename,
+                                              sl_statement_seq,
+                                              sl_status,
+                                              sl_process_group,
+                                              sl_input_channel,
+                                              sl_upload_filename,
+                                              sl_create_user)
+            SELECT OLSD_FILENAME,
+                   OLSD_STATEMENT_SEQ,
+                   OLSD_STATUS,
+                   OLSD_PROCESS_GROUP,
+                   OLSD_INPUT_CHANNEL,
+                   in_filename,
+                   'SYSTEM'
+              FROM OL_STATEMENT_DETAIL
+             WHERE     (   (    OLSD_FILENAME = in_filename
+                            AND OLSD_STATEMENT_SEQ < in_statement_seq)
+                        OR (    OLSD_FILENAME != in_filename
+                            AND OLSD_CREATE_TIMESTAMP <=
+                                   TO_DATE (CREATE_DATETIME,
+                                            'YYYYMMDDHH24MISS')))
+                   AND OLSD_INT_BANK_CODE = in_int_bank_code
+                   AND OLSD_STATEMENT_TIMESTAMP >=
+                            TO_DATE (STMT_DATETIME, 'YYYYMMDDHH24MISS')
+                          - 1 / 24
+                   AND OLSD_STATEMENT_TIMESTAMP <=
+                          TO_DATE (STMT_DATETIME, 'YYYYMMDDHH24MISS')
+                   AND OLSD_AMT_TYPE = 'CR'
+                   AND OLSD_TXN_AMOUNT = TXN_AMOUNT
+                   AND OLSD_STATUS = 'H';
+
+         IF SQL%ROWCOUNT = 0
+         THEN
+            RETURN 1;
+         END IF;
+      END IF;
+   END IF;
+
+   iCnt := 1;
+
+   RETURN 0;
+EXCEPTION
+   WHEN OTHERS
+   THEN
+      RETURN 9;
+END sp_ol_statement_hold_log;
+/
+

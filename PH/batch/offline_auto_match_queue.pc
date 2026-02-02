@@ -1,0 +1,165 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sqlca.h>
+#include <sys/types.h>
+#include <time.h>
+#include "common.h"
+#include "utilitys.h"
+#include "curl/curl.h"
+#include "ObjPtr.h"
+#include "myrecordset.h"
+
+#define SQLCA_STORAGE_CLASS extern
+#define SQLCODE sqlca.sqlcode
+
+OBJPTR(DB);
+OBJPTR(Txn);
+
+char cDebug = 'Y';
+
+int batch_init(int argc, char* argv[])
+{
+	return SUCCESS;
+}
+
+
+int batch_proc(int argc, char* argv[])
+{
+	int iRet = PD_OK;
+	int iTmpRet;
+	int iEnable = PD_TRUE;
+
+	hash_t *myHash;
+	myHash = (hash_t*) malloc (sizeof(hash_t));
+
+	char csBankStmtAuto[PD_SP_VALUE_LEN];
+	char csStmtDateRange[PD_SP_VALUE_LEN];
+
+	EXEC SQL WHENEVER SQLERROR GOTO sql_error;
+	EXEC SQL WHENEVER NOTFOUND CONTINUE;
+
+	EXEC SQL BEGIN DECLARE SECTION;
+		varchar hv_input_channel[PD_CHANNEL_CODE_LEN];
+		varchar hv_txn_code[PD_TXN_CODE_LEN];
+		char hv_status;
+		char hv_ar_ind;
+		varchar hv_sub_status[PD_SUB_STATUS_LEN];
+		int hv_stmt_date_range;
+
+		varchar v_stmt_txn_id[PD_STMT_REF_LEN + 1];
+		short ind_stmt_txn_id = -1;
+	EXEC SQL END DECLARE SECTION;
+
+	if (iRet == PD_OK) {
+DEBUGLOG(("offline_auto_match_queue: call DBSystemParameter::FindCode()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(*DBObjPtr)(PD_OFL_BANK_STMT_AUTO, csBankStmtAuto) == PD_FOUND) {
+DEBUGLOG(("offline_auto_match_queue: bank_stmt_auto = [%d]\n", atoi(csBankStmtAuto)));
+			if (atoi(csBankStmtAuto) != PD_TRUE) {
+DEBUGLOG(("offline_auto_match_queue: auto match disabled\n"));
+				iEnable = PD_FALSE;
+			}
+		} else {
+DEBUGLOG(("offline_auto_match_queue: cannot find [%s] in system parameter\n", PD_OFL_BANK_STMT_AUTO));
+ERRLOG("offline_auto_match_queue: cannot find [%s] in system parameter\n", PD_OFL_BANK_STMT_AUTO);
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK && iEnable) {
+DEBUGLOG(("offline_auto_match_queue: call DBSystemParameter::FindCode()\n"));
+		DBObjPtr = CreateObj(DBPtr, "DBSystemParameter", "FindCode");
+		if ((unsigned long)(*DBObjPtr)(PD_OFL_STMT_DATE_RANGE, csStmtDateRange) == PD_FOUND) {
+DEBUGLOG(("offline_auto_match_queue: stmt_date_range = [%d]\n", atoi(csStmtDateRange)));
+		} else {
+DEBUGLOG(("offline_auto_match_queue: cannot find [%s] in system parameter\n", PD_OFL_STMT_DATE_RANGE));
+ERRLOG("offline_auto_match_queue: cannot find [%s] in system parameter\n", PD_OFL_STMT_DATE_RANGE);
+			iRet = PD_ERR;
+		}
+	}
+
+	if (iRet == PD_OK && iEnable) {
+		hv_input_channel.len = strlen(PD_CHANNEL_OMT);
+		memcpy(hv_input_channel.arr, PD_CHANNEL_OMT, hv_input_channel.len);
+
+		hv_txn_code.len = strlen(PD_BANK_DEPOSIT_TXN_CODE);
+		memcpy(hv_txn_code.arr, PD_BANK_DEPOSIT_TXN_CODE, hv_txn_code.len);
+
+		hv_status = PD_COMPLETE;
+
+		hv_ar_ind = PD_ACCEPT;
+
+		hv_sub_status.len = strlen(PD_UNALLOCATED);
+		memcpy(hv_sub_status.arr, PD_UNALLOCATED, hv_sub_status.len);
+
+		hv_stmt_date_range = atoi(csStmtDateRange);
+
+		EXEC SQL DECLARE c_cursor_getunallocatedrecords CURSOR FOR
+			SELECT oth_txn_id
+			FROM ol_txn_header, ol_txn_psp_detail
+			WHERE oth_txn_id = otp_txn_id
+			AND oth_input_channel = :hv_input_channel
+			AND oth_txn_code = :hv_txn_code
+			AND oth_status = :hv_status
+			AND oth_ar_ind = :hv_ar_ind
+			AND oth_sub_status = :hv_sub_status
+//			AND oth_multi_match_ind = 0
+			AND otp_txn_timestamp >= sysdate - :hv_stmt_date_range
+			AND otp_txn_hold_ind = 0
+			AND otp_sys_match_ind = 1
+			ORDER BY otp_txn_timestamp ASC;
+
+		EXEC SQL OPEN c_cursor_getunallocatedrecords;
+		for (;;) {
+			EXEC SQL FETCH c_cursor_getunallocatedrecords
+			INTO :v_stmt_txn_id:ind_stmt_txn_id;
+
+			if (SQLCODE == SQL_NOT_FOUND) {
+				break;
+			}
+
+			hash_init(myHash, 0);
+
+			// stmt_txn_id
+			if (ind_stmt_txn_id >= 0) {
+				v_stmt_txn_id.arr[v_stmt_txn_id.len] = '\0';
+				PutField_CString(myHash, "txn_seq", (const char*)v_stmt_txn_id.arr);
+DEBUGLOG(("offline_auto_match_queue: stmt_txn_id = [%s]\n", (const char*)v_stmt_txn_id.arr));
+
+				TxnObjPtr = CreateObj(TxnPtr, "TxnOmtByUsATM", "Authorize");
+				iTmpRet = (unsigned long)(*TxnObjPtr)(myHash, myHash, myHash);
+				if (iTmpRet != PD_OK) {
+DEBUGLOG(("offline_auto_match_queue: call TxnOmtByUsATM:Authorize(%s) failed\n", (const char*)v_stmt_txn_id.arr));
+ERRLOG("offline_auto_match_queue: call TxnOmtByUsATM:Authorize(%s) failed\n", (const char*)v_stmt_txn_id.arr);
+				}
+			}
+
+			hash_destroy(myHash);
+		}
+		EXEC SQL CLOSE c_cursor_getunallocatedrecords;
+	}
+
+	FREE_ME(myHash);
+
+DEBUGLOG(("offline_auto_match_queue: Normal Exit() iRet = [%d]\n", iRet));
+	return iRet;
+
+sql_error:
+DEBUGLOG(("sql_error code %d\n", sqlca.sqlcode));
+DEBUGLOG(("\n%.*s\n", sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc));
+ERRLOG("offline_auto_match_queue:: sql error\n");
+	EXEC SQL WHENEVER SQLERROR CONTINUE;
+	EXEC SQL CLOSE c_cursor_getunallocatedrecords;
+	EXEC SQL ROLLBACK RELEASE;
+	FREE_ME(myHash);
+	return FAILURE;
+}
+
+
+int batch_terminate(int argc, char* argv[])
+{
+	return SUCCESS;
+}

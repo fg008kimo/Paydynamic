@@ -1,0 +1,661 @@
+CREATE OR REPLACE PACKAGE psp_recon_pkg
+IS
+   FUNCTION f_psp_recon_detail (
+      in_from_date        txn_psp_detail.tp_txn_date%TYPE,
+      in_to_date          txn_psp_detail.tp_txn_date%TYPE)
+      RETURN psp_recon_tab;
+
+   FUNCTION f_psp_recon_detail_recon (
+      in_from_date        txn_psp_detail.tp_recon_date%TYPE,
+      in_to_date          txn_psp_detail.tp_recon_date%TYPE)
+      RETURN psp_recon_tab;
+END psp_recon_pkg;
+/
+
+CREATE OR REPLACE PACKAGE BODY PSP_RECON_PKG
+ IS
+    FUNCTION f_psp_recon_detail (
+       in_from_date             txn_psp_detail.tp_txn_date%TYPE,
+       in_to_date               txn_psp_detail.tp_txn_date%TYPE)
+       RETURN psp_recon_tab
+
+    IS
+       Result                   psp_recon_tab := psp_recon_tab ();
+       n                                INTEGER := 0;
+       v_psp_txn_date           txn_psp_detail.tp_txn_date%TYPE;
+       v_recon_timestamp                txn_psp_detail.tp_create_timestamp%TYPE;
+       v_recon_date             txn_psp_detail.tp_txn_date%TYPE;
+       v_report_date            txn_psp_detail.tp_txn_date%TYPE;
+       v_recon_id               txn_psp_detail.tp_txn_id%TYPE;
+       v_psp_id                 txn_psp_detail.tp_psp_id%TYPE;
+       v_psp_name               psp_detail.psp_name%TYPE;
+       v_country                        txn_detail.td_txn_country%TYPE;
+       v_country_name           country.country_name%TYPE;
+       v_txn_ccy                        txn_psp_detail.tp_txn_ccy%TYPE;
+       v_total_txn_amt          txn_psp_detail.tp_txn_amount%TYPE;
+       v_total_fee_amt          txn_psp_detail.tp_service_fee%TYPE;
+       v_txn_count              INTEGER;
+       v_match_count            INTEGER;
+       v_recon_count            INTEGER;
+       v_recon_amount           txn_psp_detail.tp_txn_amount%TYPE;
+       v_recon_cost             txn_psp_detail.tp_txn_amount%TYPE;
+       v_dm_count               INTEGER;
+       v_dm_amount              txn_psp_detail.tp_txn_amount%TYPE;
+       v_m_psp_count            INTEGER;
+       v_m_ph_count             INTEGER;
+       v_m_merchant_count       INTEGER;
+       v_mm_count               INTEGER;
+       v_re_m_count             INTEGER;
+       v_re_m_amount            txn_psp_detail.tp_txn_amount%TYPE;
+       v_approval_timestamp     txn_header.th_update_timestamp%TYPE;
+       v_service_code           txn_header.th_service_code%TYPE;
+       v_crr_product            crr_psp_product_code_map.pm_product_code%TYPE;
+       v_status        txn_header.th_status%TYPE;
+       v_ar_ind        txn_header.th_ar_ind%TYPE;
+       v_txn_code      txn_header.th_txn_code%TYPE;
+
+
+       CURSOR psp_recon_cur
+       IS
+          SELECT dt.txn_date psp_txn_date,
+                 rh.pr_create_timestamp recon_date,
+                 rh.pr_recon_date,
+                 rh.pr_report_date,
+                 rh.pr_id,
+                 dt.tp_psp_id,
+                 pspdt.psp_name,
+                 pspdt.country td_txn_country,
+                 pspdt.country_name,
+                 dt.tp_txn_ccy,
+                 dt.total_amt TOTAL_TXN_AMT,
+                 dt.total_fee TOTAL_FEE_AMT,
+                 dt.txn_count,
+                 dt.match_count,
+                 NVL (rh.txn_count, 0) RECON_COUNT,
+                 NVL (rh.txn_amt, 0) RECON_AMOUNT,
+                 NVL (rh.actual_cost, 0) RECON_ACTUAL_COST,
+                 NVL (mismatch.mis_cnt, 0) DM_COUNT,
+                 NVL (mismatch.mis_amt, 0) DM_AMOUNT,
+                 NVL (mismatch.psp_cnt, 0) M_PSP_COUNT,
+                 NVL (mismatch.ph_cnt, 0) M_PH_COUNT,
+                 0 M_MERCHANT_COUNT,
+                 NVL (mismatch.matched_cnt, 0) MM_COUNT,
+                 NVL (rematch.re_cnt, 0) RE_M_COUNT,
+                 NVL (rematch.re_amt, 0) RE_M_AMOUNT,
+                 rh.th_update_timestamp,
+                 rh.th_service_code,
+                 pspdt.pm_product_code,
+          rh.th_status,
+          rh.th_ar_ind,
+          rh.th_txn_code
+          FROM (  SELECT txn_date,
+                        tp_psp_id,
+                        tp_txn_ccy,
+                        SUM (total_amt) AS total_amt,
+                        SUM (total_fee) AS total_fee,
+                        SUM (txn_count) AS txn_count,
+                        SUM (match_count) AS match_count
+                   FROM (  SELECT tp_txn_date AS txn_date,
+                                tp_psp_id,
+                                tp_txn_ccy,
+                                SUM (tp_txn_amount) total_amt,
+                                SUM (tp_service_fee) total_fee,
+                                NVL (COUNT (tp_txn_id), 0) txn_count,
+                                NVL (
+                                   SUM (
+                                    CASE
+                                       WHEN tp_txn_date = tp_match_date
+                                       THEN
+                                          tp_match_ind
+                                       ELSE
+                                          0
+                                    END),
+                                 0) match_count
+                             FROM (SELECT /*+ use_nl(tp th)  index(th txn_header_pk) */
+                                      tp_txn_id,
+                                      tp_txn_date,
+                                      tp_psp_id,
+                                      tp_txn_ccy,
+                                      tp_txn_amount,
+                                      tp_service_fee,
+                                      tp_match_date,
+                                      tp_match_ind
+                                   FROM txn_psp_detail tp, txn_header th
+                                   WHERE th_txn_code = 'DSI'
+                                   AND th_ar_ind = 'A'
+                                   AND tp_txn_id = th_txn_id
+                             AND tp_txn_date BETWEEN in_from_date AND in_to_date)
+                             GROUP BY tp_txn_date, tp_psp_id, tp_txn_ccy
+                            UNION ALL
+                            SELECT tp_match_date AS txn_date,
+                                   tp_psp_id,
+                                   tp_txn_ccy,
+                                   0 AS total_amt,
+                                   0 AS total_fee,
+                                   0 AS txn_count,
+                                   NVL (
+                                     SUM (
+                                        CASE
+                                                WHEN tp_txn_id =
+                                                  (SELECT dm_txn_id
+                                                     FROM deposit_mismatch
+                                                    WHERE     dm_txn_id = tp_txn_id
+                                                          AND dm_party_type = 'P')
+                                          THEN
+                                            0
+                                          ELSE
+                                            tp_match_ind
+                                       END),
+                                     0) match_count
+                              FROM (SELECT tp_txn_id,
+                                      tp_txn_date,
+                                      tp_psp_id,
+                                      tp_txn_ccy,
+                                      tp_txn_amount,
+                                      tp_service_fee,
+                                      tp_match_date,
+                                      tp_match_ind
+                                    FROM txn_psp_detail
+                                    WHERE tp_match_ind = 1
+                                   AND   tp_txn_date <> tp_match_date)
+                              WHERE tp_match_date BETWEEN in_from_date AND in_to_date
+                             GROUP BY tp_match_date, tp_psp_id, tp_txn_ccy)
+                    GROUP BY txn_date, tp_psp_id, tp_txn_ccy) dt
+                    LEFT JOIN
+                    (SELECT psp_detail.psp_id psp_id,
+                            psp_name,
+                            country,
+                            country_name,
+                            pm_product_code
+                     FROM psp_country, country, psp_detail,crr_psp_product_code_map
+                     WHERE country = country_code
+                     AND psp_country.psp_id = psp_detail.psp_id
+                     AND country.disabled = 0
+                     AND country.system_support = 1
+                     --AND psp_detail.disabled = 0
+                     AND psp_country.psp_id = pm_psp_id) pspdt
+                    ON dt.tp_psp_id = pspdt.psp_id
+                    LEFT JOIN
+                    (  SELECT pr_id,
+                              pr_psp_id,
+                              pr_txn_ccy,
+                              pr_txn_country,
+                              pr_psp_txn_date,
+                              pr_recon_date,
+                              pr_report_date,
+                              th_service_code,
+                   th_status,
+                   th_ar_ind,
+                   th_txn_code,
+                              pr_create_timestamp,
+                              th_update_timestamp,
+                              SUM (pr_txn_count) txn_count,
+                              SUM (pr_txn_amount) txn_amt,
+                              SUM (pr_input_fee) actual_cost
+                        FROM psp_recon_history, txn_header
+                        where th_txn_id = pr_id
+                        GROUP BY pr_id,
+                        pr_psp_id,
+                        pr_psp_txn_date,
+                        th_service_code,
+                        th_status,
+                        th_ar_ind,
+                        th_txn_code,
+                        pr_create_timestamp,
+                        th_update_timestamp,
+                        pr_recon_date,
+                        pr_report_date,
+                        pr_txn_ccy,
+                        pr_txn_country) rh
+                    ON  rh.pr_psp_txn_date = dt.txn_date
+                    AND rh.pr_psp_id = dt.tp_psp_id
+                    AND rh.pr_txn_ccy = dt.tp_txn_ccy
+                    AND rh.pr_txn_country = pspdt.country
+                    LEFT JOIN
+                    (  SELECT dm_party_id,
+                              dm_txn_date,
+                              NVL (COUNT (*), 0) mis_cnt,
+                              SUM (CASE WHEN DM_ABSENT = 'PSP' THEN 1 ELSE 0 END) psp_cnt,
+                              SUM (CASE WHEN DM_ABSENT = 'PH' THEN 1 ELSE 0 END) ph_cnt,
+                              SUM (CASE NVL (DM_MATCH_IND, 0) WHEN 1 THEN 1 ELSE 0 END)
+                              matched_cnt,
+                              SUM (tp_txn_amount) mis_amt
+                        FROM (SELECT dm_party_id,
+                                     dm_txn_date,
+                                     dm_absent,
+                                     dm_match_ind,
+                                     tp_txn_amount
+                              FROM DEPOSIT_MISMATCH, txn_psp_detail
+                              WHERE DM_PARTY_TYPE = 'P' AND tp_txn_id = dm_txn_id)
+                        GROUP BY dm_party_id, dm_txn_date) mismatch
+                     ON     mismatch.dm_txn_date = dt.txn_date
+                     AND mismatch.dm_party_id = dt.tp_psp_id
+                     LEFT JOIN
+                     (  SELECT DM_PARTY_ID,
+                               DM_MATCH_DATE,
+                               SUM (CASE NVL (DM_MATCH_IND, 0) WHEN 1 THEN 1 ELSE 0 END)
+                               re_cnt,
+                               SUM (tp_txn_amount) re_amt
+                        FROM (SELECT dm_party_id,
+                                     dm_match_date,
+                                     dm_match_ind,
+                                     tp_txn_amount
+                              FROM DEPOSIT_MISMATCH, txn_psp_detail
+                              WHERE     DM_PARTY_TYPE = 'P'
+                              AND dm_match_ind = 1
+                              AND tp_txn_id = dm_txn_id)
+                        GROUP BY DM_PARTY_ID, DM_match_DATE) rematch
+                     ON     rematch.dm_match_date = dt.txn_date
+                     AND rematch.dm_party_id = dt.tp_psp_id
+          WHERE dt.tp_psp_id IS NOT NULL
+          ORDER BY dt.txn_date DESC, dt.tp_psp_id;
+
+       BEGIN
+execute immediate 'alter session set nls_sort=binary';
+        OPEN psp_recon_cur;
+        LOOP
+            FETCH psp_recon_cur
+                INTO
+                        v_psp_txn_date,
+                        v_recon_timestamp,
+                        v_recon_date,
+                        v_report_date,
+                        v_recon_id,
+                        v_psp_id,
+                        v_psp_name,
+                        v_country,
+                        v_country_name,
+                        v_txn_ccy,
+                        v_total_txn_amt,
+                        v_total_fee_amt,
+                        v_txn_count,
+                        v_match_count,
+                        v_recon_count,
+                        v_recon_amount,
+                        v_recon_cost,
+                        v_dm_count,
+                        v_dm_amount,
+                        v_m_psp_count,
+                        v_m_ph_count,
+                        v_m_merchant_count,
+                        v_mm_count,
+                        v_re_m_count,
+                        v_re_m_amount,
+                        v_approval_timestamp,
+                        v_service_code,
+                        v_crr_product,
+             v_status,
+             v_ar_ind,
+             v_txn_code;
+
+            EXIT WHEN psp_recon_cur%NOTFOUND;
+
+            Result.EXTEND;
+            n := n + 1;
+            result (n) :=
+                    psp_recon_OBJ(v_psp_txn_date,
+                                  v_recon_timestamp,
+                                  v_recon_date,
+                                  v_report_date,
+                                  v_recon_id,
+                                  v_psp_id,
+                                  v_psp_name,
+                                  v_country,
+                                  v_country_name,
+                                  v_txn_ccy,
+                                  v_total_txn_amt,
+                                  v_total_fee_amt,
+                                  v_txn_count,
+                                  v_match_count,
+                                  v_recon_count,
+                                  v_recon_amount,
+                                  v_recon_cost,
+                                  v_dm_count,
+                                  v_dm_amount,
+                                  v_m_psp_count,
+                                  v_m_ph_count,
+                                  v_m_merchant_count,
+                                  v_mm_count,
+                                  v_re_m_count,
+                                  v_re_m_amount,
+                                  v_approval_timestamp,
+                                  v_service_code,
+                                  v_crr_product,
+                   v_status,
+                   v_ar_ind,
+                   v_txn_code);
+
+        END LOOP;
+
+        CLOSE psp_recon_cur;
+
+    RETURN (Result);
+execute immediate 'alter session set nls_sort=binary_ci';
+    END f_psp_recon_detail;
+
+
+
+ FUNCTION f_psp_recon_detail_recon (
+       in_from_date        txn_psp_detail.tp_recon_date%TYPE,
+       in_to_date        txn_psp_detail.tp_recon_date%TYPE)
+       RETURN psp_recon_tab
+
+    IS
+       Result            psp_recon_tab := psp_recon_tab ();
+       n                INTEGER := 0;
+       v_psp_txn_date        txn_psp_detail.tp_txn_date%TYPE;
+       v_recon_timestamp        txn_psp_detail.tp_create_timestamp%TYPE;
+       v_recon_date        txn_psp_detail.tp_txn_date%TYPE;
+       v_report_date        txn_psp_detail.tp_txn_date%TYPE;
+       v_recon_id        txn_psp_detail.tp_txn_id%TYPE;
+       v_psp_id            txn_psp_detail.tp_psp_id%TYPE;
+       v_psp_name        psp_detail.psp_name%TYPE;
+       v_country            txn_detail.td_txn_country%TYPE;
+       v_country_name        country.country_name%TYPE;
+       v_txn_ccy            txn_psp_detail.tp_txn_ccy%TYPE;
+       v_total_txn_amt        txn_psp_detail.tp_txn_amount%TYPE;
+       v_total_fee_amt        txn_psp_detail.tp_service_fee%TYPE;
+       v_txn_count        INTEGER;
+       v_match_count        INTEGER;
+       v_recon_count        INTEGER;
+       v_recon_amount        txn_psp_detail.tp_txn_amount%TYPE;
+       v_recon_cost        txn_psp_detail.tp_txn_amount%TYPE;
+       v_dm_count        INTEGER;
+       v_dm_amount        txn_psp_detail.tp_txn_amount%TYPE;
+       v_m_psp_count        INTEGER;
+       v_m_ph_count        INTEGER;
+       v_m_merchant_count    INTEGER;
+       v_mm_count        INTEGER;
+       v_re_m_count        INTEGER;
+       v_re_m_amount        txn_psp_detail.tp_txn_amount%TYPE;
+       v_approval_timestamp    txn_header.th_update_timestamp%TYPE;
+       v_service_code        txn_header.th_service_code%TYPE;
+       v_crr_product        crr_psp_product_code_map.pm_product_code%TYPE;
+       v_status        txn_header.th_status%TYPE;
+       v_ar_ind        txn_header.th_ar_ind%TYPE;
+       v_txn_code      txn_header.th_txn_code%TYPE;
+
+
+       CURSOR psp_recon_cur
+       IS
+       SELECT dt.txn_date psp_txn_date,
+               rh.pr_create_timestamp recon_date,
+          rh.pr_recon_date,
+          rh.pr_report_date,
+          rh.pr_id,
+          dt.tp_psp_id,
+          pspdt.psp_name,
+          pspdt.country td_txn_country,
+          pspdt.country_name,
+          dt.tp_txn_ccy,
+          dt.total_amt TOTAL_TXN_AMT,
+          dt.total_fee TOTAL_FEE_AMT,
+          dt.txn_count,
+          dt.match_count,
+          NVL (rh.txn_count, 0) RECON_COUNT,
+          NVL (rh.txn_amt, 0) RECON_AMOUNT,
+          NVL (rh.actual_cost, 0) RECON_ACTUAL_COST,
+          NVL (mismatch.mis_cnt, 0) DM_COUNT,
+          NVL (mismatch.mis_amt, 0) DM_AMOUNT,
+          NVL (mismatch.psp_cnt, 0) M_PSP_COUNT,
+          NVL (mismatch.ph_cnt, 0) M_PH_COUNT,
+          0 M_MERCHANT_COUNT,
+          NVL (mismatch.matched_cnt, 0) MM_COUNT,
+          NVL (rematch.re_cnt, 0) RE_M_COUNT,
+          NVL (rematch.re_amt, 0) RE_M_AMOUNT,
+          rh.th_update_timestamp,
+          rh.th_service_code,
+          pspdt.pm_product_code,
+          rh.th_status,
+          rh.th_ar_ind,
+          rh.th_txn_code
+       FROM (  SELECT txn_date,
+             tp_psp_id,
+             tp_txn_ccy,
+             SUM (total_amt) AS total_amt,
+             SUM (total_fee) AS total_fee,
+             SUM (txn_count) AS txn_count,
+             SUM (match_count) AS match_count
+            FROM (  SELECT tp_txn_date AS txn_date,
+                 tp_psp_id,
+                 tp_txn_ccy,
+                 SUM (tp_txn_amount) total_amt,
+                 SUM (tp_service_fee) total_fee,
+                 NVL (COUNT (tp_txn_id), 0) txn_count,
+                 NVL (
+                                   SUM (
+                                    CASE
+                                       WHEN tp_txn_date = tp_match_date
+                                       THEN
+                                          tp_match_ind
+                                       ELSE
+                                          0
+                                    END),
+                                 0) match_count
+                             FROM (SELECT /*+ use_nl(tp th)  index(th txn_header_pk) */ 
+                                      tp_txn_id,
+                                      tp_txn_date,
+                                      tp_psp_id,
+                                      tp_txn_ccy,
+                                      tp_txn_amount,
+                                      tp_service_fee,
+                                      tp_match_date,
+                                      tp_match_ind
+                                   FROM txn_psp_detail tp, txn_header th
+                                   WHERE th_txn_code = 'DSI'
+                                   AND th_ar_ind = 'A'
+                                   AND tp_txn_id = th_txn_id
+                                   AND tp_recon_ind = 1
+                             AND tp_recon_date BETWEEN in_from_date AND in_to_date)
+                             GROUP BY tp_txn_date, tp_psp_id, tp_txn_ccy
+                             UNION ALL
+                               SELECT tp_match_date AS txn_date,
+                    tp_psp_id,
+                    tp_txn_ccy,
+                    0 AS total_amt,
+                    0 AS total_fee,
+                    0 AS txn_count,
+                    NVL (
+                      SUM (
+                                        CASE
+                         WHEN tp_txn_id =
+                                                  (SELECT dm_txn_id
+                                                     FROM deposit_mismatch
+                                                    WHERE     dm_txn_id = tp_txn_id
+                                                          AND dm_party_type = 'P')
+                                          THEN
+                                            0
+                                          ELSE
+                                            tp_match_ind
+                                       END),
+                                     0) match_count
+                              FROM (SELECT tp_txn_id,
+                                      tp_txn_date,
+                                      tp_psp_id,
+                                      tp_txn_ccy,
+                                      tp_txn_amount,
+                                      tp_service_fee,
+                                      tp_match_date,
+                                      tp_match_ind,
+                                      tp_recon_date
+                                    FROM txn_psp_detail
+                                    WHERE tp_match_ind = 1
+                                    AND tp_recon_ind = 1
+                    AND     tp_txn_date <> tp_match_date)
+                              WHERE tp_recon_date BETWEEN in_from_date AND in_to_date
+                  GROUP BY tp_match_date, tp_psp_id, tp_txn_ccy)
+             GROUP BY txn_date, tp_psp_id, tp_txn_ccy) dt
+             LEFT JOIN
+             (SELECT psp_detail.psp_id psp_id,
+                          psp_name,
+                 country,
+                 country_name,
+                 pm_product_code
+              FROM psp_country, country, psp_detail,crr_psp_product_code_map
+              WHERE country = country_code
+              AND psp_country.psp_id = psp_detail.psp_id
+              AND country.disabled = 0
+              AND country.system_support = 1
+              --AND psp_detail.disabled = 0
+              AND psp_country.psp_id = pm_psp_id) pspdt
+             ON dt.tp_psp_id = pspdt.psp_id
+             LEFT JOIN
+             (  SELECT pr_id,
+                          pr_psp_id,
+                   pr_txn_ccy,
+                   pr_txn_country,
+                   pr_psp_txn_date,
+                   pr_recon_date,
+                   pr_report_date,
+                   th_service_code,
+                   th_status,
+                   th_ar_ind,
+                   th_txn_code,
+                   pr_create_timestamp,
+                   th_update_timestamp,
+                   SUM (pr_txn_count) txn_count,
+                   SUM (pr_txn_amount) txn_amt,
+                   SUM (pr_input_fee) actual_cost
+             FROM psp_recon_history, txn_header
+             where th_txn_id = pr_id
+             GROUP BY pr_id,
+             pr_psp_id,
+             pr_psp_txn_date,
+             th_service_code,
+            th_status,
+            th_ar_ind,
+            th_txn_code,
+             pr_create_timestamp,
+             th_update_timestamp,
+             pr_recon_date,
+             pr_report_date,
+             pr_txn_ccy,
+             pr_txn_country) rh
+             ON  rh.pr_psp_txn_date = dt.txn_date
+             AND rh.pr_psp_id = dt.tp_psp_id
+             AND rh.pr_txn_ccy = dt.tp_txn_ccy
+             AND rh.pr_txn_country = pspdt.country
+             LEFT JOIN
+             (  SELECT dm_party_id,
+                              dm_txn_date,
+                   NVL (COUNT (*), 0) mis_cnt,
+                   SUM (CASE WHEN DM_ABSENT = 'PSP' THEN 1 ELSE 0 END) psp_cnt,
+                   SUM (CASE WHEN DM_ABSENT = 'PH' THEN 1 ELSE 0 END) ph_cnt,
+                   SUM (CASE NVL (DM_MATCH_IND, 0) WHEN 1 THEN 1 ELSE 0 END)
+                   matched_cnt,
+                   SUM (tp_txn_amount) mis_amt
+             FROM (SELECT dm_party_id,
+                                     dm_txn_date,
+                      dm_absent,
+                      dm_match_ind,
+                      tp_txn_amount
+                   FROM DEPOSIT_MISMATCH, txn_psp_detail
+                   WHERE DM_PARTY_TYPE = 'P' AND tp_txn_id = dm_txn_id)
+                   GROUP BY dm_party_id, dm_txn_date) mismatch
+                      ON     mismatch.dm_txn_date = dt.txn_date
+              AND mismatch.dm_party_id = dt.tp_psp_id
+              LEFT JOIN
+              (  SELECT DM_PARTY_ID,
+                    DM_MATCH_DATE,
+                    SUM (CASE NVL (DM_MATCH_IND, 0) WHEN 1 THEN 1 ELSE 0 END)
+                    re_cnt,
+                    SUM (tp_txn_amount) re_amt
+             FROM (SELECT dm_party_id,
+                      dm_match_date,
+                      dm_match_ind,
+                      tp_txn_amount
+                   FROM DEPOSIT_MISMATCH, txn_psp_detail
+                   WHERE     DM_PARTY_TYPE = 'P'
+                   AND dm_match_ind = 1
+                   AND tp_txn_id = dm_txn_id)
+             GROUP BY DM_PARTY_ID, DM_match_DATE) rematch
+              ON     rematch.dm_match_date = dt.txn_date
+              AND rematch.dm_party_id = dt.tp_psp_id
+       WHERE dt.tp_psp_id IS NOT NULL
+       ORDER BY dt.txn_date DESC, dt.tp_psp_id;
+
+       BEGIN
+execute immediate 'alter session set nls_sort=binary';
+     OPEN psp_recon_cur;
+     LOOP
+         FETCH psp_recon_cur
+         INTO
+             v_psp_txn_date,
+             v_recon_timestamp,
+             v_recon_date,
+             v_report_date,
+             v_recon_id,
+             v_psp_id,
+             v_psp_name,
+             v_country,
+             v_country_name,
+             v_txn_ccy,
+             v_total_txn_amt,
+             v_total_fee_amt,
+             v_txn_count,
+             v_match_count,
+             v_recon_count,
+             v_recon_amount,
+             v_recon_cost,
+             v_dm_count,
+             v_dm_amount,
+             v_m_psp_count,
+             v_m_ph_count,
+             v_m_merchant_count,
+             v_mm_count,
+             v_re_m_count,
+             v_re_m_amount,
+             v_approval_timestamp,
+             v_service_code,
+             v_crr_product,
+             v_status,
+             v_ar_ind,
+             v_txn_code;
+
+         EXIT WHEN psp_recon_cur%NOTFOUND;
+
+         Result.EXTEND;
+         n := n + 1;
+         result (n) :=
+             psp_recon_OBJ(v_psp_txn_date,
+                   v_recon_timestamp,
+                   v_recon_date,
+                   v_report_date,
+                   v_recon_id,
+                   v_psp_id,
+                   v_psp_name,
+                   v_country,
+                   v_country_name,
+                   v_txn_ccy,
+                   v_total_txn_amt,
+                   v_total_fee_amt,
+                   v_txn_count,
+                   v_match_count,
+                   v_recon_count,
+                   v_recon_amount,
+                   v_recon_cost,
+                   v_dm_count,
+                   v_dm_amount,
+                   v_m_psp_count,
+                   v_m_ph_count,
+                   v_m_merchant_count,
+                   v_mm_count,
+                   v_re_m_count,
+                   v_re_m_amount,
+                   v_approval_timestamp,
+                   v_service_code,
+                   v_crr_product,
+                   v_status,
+                   v_ar_ind,
+                   v_txn_code);
+
+     END LOOP;
+
+     CLOSE psp_recon_cur;
+
+    RETURN (Result);
+execute immediate 'alter session set nls_sort=binary_ci';
+    END f_psp_recon_detail_recon;
+ END psp_recon_pkg;
+/
+

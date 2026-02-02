@@ -1,0 +1,81 @@
+#ifndef _TRANSACTION_H_
+#define _TRANSACTION_H_
+
+#include "myhash.h"
+#include "myrecordset.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int Add(const hash_t *);
+int Update(const hash_t *hRls);
+int AddDetail(const hash_t *hRls);
+int UpdateDetail(const hash_t *hRls);
+
+int GetTxnHeader(const char* csTxnID,
+                recordset_t* myRec);
+int GetTxnDetail(const char* csTxnID,
+                recordset_t* myRec);
+int MatchMerchantRef(const char* csMerchantID,
+		     const char* csMerchantRef);
+int MatchRespTxn(const char* csTxnSeq,
+                     const char cStatus);
+int MatchRespTxnStatus(const char* csTxnSeq,
+                     const char cStatus,
+		     const char cArInd);
+
+int MatchRespTxnByRemark(const char* csRemark,
+                     const char cStatus,
+			char*	csOrgTxnId);
+
+int MatchHostRef(const char* csChannelCode,
+                 const char* csMmsHostRef);
+int GetMmsDetail(const char* csMmsHostRef,
+                  recordset_t* myRec);
+int AddTxnStatusLog(const hash_t *hCon);
+
+int AddTxnBrowserInfo(const hash_t *hRls);
+
+int     ChkTxnCodeExist(const char *csTxnCode);
+
+int MatchRespTxn_ReadOnly(const char* csTxnSeq,
+                     const char cStatus);
+
+int	GetRecCntByCustID(const char* csCustID,
+				const char* csTxnCode,
+				const double dDuration,
+				int *iCnt);
+
+int GetCustomerHistoryTxnList(const char *csMerchantId,
+                       const char *csCountry,
+                       const char *csServiceCode,
+                       const char *csTxnCcy,
+                       const char *csCustomerTag,
+                       const char *csCustomerGroup,
+                       hash_t *hTxn);
+
+int GetCustomerHistoryDetail(hash_t *hTxn,
+                       recordset_t* myRec);
+
+int BatchUpdateCustomerGroup(hash_t *hTxn);
+
+int MatchTxnStatusforUpdate(const char* csTxnSeq,
+                     const char cStatus);
+
+int AddMiTxnLog(const char* csTxnId);
+
+int GetTxnIdForUpdateNoWait(const char* csTxnId);
+
+int UpdateTxnDetailRemark(hash_t *hRls);
+
+int IsCreateTimeWithinRange(const char* csTxnSeq, const int iRange);
+
+int MerchBalInTxnDetailByAprvDate(const char* csAprvDate, recordset_t* myRec);
+
+int MerchBalInTxnDetail(const char* csTxnSeq);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
